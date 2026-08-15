@@ -1,0 +1,627 @@
+"""Tests for media-db.
+
+Everything here runs against the GOLDEN FIXTURES rather than against records
+invented locally. That is the point: if a contract change breaks what media-db
+can store, these fail, and the two cannot drift apart quietly.
+
+unittest.TestCase so the same file runs under `python3 -m unittest discover`
+(what scripts/ci/run-workspace-check.mjs uses) and under pytest.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = PACKAGE_ROOT.parent.parent
+FIXTURES = REPO_ROOT / "contracts" / "fixtures"
+
+sys.path.insert(0, str(PACKAGE_ROOT))
+
+from memory_engine_media_db import (  # noqa: E402
+    Database,
+    MigrationError,
+    SCHEMA_VERSION,
+    connect,
+    cosine_distance,
+    current_version,
+    migrate,
+)
+
+MANIFEST = json.loads((FIXTURES / "index.json").read_text(encoding="utf-8"))
+
+
+def fixtures_for(schema: str, expectation: str = "valid") -> list[dict]:
+    out = []
+    for entry in MANIFEST["fixtures"]:
+        if entry["schema"] == schema and entry["expectation"] == expectation:
+            out.append(json.loads((FIXTURES / entry["path"]).read_text(encoding="utf-8")))
+    return out
+
+
+def fixture_named(schema: str, needle: str, expectation: str = "valid") -> dict:
+    """Look up one fixture by a fragment of its path.
+
+    Restricted to `valid` by default and required to be unambiguous. Without
+    both guards, `below-threshold` silently matches the schema-INVALID
+    `eligible-while-below-threshold` fixture, and a test asserting the gate
+    holds would be asserting it against a record that violates it.
+    """
+    matches = [
+        entry
+        for entry in MANIFEST["fixtures"]
+        if entry["schema"] == schema
+        and entry["expectation"] == expectation
+        and needle in entry["path"]
+    ]
+    if not matches:
+        raise LookupError(f"no {expectation} {schema} fixture matching {needle!r}")
+    if len(matches) > 1:
+        raise LookupError(
+            f"{needle!r} matches {len(matches)} {schema} fixtures: "
+            f"{[m['path'] for m in matches]}"
+        )
+    return json.loads((FIXTURES / matches[0]["path"]).read_text(encoding="utf-8"))
+
+
+class DatabaseTestCase(unittest.TestCase):
+    """A migrated in-memory database, loaded with every valid media fixture."""
+
+    def setUp(self) -> None:
+        self.db = Database.open(":memory:")
+        self.addCleanup(self.db.close)
+
+    def load_media(self) -> list[dict]:
+        records = fixtures_for("media-record")
+        for record in records:
+            self.db.put_media(record)
+        return records
+
+
+class TestMigrations(unittest.TestCase):
+    def test_migrate_creates_every_table(self):
+        connection = connect(":memory:")
+        self.addCleanup(connection.close)
+        migrate(connection)
+
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        for expected in (
+            "media", "media_source", "media_span", "media_tag",
+            "person", "face", "moment", "moment_person",
+            "job", "pref_event", "vector",
+        ):
+            self.assertIn(expected, tables)
+
+    def test_migrate_is_idempotent(self):
+        connection = connect(":memory:")
+        self.addCleanup(connection.close)
+        first = migrate(connection)
+        second = migrate(connection)
+        self.assertEqual(first, second)
+        self.assertEqual(SCHEMA_VERSION, second)
+
+    def test_migrate_resumes_from_a_partial_version(self):
+        connection = connect(":memory:")
+        self.addCleanup(connection.close)
+        self.assertEqual(0, current_version(connection))
+        migrate(connection)
+        self.assertEqual(SCHEMA_VERSION, current_version(connection))
+
+    def test_a_database_from_the_future_is_refused(self):
+        """Opening a newer file read-write would silently misread it. Refuse instead."""
+        connection = connect(":memory:")
+        self.addCleanup(connection.close)
+        migrate(connection)
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 5}")
+        with self.assertRaises(MigrationError) as caught:
+            migrate(connection)
+        self.assertIn("newer build", str(caught.exception))
+
+    def test_survives_a_reopen_on_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "library.db"
+            with Database.open(path) as db:
+                db.put_media(fixture_named("media-record", "image-beach-sunset"))
+                self.assertEqual(1, db.count_media())
+            with Database.open(path) as db:
+                self.assertEqual(SCHEMA_VERSION, db.schema_version)
+                self.assertEqual(1, db.count_media())
+
+
+class TestMediaRoundTrip(DatabaseTestCase):
+    def test_every_valid_media_fixture_stores_and_returns_unchanged(self):
+        for record in fixtures_for("media-record"):
+            with self.subTest(media_id=record["media_id"][:12]):
+                self.db.put_media(record)
+                self.assertEqual(record, self.db.get_media(record["media_id"]))
+
+    def test_writing_the_same_record_twice_is_a_no_op(self):
+        record = fixture_named("media-record", "image-beach-sunset")
+        self.db.put_media(record)
+        self.db.put_media(record)
+        self.assertEqual(1, self.db.count_media())
+        self.assertEqual(
+            1,
+            self.db.connection.execute(
+                "SELECT count(*) FROM media_source WHERE media_id = ? AND adapter = 'filesystem'",
+                (record["media_id"],),
+            ).fetchone()[0],
+        )
+
+    def test_indexed_columns_agree_with_the_stored_json(self):
+        """The columns are derived data. If they drift from the JSON, every query
+        built on them is wrong in a way no test of the JSON would catch."""
+        for record in self.load_media():
+            row = self.db.connection.execute(
+                "SELECT * FROM media WHERE media_id = ?", (record["media_id"],)
+            ).fetchone()
+            captured = record["capture"]["captured_at"]
+            self.assertEqual(record["kind"], row["kind"])
+            self.assertEqual(record["asset_kind"], row["asset_kind"])
+            self.assertEqual(record["byte_size"], row["byte_size"])
+            self.assertEqual(captured["precision"], row["capture_precision"])
+            self.assertEqual(captured.get("utc"), row["captured_utc"])
+            self.assertEqual(record["processing"]["state"], row["processing_state"])
+            self.assertEqual(
+                1 if record["exclusion"]["excluded_from_automation"] else 0, row["excluded"]
+            )
+
+    def test_multiple_sources_collapse_onto_one_record(self):
+        record = fixture_named("media-record", "image-beach-sunset")
+        self.db.put_media(record)
+        paths = self.db.connection.execute(
+            "SELECT count(*) FROM media_source WHERE media_id = ?", (record["media_id"],)
+        ).fetchone()[0]
+        self.assertEqual(2, paths, "the same bytes seen twice must be one record, two sources")
+
+    def test_deleting_media_takes_its_children_with_it(self):
+        media = fixture_named("media-record", "image-beach-sunset")
+        self.db.put_media(media)
+        self.db.vectors.put("media", media["media_id"], "siglip2_so400m_1152", [0.1] * 8)
+        with self.db.connection:
+            self.db.connection.execute(
+                "DELETE FROM media WHERE media_id = ?", (media["media_id"],)
+            )
+        for table in ("media_source", "media_tag", "media_span"):
+            remaining = self.db.connection.execute(
+                f"SELECT count(*) FROM {table} WHERE media_id = ?", (media["media_id"],)
+            ).fetchone()[0]
+            self.assertEqual(0, remaining, f"{table} left an orphan")
+
+
+class TestSpans(DatabaseTestCase):
+    def test_span_members_come_back_in_playback_order(self):
+        self.load_media()
+        assembly = fixture_named("media-record", "span-assembly")
+        members = self.db.span_members(assembly["span"]["span_id"])
+        self.assertEqual(assembly["span"]["member_media_ids"], members)
+
+    def test_a_virtual_assembly_has_no_path_of_its_own(self):
+        self.load_media()
+        assembly = fixture_named("media-record", "span-assembly")
+        self.assertIsNone(
+            self.db.resolve_path(assembly["media_id"]),
+            "an assembly has no bytes on disk; callers must expand it via span_members",
+        )
+
+    def test_resolve_path_finds_a_real_file(self):
+        self.load_media()
+        record = fixture_named("media-record", "image-beach-sunset")
+        path = self.db.resolve_path(record["media_id"])
+        self.assertIn(path, [s["path"] for s in record["sources"]])
+
+    def test_resolve_path_prefers_a_present_source(self):
+        record = json.loads(json.dumps(fixture_named("media-record", "image-beach-sunset")))
+        record["sources"][0]["present"] = False
+        self.db.put_media(record)
+        self.assertEqual(record["sources"][1]["path"], self.db.resolve_path(record["media_id"]))
+
+    def test_resolve_path_is_none_for_an_unknown_id(self):
+        self.assertIsNone(self.db.resolve_path("0" * 64))
+
+
+class TestChronology(DatabaseTestCase):
+    def test_undated_media_is_excluded_from_chronological_listings(self):
+        self.load_media()
+        undated = fixture_named("media-record", "image-no-exif-date")
+        self.assertEqual("unknown", undated["capture"]["captured_at"]["precision"])
+
+        ids = {m.media_id for m in self.db.list_media(chronological=True, limit=500)}
+        self.assertNotIn(
+            undated["media_id"],
+            ids,
+            "an undated file has no position on a timeline; sorting it to the epoch "
+            "would open every album with it",
+        )
+
+        all_ids = {m.media_id for m in self.db.list_media(limit=500, include_excluded=True)}
+        self.assertIn(undated["media_id"], all_ids, "but it must still be in the library")
+
+    def test_a_day_precision_date_is_good_enough_for_a_timeline(self):
+        whatsapp = fixture_named("media-record", "whatsapp-filename-date")
+        self.assertEqual("day", whatsapp["capture"]["captured_at"]["precision"])
+        whatsapp = json.loads(json.dumps(whatsapp))
+        whatsapp["capture"]["captured_at"]["utc"] = "2023-08-12T00:00:00+00:00"
+        self.db.put_media(whatsapp)
+        ids = {m.media_id for m in self.db.list_media(chronological=True)}
+        self.assertIn(whatsapp["media_id"], ids)
+
+    def test_chronological_listing_is_ordered(self):
+        self.load_media()
+        listed = self.db.list_media(chronological=True, limit=500)
+        stamps = [m.captured_utc for m in listed]
+        self.assertEqual(sorted(stamps), stamps)
+
+    def test_quarantined_media_is_excluded_by_default(self):
+        self.load_media()
+        corrupt = fixture_named("media-record", "truncated")
+        ids = {m.media_id for m in self.db.list_media(limit=500)}
+        self.assertNotIn(corrupt["media_id"], ids)
+        ids = {m.media_id for m in self.db.list_media(limit=500, include_excluded=True)}
+        self.assertIn(corrupt["media_id"], ids, "excluded is not deleted")
+
+
+class TestFullTextSearch(DatabaseTestCase):
+    def test_finds_media_by_tag(self):
+        self.load_media()
+        hits = self.db.search("sunset")
+        self.assertTrue(hits)
+        record = fixture_named("media-record", "image-beach-sunset")
+        self.assertIn(record["media_id"], [h.media_id for h in hits])
+
+    def test_finds_media_by_original_filename(self):
+        self.load_media()
+        hits = self.db.search("IMG_4821")
+        self.assertIn(
+            fixture_named("media-record", "image-beach-sunset")["media_id"],
+            [h.media_id for h in hits],
+            "people search for filenames far more often than designers expect",
+        )
+
+    def test_finds_media_by_camera(self):
+        self.load_media()
+        hits = self.db.search("GoPro")
+        self.assertTrue(hits)
+
+    def test_search_is_diacritic_insensitive(self):
+        record = json.loads(json.dumps(fixture_named("media-record", "image-beach-sunset")))
+        record["user"]["caption"] = "Café at Kata"
+        self.db.put_media(record)
+        self.assertTrue(self.db.search("cafe"), "unicode61 remove_diacritics 2 should match")
+
+    def test_excluded_media_is_not_returned_by_default(self):
+        record = json.loads(json.dumps(fixture_named("media-record", "image-beach-sunset")))
+        record["exclusion"]["excluded_from_automation"] = True
+        record["exclusion"]["reasons"] = ["screenshot"]
+        self.db.put_media(record)
+        self.assertEqual([], self.db.search("sunset"))
+        self.assertTrue(self.db.search("sunset", include_excluded=True))
+
+    def test_reindexing_replaces_rather_than_duplicates(self):
+        record = fixture_named("media-record", "image-beach-sunset")
+        self.db.put_media(record)
+        self.db.put_media(record)
+        rows = self.db.connection.execute(
+            "SELECT count(*) FROM media_fts WHERE media_id = ?", (record["media_id"],)
+        ).fetchone()[0]
+        self.assertEqual(1, rows)
+
+    def test_empty_query_returns_nothing_rather_than_everything(self):
+        self.load_media()
+        self.assertEqual([], self.db.search("   "))
+
+
+class TestFaceGate(DatabaseTestCase):
+    """Precision over recall, enforced where it actually matters: at the query."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.load_media()
+        for record in fixtures_for("face-record"):
+            self.db.put_face(record)
+
+    def test_every_valid_face_fixture_round_trips(self):
+        for record in fixtures_for("face-record"):
+            with self.subTest(face_id=record["face_id"][:12]):
+                stored = self.db.faces_for_media(record["media_id"])
+                self.assertIn(record, stored)
+
+    def test_person_queries_exclude_uncertain_faces_by_default(self):
+        below = fixture_named("face-record", "below-threshold")
+        self.assertFalse(below["identity"]["eligible_for_automated_output"])
+
+        # The uncertain face has a leading candidate it is not allowed to be.
+        candidate = below["identity"]["candidates"][0]["person_id"]
+        confident = fixture_named("face-record", "confirmed-high-confidence")
+        self.assertEqual(candidate, confident["identity"]["person_id"])
+
+        safe = {m.media_id for m in self.db.list_media(person_id=candidate)}
+        self.assertNotIn(
+            below["media_id"],
+            safe,
+            "an uncertain match must never reach automated output",
+        )
+
+        widened = {
+            m.media_id
+            for m in self.db.list_media(person_id=candidate, include_uncertain=True)
+        }
+        self.assertIn(below["media_id"], widened, "but review tooling must be able to see it")
+
+    def test_candidates_are_searchable_but_never_eligible(self):
+        """The active-learning loop needs 'which photos MIGHT be this person'.
+        None of those matches may reach automated output."""
+        below = fixture_named("face-record", "below-threshold")
+        candidate = below["identity"]["candidates"][0]["person_id"]
+
+        rows = self.db.connection.execute(
+            "SELECT confidence FROM face_candidate WHERE face_id = ? AND person_id = ?",
+            (below["face_id"], candidate),
+        ).fetchall()
+        self.assertEqual(1, len(rows))
+
+        eligible_media = {m.media_id for m in self.db.list_media(person_id=candidate)}
+        for face in self.db.faces_for_media(below["media_id"]):
+            self.assertFalse(face["identity"]["eligible_for_automated_output"])
+        self.assertNotIn(below["media_id"], eligible_media)
+
+    def test_people_in_media_hides_uncertain_matches(self):
+        below = fixture_named("face-record", "below-threshold")
+        self.assertEqual([], self.db.people_in_media(below["media_id"]))
+
+    def test_the_database_refuses_an_ineligible_face_claiming_eligibility(self):
+        """The gate is a storage constraint, not just writer discipline."""
+        record = json.loads(json.dumps(fixture_named("face-record", "below-threshold")))
+        record["identity"]["eligible_for_automated_output"] = True
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.put_face(record)
+
+    def test_the_database_refuses_naming_a_minor_without_consent(self):
+        record = json.loads(json.dumps(fixture_named("face-record", "minor-with-consent")))
+        record["sensitive"]["labeling_consent"] = None
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.put_face(record)
+
+    def test_a_consented_minor_is_storable_and_queryable(self):
+        record = fixture_named("face-record", "minor-with-consent")
+        person_id = record["identity"]["person_id"]
+        self.assertIn(person_id, self.db.people_in_media(record["media_id"]))
+
+    def test_review_queue_surfaces_the_uncertain_faces(self):
+        queued = self.db.review_queue()
+        ids = [f["face_id"] for f in queued]
+        self.assertIn(fixture_named("face-record", "below-threshold")["face_id"], ids)
+        for face in queued:
+            self.assertFalse(face["identity"]["eligible_for_automated_output"])
+
+    def test_review_queue_orders_by_distance_from_the_threshold(self):
+        """Ten taps of labelling should fix a thousand photos, so the faces
+        nearest the decision boundary come first."""
+        base = fixture_named("face-record", "below-threshold")
+        for suffix, confidence in (("a", 0.20), ("b", 0.91), ("c", 0.55)):
+            record = json.loads(json.dumps(base))
+            record["face_id"] = (suffix * 2) + base["face_id"][2:]
+            record["identity"]["confidence"] = confidence
+            record["identity"]["threshold_used"] = 0.92
+            self.db.put_face(record)
+
+        confidences = [
+            f["identity"]["confidence"]
+            for f in self.db.review_queue()
+            if f["identity"].get("confidence") is not None
+        ]
+        gaps = [abs(0.92 - c) for c in confidences]
+        self.assertEqual(sorted(gaps), gaps)
+
+
+class TestMoments(DatabaseTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.load_media()
+        for record in fixtures_for("moment-record"):
+            self.db.put_moment(record)
+
+    def test_every_valid_moment_fixture_round_trips(self):
+        for record in fixtures_for("moment-record"):
+            with self.subTest(moment_id=record["moment_id"][:12]):
+                found = self.db.best_moments(media_id=record["media_id"], limit=100)
+                if record["elimination"]["eliminated"]:
+                    self.assertNotIn(record, found)
+                else:
+                    self.assertIn(record, found)
+
+    def test_eliminated_moments_never_surface(self):
+        eliminated = fixture_named("moment-record", "eliminated-shake")
+        self.assertTrue(eliminated["elimination"]["eliminated"])
+        ids = [m["moment_id"] for m in self.db.best_moments(limit=100)]
+        self.assertNotIn(eliminated["moment_id"], ids)
+
+    def test_best_moments_are_ordered_by_score(self):
+        scores = [m["scores"]["moment_score"]["value"] for m in self.db.best_moments(limit=100)]
+        self.assertEqual(sorted(scores, reverse=True), scores)
+
+    def test_moments_can_be_filtered_by_person(self):
+        peak = fixture_named("moment-record", "emotional-peak")
+        person_id = peak["people"]["person_ids"][0]
+        ids = [m["moment_id"] for m in self.db.best_moments(person_id=person_id)]
+        self.assertIn(peak["moment_id"], ids)
+
+    def test_a_chapter_crossing_moment_is_stored_against_the_assembly(self):
+        crossing = fixture_named("moment-record", "crosses-chapter")
+        assembly = fixture_named("media-record", "span-assembly")
+        self.assertEqual(assembly["media_id"], crossing["media_id"])
+        ids = [m["moment_id"] for m in self.db.best_moments(media_id=assembly["media_id"])]
+        self.assertIn(crossing["moment_id"], ids)
+
+
+class TestJobs(DatabaseTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        for record in fixtures_for("job-spec"):
+            self.db.put_job(record)
+
+    def test_every_valid_job_fixture_round_trips(self):
+        for record in fixtures_for("job-spec"):
+            with self.subTest(job_id=record["job_id"][:12]):
+                stored = self.db.jobs_by_status(record["state"]["status"])
+                self.assertIn(record, stored)
+
+    def test_distinct_scan_roots_are_distinct_rows(self):
+        scans = [
+            j for j in fixtures_for("job-spec") if j["job_type"] == "scan_source"
+        ]
+        self.assertEqual(2, len(scans))
+        self.assertEqual(
+            2,
+            self.db.connection.execute(
+                "SELECT count(*) FROM job WHERE job_type = 'scan_source'"
+            ).fetchone()[0],
+            "without the locator digest these would collide on the primary key and "
+            "the second drive would silently never be scanned",
+        )
+
+    def test_claim_next_job_returns_the_highest_priority_pending_job(self):
+        # Every job fixture is mid-flight, so queue two pending ones explicitly.
+        base = fixture_named("job-spec", "job-video-proxy-resumed")
+        for suffix, priority in (("1", 50), ("2", 900)):
+            record = json.loads(json.dumps(base))
+            record["job_id"] = suffix * 64
+            record["state"]["status"] = "pending"
+            record["priority"] = priority
+            self.db.put_job(record)
+
+        job = self.db.claim_next_job()
+        self.assertIsNotNone(job)
+        self.assertEqual("pending", job["state"]["status"])
+        self.assertEqual(900, job["priority"], "interactive work outranks background sweeps")
+
+    def test_claim_next_job_is_none_when_nothing_is_pending(self):
+        self.assertIsNone(self.db.claim_next_job())
+
+    def test_the_database_refuses_egress_without_consent(self):
+        record = json.loads(json.dumps(fixture_named("job-spec", "tier3-with-consent")))
+        record["egress"]["consent"] = None
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.put_job(record)
+
+
+class TestPrefEvents(DatabaseTestCase):
+    def test_every_valid_pref_fixture_round_trips(self):
+        for record in fixtures_for("pref-event"):
+            self.db.put_pref_event(record)
+        for record in fixtures_for("pref-event"):
+            with self.subTest(event_id=record["event_id"]):
+                self.assertIn(record, self.db.pref_events())
+
+    def test_the_database_refuses_an_event_carrying_pixels(self):
+        record = json.loads(json.dumps(fixtures_for("pref-event")[0]))
+        record["pixel_data_present"] = True
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.put_pref_event(record)
+
+    def test_shareable_events_can_be_selected_for_export(self):
+        for record in fixtures_for("pref-event"):
+            self.db.put_pref_event(record)
+        shareable = self.db.pref_events(shareable_only=True)
+        self.assertTrue(shareable)
+        for event in shareable:
+            self.assertTrue(event["privacy"]["shareable_for_global_model"])
+            self.assertFalse(event["privacy"]["contains_local_identifiers"])
+
+
+class TestVectorIndex(DatabaseTestCase):
+    def test_reports_which_backend_is_live(self):
+        self.assertIn(self.db.vectors.backend, {"sqlite_vec", "brute_force"})
+
+    def test_round_trips_a_vector(self):
+        values = [0.1, -0.2, 0.3, 0.9]
+        self.db.vectors.put("media", "a" * 64, "siglip2_so400m_1152", values)
+        stored = self.db.vectors.get("media", "a" * 64, "siglip2_so400m_1152")
+        for expected, actual in zip(values, stored):
+            self.assertAlmostEqual(expected, actual, places=6)
+
+    def test_nearest_returns_closest_first(self):
+        space = "siglip2_so400m_1152"
+        self.db.vectors.put("media", "a" * 64, space, [1.0, 0.0, 0.0])
+        self.db.vectors.put("media", "b" * 64, space, [0.9, 0.1, 0.0])
+        self.db.vectors.put("media", "c" * 64, space, [0.0, 1.0, 0.0])
+
+        found = self.db.vectors.nearest(space, [1.0, 0.0, 0.0], k=3)
+        self.assertEqual(["a" * 64, "b" * 64, "c" * 64], [n.owner_id for n in found])
+        self.assertEqual(sorted(n.distance for n in found), [n.distance for n in found])
+
+    def test_nearest_is_deterministic_on_ties(self):
+        space = "siglip2_so400m_1152"
+        for owner in ("c" * 64, "a" * 64, "b" * 64):
+            self.db.vectors.put("media", owner, space, [1.0, 0.0])
+        first = [n.owner_id for n in self.db.vectors.nearest(space, [1.0, 0.0], k=3)]
+        second = [n.owner_id for n in self.db.vectors.nearest(space, [1.0, 0.0], k=3)]
+        self.assertEqual(first, second)
+        self.assertEqual(sorted(first), first, "ties break by id, so plans stay reproducible")
+
+    def test_restrict_to_prefilters_the_search(self):
+        space = "siglip2_so400m_1152"
+        self.db.vectors.put("media", "a" * 64, space, [1.0, 0.0])
+        self.db.vectors.put("media", "b" * 64, space, [0.99, 0.01])
+        found = self.db.vectors.nearest(space, [1.0, 0.0], k=5, restrict_to={"b" * 64})
+        self.assertEqual(["b" * 64], [n.owner_id for n in found])
+
+    def test_dimension_mismatch_is_an_error_not_a_wrong_answer(self):
+        space = "siglip2_so400m_1152"
+        self.db.vectors.put("media", "a" * 64, space, [1.0, 0.0, 0.0])
+        with self.assertRaises(Exception):
+            self.db.vectors.nearest(space, [1.0, 0.0], k=1)
+
+    def test_spaces_do_not_mix(self):
+        self.db.vectors.put("media", "a" * 64, "siglip2_so400m_1152", [1.0, 0.0])
+        self.db.vectors.put("media", "a" * 64, "arcface_buffalo_l_512", [0.0, 1.0])
+        found = self.db.vectors.nearest("arcface_buffalo_l_512", [0.0, 1.0], k=5)
+        self.assertEqual(1, len(found))
+        self.assertEqual(2, self.db.vectors.count())
+
+    def test_cosine_distance_matches_hand_computed_values(self):
+        self.assertAlmostEqual(0.0, cosine_distance([1, 0], [1, 0]), places=9)
+        self.assertAlmostEqual(1.0, cosine_distance([1, 0], [0, 1]), places=9)
+        self.assertAlmostEqual(2.0, cosine_distance([1, 0], [-1, 0]), places=9)
+
+    def test_similar_media_excludes_the_query_itself(self):
+        self.load_media()
+        records = fixtures_for("media-record")[:3]
+        space = "siglip2_so400m_1152"
+        for index, record in enumerate(records):
+            self.db.vectors.put("media", record["media_id"], space, [1.0, index * 0.1])
+        found = self.db.similar_media(records[0]["media_id"], space, k=5)
+        self.assertNotIn(records[0]["media_id"], [n.owner_id for n in found])
+
+
+class TestDedupe(DatabaseTestCase):
+    def test_only_primaries_are_returned_when_asked(self):
+        self.load_media()
+        record = fixture_named("media-record", "image-beach-sunset")
+        self.assertTrue(record["dedupe"]["is_primary"])
+
+        secondary = json.loads(json.dumps(record))
+        secondary["media_id"] = "f" * 64
+        secondary["dedupe"]["is_primary"] = False
+        secondary["dedupe"]["primary_media_id"] = record["media_id"]
+        self.db.put_media(secondary)
+
+        primaries = {m.media_id for m in self.db.list_media(primaries_only=True, limit=500)}
+        self.assertIn(record["media_id"], primaries)
+        self.assertNotIn(
+            secondary["media_id"],
+            primaries,
+            "a burst of near-identical frames must contribute one photo, not twelve",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
