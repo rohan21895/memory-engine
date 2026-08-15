@@ -1,0 +1,24 @@
+{
+  "name": "memory-engine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local-first media memory engine monorepo",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "apps/*",
+    "contracts/codegen",
+    "packages/*",
+    "services/*",
+    "workers/*"
+  ],
+  "scripts": {
+    "lint": "node scripts/ci/run-workspace-check.mjs lint",
+    "test": "node scripts/ci/run-workspace-check.mjs test",
+    "codegen": "node scripts/ci/generate-contracts.mjs",
+    "codegen:check": "node scripts/ci/check-codegen-freshness.mjs",
+    "test:egress": "node --test tests/egress/*.test.mjs",
+    "ci": "npm run lint && npm test && npm run codegen:check && npm run test:egress"
+  }
+}

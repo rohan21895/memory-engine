@@ -1,0 +1,29 @@
+# JavaScript / TypeScript
+node_modules/
+.npm/
+dist/
+coverage/
+
+# Rust
+target/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Generated local artifacts
+tmp/
+artifacts/
