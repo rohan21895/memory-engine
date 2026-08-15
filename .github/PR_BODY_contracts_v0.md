@@ -74,7 +74,14 @@ All four named in CLAUDE.md task 3 are present, and there's a test that fails if
 - ✅ Generated pydantic imports warning-free; every valid fixture parses **and round-trips** without a field changing shape.
 - ✅ Codegen is deterministic (identical hashes across runs) and `npm run codegen:check` reports fresh.
 - ✅ `python3 -m compileall contracts` clean.
-- ⚠️ **Rust is unverified locally — there is no cargo on the authoring machine.** The crate is emitted with `#![allow(clippy::all)]` and a `rustfmt.toml` setting `disable_all_formatting = true`, because CI runs `cargo fmt --check` on every crate it finds and generated code should be formatted by its generator, not by rustfmt. **This is the first thing to confirm on your side.** If it doesn't compile, that's a codegen bug and mine to fix.
+- ✅ Generated Rust compiles in CI (`cargo test` builds the crate) and passes `cargo fmt --check` and `cargo clippy -D warnings`. There is no cargo on the authoring machine, so this was unverified until CI ran it. The crate carries `#![allow(clippy::all)]` and a `rustfmt.toml` setting `disable_all_formatting = true` — CI runs `cargo fmt --check` on every crate it finds, and generated code should be formatted by its generator rather than by a tool that will disagree with it in ways no human can fix at the source.
+- ✅ All five CI jobs green: Lint, Test, Codegen Freshness, Egress Test, Contracts.
+
+Two follow-up commits were needed to get there, both caused by this branch:
+`contracts/codegen` is a declared npm workspace, so adding a `package.json`
+there put `package-lock.json` out of sync and broke every `npm ci`; and
+`run-workspace-check.mjs` discovers `contracts/pyproject.toml` and runs its
+tests, so the Test job needed pydantic and jsonschema installed.
 
 Two round-trip properties the tests pin down, because they're the ones that would silently rot: every timeline position is a whole frame, while at least one beat position must be *fractional* — music doesn't land on frame boundaries, and a grid rounded to frames is the bug that makes beat-locked cuts drift.
 
