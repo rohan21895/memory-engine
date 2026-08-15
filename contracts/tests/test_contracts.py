@@ -157,9 +157,18 @@ class TestManifestMatchesDisk(unittest.TestCase):
                 self.assertIn(
                     entry["expectation"], {"valid", "schema-invalid", "semantic-invalid"}
                 )
+                if entry["expectation"] == "schema-invalid":
+                    self.assertIn(
+                        entry.get("rejected_by"),
+                        {"schema_type", "schema_conditional"},
+                        "a negative fixture must say which kind of rule rejects it, so "
+                        "the generated-bindings test knows what to expect of it",
+                    )
 
-    def test_phase_zero_required_edge_cases_are_covered(self):
-        """CLAUDE.md Phase 0 task 3 names four edge cases by hand. None may go missing."""
+    def test_required_edge_cases_are_covered(self):
+        """The edge cases named in CLAUDE.md Phase 0 task 3, plus the ones Codex
+        raised in review: schema support without a golden fixture does not
+        establish that ingest and render can actually use a shape."""
         paths = {entry["path"] for entry in MANIFEST["fixtures"]}
         required = {
             "a GoPro chaptered video spanning files": {
@@ -168,16 +177,38 @@ class TestManifestMatchesDisk(unittest.TestCase):
                 "media-record/valid/video-gopro-span-assembly.json",
             },
             "a photo with no EXIF date": {"media-record/valid/image-no-exif-date.json"},
+            "a WhatsApp filename-derived date": {
+                "media-record/valid/image-whatsapp-filename-date.json"
+            },
+            "HEIC": {"media-record/valid/image-heic-mislabeled-extension.json"},
+            "paired Live Photos": {
+                "media-record/valid/live-photo-still.json",
+                "media-record/valid/live-photo-motion.json",
+            },
+            "a corrupt or truncated file": {
+                "media-record/valid/file-truncated-quarantined.json"
+            },
+            "a zero-byte file": {"media-record/valid/file-zero-byte-quarantined.json"},
             "a face below confidence threshold": {
                 "face-record/valid/face-below-threshold-review-queued.json"
             },
             "an EDL with a beat-locked cut and a vertical reframe keyframe track": {
                 "edl/valid/reel-beat-locked-vertical-reframe.json"
             },
+            "a moment crossing a GoPro chapter boundary": {
+                "moment-record/valid/moment-crosses-chapter-boundary.json"
+            },
+            "distinct scan roots yielding distinct job ids": {
+                "job-spec/valid/job-scan-source-root-a.json",
+                "job-spec/valid/job-scan-source-root-b.json",
+            },
         }
         for description, expected in required.items():
             with self.subTest(edge_case=description):
-                self.assertTrue(expected <= paths, f"missing fixture(s) for: {description}")
+                self.assertTrue(
+                    expected <= paths,
+                    f"missing fixture(s) for: {description} -- {sorted(expected - paths)}",
+                )
 
     def test_every_schema_has_at_least_one_valid_fixture(self):
         covered = {entry["schema"] for entry in _entries("valid")}
@@ -263,16 +294,68 @@ def check_face_record(record: dict) -> list[str]:
                 f"operating point, not {identity.get('threshold_profile')!r}"
             )
 
-    minor = record.get("sensitive", {}).get("minor_status")
+    sensitive = record.get("sensitive")
+    if sensitive is None:
+        problems.append(
+            "no minor-safety envelope; 'nobody asked' is not the same as 'not a child'"
+        )
+        return problems
+
+    minor = sensitive.get("minor_status", "unknown")
+    consent = sensitive.get("labeling_consent")
     if minor == "confirmed_minor":
-        if record["sensitive"].get("labeling_consent") is None and identity.get("person_id"):
+        if consent is None:
             problems.append("a confirmed minor was labeled without a consent reference")
+        else:
+            if consent.get("scope") != "minor_face_labeling":
+                problems.append(
+                    f"child labeling justified by a {consent.get('scope')!r} consent; "
+                    "a permission for one thing is not a permission for another"
+                )
+            if consent.get("revoked_at") is not None:
+                problems.append("child labeling relies on a revoked consent")
+            if consent.get("expires_at") is not None and consent.get("granted_at") is not None:
+                if consent["expires_at"] <= consent["granted_at"]:
+                    problems.append("child labeling consent expires before it was granted")
+    elif consent is not None:
+        problems.append(
+            f"minor labeling consent attached to a face marked {minor!r}, which does not need it"
+        )
     return problems
 
 
 def check_media_record(record: dict) -> list[str]:
     problems: list[str] = []
+    asset_kind = record.get("asset_kind")
     span = record.get("span")
+
+    # Identity, size and source rules differ by asset_kind. Getting this wrong is
+    # what the review caught: an assembly that claimed a byte size no file has.
+    if asset_kind == "virtual_assembly":
+        if record["byte_size"] != 0:
+            problems.append(
+                f"virtual assembly claims byte_size {record['byte_size']}; it has no bytes "
+                "of its own, and a size matching no file breaks filesystem verification"
+            )
+        if record["sources"]:
+            problems.append("virtual assembly exposes a source path; its members own the paths")
+        if record.get("proxies"):
+            problems.append("virtual assembly has proxies; it reads its members' proxies in order")
+        if span is None:
+            problems.append("virtual assembly has no span")
+        elif span["span_id"] != record["media_id"]:
+            problems.append(
+                "assembly media_id must equal its span_id -- with no bytes to hash, its "
+                "members' identity is its identity"
+            )
+    elif asset_kind == "physical_file":
+        if not record["sources"]:
+            problems.append("physical file has no source location")
+        if span and span["role"] != "member":
+            problems.append("a physical file may only be a span member, never the assembly")
+    else:
+        problems.append(f"unknown asset_kind {asset_kind!r}")
+
     if span:
         if span["role"] == "member":
             if span.get("index") is None:
@@ -282,10 +365,44 @@ def check_media_record(record: dict) -> list[str]:
         else:
             if span.get("index") is not None:
                 problems.append("span assembly must have a null index")
-            if not span.get("member_media_ids"):
-                problems.append("span assembly lists no members")
-            if span["span_id"] != record["media_id"]:
-                problems.append("assembly media_id must equal its span_id")
+            if len(span.get("member_media_ids", [])) < 2:
+                problems.append("a span assembly needs at least two members")
+            if span.get("member_count") is not None:
+                if span["member_count"] != len(span.get("member_media_ids", [])):
+                    problems.append("member_count disagrees with member_media_ids")
+
+    for hash_field in (
+        (record.get("perceptual") or {}).get("image_hash"),
+        *[k["hash"] for k in (record.get("perceptual") or {}).get("keyframe_hashes", [])],
+    ):
+        if not hash_field:
+            continue
+        if hash_field["bits"] != 4 * len(hash_field["hex"]):
+            problems.append(
+                f"perceptual hash declares {hash_field['bits']} bits but carries "
+                f"{4 * len(hash_field['hex'])} bits of hex; malformed digests poison dedupe"
+            )
+        suffix = hash_field["algorithm"].rsplit("-", 1)[-1]
+        if suffix.isdigit() and int(suffix) != hash_field["bits"]:
+            problems.append(
+                f"algorithm {hash_field['algorithm']} implies {suffix} bits but "
+                f"bits is {hash_field['bits']}"
+            )
+
+    paired = (record.get("image") or {}).get("paired_motion_media_id")
+    if paired and paired == record["media_id"]:
+        problems.append("a Live Photo cannot be paired to itself")
+
+    if record["processing"]["state"] == "quarantined":
+        if not record["exclusion"]["excluded_from_automation"]:
+            problems.append("a quarantined file must be excluded from automated output")
+        for name, stage in record["processing"]["stages"].items():
+            error = stage.get("last_error")
+            if error and error["retryable"]:
+                problems.append(
+                    f"quarantined on a retryable error in stage {name!r}; quarantine is for "
+                    "files that must never be retried automatically"
+                )
 
     captured = record["capture"]["captured_at"]
     if captured["precision"] == "unknown" and captured.get("local") is not None:
@@ -532,6 +649,19 @@ def check_edl(edl: dict) -> list[str]:
     return problems
 
 
+#: Gates that must appear, and have passed, in any AlbumSpec claiming a pass.
+#: The first four are named in the build plan; page_count_valid is here because a
+#: page count the vendor rejects is just as final a failure and the renderer is
+#: explicitly forbidden from fixing it later.
+HARD_PRINT_GATES = (
+    "dpi_floor",
+    "face_in_trim_zone",
+    "bleed_coverage",
+    "color_profile_match",
+    "page_count_valid",
+)
+
+
 def check_album_spec(spec: dict) -> list[str]:
     problems: list[str] = []
     profile = spec["vendor_profile"]
@@ -603,10 +733,33 @@ def check_album_spec(spec: dict) -> list[str]:
                         f"{adjustment['placement_id']!r}"
                     )
 
+    page_count = len(spec["pages"])
+    limits = profile.get("page_count")
+    if limits:
+        if page_count < limits["minimum"]:
+            problems.append(
+                f"{page_count} pages against a vendor minimum of {limits['minimum']}; "
+                "the renderer is forbidden from adding filler later"
+            )
+        if page_count > limits["maximum"]:
+            problems.append(f"{page_count} pages exceeds the vendor maximum of {limits['maximum']}")
+        if page_count % limits["increment"] != 0:
+            problems.append(
+                f"{page_count} pages is off the vendor increment of {limits['increment']}"
+            )
+
     report = spec["validation"]
     failed = [c for c in report["checks"] if c["severity"] == "error" and not c["passed"]]
     if report["status"] == "pass" and failed:
         problems.append("validation claims pass while error-severity checks failed")
+    if report["status"] == "pass":
+        # A pass must be earned. An empty or partial checks array would otherwise
+        # pass trivially -- the case where a spec ships because nobody ran the
+        # validator rather than because it is correct.
+        present = {c["check_id"] for c in report["checks"] if c["passed"]}
+        for gate in HARD_PRINT_GATES:
+            if gate not in present:
+                problems.append(f"pass report is missing the {gate} hard gate")
     if report["status"] == "pass" and report.get("error_count", 0) != 0:
         problems.append("validation claims pass with a non-zero error_count")
     if len(failed) != report.get("error_count", len(failed)):
@@ -648,6 +801,25 @@ def check_job_spec(job: dict) -> list[str]:
         for entry in job.get("journal", {}).get("entries", []):
             if entry["action"] in {"network_send", "network_receive"}:
                 problems.append("a local-only job journaled a network action")
+
+    if job["job_type"] == "scan_source":
+        # A scan runs before anything has a content hash, so without a locator
+        # digest two scans of different roots share an identity and the second is
+        # skipped as already-done: a whole drive silently never imported.
+        if not job["inputs"].get("source_paths"):
+            problems.append("a scan job names no source paths")
+        if not job["inputs"].get("source_locator_digest"):
+            problems.append(
+                "a scan job has no source_locator_digest; its identity would be "
+                "indistinguishable from any other scan with the same params"
+            )
+        if job["inputs"].get("media_ids"):
+            problems.append("a scan job cannot have media ids -- discovering them is its output")
+    elif job["inputs"].get("source_locator_digest"):
+        problems.append(
+            f"{job['job_type']} carries a source_locator_digest; only scan_source "
+            "addresses locations rather than content"
+        )
 
     state = job["state"]
     if state["status"] == "completed":
@@ -796,6 +968,69 @@ class TestSemanticInvariants(unittest.TestCase):
         problems = check_album_spec(spec)
         self.assertTrue(any("DPI floor" in problem for problem in problems), problems)
 
+    def test_page_count_invariant_rejects_a_short_album(self):
+        spec = _fixture(_entries("valid", "album-spec")[0])
+        self.assertEqual([], check_album_spec(spec))
+
+        spec["pages"] = spec["pages"][:3]
+        problems = check_album_spec(spec)
+        self.assertTrue(any("vendor minimum" in problem for problem in problems), problems)
+
+    def test_pass_report_invariant_rejects_a_missing_hard_gate(self):
+        spec = _fixture(_entries("valid", "album-spec")[0])
+        self.assertEqual([], check_album_spec(spec))
+
+        spec["validation"]["checks"] = [
+            c for c in spec["validation"]["checks"] if c["check_id"] != "bleed_coverage"
+        ]
+        problems = check_album_spec(spec)
+        self.assertTrue(any("bleed_coverage" in problem for problem in problems), problems)
+
+    def test_assembly_invariant_rejects_borrowed_bytes_and_paths(self):
+        record = _fixture(
+            next(e for e in _entries("valid", "media-record") if "assembly" in e["path"])
+        )
+        self.assertEqual([], check_media_record(record))
+
+        record["byte_size"] = 6043992064
+        problems = check_media_record(record)
+        self.assertTrue(any("byte_size" in problem for problem in problems), problems)
+
+    def test_minor_consent_invariant_rejects_a_wrong_scope(self):
+        record = _fixture(
+            next(e for e in _entries("valid", "face-record") if "minor" in e["path"])
+        )
+        self.assertEqual([], check_face_record(record))
+
+        record["sensitive"]["labeling_consent"]["scope"] = "cloud_render"
+        problems = check_face_record(record)
+        self.assertTrue(any("permission for one thing" in p for p in problems), problems)
+
+        record["sensitive"]["labeling_consent"]["scope"] = "minor_face_labeling"
+        record["sensitive"]["labeling_consent"]["revoked_at"] = "2026-03-19T08:00:00+05:30"
+        problems = check_face_record(record)
+        self.assertTrue(any("revoked" in p for p in problems), problems)
+
+    def test_perceptual_hash_invariant_rejects_a_length_mismatch(self):
+        record = _fixture(
+            next(e for e in _entries("valid", "media-record") if "beach-sunset" in e["path"])
+        )
+        self.assertEqual([], check_media_record(record))
+
+        record["perceptual"]["image_hash"]["bits"] = 256
+        problems = check_media_record(record)
+        self.assertTrue(any("poison dedupe" in problem for problem in problems), problems)
+
+    def test_scan_identity_invariant_rejects_a_missing_locator(self):
+        job = _fixture(
+            next(e for e in _entries("valid", "job-spec") if "scan-source-root-a" in e["path"])
+        )
+        self.assertEqual([], check_job_spec(job))
+
+        job["inputs"]["source_locator_digest"] = None
+        problems = check_job_spec(job)
+        self.assertTrue(any("indistinguishable" in problem for problem in problems), problems)
+
 
 class TestEdlDeterminismAndOtio(unittest.TestCase):
     """Properties the OTIO mapping depends on. See docs/otio-mapping.md."""
@@ -868,6 +1103,151 @@ class TestEdlDeterminismAndOtio(unittest.TestCase):
             self.assertIsNotNone(determinism[field])
 
 
+class TestChapterSpanning(unittest.TestCase):
+    """A recording split across files must be usable as one timeline.
+
+    These derive the boundary from the member fixtures rather than hard-coding
+    it, so the fixtures cannot drift apart from each other silently.
+    """
+
+    def setUp(self):
+        media = {}
+        for entry in _entries("valid", "media-record"):
+            media[Path(entry["path"]).stem] = _fixture(entry)
+        self.assembly = media["video-gopro-span-assembly"]
+        self.members = [media["video-gopro-chapter-01"], media["video-gopro-chapter-02"]]
+        start = self.assembly["video"]["start_timecode"]["value"]
+        first = self.members[0]["video"]["duration"]["value"]
+        self.boundary = start + first
+        self.available = (start, start + self.assembly["video"]["duration"]["value"])
+
+    def test_assembly_duration_is_the_sum_of_its_members(self):
+        total = sum(m["video"]["duration"]["value"] for m in self.members)
+        self.assertEqual(total, self.assembly["video"]["duration"]["value"])
+
+    def test_members_are_listed_in_order_with_matching_offsets(self):
+        listed = self.assembly["span"]["member_media_ids"]
+        self.assertEqual([m["media_id"] for m in self.members], listed)
+
+        offset = 0
+        for member in self.members:
+            self.assertEqual(offset, member["span"]["offset_in_span"]["value"])
+            offset += member["video"]["duration"]["value"]
+
+    def test_every_member_shares_the_assemblys_span_id(self):
+        for member in self.members:
+            self.assertEqual(self.assembly["span"]["span_id"], member["span"]["span_id"])
+            self.assertEqual("physical_file", member["asset_kind"])
+        self.assertEqual("virtual_assembly", self.assembly["asset_kind"])
+
+    def test_a_moment_actually_crosses_the_chapter_boundary(self):
+        moment = _fixture(
+            next(
+                e
+                for e in _entries("valid", "moment-record")
+                if "crosses-chapter" in e["path"]
+            )
+        )
+        self.assertEqual(self.assembly["media_id"], moment["media_id"])
+        start = moment["source_range"]["start_time"]["value"]
+        end = start + moment["source_range"]["duration"]["value"]
+        self.assertLess(start, self.boundary)
+        self.assertGreater(end, self.boundary)
+        self.assertGreaterEqual(start, self.available[0])
+        self.assertLessEqual(end, self.available[1])
+
+    def test_an_edl_clip_actually_crosses_the_chapter_boundary(self):
+        edl = _fixture(_entries("valid", "edl")[0])
+        refs = {
+            r["media_ref_id"]: r for r in edl["media_refs"] if r.get("is_span_assembly")
+        }
+        self.assertTrue(refs, "no span assembly referenced by the EDL")
+
+        crossing = []
+        for track in edl["tracks"]:
+            for item in track["items"]:
+                if item["item_type"] != "clip" or item["media_ref_id"] not in refs:
+                    continue
+                start = item["source_range"]["start_time"]["value"]
+                end = start + item["source_range"]["duration"]["value"]
+                if start < self.boundary < end:
+                    crossing.append(item["clip_id"])
+
+        self.assertTrue(
+            crossing,
+            f"no EDL clip spans the chapter boundary at {self.boundary}; render cannot be "
+            "shown to handle a cut across a chaptered file split",
+        )
+
+    def test_reframe_keyframes_track_the_crossing_clip(self):
+        """A clip's reframe keyframes are in source time, so they must have moved
+        with the clip rather than being left pointing at the old source range."""
+        edl = _fixture(_entries("valid", "edl")[0])
+        tracks = {t["reframe_track_id"]: t for t in edl["reframe_tracks"]}
+        for track in edl["tracks"]:
+            for clip in track["items"]:
+                if clip["item_type"] != "clip" or not clip.get("reframe_track_id"):
+                    continue
+                start = clip["source_range"]["start_time"]["value"]
+                end = start + clip["source_range"]["duration"]["value"]
+                for keyframe in tracks[clip["reframe_track_id"]]["keyframes"]:
+                    self.assertGreaterEqual(keyframe["time"]["value"], start, clip["clip_id"])
+                    self.assertLessEqual(keyframe["time"]["value"], end, clip["clip_id"])
+
+
+class TestScanIdentity(unittest.TestCase):
+    """Two scans of different roots must be two jobs.
+
+    Recomputed from the fixtures rather than compared to a stored constant, so
+    the property is demonstrated rather than asserted.
+    """
+
+    def setUp(self):
+        self.jobs = [
+            _fixture(e)
+            for e in _entries("valid", "job-spec")
+            if "scan-source-root" in e["path"]
+        ]
+        self.assertEqual(2, len(self.jobs))
+
+    def test_the_two_scans_differ_only_in_their_source_roots(self):
+        a, b = self.jobs
+        self.assertEqual(a["params_digest"], b["params_digest"])
+        self.assertEqual(a["scope"], b["scope"])
+        self.assertEqual(a["job_type"], b["job_type"])
+        self.assertEqual([], a["inputs"]["media_ids"])
+        self.assertEqual([], b["inputs"]["media_ids"])
+        self.assertNotEqual(a["inputs"]["source_paths"], b["inputs"]["source_paths"])
+
+    def test_distinct_roots_yield_distinct_locator_digests_and_job_ids(self):
+        a, b = self.jobs
+        self.assertNotEqual(
+            a["inputs"]["source_locator_digest"], b["inputs"]["source_locator_digest"]
+        )
+        self.assertNotEqual(
+            a["job_id"],
+            b["job_id"],
+            "without the locator digest these two scans collide and the second drive "
+            "is silently treated as already imported",
+        )
+
+    def test_the_locator_digest_is_reproducible_from_the_paths(self):
+        import hashlib
+        import unicodedata
+
+        for job in self.jobs:
+            paths = job["inputs"]["source_paths"]
+            canonical = sorted(
+                unicodedata.normalize("NFC", p.rstrip("/")) for p in paths
+            )
+            expected = hashlib.sha256("\x00".join(canonical).encode()).hexdigest()
+            self.assertEqual(
+                expected,
+                job["inputs"]["source_locator_digest"],
+                "the fixture's digest is not the documented canonicalisation of its paths",
+            )
+
+
 class TestGeneratedBindings(unittest.TestCase):
     """The bindings must be fresh, and they must actually accept the fixtures.
 
@@ -923,20 +1303,14 @@ class TestGeneratedBindings(unittest.TestCase):
             key: DOCUMENTS[filename]["title"]
             for key, filename in MANIFEST["schemas"].items()
         }
+        # The generated models express types, required-ness and enums, but not
+        # if/then constraints -- those are asserted against jsonschema above and
+        # re-checked by the semantic invariants. The manifest says which rule each
+        # fixture rests on, so this stays honest as fixtures are added.
         for entry in _entries("schema-invalid"):
-            path = entry["path"]
-            # The generated models express types, required-ness and enums, but not
-            # if/then constraints -- those are asserted against jsonschema above and
-            # re-checked semantically. Only the type-level rejections are expected here.
-            if entry.get("error_path") in (
-                ["identity", "eligible_for_automated_output"],
-                ["identity", "person_id"],
-                ["egress", "consent"],
-                ["privacy", "contains_local_identifiers"],
-                ["validation", "error_count"],
-            ):
+            if entry.get("rejected_by") != "schema_type":
                 continue
-            with self.subTest(fixture=path):
+            with self.subTest(fixture=entry["path"]):
                 model = ROOT_MODELS[titles[entry["schema"]]]
                 with self.assertRaises(ValidationError):
                     model.model_validate(_fixture(entry))

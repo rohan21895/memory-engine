@@ -1,22 +1,12 @@
 {
   "schema_version": "v0",
   "media_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
+  "asset_kind": "virtual_assembly",
   "kind": "video",
-  "byte_size": 6043992064,
-  "mime_type": "video/mp4",
-  "file_format": "mp4",
-  "sources": [
-    {
-      "path": "/Volumes/GOPRO/DCIM/100GOPRO/GH011234.MP4",
-      "volume_id": "gopro-sd-256",
-      "adapter": "gopro_card",
-      "sidecar_paths": [],
-      "original_filename": "GH011234.MP4",
-      "first_seen_at": "2026-03-15T11:20:03+05:30",
-      "last_verified_at": "2026-03-15T11:20:41+05:30",
-      "present": true
-    }
-  ],
+  "byte_size": 0,
+  "mime_type": null,
+  "file_format": null,
+  "sources": [],
   "span": {
     "span_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
     "role": "assembly",
@@ -27,7 +17,10 @@
       "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
       "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8"
     ],
-    "offset_in_span": { "value": 0, "rate": 59.94005994005994 },
+    "offset_in_span": {
+      "value": 0,
+      "rate": 59.94005994005994
+    },
     "continuity": "verified_gapless"
   },
   "capture": {
@@ -41,7 +34,10 @@
       "confidence": 0.9,
       "inferred_from_media_ids": []
     },
-    "metadata_present": ["quicktime", "gopro_gpmf"],
+    "metadata_present": [
+      "quicktime",
+      "gopro_gpmf"
+    ],
     "gps": {
       "latitude": 30.0869,
       "longitude": 78.2676,
@@ -60,13 +56,28 @@
   },
   "image": null,
   "video": {
-    "stored_size": { "width": 3840, "height": 2160 },
-    "oriented_size": { "width": 3840, "height": 2160 },
+    "stored_size": {
+      "width": 3840,
+      "height": 2160
+    },
+    "oriented_size": {
+      "width": 3840,
+      "height": 2160
+    },
     "rotation_deg": 0,
-    "duration": { "value": 61593, "rate": 59.94005994005994 },
-    "frame_rate": { "numerator": 60000, "denominator": 1001 },
+    "duration": {
+      "value": 61593,
+      "rate": 59.94005994005994
+    },
+    "frame_rate": {
+      "numerator": 60000,
+      "denominator": 1001
+    },
     "is_variable_frame_rate": false,
-    "start_timecode": { "value": 3025080, "rate": 59.94005994005994 },
+    "start_timecode": {
+      "value": 3025080,
+      "rate": 59.94005994005994
+    },
     "video_codec": "hevc",
     "bit_rate": 78000000,
     "color_primaries": "bt2020",
@@ -82,37 +93,83 @@
       }
     ]
   },
-  "perceptual": { "image_hash": null, "keyframe_hashes": [] },
+  "perceptual": {
+    "image_hash": null,
+    "keyframe_hashes": []
+  },
   "proxies": [],
   "processing": {
     "state": "analyzed",
     "stages": {
-      "hash": { "status": "not_applicable", "skip_reason": "virtual assembly has no bytes of its own" },
-      "metadata": { "status": "done", "attempts": 1 },
+      "hash": {
+        "status": "not_applicable",
+        "skip_reason": "virtual assembly has no bytes of its own"
+      },
+      "metadata": {
+        "status": "done",
+        "attempts": 1
+      },
       "video_proxy": {
         "status": "not_applicable",
         "skip_reason": "assembly reads the members' proxies in order"
       },
-      "shot_detection": { "status": "done", "attempts": 1, "completed_at": "2026-03-15T12:14:07+05:30" },
-      "transcription": { "status": "done", "attempts": 1 },
-      "audio_events": { "status": "done", "attempts": 1 },
-      "moment_scoring": { "status": "done", "attempts": 1, "completed_at": "2026-03-15T12:21:44+05:30" }
+      "shot_detection": {
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-15T12:14:07+05:30"
+      },
+      "transcription": {
+        "status": "done",
+        "attempts": 1
+      },
+      "audio_events": {
+        "status": "done",
+        "attempts": 1
+      },
+      "moment_scoring": {
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-15T12:21:44+05:30"
+      }
     }
   },
   "quality": null,
   "content": {
     "embedding": null,
     "tags": [
-      { "label": "mountain biking", "score": 0.89, "source": "zero_shot_siglip" },
-      { "label": "forest trail", "score": 0.84, "source": "zero_shot_siglip" }
+      {
+        "label": "mountain biking",
+        "score": 0.89,
+        "source": "zero_shot_siglip"
+      },
+      {
+        "label": "forest trail",
+        "score": 0.84,
+        "source": "zero_shot_siglip"
+      }
     ],
     "scene_type": "outdoor",
-    "safety": { "nsfw_score": 0.0, "categories": [], "auto_excluded": false, "threshold_used": 0.85 }
+    "safety": {
+      "nsfw_score": 0.0,
+      "categories": [],
+      "auto_excluded": false,
+      "threshold_used": 0.85
+    }
   },
   "faces": null,
   "dedupe": null,
-  "exclusion": { "excluded_from_automation": false, "reasons": [], "user_override": null },
-  "user": { "favorite": false, "hidden": false, "rating": null, "tags": [], "caption": null },
+  "exclusion": {
+    "excluded_from_automation": false,
+    "reasons": [],
+    "user_override": null
+  },
+  "user": {
+    "favorite": false,
+    "hidden": false,
+    "rating": null,
+    "tags": [],
+    "caption": null
+  },
   "model_runs": [
     {
       "run_id": "run-transnet-0891",

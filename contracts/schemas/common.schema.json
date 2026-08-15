@@ -154,6 +154,7 @@
     "PerceptualHash": {
       "title": "PerceptualHash",
       "description": "Perceptual hash used for near-duplicate bucketing. Bucketing is by Hamming distance on this hash; the bucket is then refined by embedding distance (build plan 4.2). Always carries its algorithm so a future algorithm change cannot silently invalidate existing buckets.",
+      "$comment": "bits and hex must agree: bits == 4 * len(hex). A hash whose declared length disagrees with its payload silently poisons dedupe -- Hamming distance against a truncated or over-long digest is meaningless, and the resulting buckets would merge unrelated photos or split identical ones. The allOf below enforces the three permitted pairings rather than leaving the rule in prose.",
       "type": "object",
       "additionalProperties": false,
       "required": ["algorithm", "bits", "hex"],
@@ -163,12 +164,30 @@
           "enum": ["phash-dct-64", "phash-dct-256", "dhash-64", "ahash-64", "wavelet-64"]
         },
         "bits": {
-          "description": "Hash length in bits. Must equal 4 * len(hex).",
+          "description": "Hash length in bits. Enforced to equal 4 * len(hex).",
           "type": "integer",
           "enum": [64, 128, 256]
         },
-        "hex": { "type": "string", "pattern": "^[0-9a-f]+$" }
-      }
+        "hex": {
+          "description": "Lowercase hex digest. Its length is pinned to `bits` by the constraints below.",
+          "type": "string",
+          "pattern": "^[0-9a-f]+$"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "bits": { "const": 64 } }, "required": ["bits"] },
+          "then": { "properties": { "hex": { "pattern": "^[0-9a-f]{16}$" } } }
+        },
+        {
+          "if": { "properties": { "bits": { "const": 128 } }, "required": ["bits"] },
+          "then": { "properties": { "hex": { "pattern": "^[0-9a-f]{32}$" } } }
+        },
+        {
+          "if": { "properties": { "bits": { "const": 256 } }, "required": ["bits"] },
+          "then": { "properties": { "hex": { "pattern": "^[0-9a-f]{64}$" } } }
+        }
+      ]
     },
 
     "TimeSource": {

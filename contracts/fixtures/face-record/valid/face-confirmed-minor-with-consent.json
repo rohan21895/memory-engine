@@ -1,0 +1,88 @@
+{
+  "schema_version": "v0",
+  "face_id": "c3e70b48d21a95f6084ce7b3159da26f80471cc9e5b2043a8fd61e97b0c4a582",
+  "media_id": "9149e85b907d9b3e5c76c1dfb91ec944120cf8adaba81eb8e31c3ceb09c4e226",
+  "frame_time": null,
+  "track": null,
+  "detection": {
+    "bbox": { "x": 0.3521, "y": 0.2814, "w": 0.2103, "h": 0.3155, "rotation_deg": 0 },
+    "detection_score": 0.9968,
+    "detector": {
+      "model_id": "scrfd-10g-bnkps",
+      "version": "1.0.0",
+      "weights_blake3": "c450fc2acdb89952121a46dc9afb23f0bbfe2d875be8accaf1edb2eb69749330",
+      "runtime": "onnxruntime_coreml",
+      "precision": "fp16"
+    },
+    "detected_on": "preview_2048",
+    "face_area_ratio": 0.0663
+  },
+  "landmarks": {
+    "scheme": "insightface_5",
+    "points": [
+      { "x": 0.4102, "y": 0.3712 },
+      { "x": 0.4988, "y": 0.3701 },
+      { "x": 0.4551, "y": 0.4204 },
+      { "x": 0.4187, "y": 0.4688 },
+      { "x": 0.4922, "y": 0.4679 }
+    ],
+    "score": 0.984
+  },
+  "embedding": {
+    "space": "arcface_buffalo_l_512",
+    "dimensions": 512,
+    "storage": "index",
+    "index_key": "vec:face:c3e70b48:arcface_buffalo_l_512",
+    "values": null,
+    "quantization": "float32",
+    "normalized": true
+  },
+  "attributes": {
+    "yaw_deg": -3.2,
+    "pitch_deg": 1.8,
+    "roll_deg": 0.4,
+    "eyes_open": 0.994,
+    "smile": 0.962,
+    "mouth_open": 0.688,
+    "gaze_on_camera": 0.941,
+    "sharpness": 0.94,
+    "occlusion": 0.01,
+    "wearing_sunglasses": 0.0,
+    "wearing_mask": 0.0,
+    "quality": { "value": 0.96, "run_id": "run-facequality-0512" }
+  },
+  "cluster": {
+    "cluster_id": "1b6d4e90-3a72-4c85-9f01-8d5e2b7a4c63",
+    "method": "hdbscan_cosine",
+    "membership_strength": 0.981,
+    "is_noise": false,
+    "distance_to_centroid": 0.121,
+    "clustering_run_id": "cluster-run-0042"
+  },
+  "identity": {
+    "person_id": "e4b8c057-9d31-4a26-b7f5-0c93e6a2d148",
+    "assignment": "user_confirmed",
+    "confidence": 0.9934,
+    "threshold_profile": "automated_output",
+    "threshold_used": 0.92,
+    "eligible_for_automated_output": true,
+    "candidates": [],
+    "review_reason": null,
+    "decided_by": "user",
+    "decided_at": "2026-03-18T21:07:44+05:30"
+  },
+  "sensitive": {
+    "minor_status": "confirmed_minor",
+    "labeling_consent": {
+      "ledger_entry_id": "b52a08e7-4c19-4d63-8f27-1a05e9b3c7d6",
+      "scope": "minor_face_labeling",
+      "granted_at": "2026-03-18T21:06:02+05:30",
+      "expires_at": null,
+      "revoked_at": null
+    },
+    "excluded_from_sharing": true
+  },
+  "model_runs": [],
+  "created_at": "2026-03-14T11:10:41+05:30",
+  "updated_at": "2026-03-18T21:07:44+05:30"
+}

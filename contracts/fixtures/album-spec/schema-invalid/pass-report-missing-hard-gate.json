@@ -1328,17 +1328,6 @@
     "status": "pass",
     "checks": [
       {
-        "check_id": "dpi_floor",
-        "severity": "error",
-        "passed": true,
-        "page_index": 2,
-        "placement_id": "p2-hero",
-        "measured_value": 324.0,
-        "required_value": 300.0,
-        "detail": "lowest effective DPI across 19 placements",
-        "remediation": null
-      },
-      {
         "check_id": "face_in_trim_zone",
         "severity": "error",
         "passed": true,

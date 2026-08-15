@@ -1,6 +1,7 @@
 {
   "schema_version": "v0",
   "media_id": "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
+  "asset_kind": "physical_file",
   "kind": "video",
   "byte_size": 4160749568,
   "mime_type": "video/mp4",
@@ -27,7 +28,10 @@
     "index": 0,
     "member_count": 2,
     "member_media_ids": [],
-    "offset_in_span": { "value": 0, "rate": 59.94005994005994 },
+    "offset_in_span": {
+      "value": 0,
+      "rate": 59.94005994005994
+    },
     "continuity": "verified_gapless"
   },
   "capture": {
@@ -41,7 +45,10 @@
       "confidence": 0.9,
       "inferred_from_media_ids": []
     },
-    "metadata_present": ["quicktime", "gopro_gpmf"],
+    "metadata_present": [
+      "quicktime",
+      "gopro_gpmf"
+    ],
     "gps": {
       "latitude": 30.0869,
       "longitude": 78.2676,
@@ -60,13 +67,28 @@
   },
   "image": null,
   "video": {
-    "stored_size": { "width": 3840, "height": 2160 },
-    "oriented_size": { "width": 3840, "height": 2160 },
+    "stored_size": {
+      "width": 3840,
+      "height": 2160
+    },
+    "oriented_size": {
+      "width": 3840,
+      "height": 2160
+    },
     "rotation_deg": 0,
-    "duration": { "value": 42405, "rate": 59.94005994005994 },
-    "frame_rate": { "numerator": 60000, "denominator": 1001 },
+    "duration": {
+      "value": 42405,
+      "rate": 59.94005994005994
+    },
+    "frame_rate": {
+      "numerator": 60000,
+      "denominator": 1001
+    },
     "is_variable_frame_rate": false,
-    "start_timecode": { "value": 3025080, "rate": 59.94005994005994 },
+    "start_timecode": {
+      "value": 3025080,
+      "rate": 59.94005994005994
+    },
     "video_codec": "hevc",
     "bit_rate": 78000000,
     "color_primaries": "bt2020",
@@ -86,12 +108,26 @@
     "image_hash": null,
     "keyframe_hashes": [
       {
-        "time": { "value": 0, "rate": 59.94005994005994 },
-        "hash": { "algorithm": "phash-dct-64", "bits": 64, "hex": "1e3c78f0e1c38707" }
+        "time": {
+          "value": 0,
+          "rate": 59.94005994005994
+        },
+        "hash": {
+          "algorithm": "phash-dct-64",
+          "bits": 64,
+          "hex": "1e3c78f0e1c38707"
+        }
       },
       {
-        "time": { "value": 21000, "rate": 59.94005994005994 },
-        "hash": { "algorithm": "phash-dct-64", "bits": 64, "hex": "78f0e1c387071e3c" }
+        "time": {
+          "value": 21000,
+          "rate": 59.94005994005994
+        },
+        "hash": {
+          "algorithm": "phash-dct-64",
+          "bits": 64,
+          "hex": "78f0e1c387071e3c"
+        }
       }
     ]
   },
@@ -100,7 +136,10 @@
       "proxy_id": "bd035371d6d1deb00d7a1704e1aa7cbd49c1755d54f953f6e3134588debbfbcc",
       "kind": "video_proxy_480p",
       "path": "/Users/example/Library/Application Support/MemoryEngine/proxies/bd/03/bd035371.mp4",
-      "size": { "width": 854, "height": 480 },
+      "size": {
+        "width": 854,
+        "height": 480
+      },
       "byte_size": 68221440,
       "generator_version": "proxy-gen/1.0.0+ffmpeg7.1+videotoolbox",
       "frame_index": {
@@ -115,11 +154,27 @@
   "processing": {
     "state": "analyzed",
     "stages": {
-      "hash": { "status": "done", "attempts": 1 },
-      "metadata": { "status": "done", "attempts": 1 },
-      "thumbnail": { "status": "done", "attempts": 1 },
-      "video_proxy": { "status": "done", "attempts": 1, "completed_at": "2026-03-15T11:48:52+05:30" },
-      "perceptual_hash": { "status": "done", "attempts": 1 },
+      "hash": {
+        "status": "done",
+        "attempts": 1
+      },
+      "metadata": {
+        "status": "done",
+        "attempts": 1
+      },
+      "thumbnail": {
+        "status": "done",
+        "attempts": 1
+      },
+      "video_proxy": {
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-15T11:48:52+05:30"
+      },
+      "perceptual_hash": {
+        "status": "done",
+        "attempts": 1
+      },
       "shot_detection": {
         "status": "skipped",
         "attempts": 0,
@@ -136,8 +191,18 @@
   "content": null,
   "faces": null,
   "dedupe": null,
-  "exclusion": { "excluded_from_automation": false, "reasons": [], "user_override": null },
-  "user": { "favorite": false, "hidden": false, "rating": null, "tags": [], "caption": null },
+  "exclusion": {
+    "excluded_from_automation": false,
+    "reasons": [],
+    "user_override": null
+  },
+  "user": {
+    "favorite": false,
+    "hidden": false,
+    "rating": null,
+    "tags": [],
+    "caption": null
+  },
   "model_runs": [],
   "first_seen_at": "2026-03-15T11:20:03+05:30",
   "updated_at": "2026-03-15T11:48:52+05:30"

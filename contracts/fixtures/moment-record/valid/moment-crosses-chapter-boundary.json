@@ -1,0 +1,94 @@
+{
+  "schema_version": "v0",
+  "moment_id": "816eddfeaa5821987822453c911f8747b1b9f0ce0665a1e8a229d02e330ed2bc",
+  "media_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
+  "source_range": {
+    "start_time": { "value": 3067380, "rate": 59.94005994005994 },
+    "duration": { "value": 240, "rate": 59.94005994005994 }
+  },
+  "proxy_range": {
+    "start_time": { "value": 42300, "rate": 59.94005994005994 },
+    "duration": { "value": 240, "rate": 59.94005994005994 }
+  },
+  "shot_id": "shot-0063",
+  "features": {
+    "motion_energy": 0.81,
+    "motion_peak": 0.9,
+    "shake": 0.24,
+    "exposure_stability": 0.79,
+    "sharpness": 0.76,
+    "face_presence": 0.12,
+    "max_face_area_ratio": 0.021,
+    "smile_intensity": 0.0,
+    "audio": {
+      "loudness_lufs": -13.8,
+      "speech_ratio": 0.0,
+      "music_ratio": 0.0,
+      "noise_ratio": 0.41,
+      "events": [{ "label": "wind", "confidence": 0.62, "time": null }],
+      "embedding": null
+    },
+    "visual_embedding": {
+      "space": "siglip2_so400m_1152",
+      "dimensions": 1152,
+      "storage": "index",
+      "index_key": "vec:moment:816eddfe:siglip2_so400m_1152",
+      "quantization": "float16",
+      "normalized": true
+    },
+    "novelty": 0.68,
+    "representative_frame_time": { "value": 3067500, "rate": 59.94005994005994 }
+  },
+  "scores": {
+    "moment_score": { "value": 0.77, "run_id": "run-fusion-0512" },
+    "technical": { "value": 0.74, "run_id": "run-fusion-0512" },
+    "hook_potential": { "value": 0.7, "run_id": "run-fusion-0512" },
+    "emotional_peak": null,
+    "narrative_value": null,
+    "source": "local_fusion",
+    "fusion_weights_version": "fusion-v1.2.0"
+  },
+  "snap_points": [
+    {
+      "time": { "value": 3067380, "rate": 59.94005994005994 },
+      "kind": "shot_boundary",
+      "strength": 0.91,
+      "confidence": 0.89,
+      "cut_direction": "in"
+    },
+    {
+      "time": { "value": 3067452, "rate": 59.94005994005994 },
+      "kind": "motion_onset",
+      "strength": 0.83,
+      "confidence": 0.85,
+      "cut_direction": "in"
+    },
+    {
+      "time": { "value": 3067536, "rate": 59.94005994005994 },
+      "kind": "motion_offset",
+      "strength": 0.71,
+      "confidence": 0.8,
+      "cut_direction": "out"
+    },
+    {
+      "time": { "value": 3067620, "rate": 59.94005994005994 },
+      "kind": "shot_boundary",
+      "strength": 0.93,
+      "confidence": 0.9,
+      "cut_direction": "out"
+    }
+  ],
+  "safe_trim": {
+    "earliest_in": { "value": 3067380, "rate": 59.94005994005994 },
+    "latest_out": { "value": 3067620, "rate": 59.94005994005994 },
+    "speech_safe_in": null,
+    "speech_safe_out": null,
+    "min_duration": { "value": 45, "rate": 59.94005994005994 },
+    "preserve_audio_tail": false
+  },
+  "elimination": { "eliminated": false, "reasons": [], "stage": null },
+  "people": { "person_ids": [], "face_track_ids": [], "unidentified_face_count": 1 },
+  "transcript": null,
+  "model_runs": [],
+  "created_at": "2026-03-15T12:21:44+05:30"
+}

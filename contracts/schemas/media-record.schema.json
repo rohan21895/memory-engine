@@ -3,13 +3,14 @@
   "$id": "https://memory-engine.local/contracts/v0/media-record.schema.json",
   "title": "MediaRecord",
   "description": "The identity of one media file and everything the analysis layer has learned about it. One record per physical file, always -- a GoPro chapter set is N member records plus one assembly record, never a record that pretends four files are one.",
-  "$comment": "OWNERSHIP: written by workers/ingest (identity, capture, proxies) and by the analysis dispatch (quality, content, faces, dedupe). Read by every intelligence package. INVARIANT: media_id equals the BLAKE3 of the file's bytes, so the same footage imported from a phone and from a backup drive collapses to one record with two entries in `sources`. INVARIANT: nothing in this record contains pixel data; proxies are referenced by id.",
+  "$comment": "OWNERSHIP: written by workers/ingest (identity, capture, proxies) and by the analysis dispatch (quality, content, faces, dedupe). Read by every intelligence package.\n\n TWO KINDS OF RECORD, AND THEY HAVE DIFFERENT IDENTITY RULES. `asset_kind` says which, and the conditional blocks at the bottom of this file enforce the difference rather than leaving it to prose that a writer can miss.\n\n physical_file -- the normal case. `media_id` is the BLAKE3 of the file's bytes, so the same footage imported from a phone and from a backup drive collapses to one record with two entries in `sources`. At least one source, a real byte_size, its own proxies.\n\n virtual_assembly -- a recording split across several files (GoPro chapters, DSLR 4GB splits). It has no bytes of its own, so it cannot have a byte hash. Its `media_id` is the `span_id`: a BLAKE3 over the ordered member media_ids, which is still content-addressed and still idempotent, just derived from its members rather than from bytes. It carries byte_size 0, NO sources (its members hold the paths) and NO proxies (analysis reads the members' proxies in order). Sum the members if you want a total size; do not put that sum here, because a number in byte_size that no file on disk has is a trap for anything that verifies a record against the filesystem.\n\n INVARIANT: nothing in this record contains pixel data; proxies are referenced by id.",
 
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
     "media_id",
+    "asset_kind",
     "kind",
     "byte_size",
     "sources",
@@ -20,8 +21,14 @@
     "schema_version": { "$ref": "common.schema.json#/$defs/SchemaVersion" },
 
     "media_id": {
-      "description": "BLAKE3 of the file's bytes. Primary key. Content-addressed so re-importing the same file is a no-op and every downstream job keyed on it is idempotent.",
+      "description": "Primary key. For a physical_file this is the BLAKE3 of the file's bytes; for a virtual_assembly it is the span_id, a BLAKE3 over the ordered member media_ids. Content-addressed either way, so re-importing is a no-op and every downstream job keyed on it is idempotent.",
       "$ref": "common.schema.json#/$defs/Blake3Hash"
+    },
+
+    "asset_kind": {
+      "description": "Whether this record describes bytes on disk or a virtual assembly of other records. Required and explicit: the identity, size and source rules differ between the two, and a reader must never have to infer which set applies.",
+      "type": "string",
+      "enum": ["physical_file", "virtual_assembly"]
     },
 
     "kind": {
@@ -48,9 +55,8 @@
     },
 
     "sources": {
-      "description": "Every place on disk these exact bytes have been seen. Plural because deduplication by content is the whole point: one record, many paths. Never empty -- a record exists because a file was found.",
+      "description": "Every place on disk these exact bytes have been seen. Plural because deduplication by content is the whole point: one record, many paths. A physical_file always has at least one; a virtual_assembly always has none, because its members own the paths and duplicating one of them here would make the assembly look like a file that can be opened.",
       "type": "array",
-      "minItems": 1,
       "items": { "$ref": "#/$defs/SourceLocation" }
     },
 
@@ -114,6 +120,78 @@
     "updated_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
   },
 
+  "allOf": [
+    {
+      "$comment": "A physical file has bytes, so it has at least one place those bytes live.",
+      "if": {
+        "properties": { "asset_kind": { "const": "physical_file" } },
+        "required": ["asset_kind"]
+      },
+      "then": {
+        "properties": {
+          "sources": { "minItems": 1 }
+        }
+      }
+    },
+    {
+      "$comment": "A virtual assembly has no bytes of its own. byte_size 0 rather than the sum of its members, because a size that matches no file on disk breaks any check that verifies a record against the filesystem. No sources and no proxies: the members hold both.",
+      "if": {
+        "properties": { "asset_kind": { "const": "virtual_assembly" } },
+        "required": ["asset_kind"]
+      },
+      "then": {
+        "required": ["span"],
+        "properties": {
+          "byte_size": { "const": 0 },
+          "sources": { "maxItems": 0 },
+          "proxies": { "maxItems": 0 },
+          "span": {
+            "type": "object",
+            "required": ["member_media_ids"],
+            "properties": {
+              "role": { "const": "assembly" },
+              "index": { "type": "null" },
+              "member_media_ids": { "minItems": 2 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "The reverse direction, so the two fields cannot drift apart: a record whose span says `assembly` must be declared virtual, and a `member` must be a real file.",
+      "if": {
+        "type": "object",
+        "properties": {
+          "span": {
+            "type": "object",
+            "properties": { "role": { "const": "assembly" } },
+            "required": ["role"]
+          }
+        },
+        "required": ["span"]
+      },
+      "then": {
+        "properties": { "asset_kind": { "const": "virtual_assembly" } }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "span": {
+            "type": "object",
+            "properties": { "role": { "const": "member" } },
+            "required": ["role"]
+          }
+        },
+        "required": ["span"]
+      },
+      "then": {
+        "properties": { "asset_kind": { "const": "physical_file" } }
+      }
+    }
+  ],
+
   "$defs": {
     "SourceLocation": {
       "title": "SourceLocation",
@@ -164,11 +242,11 @@
       "required": ["span_id", "role", "span_kind"],
       "properties": {
         "span_id": {
-          "description": "BLAKE3 over the ordered member media_ids once the set is closed. Before closure, a provisional id derived from the camera's own group identifier (GoPro's file number, e.g. 1234 in GH011234.MP4).",
+          "description": "BLAKE3 over the ordered member media_ids once the set is closed. Before closure, a provisional id derived from the camera's own group identifier (GoPro's file number, e.g. 1234 in GH011234.MP4). On the assembly record this is also the media_id -- the assembly has no bytes to hash, so its members' identity is its identity.",
           "$ref": "common.schema.json#/$defs/Blake3Hash"
         },
         "role": {
-          "description": "`member` is a physical file on disk. `assembly` is the virtual record representing the concatenated recording; it has byte_size 0, no SourceLocation of its own beyond its members, and is what MomentRecords and EDL clips reference so a cut can cross a chapter boundary without the planner knowing chapters exist.",
+          "description": "`member` is a physical file on disk and always sits on an asset_kind of physical_file. `assembly` is the virtual record representing the concatenated recording; it is always asset_kind virtual_assembly, carries byte_size 0, no sources and no proxies, and is what MomentRecords and EDL clips reference so a cut can cross a chapter boundary without the planner knowing chapters exist.",
           "type": "string",
           "enum": ["member", "assembly"]
         },

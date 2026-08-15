@@ -976,10 +976,15 @@ class PerceptualHash(ContractModel):
 
     algorithm: PerceptualHashAlgorithm
 
-    # Hash length in bits. Must equal 4 * len(hex).
-    bits: PerceptualHashBits = Field(description="Hash length in bits. Must equal 4 * len(hex).")
+    # Hash length in bits. Enforced to equal 4 * len(hex).
+    bits: PerceptualHashBits = Field(
+        description="Hash length in bits. Enforced to equal 4 * len(hex).",
+    )
 
-    hex: str
+    # Lowercase hex digest. Its length is pinned to `bits` by the constraints below.
+    hex: str = Field(
+        description="Lowercase hex digest. Its length is pinned to `bits` by the constraints below.",
+    )
 
 
 class PixelSize(ContractModel):
@@ -2763,10 +2768,12 @@ class SensitiveFlags(ContractModel):
     )
 
     # Required before a confirmed_minor face may be labeled with a person identity.
-    # Absent consent, the face is still detected and counted, but never named.
+    # Absent consent, the face is still detected and counted, but never named. Must be
+    # scoped to minor_face_labeling specifically -- a consent granted for cloud
+    # rendering does not authorise naming a child.
     labeling_consent: ConsentRef | None = Field(
         default=None,
-        description="Required before a confirmed_minor face may be labeled with a person identity. Absent consent, the face is still detected and counted, but never named.",
+        description="Required before a confirmed_minor face may be labeled with a person identity. Absent consent, the face is still detected and counted, but never named. Must be scoped to minor_face_labeling specifically -- a consent granted for cloud rend...",
     )
 
     excluded_from_sharing: bool = Field(default=False)
@@ -2799,6 +2806,8 @@ class FaceRecord(ContractModel):
 
     identity: Identity
 
+    sensitive: SensitiveFlags
+
     # Position within the video, in SOURCE time (already mapped back through the proxy
     # frame index). Null for stills.
     frame_time: RationalTime | None = Field(
@@ -2827,8 +2836,6 @@ class FaceRecord(ContractModel):
     attributes: FaceAttributes | None = Field(default=None)
 
     cluster: ClusterMembership | None = Field(default=None)
-
-    sensitive: SensitiveFlags | None = Field(default=None)
 
     model_runs: list[ModelRun] = Field(default_factory=list)
 
@@ -2997,6 +3004,18 @@ class JobInputs(ContractModel):
     source_paths: list[str] = Field(
         default_factory=list,
         description="Only for scan_source, which by definition starts before anything has a hash. Every other job type addresses content, never location.",
+    )
+
+    # BLAKE3 over the canonical form of `source_paths`: each path resolved to
+    # absolute, symlinks followed, trailing separators stripped, NFC-normalised, then
+    # sorted and joined with a NUL separator. Required for scan_source and the only
+    # thing distinguishing two scans of different folders, since neither has content
+    # hashes yet. Canonicalisation matters as much as the digest -- '/Volumes/Archive'
+    # and '/Volumes/Archive/' must not be two jobs, or a re-scan re-walks a whole
+    # drive.
+    source_locator_digest: Blake3Hash | None = Field(
+        default=None,
+        description="BLAKE3 over the canonical form of `source_paths`: each path resolved to absolute, symlinks followed, trailing separators stripped, NFC-normalised, then sorted and joined with a NUL separator. Required for scan_source and the only thing d...",
     )
 
     # The job that spawned this one. A scan spawns a hash job per file; the tree is
@@ -3259,11 +3278,12 @@ class JobSpec(ContractModel):
 
     schema_version: SchemaVersion
 
-    # BLAKE3 over (job_type, sorted input ids, params_digest, scope). Doubles as the
-    # idempotency key -- there is deliberately no second field for that, because two
-    # sources of truth for identity is how duplicate work gets in.
+    # BLAKE3 over (job_type, sorted input ids, source_locator_digest or the empty
+    # string, params_digest, scope). Doubles as the idempotency key -- there is
+    # deliberately no second field for that, because two sources of truth for identity
+    # is how duplicate work gets in.
     job_id: Blake3Hash = Field(
-        description="BLAKE3 over (job_type, sorted input ids, params_digest, scope). Doubles as the idempotency key -- there is deliberately no second field for that, because two sources of truth for identity is how duplicate work gets in.",
+        description="BLAKE3 over (job_type, sorted input ids, source_locator_digest or the empty string, params_digest, scope). Doubles as the idempotency key -- there is deliberately no second field for that, because two sources of truth for identity is how...",
     )
 
     # What kind of work. Enumerated rather than free-form so that a worker cannot be
@@ -3939,18 +3959,20 @@ class Span(ContractModel):
 
     # BLAKE3 over the ordered member media_ids once the set is closed. Before closure,
     # a provisional id derived from the camera's own group identifier (GoPro's file
-    # number, e.g. 1234 in GH011234.MP4).
+    # number, e.g. 1234 in GH011234.MP4). On the assembly record this is also the
+    # media_id -- the assembly has no bytes to hash, so its members' identity is its
+    # identity.
     span_id: Blake3Hash = Field(
-        description="BLAKE3 over the ordered member media_ids once the set is closed. Before closure, a provisional id derived from the camera's own group identifier (GoPro's file number, e.g. 1234 in GH011234.MP4).",
+        description="BLAKE3 over the ordered member media_ids once the set is closed. Before closure, a provisional id derived from the camera's own group identifier (GoPro's file number, e.g. 1234 in GH011234.MP4). On the assembly record this is also the me...",
     )
 
-    # `member` is a physical file on disk. `assembly` is the virtual record
-    # representing the concatenated recording; it has byte_size 0, no SourceLocation
-    # of its own beyond its members, and is what MomentRecords and EDL clips reference
-    # so a cut can cross a chapter boundary without the planner knowing chapters
-    # exist.
+    # `member` is a physical file on disk and always sits on an asset_kind of
+    # physical_file. `assembly` is the virtual record representing the concatenated
+    # recording; it is always asset_kind virtual_assembly, carries byte_size 0, no
+    # sources and no proxies, and is what MomentRecords and EDL clips reference so a
+    # cut can cross a chapter boundary without the planner knowing chapters exist.
     role: SpanRole = Field(
-        description="`member` is a physical file on disk. `assembly` is the virtual record representing the concatenated recording; it has byte_size 0, no SourceLocation of its own beyond its members, and is what MomentRecords and EDL clips reference so a cu...",
+        description="`member` is a physical file on disk and always sits on an asset_kind of physical_file. `assembly` is the virtual record representing the concatenated recording; it is always asset_kind virtual_assembly, carries byte_size 0, no sources an...",
     )
 
     span_kind: SpanSpanKind
@@ -4094,6 +4116,11 @@ class VideoProperties(ContractModel):
     audio_streams: list[AudioStream] = Field(default_factory=list)
 
 
+class MediaRecordAssetKind(str, Enum):
+    PHYSICAL_FILE = "physical_file"
+    VIRTUAL_ASSEMBLY = "virtual_assembly"
+
+
 class MediaRecordKind(str, Enum):
     IMAGE = "image"
     VIDEO = "video"
@@ -4149,10 +4176,19 @@ class MediaRecord(ContractModel):
 
     schema_version: SchemaVersion
 
-    # BLAKE3 of the file's bytes. Primary key. Content-addressed so re-importing the
-    # same file is a no-op and every downstream job keyed on it is idempotent.
+    # Primary key. For a physical_file this is the BLAKE3 of the file's bytes; for a
+    # virtual_assembly it is the span_id, a BLAKE3 over the ordered member media_ids.
+    # Content-addressed either way, so re-importing is a no-op and every downstream
+    # job keyed on it is idempotent.
     media_id: Blake3Hash = Field(
-        description="BLAKE3 of the file's bytes. Primary key. Content-addressed so re-importing the same file is a no-op and every downstream job keyed on it is idempotent.",
+        description="Primary key. For a physical_file this is the BLAKE3 of the file's bytes; for a virtual_assembly it is the span_id, a BLAKE3 over the ordered member media_ids. Content-addressed either way, so re-importing is a no-op and every downstream ...",
+    )
+
+    # Whether this record describes bytes on disk or a virtual assembly of other
+    # records. Required and explicit: the identity, size and source rules differ
+    # between the two, and a reader must never have to infer which set applies.
+    asset_kind: MediaRecordAssetKind = Field(
+        description="Whether this record describes bytes on disk or a virtual assembly of other records. Required and explicit: the identity, size and source rules differ between the two, and a reader must never have to infer which set applies.",
     )
 
     # Top-level media class. `live_photo` and `motion_photo` are their own kind rather
@@ -4165,10 +4201,12 @@ class MediaRecord(ContractModel):
     byte_size: int
 
     # Every place on disk these exact bytes have been seen. Plural because
-    # deduplication by content is the whole point: one record, many paths. Never empty
-    # -- a record exists because a file was found.
+    # deduplication by content is the whole point: one record, many paths. A
+    # physical_file always has at least one; a virtual_assembly always has none,
+    # because its members own the paths and duplicating one of them here would make
+    # the assembly look like a file that can be opened.
     sources: list[SourceLocation] = Field(
-        description="Every place on disk these exact bytes have been seen. Plural because deduplication by content is the whole point: one record, many paths. Never empty -- a record exists because a file was found.",
+        description="Every place on disk these exact bytes have been seen. Plural because deduplication by content is the whole point: one record, many paths. A physical_file always has at least one; a virtual_assembly always has none, because its members ow...",
     )
 
     capture: Capture
@@ -5481,6 +5519,7 @@ __all__ = [
     "VideoPropertiesRotationDeg",
     "VideoPropertiesFrameRate",
     "VideoProperties",
+    "MediaRecordAssetKind",
     "MediaRecordKind",
     "MediaRecordFileFormat",
     "MediaRecord",

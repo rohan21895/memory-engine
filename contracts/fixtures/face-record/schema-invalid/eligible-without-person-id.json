@@ -4,7 +4,12 @@
   "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
   "frame_time": null,
   "detection": {
-    "bbox": { "x": 0.52, "y": 0.31, "w": 0.09, "h": 0.14 },
+    "bbox": {
+      "x": 0.52,
+      "y": 0.31,
+      "w": 0.09,
+      "h": 0.14
+    },
     "detection_score": 0.981,
     "detector": {
       "model_id": "scrfd-10g-bnkps",
@@ -23,5 +28,7 @@
     "eligible_for_automated_output": true,
     "decided_by": "model"
   },
-  "sensitive": { "minor_status": "unknown" }
+  "sensitive": {
+    "minor_status": "unknown"
+  }
 }

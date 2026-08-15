@@ -1,41 +1,42 @@
 {
   "schema_version": "v0",
-  "media_id": "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8",
-  "asset_kind": "physical_file",
+  "media_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
+  "asset_kind": "virtual_assembly",
   "kind": "video",
-  "byte_size": 1883242496,
-  "mime_type": "video/mp4",
-  "file_format": "mp4",
+  "byte_size": 6043992064,
+  "mime_type": null,
+  "file_format": null,
   "sources": [
     {
-      "path": "/Volumes/GOPRO/DCIM/100GOPRO/GH021234.MP4",
+      "path": "/Volumes/GOPRO/DCIM/100GOPRO/GH011234.MP4",
       "volume_id": "gopro-sd-256",
       "adapter": "gopro_card",
-      "sidecar_paths": [
-        "/Volumes/GOPRO/DCIM/100GOPRO/GL021234.LRV"
-      ],
-      "original_filename": "GH021234.MP4",
-      "first_seen_at": "2026-03-15T11:20:41+05:30",
+      "sidecar_paths": [],
+      "original_filename": "GH011234.MP4",
+      "first_seen_at": "2026-03-15T11:20:03+05:30",
       "last_verified_at": "2026-03-15T11:20:41+05:30",
       "present": true
     }
   ],
   "span": {
     "span_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
-    "role": "member",
+    "role": "assembly",
     "span_kind": "gopro_chapter",
-    "index": 1,
+    "index": null,
     "member_count": 2,
-    "member_media_ids": [],
+    "member_media_ids": [
+      "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
+      "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8"
+    ],
     "offset_in_span": {
-      "value": 42405,
+      "value": 0,
       "rate": 59.94005994005994
     },
     "continuity": "verified_gapless"
   },
   "capture": {
     "captured_at": {
-      "local": "2025-01-18T14:14:00",
+      "local": "2025-01-18T14:02:11",
       "utc": null,
       "timezone": null,
       "utc_offset_minutes": null,
@@ -49,10 +50,10 @@
       "gopro_gpmf"
     ],
     "gps": {
-      "latitude": 30.0912,
-      "longitude": 78.2701,
-      "altitude_m": 1438.0,
-      "horizontal_accuracy_m": 4.1,
+      "latitude": 30.0869,
+      "longitude": 78.2676,
+      "altitude_m": 1402.0,
+      "horizontal_accuracy_m": 4.5,
       "source": "quicktime_location"
     },
     "device": {
@@ -76,7 +77,7 @@
     },
     "rotation_deg": 0,
     "duration": {
-      "value": 19188,
+      "value": 61593,
       "rate": 59.94005994005994
     },
     "frame_rate": {
@@ -85,7 +86,7 @@
     },
     "is_variable_frame_rate": false,
     "start_timecode": {
-      "value": 3067485,
+      "value": 3025080,
       "rate": 59.94005994005994
     },
     "video_codec": "hevc",
@@ -105,78 +106,67 @@
   },
   "perceptual": {
     "image_hash": null,
-    "keyframe_hashes": [
-      {
-        "time": {
-          "value": 0,
-          "rate": 59.94005994005994
-        },
-        "hash": {
-          "algorithm": "phash-dct-64",
-          "bits": 64,
-          "hex": "e1c387071e3c78f0"
-        }
-      }
-    ]
+    "keyframe_hashes": []
   },
-  "proxies": [
-    {
-      "proxy_id": "34a6b292e2c4565718bb6522bc3dbaa7ab9486f62650da24c8a0376231f3dda2",
-      "kind": "video_proxy_480p",
-      "path": "/Users/example/Library/Application Support/MemoryEngine/proxies/34/a6/34a6b292.mp4",
-      "size": {
-        "width": 854,
-        "height": 480
-      },
-      "byte_size": 30867456,
-      "generator_version": "proxy-gen/1.0.0+ffmpeg7.1+videotoolbox",
-      "frame_index": {
-        "path": "/Users/example/Library/Application Support/MemoryEngine/proxies/34/a6/34a6b292.idx",
-        "entry_count": 19188,
-        "mapping": "identity",
-        "source_rate": 59.94005994005994,
-        "proxy_rate": 59.94005994005994
-      }
-    }
-  ],
+  "proxies": [],
   "processing": {
     "state": "analyzed",
     "stages": {
       "hash": {
-        "status": "done",
-        "attempts": 1
+        "status": "not_applicable",
+        "skip_reason": "virtual assembly has no bytes of its own"
       },
       "metadata": {
         "status": "done",
         "attempts": 1
       },
-      "thumbnail": {
-        "status": "done",
-        "attempts": 1
-      },
       "video_proxy": {
-        "status": "done",
-        "attempts": 1,
-        "completed_at": "2026-03-15T11:52:10+05:30"
-      },
-      "perceptual_hash": {
-        "status": "done",
-        "attempts": 1
+        "status": "not_applicable",
+        "skip_reason": "assembly reads the members' proxies in order"
       },
       "shot_detection": {
-        "status": "skipped",
-        "attempts": 0,
-        "skip_reason": "analysis runs on the span assembly, not on individual chapters"
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-15T12:14:07+05:30"
+      },
+      "transcription": {
+        "status": "done",
+        "attempts": 1
+      },
+      "audio_events": {
+        "status": "done",
+        "attempts": 1
       },
       "moment_scoring": {
-        "status": "skipped",
-        "attempts": 0,
-        "skip_reason": "analysis runs on the span assembly, not on individual chapters"
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-15T12:21:44+05:30"
       }
     }
   },
   "quality": null,
-  "content": null,
+  "content": {
+    "embedding": null,
+    "tags": [
+      {
+        "label": "mountain biking",
+        "score": 0.89,
+        "source": "zero_shot_siglip"
+      },
+      {
+        "label": "forest trail",
+        "score": 0.84,
+        "source": "zero_shot_siglip"
+      }
+    ],
+    "scene_type": "outdoor",
+    "safety": {
+      "nsfw_score": 0.0,
+      "categories": [],
+      "auto_excluded": false,
+      "threshold_used": 0.85
+    }
+  },
   "faces": null,
   "dedupe": null,
   "exclusion": {
@@ -191,7 +181,22 @@
     "tags": [],
     "caption": null
   },
-  "model_runs": [],
+  "model_runs": [
+    {
+      "run_id": "run-transnet-0891",
+      "model": {
+        "model_id": "transnetv2",
+        "version": "2.0.0",
+        "weights_blake3": "1e5492a4be90f117aeddde8a7cc61904b01b372e6e64fdba4d4ce87b46be51fa",
+        "runtime": "onnxruntime_coreml",
+        "precision": "fp16"
+      },
+      "ran_at": "2026-03-15T12:14:07+05:30",
+      "input_proxy_id": "bd035371d6d1deb00d7a1704e1aa7cbd49c1755d54f953f6e3134588debbfbcc",
+      "duration_ms": 18422.0,
+      "job_id": null
+    }
+  ],
   "first_seen_at": "2026-03-15T11:20:41+05:30",
-  "updated_at": "2026-03-15T11:52:10+05:30"
+  "updated_at": "2026-03-15T12:21:44+05:30"
 }

@@ -611,6 +611,71 @@
           "then": {
             "properties": { "error_count": { "const": 0 } }
           }
+        },
+        {
+          "$comment": "A pass must be EARNED, not merely asserted. An empty or partial checks array would otherwise pass trivially, which is the failure mode where a spec ships because nobody ran the validator rather than because it is correct. Every hard gate must appear AND have passed. The gates are the four named in the build plan -- DPI floor, face in trim zone, bleed, colour profile -- plus page_count_valid, because a page count the vendor will reject is just as final a failure and the renderer is forbidden from fixing it later.",
+          "if": {
+            "properties": { "status": { "const": "pass" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "allOf": [
+                  {
+                    "contains": {
+                      "type": "object",
+                      "properties": {
+                        "check_id": { "const": "dpi_floor" },
+                        "passed": { "const": true }
+                      },
+                      "required": ["check_id", "passed"]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "properties": {
+                        "check_id": { "const": "face_in_trim_zone" },
+                        "passed": { "const": true }
+                      },
+                      "required": ["check_id", "passed"]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "properties": {
+                        "check_id": { "const": "bleed_coverage" },
+                        "passed": { "const": true }
+                      },
+                      "required": ["check_id", "passed"]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "properties": {
+                        "check_id": { "const": "color_profile_match" },
+                        "passed": { "const": true }
+                      },
+                      "required": ["check_id", "passed"]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "properties": {
+                        "check_id": { "const": "page_count_valid" },
+                        "passed": { "const": true }
+                      },
+                      "required": ["check_id", "passed"]
+                    }
+                  }
+                ]
+              }
+            }
+          }
         }
       ]
     },

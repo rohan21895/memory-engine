@@ -36,9 +36,27 @@ contracts/
 
 **Identity is content-addressed where the bytes determine it.** BLAKE3 for media, faces, moments, jobs and plans; UUID only where a human or a clustering run created the entity. This is what makes every job idempotent and every plan portable between machines.
 
+Two places where "the bytes" is not the whole story, both handled explicitly rather than by convention:
+
+- **`MediaRecord.asset_kind`** distinguishes a `physical_file` (identity is the BLAKE3 of its bytes; at least one source; its own proxies) from a `virtual_assembly` (a GoPro chapter set or DSLR split; identity is the `span_id` over its ordered members; `byte_size` 0; no sources and no proxies, because the members own both). Conditional validation enforces the difference. An assembly carrying the *sum* of its members' sizes would be a number matching no file on disk, which breaks anything verifying a record against the filesystem.
+- **`JobSpec.inputs.source_locator_digest`** exists because `scan_source` runs *before* any content hash exists. Without it, two scans of different drives with the same parameters share a `job_id`, and the second is skipped as already-done — a whole drive silently never imported.
+
 **Nothing here carries pixel data.** Images are referenced by proxy id, embeddings by index key.
 
-**Constraints that JSON Schema can express, it does.** The precision-first face gate, the egress-requires-consent rule, the no-pass-with-errors rule and the pixel-data prohibition are all `if`/`then` blocks or `const`s, so a bad record fails validation rather than relying on a code path being reached. Constraints it cannot express — comparing two sibling values — live in `tests/test_contracts.py` and are exercised against the fixtures.
+**Constraints that JSON Schema can express, it does** — as `if`/`then` blocks or `const`s, so a bad record fails validation rather than relying on a code path being reached:
+
+| Rule | Where |
+|---|---|
+| A sub-threshold face cannot claim `eligible_for_automated_output`, and an eligible one must name its person, confidence and threshold | `face-record` |
+| A `confirmed_minor` cannot be named without a live consent scoped `minor_face_labeling` | `face-record` |
+| `requires_egress: true` demands a `ConsentRef`, a destination and a payload kind | `job-spec` |
+| `scan_source` demands source paths and a `source_locator_digest` | `job-spec` |
+| An `AlbumSpec` cannot claim `pass` with a non-zero `error_count`, **or** with any hard gate missing from its checks | `album-spec` |
+| A virtual assembly cannot carry bytes, sources or proxies | `media-record` |
+| A perceptual hash's `bits` must equal `4 * len(hex)` | `common` |
+| `PrefEvent.pixel_data_present` is `const false`, and a shareable event must be anonymised | `pref-event` |
+
+Constraints it cannot express — comparing two sibling values — live in `tests/test_contracts.py` and are exercised against the fixtures. Every negative fixture declares in `index.json` whether it is rejected by a type-level rule (the generated bindings catch it too) or a conditional one (only jsonschema and the semantic checks can).
 
 ## Regenerating the bindings
 

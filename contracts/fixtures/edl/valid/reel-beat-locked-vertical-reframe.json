@@ -215,11 +215,11 @@
         {
           "item_type": "clip",
           "clip_id": "clip-04",
-          "name": "root section",
+          "name": "root section (crosses the GH01/GH02 chapter boundary)",
           "media_ref_id": "src-ride",
           "source_range": {
             "start_time": {
-              "value": 3038700,
+              "value": 3067400,
               "rate": 59.94005994005994
             },
             "duration": {
@@ -795,7 +795,7 @@
       "keyframes": [
         {
           "time": {
-            "value": 3038700,
+            "value": 3067400,
             "rate": 59.94005994005994
           },
           "crop": {
@@ -811,7 +811,7 @@
         },
         {
           "time": {
-            "value": 3038756,
+            "value": 3067456,
             "rate": 59.94005994005994
           },
           "crop": {
@@ -827,7 +827,7 @@
         },
         {
           "time": {
-            "value": 3038813,
+            "value": 3067513,
             "rate": 59.94005994005994
           },
           "crop": {
@@ -1988,6 +1988,13 @@
         "severity": "error",
         "detail": "",
         "clip_id": null
+      },
+      {
+        "check_id": "source_range_within_available",
+        "passed": true,
+        "severity": "error",
+        "detail": "clip-04 spans the GH01/GH02 chapter boundary at 3067485; the assembly's available_range covers it, and the renderer resolves it to two member reads",
+        "clip_id": "clip-04"
       }
     ],
     "validated_at": "2026-03-16T20:04:53+05:30",

@@ -1,33 +1,33 @@
 {
   "schema_version": "v0",
-  "media_id": "4086a6f2bc6cc368bbcdf98be7ce7cf39b8b1ddb5ebd3e26d91e86fb56bba93c",
+  "media_id": "ee827057a0040e3c341dced321a5bba82b467acd39ddb2221e0440495bb2093e",
   "asset_kind": "physical_file",
   "kind": "image",
-  "byte_size": 118442,
+  "byte_size": 96233,
   "mime_type": "image/jpeg",
   "file_format": "jpeg",
   "sources": [
     {
-      "path": "/Users/example/Pictures/Scans/Box 3/scan_0043.jpg",
+      "path": "/Users/example/Library/WhatsApp/Media/WhatsApp Images/IMG-20230812-WA0037.jpg",
       "volume_id": "disk-internal",
-      "adapter": "manual_import",
+      "adapter": "whatsapp",
       "sidecar_paths": [],
-      "original_filename": "scan_0043.jpg",
-      "first_seen_at": "2026-03-14T10:02:18+05:30",
-      "last_verified_at": "2026-03-14T10:02:18+05:30",
+      "original_filename": "IMG-20230812-WA0037.jpg",
+      "first_seen_at": "2026-03-14T10:04:02+05:30",
+      "last_verified_at": "2026-03-14T10:04:02+05:30",
       "present": true
     }
   ],
   "span": null,
   "capture": {
     "captured_at": {
-      "local": null,
+      "local": "2023-08-12T00:00:00",
       "utc": null,
       "timezone": null,
       "utc_offset_minutes": null,
-      "source": "unknown",
-      "precision": "unknown",
-      "confidence": 0.0,
+      "source": "filename_pattern",
+      "precision": "day",
+      "confidence": 0.72,
       "inferred_from_media_ids": []
     },
     "metadata_present": [],
@@ -37,12 +37,12 @@
   },
   "image": {
     "stored_size": {
-      "width": 1600,
-      "height": 1200
+      "width": 1280,
+      "height": 960
     },
     "oriented_size": {
-      "width": 1600,
-      "height": 1200
+      "width": 1280,
+      "height": 960
     },
     "orientation": 1,
     "bit_depth": 8,
@@ -58,20 +58,20 @@
     "image_hash": {
       "algorithm": "phash-dct-64",
       "bits": 64,
-      "hex": "3c7ef0c183071e3c"
+      "hex": "c1830f1e3c78f0e1"
     },
     "keyframe_hashes": []
   },
   "proxies": [
     {
-      "proxy_id": "032ef047c0487e64e4b8e760b483f0c23aa4506913b43d19b671e2e6090d9e32",
+      "proxy_id": "39c7f53d64ad7e9c8899cbab61f1e61b31182d6bae6ad462373e81632267bb53",
       "kind": "thumbnail_512",
-      "path": "/Users/example/Library/Application Support/MemoryEngine/proxies/03/2e/032ef047.jpg",
+      "path": "/Users/example/Library/Application Support/MemoryEngine/proxies/39/c7/39c7f53d.jpg",
       "size": {
         "width": 512,
         "height": 384
       },
-      "byte_size": 31118,
+      "byte_size": 27442,
       "generator_version": "proxy-gen/1.0.0+libvips8.15",
       "frame_index": null
     }
@@ -86,8 +86,7 @@
       "metadata": {
         "status": "done",
         "attempts": 1,
-        "skip_reason": null,
-        "completed_at": "2026-03-14T10:02:19+05:30"
+        "skip_reason": "no EXIF present; date recovered from the WhatsApp filename convention"
       },
       "thumbnail": {
         "status": "done",
@@ -109,14 +108,6 @@
         "status": "done",
         "attempts": 1
       },
-      "iqa": {
-        "status": "done",
-        "attempts": 1
-      },
-      "aesthetic": {
-        "status": "done",
-        "attempts": 1
-      },
       "safety": {
         "status": "done",
         "attempts": 1
@@ -125,20 +116,16 @@
   },
   "quality": {
     "sharpness": {
-      "value": 0.44
+      "value": 0.51
     },
     "exposure": {
-      "value": 0.61
+      "value": 0.64
     },
     "noise": {
-      "value": 0.52
-    },
-    "technical_iqa": {
-      "value": 0.38,
-      "raw_value": 41.2
+      "value": 0.47
     },
     "aesthetic": {
-      "value": 0.41
+      "value": 0.38
     },
     "is_black_frame": false,
     "is_lens_obstructed": false
@@ -148,19 +135,14 @@
       "space": "siglip2_so400m_1152",
       "dimensions": 1152,
       "storage": "index",
-      "index_key": "vec:media:4086a6f2:siglip2_so400m_1152",
+      "index_key": "vec:media:ee827057:siglip2_so400m_1152",
       "quantization": "float16",
       "normalized": true
     },
     "tags": [
       {
-        "label": "group photo",
-        "score": 0.82,
-        "source": "zero_shot_siglip"
-      },
-      {
-        "label": "indoor",
-        "score": 0.71,
+        "label": "celebration",
+        "score": 0.79,
         "source": "zero_shot_siglip"
       }
     ],
@@ -172,13 +154,7 @@
       "threshold_used": 0.85
     }
   },
-  "faces": {
-    "face_count": 5,
-    "face_ids": [],
-    "confirmed_person_ids": [],
-    "pending_review_count": 5,
-    "largest_face_area_ratio": 0.019
-  },
+  "faces": null,
   "dedupe": null,
   "exclusion": {
     "excluded_from_automation": false,
@@ -193,6 +169,6 @@
     "caption": null
   },
   "model_runs": [],
-  "first_seen_at": "2026-03-14T10:02:18+05:30",
-  "updated_at": "2026-03-14T10:02:31+05:30"
+  "first_seen_at": "2026-03-14T10:04:02+05:30",
+  "updated_at": "2026-03-14T10:04:19+05:30"
 }

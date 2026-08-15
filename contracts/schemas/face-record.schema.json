@@ -12,7 +12,8 @@
     "face_id",
     "media_id",
     "detection",
-    "identity"
+    "identity",
+    "sensitive"
   ],
   "properties": {
     "schema_version": { "$ref": "common.schema.json#/$defs/SchemaVersion" },
@@ -69,6 +70,32 @@
     "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
     "updated_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
   },
+
+  "allOf": [
+    {
+      "$comment": "A confirmed minor may be detected and counted freely, but may not be NAMED without an explicit minor_face_labeling consent. Expressed as: confirmed_minor implies labeling_consent is an object, which the SensitiveFlags constraint then forces to be correctly scoped and unrevoked. Applied whenever the status is confirmed_minor rather than only when a person_id is already attached, so the consent has to exist before the label can be written rather than being back-filled after.",
+      "if": {
+        "type": "object",
+        "properties": {
+          "sensitive": {
+            "type": "object",
+            "properties": { "minor_status": { "const": "confirmed_minor" } },
+            "required": ["minor_status"]
+          }
+        },
+        "required": ["sensitive"]
+      },
+      "then": {
+        "properties": {
+          "sensitive": {
+            "type": "object",
+            "required": ["labeling_consent"],
+            "properties": { "labeling_consent": { "type": "object" } }
+          }
+        }
+      }
+    }
+  ],
 
   "$defs": {
     "Detection": {
@@ -293,6 +320,7 @@
     "SensitiveFlags": {
       "title": "SensitiveFlags",
       "description": "Child-face labeling sits behind separate explicit consent (build plan section 8). Modelled here rather than on the person so that the gate is evaluated at the point of use.",
+      "$comment": "This block is REQUIRED on every FaceRecord. Making it optional would let a face become eligible for unattended output without anyone having decided whether it belongs to a child, and 'nobody asked' is not the same as 'no'. `unknown` is the conservative default and is explicitly NOT treated as adult.",
       "type": "object",
       "additionalProperties": false,
       "required": ["minor_status"],
@@ -304,14 +332,34 @@
           "default": "unknown"
         },
         "labeling_consent": {
-          "description": "Required before a confirmed_minor face may be labeled with a person identity. Absent consent, the face is still detected and counted, but never named.",
+          "description": "Required before a confirmed_minor face may be labeled with a person identity. Absent consent, the face is still detected and counted, but never named. Must be scoped to minor_face_labeling specifically -- a consent granted for cloud rendering does not authorise naming a child.",
           "oneOf": [{ "$ref": "common.schema.json#/$defs/ConsentRef" }, { "type": "null" }]
         },
         "excluded_from_sharing": {
           "type": "boolean",
           "default": false
         }
-      }
+      },
+      "allOf": [
+        {
+          "$comment": "A consent attached here may only ever be the child-labeling one, and it must be live. A revoked consent that still validates is worse than no consent at all, because it reads as permission.",
+          "if": {
+            "properties": { "labeling_consent": { "type": "object" } },
+            "required": ["labeling_consent"]
+          },
+          "then": {
+            "properties": {
+              "labeling_consent": {
+                "type": "object",
+                "properties": {
+                  "scope": { "const": "minor_face_labeling" },
+                  "revoked_at": { "type": "null" }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
 
     "FaceTrack": {

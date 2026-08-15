@@ -1,0 +1,91 @@
+{
+  "schema_version": "v0",
+  "media_id": "78251855814b83eac60474233d44edfef7b65943867c115f106db904180f2966",
+  "asset_kind": "physical_file",
+  "kind": "unknown",
+  "byte_size": 1048576,
+  "mime_type": null,
+  "file_format": "unknown",
+  "sources": [
+    {
+      "path": "/Volumes/OldDrive/Recovered/DCIM/IMG_3391.JPG",
+      "volume_id": "disk-olddrive-2tb",
+      "adapter": "filesystem",
+      "sidecar_paths": [],
+      "original_filename": "IMG_3391.JPG",
+      "first_seen_at": "2026-03-14T12:41:09+05:30",
+      "last_verified_at": "2026-03-14T12:41:09+05:30",
+      "present": true
+    }
+  ],
+  "span": null,
+  "capture": {
+    "captured_at": {
+      "local": null,
+      "utc": null,
+      "timezone": null,
+      "utc_offset_minutes": null,
+      "source": "unknown",
+      "precision": "unknown",
+      "confidence": 0.0,
+      "inferred_from_media_ids": []
+    },
+    "metadata_present": [],
+    "gps": null,
+    "device": null,
+    "exposure": null
+  },
+  "image": null,
+  "video": null,
+  "perceptual": null,
+  "proxies": [],
+  "processing": {
+    "state": "quarantined",
+    "stages": {
+      "hash": { "status": "done", "attempts": 1, "completed_at": "2026-03-14T12:41:11+05:30" },
+      "metadata": {
+        "status": "failed",
+        "attempts": 3,
+        "last_error": {
+          "code": "file_corrupt",
+          "message": "JPEG scan data ends before the declared height; entropy stream truncated at 63% of expected length",
+          "retryable": false,
+          "occurred_at": "2026-03-14T12:41:14+05:30"
+        }
+      },
+      "thumbnail": {
+        "status": "failed",
+        "attempts": 3,
+        "last_error": {
+          "code": "file_corrupt",
+          "message": "decoder produced no complete scanline",
+          "retryable": false,
+          "occurred_at": "2026-03-14T12:41:16+05:30"
+        }
+      },
+      "perceptual_hash": {
+        "status": "skipped",
+        "attempts": 0,
+        "skip_reason": "no decodable image; a hash of a partial decode would poison dedupe buckets"
+      },
+      "classical_quality": {
+        "status": "skipped",
+        "attempts": 0,
+        "skip_reason": "quarantined before analysis"
+      }
+    }
+  },
+  "quality": null,
+  "content": null,
+  "faces": null,
+  "dedupe": null,
+  "exclusion": {
+    "excluded_from_automation": true,
+    "reasons": ["corrupt"],
+    "user_override": null
+  },
+  "user": { "favorite": false, "hidden": false, "rating": null, "tags": [], "caption": null },
+  "model_runs": [],
+  "first_seen_at": "2026-03-14T12:41:09+05:30",
+  "updated_at": "2026-03-14T12:41:16+05:30"
+}

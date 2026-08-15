@@ -3,7 +3,7 @@
   "$id": "https://memory-engine.local/contracts/v0/job-spec.schema.json",
   "title": "JobSpec",
   "description": "Any unit of work in the system: what to do, to which inputs, with which parameters, how far it got, and how to pick it up again.",
-  "$comment": "Kill the app at 47% of a 3TB scan; on relaunch it continues. That single requirement drives every design choice here.\n\n IDEMPOTENCY: job_id is a BLAKE3 over (job_type, ordered input hashes, params_digest, scope). Submitting the same work twice yields the same id, so 'have we already done this' is a primary-key lookup rather than a heuristic. Re-running a completed job is a no-op by construction, not by convention.\n\n RESUMPTION: `checkpoint.cursor` is deliberately an opaque string owned by the worker. The contract guarantees that it is durably stored and handed back on resume; it does not presume to know what a file walker or an FFmpeg pass needs to remember. What the contract DOES specify is that partial outputs are recorded as they are produced, so resumption never redoes completed sub-work.\n\n EGRESS: a job whose `requires_egress` is true MUST carry a ConsentRef. This is checked in the schema, not only in code, because 'no network egress without a consent-ledger entry' is verified by an automated CI test and the contract is where that promise is made legible.",
+  "$comment": "Kill the app at 47% of a 3TB scan; on relaunch it continues. That single requirement drives every design choice here.\n\n IDEMPOTENCY: job_id is a BLAKE3 over (job_type, ordered input hashes, source_locator_digest, params_digest, scope). Submitting the same work twice yields the same id, so 'have we already done this' is a primary-key lookup rather than a heuristic. Re-running a completed job is a no-op by construction, not by convention.\n\n THE SOURCE-LOCATOR DIGEST EXISTS FOR ONE JOB TYPE. scan_source runs BEFORE anything has a content hash -- discovering files is what produces them -- so its `media_ids` are empty and the rest of the identity tuple is identical for every scan with the same parameters. Two different folders would then collide on job_id, and the second scan would be treated as already done: a whole drive silently never imported. source_locator_digest folds the canonicalised source roots into the identity so distinct roots are distinct jobs. It is required for scan_source and meaningless elsewhere, where content hashes already carry the identity.\n\n RESUMPTION: `checkpoint.cursor` is deliberately an opaque string owned by the worker. The contract guarantees that it is durably stored and handed back on resume; it does not presume to know what a file walker or an FFmpeg pass needs to remember. What the contract DOES specify is that partial outputs are recorded as they are produced, so resumption never redoes completed sub-work.\n\n EGRESS: a job whose `requires_egress` is true MUST carry a ConsentRef. This is checked in the schema, not only in code, because 'no network egress without a consent-ledger entry' is verified by an automated CI test and the contract is where that promise is made legible.",
 
   "type": "object",
   "additionalProperties": false,
@@ -20,7 +20,7 @@
     "schema_version": { "$ref": "common.schema.json#/$defs/SchemaVersion" },
 
     "job_id": {
-      "description": "BLAKE3 over (job_type, sorted input ids, params_digest, scope). Doubles as the idempotency key -- there is deliberately no second field for that, because two sources of truth for identity is how duplicate work gets in.",
+      "description": "BLAKE3 over (job_type, sorted input ids, source_locator_digest or the empty string, params_digest, scope). Doubles as the idempotency key -- there is deliberately no second field for that, because two sources of truth for identity is how duplicate work gets in.",
       "$ref": "common.schema.json#/$defs/Blake3Hash"
     },
 
@@ -121,6 +121,28 @@
     }
   },
 
+  "allOf": [
+    {
+      "$comment": "A scan has no content hashes yet, so without a source-locator digest two scans of different drives share an identity and the second is skipped as already-done. Requiring both the paths and their digest makes that collision unrepresentable.",
+      "if": {
+        "properties": { "job_type": { "const": "scan_source" } },
+        "required": ["job_type"]
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "type": "object",
+            "required": ["source_paths", "source_locator_digest"],
+            "properties": {
+              "source_paths": { "minItems": 1 },
+              "source_locator_digest": { "$ref": "common.schema.json#/$defs/Blake3Hash" }
+            }
+          }
+        }
+      }
+    }
+  ],
+
   "$defs": {
     "JobInputs": {
       "title": "JobInputs",
@@ -155,6 +177,11 @@
           "type": "array",
           "items": { "type": "string" },
           "default": []
+        },
+
+        "source_locator_digest": {
+          "description": "BLAKE3 over the canonical form of `source_paths`: each path resolved to absolute, symlinks followed, trailing separators stripped, NFC-normalised, then sorted and joined with a NUL separator. Required for scan_source and the only thing distinguishing two scans of different folders, since neither has content hashes yet. Canonicalisation matters as much as the digest -- '/Volumes/Archive' and '/Volumes/Archive/' must not be two jobs, or a re-scan re-walks a whole drive.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
         },
         "parent_job_id": {
           "description": "The job that spawned this one. A scan spawns a hash job per file; the tree is what makes 'cancel this import' a well-defined operation.",

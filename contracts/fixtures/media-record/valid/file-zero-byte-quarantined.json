@@ -1,0 +1,93 @@
+{
+  "schema_version": "v0",
+  "media_id": "560b45e18f9a48bda5f9f50273797acaf04b83b9cf2e8c6d476fb98e0fd1a621",
+  "asset_kind": "physical_file",
+  "kind": "unknown",
+  "byte_size": 0,
+  "mime_type": null,
+  "file_format": "unknown",
+  "sources": [
+    {
+      "path": "/Volumes/OldDrive/Recovered/DCIM/IMG_3392.JPG",
+      "volume_id": "disk-olddrive-2tb",
+      "adapter": "filesystem",
+      "sidecar_paths": [],
+      "original_filename": "IMG_3392.JPG",
+      "first_seen_at": "2026-03-14T12:41:09+05:30",
+      "last_verified_at": "2026-03-14T12:41:09+05:30",
+      "present": true
+    },
+    {
+      "path": "/Volumes/OldDrive/Recovered/DCIM/IMG_3407.JPG",
+      "volume_id": "disk-olddrive-2tb",
+      "adapter": "filesystem",
+      "sidecar_paths": [],
+      "original_filename": "IMG_3407.JPG",
+      "first_seen_at": "2026-03-14T12:41:22+05:30",
+      "last_verified_at": "2026-03-14T12:41:22+05:30",
+      "present": true
+    }
+  ],
+  "span": null,
+  "capture": {
+    "captured_at": {
+      "local": null,
+      "utc": null,
+      "timezone": null,
+      "utc_offset_minutes": null,
+      "source": "unknown",
+      "precision": "unknown",
+      "confidence": 0.0,
+      "inferred_from_media_ids": []
+    },
+    "metadata_present": [],
+    "gps": null,
+    "device": null,
+    "exposure": null
+  },
+  "image": null,
+  "video": null,
+  "perceptual": null,
+  "proxies": [],
+  "processing": {
+    "state": "quarantined",
+    "stages": {
+      "hash": { "status": "done", "attempts": 1, "completed_at": "2026-03-14T12:41:09+05:30" },
+      "metadata": {
+        "status": "failed",
+        "attempts": 1,
+        "last_error": {
+          "code": "zero_byte_file",
+          "message": "file is empty; nothing to read",
+          "retryable": false,
+          "occurred_at": "2026-03-14T12:41:09+05:30"
+        }
+      },
+      "thumbnail": {
+        "status": "skipped",
+        "attempts": 0,
+        "skip_reason": "zero-byte file; quarantined before any decode was attempted"
+      }
+    }
+  },
+  "quality": null,
+  "content": null,
+  "faces": null,
+  "dedupe": {
+    "group_id": "0a5f7c93-1e28-4b06-9d34-7f8a2c6e5b10",
+    "is_primary": true,
+    "primary_media_id": "560b45e18f9a48bda5f9f50273797acaf04b83b9cf2e8c6d476fb98e0fd1a621",
+    "similarity_to_primary": 1.0,
+    "group_size": 1,
+    "method": "exact_content_hash"
+  },
+  "exclusion": {
+    "excluded_from_automation": true,
+    "reasons": ["corrupt", "unreadable"],
+    "user_override": null
+  },
+  "user": { "favorite": false, "hidden": false, "rating": null, "tags": [], "caption": null },
+  "model_runs": [],
+  "first_seen_at": "2026-03-14T12:41:09+05:30",
+  "updated_at": "2026-03-14T12:41:22+05:30"
+}
