@@ -35,6 +35,15 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # run-workspace-check.mjs discovers every pyproject.toml and runs its
+      # tests. contracts/ validates fixtures against the schemas and round-trips
+      # them through the generated pydantic models, so those two libraries have
+      # to be present here as well as in the Contracts job.
+      - run: python3 -m pip install --upgrade pip
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20"
       - run: npm ci --ignore-scripts
       - run: npm test
 
