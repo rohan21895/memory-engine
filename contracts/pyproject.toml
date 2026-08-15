@@ -1,0 +1,25 @@
+[project]
+name = "memory-engine-contracts"
+version = "0.0.0"
+description = "Memory Engine contract schemas, code generation and golden fixtures"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "jsonschema>=4.20",
+]
+
+# The generator itself is stdlib-only on purpose: the contract layer is the one
+# thing both agents must be able to regenerate anywhere, offline, without a
+# dependency resolution step between a schema edit and a reviewable diff. The
+# dependencies above are for the TESTS, which validate fixtures against the
+# schemas and round-trip them through the generated pydantic models.
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+# Not a distributable package; present so tooling can discover the project root.
+py-modules = []

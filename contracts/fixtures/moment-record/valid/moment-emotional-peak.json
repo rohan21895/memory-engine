@@ -1,0 +1,169 @@
+{
+  "schema_version": "v0",
+  "moment_id": "b8a3f2ac42d376a8af7f54946248f305343c486dfecc27c8687b4fa703fd1947",
+  "media_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
+  "source_range": {
+    "start_time": { "value": 3049200, "rate": 59.94005994005994 },
+    "duration": { "value": 210, "rate": 59.94005994005994 }
+  },
+  "proxy_range": {
+    "start_time": { "value": 24120, "rate": 59.94005994005994 },
+    "duration": { "value": 210, "rate": 59.94005994005994 }
+  },
+  "shot_id": "shot-0041",
+  "features": {
+    "motion_energy": 0.72,
+    "motion_peak": 0.94,
+    "shake": 0.18,
+    "exposure_stability": 0.88,
+    "sharpness": 0.81,
+    "face_presence": 0.86,
+    "max_face_area_ratio": 0.094,
+    "smile_intensity": 0.91,
+    "audio": {
+      "loudness_lufs": -16.4,
+      "speech_ratio": 0.31,
+      "music_ratio": 0.0,
+      "noise_ratio": 0.22,
+      "events": [
+        {
+          "label": "laughter",
+          "confidence": 0.934,
+          "time": { "value": 3049320, "rate": 59.94005994005994 }
+        },
+        {
+          "label": "cheering",
+          "confidence": 0.712,
+          "time": { "value": 3049380, "rate": 59.94005994005994 }
+        }
+      ],
+      "embedding": {
+        "space": "clap_audio_512",
+        "dimensions": 512,
+        "storage": "index",
+        "index_key": "vec:moment:b8a3f2ac:clap_audio_512",
+        "quantization": "float16",
+        "normalized": true
+      }
+    },
+    "visual_embedding": {
+      "space": "siglip2_so400m_1152",
+      "dimensions": 1152,
+      "storage": "index",
+      "index_key": "vec:moment:b8a3f2ac:siglip2_so400m_1152",
+      "quantization": "float16",
+      "normalized": true
+    },
+    "novelty": 0.78,
+    "representative_frame_time": { "value": 3049311, "rate": 59.94005994005994 }
+  },
+  "scores": {
+    "moment_score": { "value": 0.91, "run_id": "run-fusion-0512", "raw_value": null },
+    "technical": { "value": 0.84, "run_id": "run-fusion-0512" },
+    "hook_potential": { "value": 0.88, "run_id": "run-fusion-0512" },
+    "emotional_peak": { "value": 0.93, "run_id": "run-tier3-0009" },
+    "narrative_value": { "value": 0.87, "run_id": "run-tier3-0009" },
+    "source": "tier3_model",
+    "fusion_weights_version": "fusion-v1.2.0"
+  },
+  "snap_points": [
+    {
+      "time": { "value": 3049200, "rate": 59.94005994005994 },
+      "kind": "shot_boundary",
+      "strength": 0.97,
+      "confidence": 0.95,
+      "cut_direction": "in"
+    },
+    {
+      "time": { "value": 3049284, "rate": 59.94005994005994 },
+      "kind": "motion_onset",
+      "strength": 0.86,
+      "confidence": 0.88,
+      "cut_direction": "in"
+    },
+    {
+      "time": { "value": 3049320, "rate": 59.94005994005994 },
+      "kind": "audio_onset",
+      "strength": 0.93,
+      "confidence": 0.91,
+      "cut_direction": "both"
+    },
+    {
+      "time": { "value": 3049398, "rate": 59.94005994005994 },
+      "kind": "speech_gap",
+      "strength": 0.64,
+      "confidence": 0.79,
+      "cut_direction": "out"
+    },
+    {
+      "time": { "value": 3049410, "rate": 59.94005994005994 },
+      "kind": "shot_boundary",
+      "strength": 0.96,
+      "confidence": 0.94,
+      "cut_direction": "out"
+    }
+  ],
+  "safe_trim": {
+    "earliest_in": { "value": 3049200, "rate": 59.94005994005994 },
+    "latest_out": { "value": 3049410, "rate": 59.94005994005994 },
+    "speech_safe_in": { "value": 3049284, "rate": 59.94005994005994 },
+    "speech_safe_out": { "value": 3049398, "rate": 59.94005994005994 },
+    "min_duration": { "value": 45, "rate": 59.94005994005994 },
+    "preserve_audio_tail": true
+  },
+  "elimination": { "eliminated": false, "reasons": [], "stage": null },
+  "people": {
+    "person_ids": ["3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03"],
+    "face_track_ids": ["7c9e2a41-5b83-4d06-9e17-3a4f8b2c5d10"],
+    "unidentified_face_count": 1
+  },
+  "transcript": {
+    "text": "did you see that",
+    "language": "en-IN",
+    "words": [
+      {
+        "word": "did",
+        "start": { "value": 3049290, "rate": 59.94005994005994 },
+        "end": { "value": 3049308, "rate": 59.94005994005994 },
+        "confidence": 0.96
+      },
+      {
+        "word": "you",
+        "start": { "value": 3049308, "rate": 59.94005994005994 },
+        "end": { "value": 3049322, "rate": 59.94005994005994 },
+        "confidence": 0.98
+      },
+      {
+        "word": "see",
+        "start": { "value": 3049322, "rate": 59.94005994005994 },
+        "end": { "value": 3049346, "rate": 59.94005994005994 },
+        "confidence": 0.97
+      },
+      {
+        "word": "that",
+        "start": { "value": 3049346, "rate": 59.94005994005994 },
+        "end": { "value": 3049380, "rate": 59.94005994005994 },
+        "confidence": 0.94
+      }
+    ],
+    "speaker_ids": ["SPEAKER_00"],
+    "contains_name_mention": false
+  },
+  "model_runs": [
+    {
+      "run_id": "run-fusion-0512",
+      "model": {
+        "model_id": "moment-fusion-linear",
+        "version": "1.2.0",
+        "weights_blake3": "f95d55c5b95e9f5ad8d225d439f2871d775ccf5c6e5b9517047cc47d64d24b8f",
+        "runtime": "native",
+        "precision": "fp32"
+      },
+      "ran_at": "2026-03-15T12:21:40+05:30",
+      "input_proxy_id": "bd035371d6d1deb00d7a1704e1aa7cbd49c1755d54f953f6e3134588debbfbcc",
+      "duration_ms": 2.1,
+      "job_id": null
+    }
+  ],
+  "created_at": "2026-03-15T12:21:44+05:30"
+}

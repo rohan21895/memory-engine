@@ -1,0 +1,428 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memory-engine.local/contracts/v0/common.schema.json",
+  "title": "Common",
+  "description": "Shared definitions referenced by every Memory Engine contract schema. This file declares no root type; it exists only to host $defs.",
+  "$comment": "CONTRACT v0. Design rules enforced throughout: (1) every object is additionalProperties:false so neither agent can smuggle in an undeclared field; (2) all timeline and source timings are RationalTime, never floats, because float seconds cannot round-trip OpenTimelineIO losslessly and cannot express 1001/30000 drop-frame rates exactly; (3) identity is content-addressed (BLAKE3) wherever the bytes determine the identity, and UUID only where a human or a clustering run created the entity; (4) no schema ever carries pixel data.",
+
+  "$defs": {
+    "SchemaVersion": {
+      "title": "SchemaVersion",
+      "description": "Contract version this record was written against. Frozen at 'v0' for the Phase 0 contract. A reader that does not recognise the value must refuse the record rather than guess -- see hard rule 7, no silent anything.",
+      "type": "string",
+      "const": "v0"
+    },
+
+    "Blake3Hash": {
+      "title": "Blake3Hash",
+      "description": "Lowercase hex BLAKE3-256 digest. The universal content address: same bytes anywhere in the world produce the same id, which is what makes every job idempotent.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+
+    "Uuid": {
+      "title": "Uuid",
+      "description": "RFC 4122 UUID, lowercase. Used only for entities whose identity is NOT determined by content: person ids, cluster ids, user sessions, projects.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+
+    "Slug": {
+      "title": "Slug",
+      "description": "Short stable machine identifier, lowercase alphanumeric with hyphens and underscores. Used for ids that are authored by us rather than generated: track ids, act ids, check ids.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+
+    "Timestamp": {
+      "title": "Timestamp",
+      "description": "RFC 3339 instant with an explicit offset. Every wall-clock moment the system itself observes (ingest time, decision time, render time) is unambiguous by construction.",
+      "type": "string",
+      "format": "date-time"
+    },
+
+    "LocalDateTime": {
+      "title": "LocalDateTime",
+      "description": "ISO 8601 date-time with NO offset, e.g. 2019-08-04T17:22:31. This is what a camera actually writes into EXIF DateTimeOriginal: a wall-clock reading with no timezone. Storing it as a naive local time and keeping the zone separate is the only lossless representation.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?$"
+    },
+
+    "RationalTime": {
+      "title": "RationalTime",
+      "description": "A time expressed as an exact rational: value frames (or samples) at the given rate. Maps 1:1 onto opentimelineio.opentime.RationalTime. Seconds = value / rate. Never store seconds as a float in this contract.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "rate"],
+      "properties": {
+        "value": {
+          "description": "Position or count in units of 1/rate. May be fractional to survive sample-accurate audio edits, but integral values are strongly preferred on video tracks.",
+          "type": "number"
+        },
+        "rate": {
+          "description": "Units per second. Use the exact NTSC rationals where applicable: 24000/1001 = 23.976023976023978, 30000/1001 = 29.97002997002997, 60000/1001 = 59.94005994005994.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+
+    "TimeRange": {
+      "title": "TimeRange",
+      "description": "Half-open interval [start_time, start_time + duration). Maps 1:1 onto opentimelineio.opentime.TimeRange. Half-open is deliberate and matches OTIO: it makes adjacent clips tile a timeline with no off-by-one frame.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_time", "duration"],
+      "properties": {
+        "start_time": { "$ref": "#/$defs/RationalTime" },
+        "duration": { "$ref": "#/$defs/RationalTime" }
+      }
+    },
+
+    "Unit": {
+      "title": "Unit",
+      "description": "A score normalised to [0,1]. Every model output in this contract is normalised before it is written, so fusion never has to know a model's native range.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+
+    "Confidence": {
+      "title": "Confidence",
+      "description": "Calibrated probability in [0,1]. Distinct from Unit by intent: a Confidence is expected to be calibrated against a validation set and is therefore comparable to a threshold. A Unit is merely ordered.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+
+    "NormalizedBox": {
+      "title": "NormalizedBox",
+      "description": "Axis-aligned rectangle in normalised image coordinates: origin top-left, x to the right, y down, all values in [0,1] relative to the ORIENTED image (after EXIF rotation is applied). Normalised so a box computed on a 512px thumbnail is valid against the 6000px original without rescaling -- this is what lets analysis run on proxies and render run on sources.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "w", "h"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "w": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "h": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "rotation_deg": {
+          "description": "Clockwise rotation of the box about its own centre. Present only for crops that deliberately rotate, e.g. straightening a horizon in an album placement.",
+          "type": "number",
+          "minimum": -180,
+          "exclusiveMaximum": 180,
+          "default": 0
+        }
+      }
+    },
+
+    "Point2D": {
+      "title": "Point2D",
+      "description": "Point in the same normalised, orientation-applied coordinate space as NormalizedBox. Landmarks may fall slightly outside [0,1] when a face is clipped by the frame edge, so the bounds here are deliberately loose.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number", "minimum": -0.5, "maximum": 1.5 },
+        "y": { "type": "number", "minimum": -0.5, "maximum": 1.5 }
+      }
+    },
+
+    "AspectRatio": {
+      "title": "AspectRatio",
+      "description": "Exact aspect ratio as integers, e.g. 9:16 for a reel. Integers rather than a float so 'is this 16:9' is an equality test, not an epsilon comparison.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": { "type": "integer", "exclusiveMinimum": 0 },
+        "denominator": { "type": "integer", "exclusiveMinimum": 0 }
+      }
+    },
+
+    "PixelSize": {
+      "title": "PixelSize",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "exclusiveMinimum": 0 },
+        "height": { "type": "integer", "exclusiveMinimum": 0 }
+      }
+    },
+
+    "PerceptualHash": {
+      "title": "PerceptualHash",
+      "description": "Perceptual hash used for near-duplicate bucketing. Bucketing is by Hamming distance on this hash; the bucket is then refined by embedding distance (build plan 4.2). Always carries its algorithm so a future algorithm change cannot silently invalidate existing buckets.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "bits", "hex"],
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "enum": ["phash-dct-64", "phash-dct-256", "dhash-64", "ahash-64", "wavelet-64"]
+        },
+        "bits": {
+          "description": "Hash length in bits. Must equal 4 * len(hex).",
+          "type": "integer",
+          "enum": [64, 128, 256]
+        },
+        "hex": { "type": "string", "pattern": "^[0-9a-f]+$" }
+      }
+    },
+
+    "TimeSource": {
+      "title": "TimeSource",
+      "description": "Where a capture time came from, ordered from most to least trustworthy. The ranking is load-bearing: event clustering weights a filename-derived date far less than an EXIF original, and an inferred date not at all for chronology-critical decisions.",
+      "type": "string",
+      "enum": [
+        "exif_datetime_original",
+        "exif_datetime_digitized",
+        "quicktime_creation_date",
+        "xmp_create_date",
+        "gps_timestamp",
+        "sidecar_json",
+        "filename_pattern",
+        "filesystem_mtime",
+        "neighbour_interpolation",
+        "user_supplied",
+        "unknown"
+      ]
+    },
+
+    "TimeAssertion": {
+      "title": "TimeAssertion",
+      "description": "A claim about when something was captured, together with how much we believe it. Modelling capture time as an assertion rather than a bare timestamp is what lets the system ingest a library where a third of the files have no EXIF date at all without either dropping them or lying about their chronology.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "precision", "confidence"],
+      "properties": {
+        "local": {
+          "description": "Wall-clock reading as recorded by the device, with no zone applied. Null when nothing in the file or its neighbours implies a time.",
+          "oneOf": [{ "$ref": "#/$defs/LocalDateTime" }, { "type": "null" }]
+        },
+        "utc": {
+          "description": "Resolved instant, present only when the zone is actually known (explicit offset in metadata, or GPS-derived zone). Never fabricate this by assuming the machine's local zone -- that silently shifts an entire holiday by hours.",
+          "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "timezone": {
+          "description": "IANA zone name, e.g. Asia/Kolkata, when it could be determined from metadata or GPS coordinates.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "utc_offset_minutes": {
+          "description": "Offset actually recorded in the file (EXIF OffsetTimeOriginal or QuickTime), when present.",
+          "oneOf": [{ "type": "integer", "minimum": -1080, "maximum": 1080 }, { "type": "null" }]
+        },
+        "source": { "$ref": "#/$defs/TimeSource" },
+        "precision": {
+          "description": "Granularity the assertion is actually good to. 'unknown' means we have no usable time at all, and consumers must exclude the item from chronology-ordered output rather than sorting it to the epoch.",
+          "type": "string",
+          "enum": ["second", "minute", "hour", "day", "month", "year", "unknown"]
+        },
+        "confidence": { "$ref": "#/$defs/Confidence" },
+        "inferred_from_media_ids": {
+          "description": "When precision came from neighbour_interpolation, the sibling records that bracketed this one. Recorded so the inference is auditable and can be recomputed when a neighbour's date is later corrected.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Blake3Hash" },
+          "maxItems": 8,
+          "default": []
+        }
+      }
+    },
+
+    "GeoPoint": {
+      "title": "GeoPoint",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["latitude", "longitude", "source"],
+      "properties": {
+        "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+        "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
+        "altitude_m": { "oneOf": [{ "type": "number" }, { "type": "null" }] },
+        "horizontal_accuracy_m": {
+          "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }]
+        },
+        "source": {
+          "type": "string",
+          "enum": ["exif_gps", "quicktime_location", "xmp", "sidecar_json", "user_supplied", "inferred"]
+        }
+      }
+    },
+
+    "VectorSpace": {
+      "title": "VectorSpace",
+      "description": "Named embedding space. Two vectors may only be compared when their space matches exactly, including the model version that produced them -- a SigLIP 2 upgrade creates a NEW space, it does not reinterpret the old one.",
+      "type": "string",
+      "enum": [
+        "siglip2_base_768",
+        "siglip2_so400m_1152",
+        "arcface_buffalo_l_512",
+        "adaface_ir101_512",
+        "clap_audio_512",
+        "aesthetic_head_1"
+      ]
+    },
+
+    "VectorRef": {
+      "title": "VectorRef",
+      "description": "Reference to an embedding held in the vector index. Embeddings are referenced rather than inlined so a MediaRecord stays small enough to page through 100k of them in a UI; the index owns the floats. Inline values are permitted ONLY for fixtures and tests, where self-containment matters more than size.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["space", "dimensions", "storage"],
+      "properties": {
+        "space": { "$ref": "#/$defs/VectorSpace" },
+        "dimensions": { "type": "integer", "exclusiveMinimum": 0 },
+        "storage": {
+          "type": "string",
+          "enum": ["index", "inline"]
+        },
+        "index_key": {
+          "description": "Row key in the sqlite-vec table. Required when storage is 'index'.",
+          "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "values": {
+          "description": "Raw float components. Permitted only when storage is 'inline'. Length must equal `dimensions`.",
+          "oneOf": [
+            { "type": "array", "items": { "type": "number" }, "maxItems": 2048 },
+            { "type": "null" }
+          ]
+        },
+        "quantization": {
+          "type": "string",
+          "enum": ["float32", "float16", "int8", "binary"],
+          "default": "float32"
+        },
+        "normalized": {
+          "description": "True when the vector is L2-normalised, which makes cosine distance a dot product. Every space in this contract stores normalised vectors.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "storage=inline requires values; storage=index requires index_key. Encoded as if/then so a malformed VectorRef fails validation rather than silently losing the embedding.",
+          "if": { "properties": { "storage": { "const": "inline" } }, "required": ["storage"] },
+          "then": { "required": ["values"], "properties": { "values": { "type": "array" } } },
+          "else": { "required": ["index_key"], "properties": { "index_key": { "type": "string" } } }
+        }
+      ]
+    },
+
+    "RuntimeTarget": {
+      "title": "RuntimeTarget",
+      "type": "string",
+      "enum": ["onnxruntime_cpu", "onnxruntime_coreml", "onnxruntime_directml", "onnxruntime_cuda", "ctranslate2", "mlx", "llama_cpp", "opencv", "librosa", "native"]
+    },
+
+    "ModelRef": {
+      "title": "ModelRef",
+      "description": "Pin to an exact model in the registry. Carries the weights hash, not just a version string, because 'the same version' of a HuggingFace repo has changed weights under people before. A record produced by an unpinned model is not reproducible, and reproducibility is the product.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id", "version", "weights_blake3"],
+      "properties": {
+        "model_id": { "$ref": "#/$defs/Slug" },
+        "version": { "type": "string", "minLength": 1 },
+        "weights_blake3": { "$ref": "#/$defs/Blake3Hash" },
+        "runtime": {
+          "oneOf": [{ "$ref": "#/$defs/RuntimeTarget" }, { "type": "null" }]
+        },
+        "precision": {
+          "description": "Quantisation the weights were executed at. int8 and fp16 runs can differ from fp32 at the third decimal, which is enough to flip a borderline face match, so it is part of provenance.",
+          "oneOf": [
+            { "type": "string", "enum": ["fp32", "fp16", "bf16", "int8", "int4"] },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+
+    "ModelRun": {
+      "title": "ModelRun",
+      "description": "One execution of one model against one record. Every score in this contract points at a run id, so 'why is this photo ranked 0.82' is always answerable and a model swap can be evaluated by replaying only the affected runs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "model", "ran_at"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/Slug" },
+        "model": { "$ref": "#/$defs/ModelRef" },
+        "ran_at": { "$ref": "#/$defs/Timestamp" },
+        "input_proxy_id": {
+          "description": "Which proxy the model actually saw. Analysis never touches originals (AGENTS.md hard rule 5), so this is normally set; null only for classical measures computed during ingest.",
+          "oneOf": [{ "$ref": "#/$defs/Blake3Hash" }, { "type": "null" }]
+        },
+        "duration_ms": { "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }] },
+        "job_id": {
+          "oneOf": [{ "$ref": "#/$defs/Blake3Hash" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "Score": {
+      "title": "Score",
+      "description": "A single scored value with a pointer back to the run that produced it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value"],
+      "properties": {
+        "value": { "$ref": "#/$defs/Unit" },
+        "run_id": {
+          "oneOf": [{ "$ref": "#/$defs/Slug" }, { "type": "null" }]
+        },
+        "raw_value": {
+          "description": "Model output before normalisation to [0,1], kept so a recalibration can be applied without re-running the model.",
+          "oneOf": [{ "type": "number" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "ConsentRef": {
+      "title": "ConsentRef",
+      "description": "Pointer into the consent ledger owned by services/api. Required on anything that leaves the device or touches a child's face. Hard rule: no network egress without a ledger entry, verified by the CI egress test.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ledger_entry_id", "scope", "granted_at"],
+      "properties": {
+        "ledger_entry_id": { "$ref": "#/$defs/Uuid" },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "tier3_contact_sheet",
+            "cloud_render",
+            "cloud_backup",
+            "share_link",
+            "print_order",
+            "minor_face_labeling",
+            "anonymized_preference_training"
+          ]
+        },
+        "granted_at": { "$ref": "#/$defs/Timestamp" },
+        "expires_at": { "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }] },
+        "revoked_at": { "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }] }
+      }
+    },
+
+    "Determinism": {
+      "title": "Determinism",
+      "description": "Everything needed to reproduce a plan byte-for-byte. Present on every artifact a planner emits (EDL, AlbumSpec). Hard rule 3: same plan + same sources = identical output, and that is only auditable if the plan says what produced it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planner", "planner_version", "seed", "inputs_digest"],
+      "properties": {
+        "planner": { "$ref": "#/$defs/Slug" },
+        "planner_version": { "type": "string", "minLength": 1 },
+        "seed": {
+          "description": "Seed for every stochastic choice in planning (variant sampling, tie-breaking). Same seed + same inputs must yield the same plan.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "inputs_digest": {
+          "description": "BLAKE3 over the canonical JSON of every input the planner read: candidate ids, parameters, model refs. Two plans with the same digest and the same planner version are guaranteed identical.",
+          "$ref": "#/$defs/Blake3Hash"
+        },
+        "generated_at": { "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }] }
+      }
+    }
+  }
+}

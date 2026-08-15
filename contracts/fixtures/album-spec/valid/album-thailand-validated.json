@@ -1,0 +1,507 @@
+{
+  "schema_version": "v0",
+  "album_id": "4995f8f46254a30a91bd452be677c893b96d2b1ce7b053b2f67753d88a894c3e",
+  "title": "Thailand",
+  "subtitle": "November 2024",
+  "event": {
+    "event_cluster_id": "9d4e1a07-6c82-4b35-a190-3f7e2b8c5d64",
+    "label": "beach day",
+    "date_range": {
+      "start": "2024-11-22T00:00:00+07:00",
+      "end": "2024-11-22T23:59:59+07:00"
+    },
+    "person_ids": ["3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03"],
+    "place_label": "Kata Beach, Phuket"
+  },
+  "vendor_profile": {
+    "vendor_id": "vendor-primary",
+    "product_id": "layflat-300-square",
+    "profile_version": "2026.1",
+    "trim_size_mm": { "width_mm": 300.0, "height_mm": 300.0 },
+    "bleed_mm": 3.0,
+    "safe_margin_mm": 8.0,
+    "gutter_mm": 10.0,
+    "spine_mm": 14.0,
+    "dpi_floor": 300.0,
+    "dpi_preferred": 350.0,
+    "color_profile": {
+      "icc_name": "FOGRA39 Coated",
+      "icc_hash": "57100d93e9f70e7414d12e23fc1485ca14b25b11cf7017d2842d1cc5ecc86093",
+      "intent": "relative_colorimetric"
+    },
+    "page_count": { "minimum": 20, "maximum": 100, "increment": 2 },
+    "binding": "layflat",
+    "paper_stock": "170gsm silk",
+    "pdf_standard": "pdf_x_4"
+  },
+  "pages": [
+    {
+      "page_index": 0,
+      "spread_id": null,
+      "side": "front_cover",
+      "section_id": null,
+      "background": { "kind": "solid", "color_hex": "#ffffff" },
+      "placements": [
+        {
+          "placement_id": "cover-hero",
+          "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+          "frame": {
+            "x_mm": 0.0,
+            "y_mm": 0.0,
+            "width_mm": 306.0,
+            "height_mm": 306.0,
+            "rotation_deg": 0
+          },
+          "crop": { "x": 0.1667, "y": 0.0, "w": 0.6667, "h": 1.0, "rotation_deg": 0 },
+          "effective_dpi": 332.0,
+          "z_index": 0,
+          "bleeds": ["top", "bottom", "left", "right"],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 2,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": 41.2,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [
+            {
+              "op_id": "op-cover-denoise",
+              "kind": "denoise",
+              "order": 0,
+              "model": {
+                "model_id": "learned-denoise",
+                "version": "1.1.0",
+                "weights_blake3": "f95d55c5b95e9f5ad8d225d439f2871d775ccf5c6e5b9517047cc47d64d24b8f",
+                "runtime": "onnxruntime_coreml",
+                "precision": "fp16"
+              },
+              "license_cleared": true,
+              "parameters": { "luma_strength": 0.3, "chroma_strength": 0.5 },
+              "strength": 0.35,
+              "reason": "ISO 400 at dusk; visible chroma noise in the sky gradient"
+            }
+          ],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [
+        {
+          "block_id": "cover-title",
+          "text": "Thailand",
+          "frame": {
+            "x_mm": 24.0,
+            "y_mm": 236.0,
+            "width_mm": 258.0,
+            "height_mm": 34.0,
+            "rotation_deg": 0
+          },
+          "role": "title",
+          "font_family": "Söhne",
+          "font_size_pt": 48.0,
+          "color_hex": "#ffffff",
+          "alignment": "left"
+        }
+      ],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": null,
+        "constraints_satisfied": ["full_bleed_hero", "title_within_safe_margin"],
+        "constraints_relaxed": [],
+        "solver_cost": 0.08
+      }
+    },
+    {
+      "page_index": 1,
+      "spread_id": "spread-01",
+      "side": "left",
+      "section_id": "section-arrival",
+      "background": { "kind": "solid", "color_hex": "#ffffff" },
+      "placements": [
+        {
+          "placement_id": "p1-a",
+          "media_id": "0e91f050fec39c6abc0e4e18fe01dc1c6f42ebae81e2b2b551d61371fad2ee1c",
+          "frame": {
+            "x_mm": 21.0,
+            "y_mm": 24.0,
+            "width_mm": 140.0,
+            "height_mm": 93.0,
+            "rotation_deg": 0
+          },
+          "crop": { "x": 0.0, "y": 0.0833, "w": 1.0, "h": 0.8333, "rotation_deg": 0 },
+          "effective_dpi": 731.5,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": "The road in",
+          "border": null
+        },
+        {
+          "placement_id": "p1-b",
+          "media_id": "d98b239423d217ef98c1572e009f04878002197c96cd9e8c4468fe684e7b73c1",
+          "frame": {
+            "x_mm": 21.0,
+            "y_mm": 129.0,
+            "width_mm": 140.0,
+            "height_mm": 153.0,
+            "rotation_deg": 0
+          },
+          "crop": { "x": 0.1094, "y": 0.0, "w": 0.7813, "h": 1.0, "rotation_deg": 0 },
+          "effective_dpi": 571.3,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 1,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": 18.4,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": { "columns": 1, "rows": 2, "gutter_mm": 12.0 },
+        "constraints_satisfied": [
+          "no_near_duplicates_on_spread",
+          "faces_clear_of_gutter",
+          "dpi_floor_met"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.14
+      }
+    },
+    {
+      "page_index": 2,
+      "spread_id": "spread-01",
+      "side": "right",
+      "section_id": "section-arrival",
+      "background": { "kind": "solid", "color_hex": "#ffffff" },
+      "placements": [
+        {
+          "placement_id": "p2-hero",
+          "media_id": "a632aab3dfd7dc461178d4463adf056ee13a4a1a78dc64bab09ddce623cdfbd5",
+          "frame": {
+            "x_mm": 26.0,
+            "y_mm": 24.0,
+            "width_mm": 259.0,
+            "height_mm": 258.0,
+            "rotation_deg": 0
+          },
+          "crop": { "x": 0.0781, "y": 0.0, "w": 0.8438, "h": 1.0, "rotation_deg": 0 },
+          "effective_dpi": 372.4,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 2,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": 31.7,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [
+            {
+              "op_id": "op-p2-harmonize",
+              "kind": "spread_harmonize",
+              "order": 0,
+              "model": null,
+              "license_cleared": true,
+              "parameters": {},
+              "strength": 0.6,
+              "reason": "facing page is 340K warmer; solved jointly across the spread"
+            }
+          ],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": { "columns": 1, "rows": 1, "gutter_mm": 0.0 },
+        "constraints_satisfied": ["single_hero", "dpi_floor_met"],
+        "constraints_relaxed": ["preferred_dpi_350"],
+        "solver_cost": 0.21
+      }
+    }
+  ],
+  "selection": {
+    "candidate_count": 412,
+    "selected_count": 4,
+    "diversity_constraints": [
+      { "constraint": "no_near_duplicates_on_spread", "satisfied": true, "detail": "" },
+      {
+        "constraint": "people_scenery_detail_balance",
+        "satisfied": true,
+        "detail": "2 people / 1 scenery / 1 detail in section-arrival"
+      },
+      { "constraint": "chronological_within_section", "satisfied": true, "detail": "" },
+      { "constraint": "min_hero_quality", "satisfied": true, "detail": "heroes above 0.72 aesthetic" }
+    ],
+    "rejected": [
+      {
+        "media_id": "4086a6f2bc6cc368bbcdf98be7ce7cf39b8b1ddb5ebd3e26d91e86fb56bba93c",
+        "reason": "dpi_too_low"
+      },
+      {
+        "media_id": "4441146b0fe1d5c6845af126ba5ce6003ea77d6b4cb04d14114f86a925c5dbca",
+        "reason": "excluded_content"
+      }
+    ]
+  },
+  "spread_harmony": {
+    "enabled": true,
+    "spreads": [
+      {
+        "spread_id": "spread-01",
+        "target_temperature_k": 5400.0,
+        "target_exposure_ev": 0.0,
+        "adjustments": [
+          {
+            "placement_id": "p1-a",
+            "exposure_ev_delta": -0.12,
+            "temperature_k_delta": -180.0,
+            "tint_delta": 0.0,
+            "saturation_delta": -0.03
+          },
+          {
+            "placement_id": "p1-b",
+            "exposure_ev_delta": 0.05,
+            "temperature_k_delta": -60.0,
+            "tint_delta": 0.01,
+            "saturation_delta": 0.0
+          },
+          {
+            "placement_id": "p2-hero",
+            "exposure_ev_delta": 0.08,
+            "temperature_k_delta": 160.0,
+            "tint_delta": -0.01,
+            "saturation_delta": 0.02
+          }
+        ]
+      }
+    ]
+  },
+  "determinism": {
+    "planner": "album-planner",
+    "planner_version": "1.0.0",
+    "seed": 20260317,
+    "inputs_digest": "55aaa597202f0ef821bdf84c6132c7404ca208c917bc02fcbcd0b91e3b8d4ed4",
+    "generated_at": "2026-03-17T14:22:08+05:30"
+  },
+  "validation": {
+    "status": "pass",
+    "checks": [
+      {
+        "check_id": "dpi_floor",
+        "severity": "error",
+        "passed": true,
+        "page_index": 2,
+        "placement_id": "p2-hero",
+        "measured_value": 372.4,
+        "required_value": 300.0,
+        "detail": "lowest effective DPI across 4 placements",
+        "remediation": null
+      },
+      {
+        "check_id": "face_in_trim_zone",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": 18.4,
+        "required_value": 8.0,
+        "detail": "closest face sits 18.4mm inside the trim line",
+        "remediation": null
+      },
+      {
+        "check_id": "face_in_gutter",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": 0.0,
+        "required_value": 0.0,
+        "detail": "no faces within the 10mm gutter",
+        "remediation": null
+      },
+      {
+        "check_id": "bleed_coverage",
+        "severity": "error",
+        "passed": true,
+        "page_index": 0,
+        "placement_id": "cover-hero",
+        "measured_value": 3.0,
+        "required_value": 3.0,
+        "detail": "full-bleed cover extends 3mm past trim on all four edges",
+        "remediation": null
+      },
+      {
+        "check_id": "color_profile_match",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "FOGRA39 Coated embedded, matches vendor profile 2026.1",
+        "remediation": null
+      },
+      {
+        "check_id": "crop_aspect_matches_frame",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "4 placements within 0.5% aspect tolerance",
+        "remediation": null
+      },
+      {
+        "check_id": "placement_within_page",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "",
+        "remediation": null
+      },
+      {
+        "check_id": "no_duplicate_on_spread",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "",
+        "remediation": null
+      },
+      {
+        "check_id": "text_within_safe_margin",
+        "severity": "error",
+        "passed": true,
+        "page_index": 0,
+        "placement_id": null,
+        "measured_value": 21.0,
+        "required_value": 8.0,
+        "detail": "cover title inset 21mm from trim",
+        "remediation": null
+      },
+      {
+        "check_id": "enhancement_license_cleared",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "2 ops, both cleared for commercial use",
+        "remediation": null
+      },
+      {
+        "check_id": "source_media_available",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "4 sources resolved by content hash",
+        "remediation": null
+      },
+      {
+        "check_id": "page_count_valid",
+        "severity": "warning",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": 3.0,
+        "required_value": 20.0,
+        "detail": "fixture album; a real export pads to the 20-page minimum in increments of 2",
+        "remediation": "add filler spreads before export"
+      },
+      {
+        "check_id": "pdf_standard_supported",
+        "severity": "info",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "PDF/X-4",
+        "remediation": null
+      }
+    ],
+    "validated_at": "2026-03-17T14:22:11+05:30",
+    "validator_version": "print-validator/1.0.0",
+    "error_count": 0,
+    "warning_count": 0
+  },
+  "review": {
+    "status": "issues_fixed",
+    "model": {
+      "model_id": "frontier-multimodal",
+      "version": "2026-02",
+      "weights_blake3": "93e2abe19030b118a176b0bca42fb173a34eb175c32903a1cec731a1f02fd659",
+      "runtime": null,
+      "precision": null
+    },
+    "consent": {
+      "ledger_entry_id": "c47a1e93-8b25-4f60-9d31-6e02a7b5c8f4",
+      "scope": "tier3_contact_sheet",
+      "granted_at": "2026-03-17T14:20:02+05:30",
+      "expires_at": null,
+      "revoked_at": null
+    },
+    "prompt_id": "album-spread-review-v2",
+    "iterations": 2,
+    "findings": [
+      {
+        "finding_id": "find-01",
+        "kind": "exposure_mismatch",
+        "severity": "warning",
+        "spread_id": "spread-01",
+        "placement_ids": ["p1-a", "p2-hero"],
+        "comment": "Left page reads noticeably cooler than the facing hero.",
+        "resolved": true,
+        "resolution": "harmonized"
+      },
+      {
+        "finding_id": "find-02",
+        "kind": "awkward_crop",
+        "severity": "warning",
+        "spread_id": "spread-01",
+        "placement_ids": ["p1-b"],
+        "comment": "Original crop clipped the subject's elbow at the frame edge.",
+        "resolved": true,
+        "resolution": "recropped"
+      }
+    ]
+  }
+}

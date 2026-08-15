@@ -1,0 +1,28 @@
+{
+  "schema_version": "v0",
+  "face_id": "1da86dd7b40f080e8b10a742b6669b7eb80a91274e2190301157f7aa7fca4f80",
+  "media_id": "4086a6f2bc6cc368bbcdf98be7ce7cf39b8b1ddb5ebd3e26d91e86fb56bba93c",
+  "frame_time": null,
+  "detection": {
+    "bbox": { "x": 0.6188, "y": 0.2417, "w": 0.0475, "h": 0.0708 },
+    "detection_score": 0.8134,
+    "detector": {
+      "model_id": "scrfd-10g-bnkps",
+      "version": "1.0.0",
+      "weights_blake3": "c450fc2acdb89952121a46dc9afb23f0bbfe2d875be8accaf1edb2eb69749330"
+    },
+    "detected_on": "thumbnail_512",
+    "face_area_ratio": 0.0034
+  },
+  "identity": {
+    "person_id": "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03",
+    "assignment": "auto_below_threshold",
+    "confidence": 0.7418,
+    "threshold_profile": "automated_output",
+    "threshold_used": 0.92,
+    "eligible_for_automated_output": true,
+    "review_reason": "below_threshold",
+    "decided_by": "model"
+  },
+  "sensitive": { "minor_status": "unknown" }
+}

@@ -1,0 +1,108 @@
+{
+  "schema_version": "v0",
+  "event_id": "f1c07a53-6d28-4e91-b504-8a3f7e2c9b16",
+  "occurred_at": "2026-03-16T20:11:37+05:30",
+  "decision": {
+    "kind": "variant_picked",
+    "surface": "variant_picker",
+    "explicit": true,
+    "confidence": null,
+    "reversed_at": null
+  },
+  "subject": {
+    "subject_type": "edl_variant",
+    "subject_id": "ba5a48c7442b26d6e170f74b497de7257652982e5b4bfd2deab6fefa244bfb5e",
+    "alternatives": [
+      {
+        "subject_id": "ba5a48c7442b26d6e170f74b497de7257652982e5b4bfd2deab6fefa244bfb5e",
+        "chosen": true,
+        "presented_rank": 1,
+        "presented_score": 0.81,
+        "feature_vector": {
+          "feature_set_id": "reel-features-v1",
+          "values": [0.91, 0.72, 0.88, 0.34, 0.97, 0.62, 0.15, 1.875]
+        }
+      },
+      {
+        "subject_id": "42cd6ba33183718575cd697f2890939b4c35189939a31429a53165064872dcd3",
+        "chosen": false,
+        "presented_rank": 0,
+        "presented_score": 0.86,
+        "feature_vector": {
+          "feature_set_id": "reel-features-v1",
+          "values": [0.88, 0.55, 0.71, 0.29, 0.83, 0.44, 0.22, 2.5]
+        }
+      },
+      {
+        "subject_id": "0d14f2503ec754d282a1868b12b7c3bedb33e3f703ec65b5187cecd886984f4b",
+        "chosen": false,
+        "presented_rank": 2,
+        "presented_score": 0.74,
+        "feature_vector": {
+          "feature_set_id": "reel-features-v1",
+          "values": [0.79, 0.81, 0.62, 0.41, 0.7, 0.71, 0.09, 1.5]
+        }
+      }
+    ],
+    "parent_id": "project:reel-ridge-15s"
+  },
+  "context": {
+    "task": "reel",
+    "project_id": "5e8c1b04-7a29-4d36-9f81-2b6e04a7c3d5",
+    "session_id": "a92f6c31-4e07-4b85-8d13-7c05e2a9b416",
+    "candidate_set_size": 3,
+    "presented_count": 3,
+    "subject_presented_rank": 1,
+    "deliberation_ms": 21400.0,
+    "position_in_session": 12,
+    "ranker_version": "ranker-v1.0.0",
+    "fusion_weights_version": "fusion-v1.2.0",
+    "device_class": "desktop"
+  },
+  "features": {
+    "feature_set_id": "reel-features-v1",
+    "named": {
+      "peak_moment_score": 0.91,
+      "mean_moment_score": 0.72,
+      "hook_strength": 0.88,
+      "speech_ratio": 0.34,
+      "max_motion_energy": 0.97,
+      "novelty_mean": 0.62,
+      "beat_error_mean_ms": 0.15,
+      "mean_clip_duration_s": 1.875
+    },
+    "dense": {
+      "feature_set_id": "reel-features-v1",
+      "values": [0.91, 0.72, 0.88, 0.34, 0.97, 0.62, 0.15, 1.875]
+    },
+    "embeddings": [
+      {
+        "space": "siglip2_so400m_1152",
+        "dimensions": 1152,
+        "storage": "index",
+        "index_key": "vec:moment:b8a3f2ac:siglip2_so400m_1152",
+        "quantization": "float16",
+        "normalized": true
+      }
+    ],
+    "scores_at_decision": {
+      "overall": 0.81,
+      "narrative_coherence": 0.87,
+      "pacing": 0.79
+    },
+    "person_context": {
+      "confirmed_person_count": 1,
+      "includes_priority_person": true,
+      "person_ids": ["3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03"]
+    }
+  },
+  "delta": null,
+  "privacy": {
+    "user_pseudonym": "fb0f34a1205c83df7fd3d76e0d4d22fa6e241f8d48f7c9ce043e40d094b7da0f",
+    "shareable_for_global_model": false,
+    "consent": null,
+    "contains_local_identifiers": true,
+    "anonymization_version": null
+  },
+  "pixel_data_present": false
+}

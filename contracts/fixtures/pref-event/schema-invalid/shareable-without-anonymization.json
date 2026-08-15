@@ -1,0 +1,37 @@
+{
+  "schema_version": "v0",
+  "event_id": "2d7b91e4-5a06-4c38-9e72-1f4a8c05b3d9",
+  "occurred_at": "2026-03-17T14:31:09+05:30",
+  "decision": {
+    "kind": "recropped",
+    "surface": "spread_editor",
+    "explicit": true
+  },
+  "subject": {
+    "subject_type": "placement",
+    "subject_id": "p1-b",
+    "alternatives": []
+  },
+  "context": { "task": "album" },
+  "features": {
+    "feature_set_id": "placement-features-v1",
+    "named": { "aesthetic": 0.74 },
+    "person_context": {
+      "confirmed_person_count": 1,
+      "includes_priority_person": true,
+      "person_ids": ["3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03"]
+    }
+  },
+  "privacy": {
+    "user_pseudonym": "fb0f34a1205c83df7fd3d76e0d4d22fa6e241f8d48f7c9ce043e40d094b7da0f",
+    "shareable_for_global_model": true,
+    "consent": {
+      "ledger_entry_id": "e0349d17-6b82-4a95-bc31-58f2e7a04c6b",
+      "scope": "anonymized_preference_training",
+      "granted_at": "2026-02-01T10:14:33+05:30"
+    },
+    "contains_local_identifiers": true,
+    "anonymization_version": null
+  },
+  "pixel_data_present": false
+}

@@ -1,0 +1,8 @@
+# Generated code is formatted by its generator, not by rustfmt.
+#
+# CI runs `cargo fmt --check` across every crate it finds. Letting rustfmt also
+# have an opinion about this file would make the build fail whenever the two
+# disagree about a line break -- a diff no human authored and no human can fix
+# at the source. The generator owns the formatting; this turns rustfmt off for
+# this crate only.
+disable_all_formatting = true

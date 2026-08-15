@@ -1,0 +1,2002 @@
+{
+  "schema_version": "v0",
+  "edl_id": "ba5a48c7442b26d6e170f74b497de7257652982e5b4bfd2deab6fefa244bfb5e",
+  "name": "Uttarakhand ridge ride - 15s",
+  "kind": "reel",
+  "rate": 59.94005994005994,
+  "global_start_time": {
+    "value": 0,
+    "rate": 59.94005994005994
+  },
+  "target": {
+    "destination": "instagram_reel",
+    "resolution": {
+      "width": 1080,
+      "height": 1920
+    },
+    "aspect_ratio": {
+      "numerator": 9,
+      "denominator": 16
+    },
+    "target_duration": {
+      "value": 899,
+      "rate": 59.94005994005994
+    },
+    "max_duration": {
+      "value": 5395,
+      "rate": 59.94005994005994
+    },
+    "loudness_target_lufs": -14.0
+  },
+  "media_refs": [
+    {
+      "media_ref_id": "src-ride",
+      "media_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
+      "media_kind": "video",
+      "available_range": {
+        "start_time": {
+          "value": 3025080,
+          "rate": 59.94005994005994
+        },
+        "duration": {
+          "value": 61593,
+          "rate": 59.94005994005994
+        }
+      },
+      "is_span_assembly": true,
+      "expected_frame_rate": 59.94005994005994,
+      "label": "GH01/GH02 1234 (assembled)"
+    },
+    {
+      "media_ref_id": "src-music",
+      "media_id": "22fbf421bb5540190572a9439a138fc77ad8c3c13b3a87be34f96a965da222ce",
+      "media_kind": "music",
+      "available_range": {
+        "start_time": {
+          "value": 0,
+          "rate": 59.94005994005994
+        },
+        "duration": {
+          "value": 9590,
+          "rate": 59.94005994005994
+        }
+      },
+      "is_span_assembly": false,
+      "expected_frame_rate": null,
+      "label": "Ridgeline (instrumental)"
+    }
+  ],
+  "tracks": [
+    {
+      "track_id": "v1",
+      "kind": "video",
+      "name": "V1",
+      "role": "primary",
+      "enabled": true,
+      "items": [
+        {
+          "item_type": "clip",
+          "clip_id": "clip-01",
+          "name": "hook: drop-in",
+          "media_ref_id": "src-ride",
+          "source_range": {
+            "start_time": {
+              "value": 3049200,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 112,
+              "rate": 59.94005994005994
+            }
+          },
+          "timeline_range": {
+            "start_time": {
+              "value": 0,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 112,
+              "rate": 59.94005994005994
+            }
+          },
+          "moment_id": null,
+          "enabled": true,
+          "time_effect": null,
+          "reframe_track_id": "reframe-clip-01",
+          "color_ops": [],
+          "audio": {
+            "gain_db": -14.0,
+            "muted": false,
+            "fade_in": null,
+            "fade_out": null,
+            "audio_extends_past_out": null
+          },
+          "beat_lock": {
+            "beat_index": 0,
+            "is_downbeat": true,
+            "alignment_error_ms": 0.0,
+            "snap_point_kind": "shot_boundary"
+          },
+          "story_beat_id": "beat-hook-open",
+          "markers": []
+        },
+        {
+          "item_type": "clip",
+          "clip_id": "clip-02",
+          "name": "trail entry",
+          "media_ref_id": "src-ride",
+          "source_range": {
+            "start_time": {
+              "value": 3031860,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 113,
+              "rate": 59.94005994005994
+            }
+          },
+          "timeline_range": {
+            "start_time": {
+              "value": 112,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 113,
+              "rate": 59.94005994005994
+            }
+          },
+          "moment_id": null,
+          "enabled": true,
+          "time_effect": null,
+          "reframe_track_id": "reframe-clip-02",
+          "color_ops": [],
+          "audio": {
+            "gain_db": -14.0,
+            "muted": false,
+            "fade_in": null,
+            "fade_out": null,
+            "audio_extends_past_out": null
+          },
+          "beat_lock": {
+            "beat_index": 4,
+            "is_downbeat": true,
+            "alignment_error_ms": -6.4667,
+            "snap_point_kind": "motion_onset"
+          },
+          "story_beat_id": "beat-build-place",
+          "markers": []
+        },
+        {
+          "item_type": "clip",
+          "clip_id": "clip-03",
+          "name": "berm carve",
+          "media_ref_id": "src-ride",
+          "source_range": {
+            "start_time": {
+              "value": 3055440,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 112,
+              "rate": 59.94005994005994
+            }
+          },
+          "timeline_range": {
+            "start_time": {
+              "value": 225,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 112,
+              "rate": 59.94005994005994
+            }
+          },
+          "moment_id": null,
+          "enabled": true,
+          "time_effect": null,
+          "reframe_track_id": "reframe-clip-03",
+          "color_ops": [],
+          "audio": {
+            "gain_db": -14.0,
+            "muted": false,
+            "fade_in": null,
+            "fade_out": null,
+            "audio_extends_past_out": null
+          },
+          "beat_lock": {
+            "beat_index": 8,
+            "is_downbeat": true,
+            "alignment_error_ms": 3.75,
+            "snap_point_kind": "motion_onset"
+          },
+          "story_beat_id": "beat-build-motion",
+          "markers": []
+        },
+        {
+          "item_type": "clip",
+          "clip_id": "clip-04",
+          "name": "root section",
+          "media_ref_id": "src-ride",
+          "source_range": {
+            "start_time": {
+              "value": 3038700,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 113,
+              "rate": 59.94005994005994
+            }
+          },
+          "timeline_range": {
+            "start_time": {
+              "value": 337,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 113,
+              "rate": 59.94005994005994
+            }
+          },
+          "moment_id": null,
+          "enabled": true,
+          "time_effect": null,
+          "reframe_track_id": "reframe-clip-04",
+          "color_ops": [],
+          "audio": {
+            "gain_db": -14.0,
+            "muted": false,
+            "fade_in": null,
+            "fade_out": null,
+            "audio_extends_past_out": null
+          },
+          "beat_lock": {
+            "beat_index": 12,
+            "is_downbeat": true,
+            "alignment_error_ms": -2.7167,
+            "snap_point_kind": "motion_onset"
+          },
+          "story_beat_id": null,
+          "markers": []
+        },
+        {
+          "item_type": "clip",
+          "clip_id": "clip-05",
+          "name": "the gap jump",
+          "media_ref_id": "src-ride",
+          "source_range": {
+            "start_time": {
+              "value": 3062100,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 112,
+              "rate": 59.94005994005994
+            }
+          },
+          "timeline_range": {
+            "start_time": {
+              "value": 450,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 112,
+              "rate": 59.94005994005994
+            }
+          },
+          "moment_id": null,
+          "enabled": true,
+          "time_effect": {
+            "kind": "linear_speed",
+            "time_scalar": 0.5,
+            "freeze_at": null,
+            "audio_handling": "mute"
+          },
+          "reframe_track_id": "reframe-clip-05",
+          "color_ops": [],
+          "audio": {
+            "gain_db": -14.0,
+            "muted": false,
+            "fade_in": null,
+            "fade_out": null,
+            "audio_extends_past_out": null
+          },
+          "beat_lock": {
+            "beat_index": 16,
+            "is_downbeat": true,
+            "alignment_error_ms": 7.5,
+            "snap_point_kind": "motion_onset"
+          },
+          "story_beat_id": "beat-peak-airtime",
+          "markers": [
+            {
+              "name": "emotional peak",
+              "marked_range": {
+                "start_time": {
+                  "value": 450,
+                  "rate": 59.94005994005994
+                },
+                "duration": {
+                  "value": 112,
+                  "rate": 59.94005994005994
+                }
+              },
+              "color": "MAGENTA",
+              "kind": "emotional_peak",
+              "comment": "airtime; Tier 3 flagged this as the moment the reel is about"
+            }
+          ]
+        },
+        {
+          "item_type": "clip",
+          "clip_id": "clip-06",
+          "name": "landing",
+          "media_ref_id": "src-ride",
+          "source_range": {
+            "start_time": {
+              "value": 3044160,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 112,
+              "rate": 59.94005994005994
+            }
+          },
+          "timeline_range": {
+            "start_time": {
+              "value": 562,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 112,
+              "rate": 59.94005994005994
+            }
+          },
+          "moment_id": null,
+          "enabled": true,
+          "time_effect": null,
+          "reframe_track_id": "reframe-clip-06",
+          "color_ops": [],
+          "audio": {
+            "gain_db": -14.0,
+            "muted": false,
+            "fade_in": null,
+            "fade_out": null,
+            "audio_extends_past_out": null
+          },
+          "beat_lock": {
+            "beat_index": 20,
+            "is_downbeat": true,
+            "alignment_error_ms": 1.0333,
+            "snap_point_kind": "motion_onset"
+          },
+          "story_beat_id": "beat-peak-airtime",
+          "markers": []
+        },
+        {
+          "item_type": "clip",
+          "clip_id": "clip-07",
+          "name": "rider reaction",
+          "media_ref_id": "src-ride",
+          "source_range": {
+            "start_time": {
+              "value": 3068400,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 113,
+              "rate": 59.94005994005994
+            }
+          },
+          "timeline_range": {
+            "start_time": {
+              "value": 674,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 113,
+              "rate": 59.94005994005994
+            }
+          },
+          "moment_id": null,
+          "enabled": true,
+          "time_effect": null,
+          "reframe_track_id": "reframe-clip-07",
+          "color_ops": [
+            {
+              "op": "exposure",
+              "amount": 0.12,
+              "lut_id": null,
+              "reference_clip_id": null
+            },
+            {
+              "op": "match_to_reference",
+              "amount": 0.4,
+              "lut_id": null,
+              "reference_clip_id": "clip-05"
+            }
+          ],
+          "audio": {
+            "gain_db": -14.0,
+            "muted": false,
+            "fade_in": null,
+            "fade_out": null,
+            "audio_extends_past_out": {
+              "value": 18,
+              "rate": 59.94005994005994
+            }
+          },
+          "beat_lock": {
+            "beat_index": 24,
+            "is_downbeat": true,
+            "alignment_error_ms": -5.4333,
+            "snap_point_kind": "motion_onset"
+          },
+          "story_beat_id": "beat-peak-face",
+          "markers": []
+        },
+        {
+          "item_type": "transition",
+          "transition_id": "xfade-peak-to-button",
+          "transition_type": "dissolve",
+          "in_offset": {
+            "value": 6,
+            "rate": 59.94005994005994
+          },
+          "out_offset": {
+            "value": 6,
+            "rate": 59.94005994005994
+          },
+          "easing": "ease_in_out",
+          "parameters": {}
+        },
+        {
+          "item_type": "clip",
+          "clip_id": "clip-08",
+          "name": "ridgeline out",
+          "media_ref_id": "src-ride",
+          "source_range": {
+            "start_time": {
+              "value": 3033900,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 112,
+              "rate": 59.94005994005994
+            }
+          },
+          "timeline_range": {
+            "start_time": {
+              "value": 787,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 112,
+              "rate": 59.94005994005994
+            }
+          },
+          "moment_id": null,
+          "enabled": true,
+          "time_effect": null,
+          "reframe_track_id": "reframe-clip-08",
+          "color_ops": [],
+          "audio": {
+            "gain_db": -14.0,
+            "muted": false,
+            "fade_in": null,
+            "fade_out": null,
+            "audio_extends_past_out": null
+          },
+          "beat_lock": {
+            "beat_index": 28,
+            "is_downbeat": true,
+            "alignment_error_ms": 4.7833,
+            "snap_point_kind": "motion_onset"
+          },
+          "story_beat_id": "beat-button-close",
+          "markers": []
+        }
+      ]
+    },
+    {
+      "track_id": "a1",
+      "kind": "audio",
+      "name": "A1 ambient",
+      "role": "ambient",
+      "enabled": true,
+      "items": [
+        {
+          "item_type": "gap",
+          "gap_id": "ambient-handled-on-video-track",
+          "duration": {
+            "value": 899,
+            "rate": 59.94005994005994
+          },
+          "fill": "silence"
+        }
+      ]
+    },
+    {
+      "track_id": "a2",
+      "kind": "audio",
+      "name": "A2 music",
+      "role": "music",
+      "enabled": true,
+      "items": [
+        {
+          "item_type": "clip",
+          "clip_id": "music-01",
+          "name": "Ridgeline",
+          "media_ref_id": "src-music",
+          "source_range": {
+            "start_time": {
+              "value": 1798,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 899,
+              "rate": 59.94005994005994
+            }
+          },
+          "timeline_range": {
+            "start_time": {
+              "value": 0,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 899,
+              "rate": 59.94005994005994
+            }
+          },
+          "moment_id": null,
+          "enabled": true,
+          "time_effect": null,
+          "reframe_track_id": null,
+          "color_ops": [],
+          "audio": {
+            "gain_db": 0.0,
+            "muted": false,
+            "fade_in": {
+              "value": 12,
+              "rate": 59.94005994005994
+            },
+            "fade_out": {
+              "value": 36,
+              "rate": 59.94005994005994
+            },
+            "audio_extends_past_out": null
+          },
+          "beat_lock": null,
+          "story_beat_id": null,
+          "markers": []
+        }
+      ]
+    }
+  ],
+  "reframe_tracks": [
+    {
+      "reframe_track_id": "reframe-clip-01",
+      "target_aspect_ratio": {
+        "numerator": 9,
+        "denominator": 16
+      },
+      "keyframes": [
+        {
+          "time": {
+            "value": 3049200,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.312,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3049256,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3402,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3049312,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3689,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "hold",
+          "bezier_control": null,
+          "confidence": 0.94
+        }
+      ],
+      "subject_lock": {
+        "source": "sam2_track",
+        "subject_ref": "sam2-obj-01",
+        "person_id": "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03",
+        "keep_in_frame": "full_body",
+        "headroom": 0.12
+      },
+      "smoothing": {
+        "method": "savitzky_golay",
+        "window_frames": 31,
+        "max_velocity_per_second": 0.35,
+        "deadzone": 0.015
+      },
+      "fallback": "saliency_crop"
+    },
+    {
+      "reframe_track_id": "reframe-clip-02",
+      "target_aspect_ratio": {
+        "numerator": 9,
+        "denominator": 16
+      },
+      "keyframes": [
+        {
+          "time": {
+            "value": 3031860,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.4015,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3031916,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3788,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3031973,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3401,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "hold",
+          "bezier_control": null,
+          "confidence": 0.94
+        }
+      ],
+      "subject_lock": {
+        "source": "sam2_track",
+        "subject_ref": "sam2-obj-02",
+        "person_id": "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03",
+        "keep_in_frame": "full_body",
+        "headroom": 0.12
+      },
+      "smoothing": {
+        "method": "savitzky_golay",
+        "window_frames": 31,
+        "max_velocity_per_second": 0.35,
+        "deadzone": 0.015
+      },
+      "fallback": "saliency_crop"
+    },
+    {
+      "reframe_track_id": "reframe-clip-03",
+      "target_aspect_ratio": {
+        "numerator": 9,
+        "denominator": 16
+      },
+      "keyframes": [
+        {
+          "time": {
+            "value": 3055440,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.2874,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3055496,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.331,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3055552,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.4102,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "hold",
+          "bezier_control": null,
+          "confidence": 0.94
+        }
+      ],
+      "subject_lock": {
+        "source": "sam2_track",
+        "subject_ref": "sam2-obj-03",
+        "person_id": "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03",
+        "keep_in_frame": "full_body",
+        "headroom": 0.12
+      },
+      "smoothing": {
+        "method": "savitzky_golay",
+        "window_frames": 31,
+        "max_velocity_per_second": 0.35,
+        "deadzone": 0.015
+      },
+      "fallback": "saliency_crop"
+    },
+    {
+      "reframe_track_id": "reframe-clip-04",
+      "target_aspect_ratio": {
+        "numerator": 9,
+        "denominator": 16
+      },
+      "keyframes": [
+        {
+          "time": {
+            "value": 3038700,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.399,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3038756,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3612,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3038813,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3388,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "hold",
+          "bezier_control": null,
+          "confidence": 0.94
+        }
+      ],
+      "subject_lock": {
+        "source": "sam2_track",
+        "subject_ref": "sam2-obj-04",
+        "person_id": "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03",
+        "keep_in_frame": "full_body",
+        "headroom": 0.12
+      },
+      "smoothing": {
+        "method": "savitzky_golay",
+        "window_frames": 31,
+        "max_velocity_per_second": 0.35,
+        "deadzone": 0.015
+      },
+      "fallback": "saliency_crop"
+    },
+    {
+      "reframe_track_id": "reframe-clip-05",
+      "target_aspect_ratio": {
+        "numerator": 9,
+        "denominator": 16
+      },
+      "keyframes": [
+        {
+          "time": {
+            "value": 3062100,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.2601,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.87
+        },
+        {
+          "time": {
+            "value": 3062139,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3204,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.87
+        },
+        {
+          "time": {
+            "value": 3062178,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.4188,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.87
+        },
+        {
+          "time": {
+            "value": 3062212,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.4602,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "hold",
+          "bezier_control": null,
+          "confidence": 0.87
+        }
+      ],
+      "subject_lock": {
+        "source": "sam2_track",
+        "subject_ref": "sam2-obj-05",
+        "person_id": "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03",
+        "keep_in_frame": "full_body",
+        "headroom": 0.12
+      },
+      "smoothing": {
+        "method": "savitzky_golay",
+        "window_frames": 31,
+        "max_velocity_per_second": 0.35,
+        "deadzone": 0.015
+      },
+      "fallback": "saliency_crop"
+    },
+    {
+      "reframe_track_id": "reframe-clip-06",
+      "target_aspect_ratio": {
+        "numerator": 9,
+        "denominator": 16
+      },
+      "keyframes": [
+        {
+          "time": {
+            "value": 3044160,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.441,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3044216,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3903,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3044272,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3502,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "hold",
+          "bezier_control": null,
+          "confidence": 0.94
+        }
+      ],
+      "subject_lock": {
+        "source": "sam2_track",
+        "subject_ref": "sam2-obj-06",
+        "person_id": "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03",
+        "keep_in_frame": "full_body",
+        "headroom": 0.12
+      },
+      "smoothing": {
+        "method": "savitzky_golay",
+        "window_frames": 31,
+        "max_velocity_per_second": 0.35,
+        "deadzone": 0.015
+      },
+      "fallback": "saliency_crop"
+    },
+    {
+      "reframe_track_id": "reframe-clip-07",
+      "target_aspect_ratio": {
+        "numerator": 9,
+        "denominator": 16
+      },
+      "keyframes": [
+        {
+          "time": {
+            "value": 3068400,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3301,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3068456,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3418,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3068513,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3502,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "hold",
+          "bezier_control": null,
+          "confidence": 0.94
+        }
+      ],
+      "subject_lock": {
+        "source": "sam2_track",
+        "subject_ref": "sam2-obj-07",
+        "person_id": "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03",
+        "keep_in_frame": "full_body",
+        "headroom": 0.12
+      },
+      "smoothing": {
+        "method": "savitzky_golay",
+        "window_frames": 31,
+        "max_velocity_per_second": 0.35,
+        "deadzone": 0.015
+      },
+      "fallback": "saliency_crop"
+    },
+    {
+      "reframe_track_id": "reframe-clip-08",
+      "target_aspect_ratio": {
+        "numerator": 9,
+        "denominator": 16
+      },
+      "keyframes": [
+        {
+          "time": {
+            "value": 3033900,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.36,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3033956,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3418,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "smooth",
+          "bezier_control": null,
+          "confidence": 0.94
+        },
+        {
+          "time": {
+            "value": 3034012,
+            "rate": 59.94005994005994
+          },
+          "crop": {
+            "x": 0.3201,
+            "y": 0.0,
+            "w": 0.31640625,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "interpolation": "hold",
+          "bezier_control": null,
+          "confidence": 0.94
+        }
+      ],
+      "subject_lock": {
+        "source": "sam2_track",
+        "subject_ref": "sam2-obj-08",
+        "person_id": "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03",
+        "keep_in_frame": "full_body",
+        "headroom": 0.12
+      },
+      "smoothing": {
+        "method": "savitzky_golay",
+        "window_frames": 31,
+        "max_velocity_per_second": 0.35,
+        "deadzone": 0.015
+      },
+      "fallback": "saliency_crop"
+    }
+  ],
+  "audio_plan": {
+    "music": [
+      {
+        "cue_id": "cue-01",
+        "media_ref_id": "src-music",
+        "source_range": {
+          "start_time": {
+            "value": 1798,
+            "rate": 59.94005994005994
+          },
+          "duration": {
+            "value": 899,
+            "rate": 59.94005994005994
+          }
+        },
+        "timeline_range": {
+          "start_time": {
+            "value": 0,
+            "rate": 59.94005994005994
+          },
+          "duration": {
+            "value": 899,
+            "rate": 59.94005994005994
+          }
+        },
+        "license": {
+          "provider": "catalog_partner",
+          "license_id": "CAT-2026-004182",
+          "track_title": "Ridgeline (instrumental)",
+          "attribution_required": false,
+          "attribution_text": null,
+          "license_type": "royalty_free",
+          "cleared_for": [
+            "private_playback",
+            "social_share",
+            "commercial_use"
+          ]
+        },
+        "gain_db": 0.0,
+        "fade_in": {
+          "value": 12,
+          "rate": 59.94005994005994
+        },
+        "fade_out": {
+          "value": 36,
+          "rate": 59.94005994005994
+        },
+        "loop": false
+      }
+    ],
+    "ambient": {
+      "enabled": true,
+      "default_gain_db": -14.0,
+      "preserve_speech": true,
+      "high_pass_hz": 120.0,
+      "noise_suppression": "moderate",
+      "per_clip_gain_db": [
+        {
+          "clip_id": "clip-05",
+          "gain_db": -60.0
+        },
+        {
+          "clip_id": "clip-07",
+          "gain_db": -6.0
+        }
+      ]
+    },
+    "ducking": [
+      {
+        "rule_id": "duck-music-under-reaction",
+        "target": "music",
+        "trigger": "explicit_ranges",
+        "reduction_db": 9.0,
+        "threshold_db": null,
+        "ratio": null,
+        "attack_ms": 60.0,
+        "release_ms": 320.0,
+        "ranges": [
+          {
+            "start_time": {
+              "value": 674,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 113,
+              "rate": 59.94005994005994
+            }
+          }
+        ]
+      }
+    ],
+    "mix": {
+      "master_gain_db": 0.0,
+      "loudness_target_lufs": -14.0,
+      "true_peak_ceiling_db": -1.0,
+      "limiter": true,
+      "channels": "stereo",
+      "sample_rate": 48000
+    }
+  },
+  "beat_grid": {
+    "source_cue_id": "cue-01",
+    "bpm": 128.0,
+    "bpm_confidence": 0.97,
+    "time_signature": {
+      "beats_per_bar": 4,
+      "beat_unit": 4
+    },
+    "beats": [
+      {
+        "index": 0,
+        "time": {
+          "value": 0.0,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": true,
+        "bar": 0,
+        "beat_in_bar": 1,
+        "strength": 0.95,
+        "section": "intro"
+      },
+      {
+        "index": 1,
+        "time": {
+          "value": 28.096903,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 0,
+        "beat_in_bar": 2,
+        "strength": 0.62,
+        "section": "intro"
+      },
+      {
+        "index": 2,
+        "time": {
+          "value": 56.193806,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 0,
+        "beat_in_bar": 3,
+        "strength": 0.62,
+        "section": "intro"
+      },
+      {
+        "index": 3,
+        "time": {
+          "value": 84.290709,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 0,
+        "beat_in_bar": 4,
+        "strength": 0.62,
+        "section": "intro"
+      },
+      {
+        "index": 4,
+        "time": {
+          "value": 112.387612,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": true,
+        "bar": 1,
+        "beat_in_bar": 1,
+        "strength": 0.95,
+        "section": "verse"
+      },
+      {
+        "index": 5,
+        "time": {
+          "value": 140.484515,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 1,
+        "beat_in_bar": 2,
+        "strength": 0.62,
+        "section": "verse"
+      },
+      {
+        "index": 6,
+        "time": {
+          "value": 168.581419,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 1,
+        "beat_in_bar": 3,
+        "strength": 0.62,
+        "section": "verse"
+      },
+      {
+        "index": 7,
+        "time": {
+          "value": 196.678322,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 1,
+        "beat_in_bar": 4,
+        "strength": 0.62,
+        "section": "verse"
+      },
+      {
+        "index": 8,
+        "time": {
+          "value": 224.775225,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": true,
+        "bar": 2,
+        "beat_in_bar": 1,
+        "strength": 0.95,
+        "section": "verse"
+      },
+      {
+        "index": 9,
+        "time": {
+          "value": 252.872128,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 2,
+        "beat_in_bar": 2,
+        "strength": 0.62,
+        "section": "verse"
+      },
+      {
+        "index": 10,
+        "time": {
+          "value": 280.969031,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 2,
+        "beat_in_bar": 3,
+        "strength": 0.62,
+        "section": "verse"
+      },
+      {
+        "index": 11,
+        "time": {
+          "value": 309.065934,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 2,
+        "beat_in_bar": 4,
+        "strength": 0.62,
+        "section": "verse"
+      },
+      {
+        "index": 12,
+        "time": {
+          "value": 337.162837,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": true,
+        "bar": 3,
+        "beat_in_bar": 1,
+        "strength": 0.95,
+        "section": "verse"
+      },
+      {
+        "index": 13,
+        "time": {
+          "value": 365.25974,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 3,
+        "beat_in_bar": 2,
+        "strength": 0.62,
+        "section": "verse"
+      },
+      {
+        "index": 14,
+        "time": {
+          "value": 393.356643,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 3,
+        "beat_in_bar": 3,
+        "strength": 0.62,
+        "section": "verse"
+      },
+      {
+        "index": 15,
+        "time": {
+          "value": 421.453546,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 3,
+        "beat_in_bar": 4,
+        "strength": 0.62,
+        "section": "verse"
+      },
+      {
+        "index": 16,
+        "time": {
+          "value": 449.55045,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": true,
+        "bar": 4,
+        "beat_in_bar": 1,
+        "strength": 0.95,
+        "section": "drop"
+      },
+      {
+        "index": 17,
+        "time": {
+          "value": 477.647353,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 4,
+        "beat_in_bar": 2,
+        "strength": 0.62,
+        "section": "drop"
+      },
+      {
+        "index": 18,
+        "time": {
+          "value": 505.744256,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 4,
+        "beat_in_bar": 3,
+        "strength": 0.62,
+        "section": "drop"
+      },
+      {
+        "index": 19,
+        "time": {
+          "value": 533.841159,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 4,
+        "beat_in_bar": 4,
+        "strength": 0.62,
+        "section": "drop"
+      },
+      {
+        "index": 20,
+        "time": {
+          "value": 561.938062,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": true,
+        "bar": 5,
+        "beat_in_bar": 1,
+        "strength": 0.95,
+        "section": "drop"
+      },
+      {
+        "index": 21,
+        "time": {
+          "value": 590.034965,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 5,
+        "beat_in_bar": 2,
+        "strength": 0.62,
+        "section": "drop"
+      },
+      {
+        "index": 22,
+        "time": {
+          "value": 618.131868,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 5,
+        "beat_in_bar": 3,
+        "strength": 0.62,
+        "section": "drop"
+      },
+      {
+        "index": 23,
+        "time": {
+          "value": 646.228771,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 5,
+        "beat_in_bar": 4,
+        "strength": 0.62,
+        "section": "drop"
+      },
+      {
+        "index": 24,
+        "time": {
+          "value": 674.325674,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": true,
+        "bar": 6,
+        "beat_in_bar": 1,
+        "strength": 0.95,
+        "section": "drop"
+      },
+      {
+        "index": 25,
+        "time": {
+          "value": 702.422577,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 6,
+        "beat_in_bar": 2,
+        "strength": 0.62,
+        "section": "drop"
+      },
+      {
+        "index": 26,
+        "time": {
+          "value": 730.519481,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 6,
+        "beat_in_bar": 3,
+        "strength": 0.62,
+        "section": "drop"
+      },
+      {
+        "index": 27,
+        "time": {
+          "value": 758.616384,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 6,
+        "beat_in_bar": 4,
+        "strength": 0.62,
+        "section": "drop"
+      },
+      {
+        "index": 28,
+        "time": {
+          "value": 786.713287,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": true,
+        "bar": 7,
+        "beat_in_bar": 1,
+        "strength": 0.95,
+        "section": "outro"
+      },
+      {
+        "index": 29,
+        "time": {
+          "value": 814.81019,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 7,
+        "beat_in_bar": 2,
+        "strength": 0.62,
+        "section": "outro"
+      },
+      {
+        "index": 30,
+        "time": {
+          "value": 842.907093,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 7,
+        "beat_in_bar": 3,
+        "strength": 0.62,
+        "section": "outro"
+      },
+      {
+        "index": 31,
+        "time": {
+          "value": 871.003996,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": false,
+        "bar": 7,
+        "beat_in_bar": 4,
+        "strength": 0.62,
+        "section": "outro"
+      },
+      {
+        "index": 32,
+        "time": {
+          "value": 899.100899,
+          "rate": 59.94005994005994
+        },
+        "is_downbeat": true,
+        "bar": 8,
+        "beat_in_bar": 1,
+        "strength": 0.95,
+        "section": "outro"
+      }
+    ],
+    "analyzer": {
+      "model_id": "librosa-beat-track",
+      "version": "0.10.2",
+      "weights_blake3": "891a26ecd8606c5c80b8c7487bcddfb9286014bb1ab34fb4eb37d66d836a1d9b",
+      "runtime": "librosa",
+      "precision": null
+    },
+    "tolerance_ms": 50.0
+  },
+  "story_arc": {
+    "arc_id": "arc-ridge-15s",
+    "template": "hook_build_peak_button",
+    "title": "Ridge ride",
+    "logline": "A climb through forest that pays off in three seconds of air.",
+    "acts": [
+      {
+        "act_id": "act-hook",
+        "name": "Hook",
+        "intent": "Open on motion so the first second earns the next fourteen.",
+        "timeline_range": {
+          "start_time": {
+            "value": 0,
+            "rate": 59.94005994005994
+          },
+          "duration": {
+            "value": 112,
+            "rate": 59.94005994005994
+          }
+        },
+        "target_energy": 0.9,
+        "beats": [
+          {
+            "beat_id": "beat-hook-open",
+            "description": "Immediate movement, no establishing shot.",
+            "required": true,
+            "satisfied_by_clip_ids": [
+              "clip-01"
+            ],
+            "candidate_moment_ids": [
+              "b8a3f2ac42d376a8af7f54946248f305343c486dfecc27c8687b4fa703fd1947"
+            ]
+          }
+        ]
+      },
+      {
+        "act_id": "act-build",
+        "name": "Build",
+        "intent": "Establish the trail and the effort it takes.",
+        "timeline_range": {
+          "start_time": {
+            "value": 112,
+            "rate": 59.94005994005994
+          },
+          "duration": {
+            "value": 338,
+            "rate": 59.94005994005994
+          }
+        },
+        "target_energy": 0.55,
+        "beats": [
+          {
+            "beat_id": "beat-build-place",
+            "description": "Where we are.",
+            "required": true,
+            "satisfied_by_clip_ids": [
+              "clip-02"
+            ],
+            "candidate_moment_ids": []
+          },
+          {
+            "beat_id": "beat-build-motion",
+            "description": "Speed and terrain.",
+            "required": false,
+            "satisfied_by_clip_ids": [
+              "clip-03"
+            ],
+            "candidate_moment_ids": []
+          }
+        ]
+      },
+      {
+        "act_id": "act-peak",
+        "name": "Peak",
+        "intent": "The jump, then the human reaction to it.",
+        "timeline_range": {
+          "start_time": {
+            "value": 450,
+            "rate": 59.94005994005994
+          },
+          "duration": {
+            "value": 337,
+            "rate": 59.94005994005994
+          }
+        },
+        "target_energy": 1.0,
+        "beats": [
+          {
+            "beat_id": "beat-peak-airtime",
+            "description": "The gap jump, held long enough to read.",
+            "required": true,
+            "satisfied_by_clip_ids": [
+              "clip-05",
+              "clip-06"
+            ],
+            "candidate_moment_ids": []
+          },
+          {
+            "beat_id": "beat-peak-face",
+            "description": "A face reacting; without this it is footage, not a memory.",
+            "required": true,
+            "satisfied_by_clip_ids": [
+              "clip-07"
+            ],
+            "candidate_moment_ids": [
+              "b8a3f2ac42d376a8af7f54946248f305343c486dfecc27c8687b4fa703fd1947"
+            ]
+          }
+        ]
+      },
+      {
+        "act_id": "act-button",
+        "name": "Button",
+        "intent": "Land on a held wide so the loop does not feel abrupt.",
+        "timeline_range": {
+          "start_time": {
+            "value": 787,
+            "rate": 59.94005994005994
+          },
+          "duration": {
+            "value": 112,
+            "rate": 59.94005994005994
+          }
+        },
+        "target_energy": 0.35,
+        "beats": [
+          {
+            "beat_id": "beat-button-close",
+            "description": "Wide ridgeline, rider leaving frame.",
+            "required": true,
+            "satisfied_by_clip_ids": [
+              "clip-08"
+            ],
+            "candidate_moment_ids": []
+          }
+        ]
+      }
+    ],
+    "energy_curve": [
+      {
+        "time": {
+          "value": 0,
+          "rate": 59.94005994005994
+        },
+        "energy": 0.9
+      },
+      {
+        "time": {
+          "value": 112,
+          "rate": 59.94005994005994
+        },
+        "energy": 0.5
+      },
+      {
+        "time": {
+          "value": 337,
+          "rate": 59.94005994005994
+        },
+        "energy": 0.62
+      },
+      {
+        "time": {
+          "value": 450,
+          "rate": 59.94005994005994
+        },
+        "energy": 1.0
+      },
+      {
+        "time": {
+          "value": 674,
+          "rate": 59.94005994005994
+        },
+        "energy": 0.92
+      },
+      {
+        "time": {
+          "value": 787,
+          "rate": 59.94005994005994
+        },
+        "energy": 0.4
+      },
+      {
+        "time": {
+          "value": 899,
+          "rate": 59.94005994005994
+        },
+        "energy": 0.25
+      }
+    ],
+    "source": "tier3_model",
+    "model": {
+      "model_id": "frontier-multimodal",
+      "version": "2026-02",
+      "weights_blake3": "93e2abe19030b118a176b0bca42fb173a34eb175c32903a1cec731a1f02fd659",
+      "runtime": null,
+      "precision": null
+    },
+    "prompt_id": "reel-arc-v3",
+    "consent": {
+      "ledger_entry_id": "6b1e4d0a-9f37-4c25-b8e1-05a7c3f26d94",
+      "scope": "tier3_contact_sheet",
+      "granted_at": "2026-03-16T20:02:11+05:30",
+      "expires_at": null,
+      "revoked_at": null
+    },
+    "rationale": "The jump is the only moment in 17 minutes of footage that cannot be inferred from any other shot, so the arc is built backwards from it."
+  },
+  "color_pipeline": {
+    "input_transform": "auto",
+    "working_space": "rec709",
+    "output_transform": "rec709",
+    "tone_map_hdr_to_sdr": true
+  },
+  "variant": {
+    "variant_id": "var-02",
+    "variant_index": 1,
+    "sibling_edl_ids": [
+      "42cd6ba33183718575cd697f2890939b4c35189939a31429a53165064872dcd3"
+    ],
+    "strategy": "pacing_seed",
+    "description": "Faster, cuts on every bar"
+  },
+  "determinism": {
+    "planner": "reel-planner",
+    "planner_version": "1.0.0",
+    "seed": 20260316,
+    "inputs_digest": "ade3ed501d4b14a36ee805bf5fd036b51ffb33023ca8486f75b46d30e5865007",
+    "generated_at": "2026-03-16T20:04:52+05:30"
+  },
+  "validation": {
+    "status": "pass",
+    "checks": [
+      {
+        "check_id": "source_range_within_available",
+        "passed": true,
+        "severity": "error",
+        "detail": "8 clips checked against src-ride available_range",
+        "clip_id": null
+      },
+      {
+        "check_id": "media_refs_resolvable",
+        "passed": true,
+        "severity": "error",
+        "detail": "2 refs resolved by content hash",
+        "clip_id": null
+      },
+      {
+        "check_id": "timeline_contiguous",
+        "passed": true,
+        "severity": "error",
+        "detail": "V1 tiles [0, 899) with no gaps",
+        "clip_id": null
+      },
+      {
+        "check_id": "transition_handles_available",
+        "passed": true,
+        "severity": "error",
+        "detail": "xfade-peak-to-button has 6 frames of handle on both sides",
+        "clip_id": "clip-08"
+      },
+      {
+        "check_id": "beat_alignment_within_tolerance",
+        "passed": true,
+        "severity": "error",
+        "detail": "worst downbeat error 7.5000 ms against a 50 ms tolerance",
+        "clip_id": "clip-05"
+      },
+      {
+        "check_id": "reframe_aspect_matches_target",
+        "passed": true,
+        "severity": "error",
+        "detail": "all crops are 9:16 within 1e-6",
+        "clip_id": null
+      },
+      {
+        "check_id": "reframe_keyframes_ordered",
+        "passed": true,
+        "severity": "error",
+        "detail": "8 tracks, keyframes strictly increasing",
+        "clip_id": null
+      },
+      {
+        "check_id": "duration_within_max",
+        "passed": true,
+        "severity": "error",
+        "detail": "14.998 s against a 90 s platform ceiling",
+        "clip_id": null
+      },
+      {
+        "check_id": "music_license_covers_destination",
+        "passed": true,
+        "severity": "error",
+        "detail": "social_share is covered by CAT-2026-004182",
+        "clip_id": null
+      },
+      {
+        "check_id": "required_story_beats_satisfied",
+        "passed": true,
+        "severity": "error",
+        "detail": "5 required beats, all satisfied",
+        "clip_id": null
+      },
+      {
+        "check_id": "no_mid_word_cut",
+        "passed": true,
+        "severity": "warning",
+        "detail": "only clip-07 carries speech; its out-point is a speech gap",
+        "clip_id": "clip-07"
+      },
+      {
+        "check_id": "determinism_digest_present",
+        "passed": true,
+        "severity": "error",
+        "detail": "",
+        "clip_id": null
+      }
+    ],
+    "validated_at": "2026-03-16T20:04:53+05:30",
+    "validator_version": "edl-validator/1.0.0"
+  },
+  "otio": {
+    "otio_schema_version": "OTIO_SCHEMA:Timeline.1",
+    "metadata_namespace": "memory_engine",
+    "unmapped_fields": [],
+    "round_trip_verified": true
+  }
+}

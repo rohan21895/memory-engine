@@ -1,0 +1,55 @@
+{
+  "schema_version": "v0",
+  "moment_id": "0d14f2503ec754d282a1868b12b7c3bedb33e3f703ec65b5187cecd886984f4b",
+  "media_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
+  "source_range": {
+    "start_time": { "value": 3031560, "rate": 59.94005994005994 },
+    "duration": { "value": 300, "rate": 59.94005994005994 }
+  },
+  "proxy_range": {
+    "start_time": { "value": 6480, "rate": 59.94005994005994 },
+    "duration": { "value": 300, "rate": 59.94005994005994 }
+  },
+  "shot_id": "shot-0008",
+  "features": {
+    "motion_energy": 0.97,
+    "motion_peak": 1.0,
+    "shake": 0.94,
+    "exposure_stability": 0.31,
+    "sharpness": 0.12,
+    "face_presence": 0.0,
+    "max_face_area_ratio": 0.0,
+    "smile_intensity": 0.0,
+    "audio": {
+      "loudness_lufs": -8.2,
+      "speech_ratio": 0.0,
+      "music_ratio": 0.0,
+      "noise_ratio": 0.96,
+      "events": [{ "label": "wind", "confidence": 0.981, "time": null }],
+      "embedding": null
+    },
+    "visual_embedding": null,
+    "novelty": 0.11,
+    "representative_frame_time": null
+  },
+  "scores": {
+    "moment_score": { "value": 0.04, "run_id": "run-classical-elim-0033" },
+    "technical": { "value": 0.06, "run_id": "run-classical-elim-0033" },
+    "hook_potential": null,
+    "emotional_peak": null,
+    "narrative_value": null,
+    "source": "local_fusion",
+    "fusion_weights_version": "fusion-v1.2.0"
+  },
+  "snap_points": [],
+  "safe_trim": null,
+  "elimination": {
+    "eliminated": true,
+    "reasons": ["shake", "wind_noise_dominant", "no_subject"],
+    "stage": "classical"
+  },
+  "people": { "person_ids": [], "face_track_ids": [], "unidentified_face_count": 0 },
+  "transcript": null,
+  "model_runs": [],
+  "created_at": "2026-03-15T12:19:02+05:30"
+}

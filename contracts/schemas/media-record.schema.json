@@ -1,0 +1,738 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memory-engine.local/contracts/v0/media-record.schema.json",
+  "title": "MediaRecord",
+  "description": "The identity of one media file and everything the analysis layer has learned about it. One record per physical file, always -- a GoPro chapter set is N member records plus one assembly record, never a record that pretends four files are one.",
+  "$comment": "OWNERSHIP: written by workers/ingest (identity, capture, proxies) and by the analysis dispatch (quality, content, faces, dedupe). Read by every intelligence package. INVARIANT: media_id equals the BLAKE3 of the file's bytes, so the same footage imported from a phone and from a backup drive collapses to one record with two entries in `sources`. INVARIANT: nothing in this record contains pixel data; proxies are referenced by id.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "media_id",
+    "kind",
+    "byte_size",
+    "sources",
+    "capture",
+    "processing"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/SchemaVersion" },
+
+    "media_id": {
+      "description": "BLAKE3 of the file's bytes. Primary key. Content-addressed so re-importing the same file is a no-op and every downstream job keyed on it is idempotent.",
+      "$ref": "common.schema.json#/$defs/Blake3Hash"
+    },
+
+    "kind": {
+      "description": "Top-level media class. `live_photo` and `motion_photo` are their own kind rather than image-with-a-video because the still and the motion track are separately renderable and separately rankable.",
+      "type": "string",
+      "enum": ["image", "video", "live_photo", "motion_photo", "audio", "sidecar", "unknown"]
+    },
+
+    "byte_size": { "type": "integer", "minimum": 0 },
+
+    "mime_type": {
+      "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+
+    "file_format": {
+      "description": "Container as detected from content, not from the extension. A .jpg that is actually HEIC is common in exports and must not be trusted by extension.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": ["jpeg", "png", "heic", "heif", "avif", "webp", "tiff", "dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "gif", "bmp", "mp4", "mov", "avi", "mkv", "webm", "m4v", "mts", "3gp", "insv", "wav", "mp3", "m4a", "aac", "flac", "unknown"]
+        },
+        { "type": "null" }
+      ]
+    },
+
+    "sources": {
+      "description": "Every place on disk these exact bytes have been seen. Plural because deduplication by content is the whole point: one record, many paths. Never empty -- a record exists because a file was found.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/SourceLocation" }
+    },
+
+    "span": {
+      "description": "Set membership for footage split across multiple files. Present on GoPro chaptered MP4s (GH011234.MP4, GH021234.MP4, ...), DSLR 4GB-limit splits, and Insta360 .insv sets. Null for the overwhelming majority of files.",
+      "oneOf": [{ "$ref": "#/$defs/Span" }, { "type": "null" }]
+    },
+
+    "capture": { "$ref": "#/$defs/Capture" },
+
+    "image": {
+      "oneOf": [{ "$ref": "#/$defs/ImageProperties" }, { "type": "null" }]
+    },
+
+    "video": {
+      "oneOf": [{ "$ref": "#/$defs/VideoProperties" }, { "type": "null" }]
+    },
+
+    "perceptual": {
+      "oneOf": [{ "$ref": "#/$defs/PerceptualFingerprint" }, { "type": "null" }]
+    },
+
+    "proxies": {
+      "description": "Derived renditions. Analysis reads only these; the original is opened exactly twice in the file's life, once to make these and once at final render.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/ProxyRef" },
+      "default": []
+    },
+
+    "processing": { "$ref": "#/$defs/ProcessingState" },
+
+    "quality": {
+      "oneOf": [{ "$ref": "#/$defs/QualityScores" }, { "type": "null" }]
+    },
+
+    "content": {
+      "oneOf": [{ "$ref": "#/$defs/ContentAnalysis" }, { "type": "null" }]
+    },
+
+    "faces": {
+      "description": "Denormalised face summary. The authoritative per-face data lives in FaceRecord; this block exists so the library grid can filter 'photos with 3+ people' without joining.",
+      "oneOf": [{ "$ref": "#/$defs/FaceSummary" }, { "type": "null" }]
+    },
+
+    "dedupe": {
+      "oneOf": [{ "$ref": "#/$defs/DedupeMembership" }, { "type": "null" }]
+    },
+
+    "exclusion": { "$ref": "#/$defs/ExclusionState" },
+
+    "user": { "$ref": "#/$defs/UserAnnotations" },
+
+    "model_runs": {
+      "description": "Provenance for every score on this record. Scores reference these by run_id.",
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/ModelRun" },
+      "default": []
+    },
+
+    "first_seen_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+  },
+
+  "$defs": {
+    "SourceLocation": {
+      "title": "SourceLocation",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "adapter", "first_seen_at", "present"],
+      "properties": {
+        "path": {
+          "description": "Absolute path as seen at scan time. Local only -- this string never leaves the device and is stripped by the crash-reporter privacy filter.",
+          "type": "string",
+          "minLength": 1
+        },
+        "volume_id": {
+          "description": "Stable identifier for the containing volume, so an unplugged external drive is reported as 'offline' rather than 'deleted'.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "adapter": {
+          "description": "Which ingest adapter found it. Drives source-specific metadata recovery: Takeout puts the real date in a sidecar JSON, WhatsApp puts it in the filename, and neither has usable EXIF.",
+          "type": "string",
+          "enum": ["filesystem", "google_takeout", "icloud_export", "whatsapp", "gopro_card", "dslr_card", "phone_gallery", "insta360", "drone_card", "manual_import"]
+        },
+        "sidecar_paths": {
+          "description": "Companion files: XMP, Takeout's .json, GoPro's .THM/.LRV, Live Photo's paired .MOV.",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "original_filename": {
+          "description": "Filename as it appeared, kept after any rename because WhatsApp and camera naming conventions are the only date source for a large share of real libraries.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "first_seen_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "last_verified_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "present": {
+          "description": "False when the path no longer resolves. The record is retained: losing sight of a file is not permission to forget everything we learned about it (hard rule 7, no silent data loss).",
+          "type": "boolean"
+        }
+      }
+    },
+
+    "Span": {
+      "title": "Span",
+      "description": "Membership in a multi-file recording. Modelled as a role on each record rather than a nested structure so that a chapter can be discovered, hashed and analysed before its siblings have even been walked -- which is exactly what happens on a 400-file GoPro card.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["span_id", "role", "span_kind"],
+      "properties": {
+        "span_id": {
+          "description": "BLAKE3 over the ordered member media_ids once the set is closed. Before closure, a provisional id derived from the camera's own group identifier (GoPro's file number, e.g. 1234 in GH011234.MP4).",
+          "$ref": "common.schema.json#/$defs/Blake3Hash"
+        },
+        "role": {
+          "description": "`member` is a physical file on disk. `assembly` is the virtual record representing the concatenated recording; it has byte_size 0, no SourceLocation of its own beyond its members, and is what MomentRecords and EDL clips reference so a cut can cross a chapter boundary without the planner knowing chapters exist.",
+          "type": "string",
+          "enum": ["member", "assembly"]
+        },
+        "span_kind": {
+          "type": "string",
+          "enum": ["gopro_chapter", "dslr_size_split", "insta360_lens_pair", "manual_group"]
+        },
+        "index": {
+          "description": "0-based position within the recording. Required on members, null on the assembly.",
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "member_count": {
+          "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+        },
+        "member_media_ids": {
+          "description": "Ordered member ids. Populated on the assembly record only.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        },
+        "offset_in_span": {
+          "description": "Where this member starts within the assembly's timeline. Lets a MomentRecord on the assembly be resolved back to (file, timecode) at render without re-probing every chapter.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "continuity": {
+          "description": "Whether the chapters were verified to be gapless. Cameras occasionally drop a frame at the split; the renderer must know before it concatenates.",
+          "type": "string",
+          "enum": ["verified_gapless", "verified_gap", "unverified", "incomplete_set"],
+          "default": "unverified"
+        }
+      }
+    },
+
+    "Capture": {
+      "title": "Capture",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["captured_at", "metadata_present"],
+      "properties": {
+        "captured_at": {
+          "description": "Always a TimeAssertion, never a bare timestamp. A file with no EXIF gets an assertion with source 'unknown' and precision 'unknown', not a fabricated date.",
+          "$ref": "common.schema.json#/$defs/TimeAssertion"
+        },
+        "metadata_present": {
+          "description": "Which metadata blocks were actually found. Empty array is the EXIF-less case and is completely normal for WhatsApp media and screenshots.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["exif", "xmp", "iptc", "quicktime", "gopro_gpmf", "takeout_json", "maker_note"]
+          }
+        },
+        "gps": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/GeoPoint" }, { "type": "null" }]
+        },
+        "device": {
+          "oneOf": [{ "$ref": "#/$defs/DeviceInfo" }, { "type": "null" }]
+        },
+        "exposure": {
+          "oneOf": [{ "$ref": "#/$defs/ExposureInfo" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "DeviceInfo": {
+      "title": "DeviceInfo",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "make": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "model": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "lens": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "software": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "body_serial_hash": {
+          "description": "Hashed, never raw. A camera serial is a personal identifier; we want 'same body' equality without storing the number.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "ExposureInfo": {
+      "title": "ExposureInfo",
+      "description": "Shot settings, used as priors by the technical quality pass: a 1/8s handheld exposure predicts motion blur before any model runs.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "iso": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "exposure_time_s": { "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }] },
+        "f_number": { "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }] },
+        "focal_length_mm": { "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }] },
+        "focal_length_35mm": { "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }] },
+        "flash_fired": { "oneOf": [{ "type": "boolean" }, { "type": "null" }] },
+        "metering_mode": { "oneOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+
+    "ImageProperties": {
+      "title": "ImageProperties",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stored_size", "oriented_size"],
+      "properties": {
+        "stored_size": {
+          "description": "Pixel dimensions as stored in the file, before EXIF orientation is applied.",
+          "$ref": "common.schema.json#/$defs/PixelSize"
+        },
+        "oriented_size": {
+          "description": "Dimensions after orientation. Every NormalizedBox in the system is relative to THIS, which removes an entire class of rotated-crop bugs.",
+          "$ref": "common.schema.json#/$defs/PixelSize"
+        },
+        "orientation": {
+          "description": "EXIF orientation tag, 1-8.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 1
+        },
+        "bit_depth": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "color_space": {
+          "oneOf": [
+            { "type": "string", "enum": ["srgb", "display_p3", "adobe_rgb", "prophoto_rgb", "rec2020", "linear", "unknown"] },
+            { "type": "null" }
+          ]
+        },
+        "icc_profile_name": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "has_alpha": { "type": "boolean", "default": false },
+        "is_raw": { "type": "boolean", "default": false },
+        "is_hdr": { "type": "boolean", "default": false },
+        "paired_motion_media_id": {
+          "description": "For a Live Photo or Motion Photo, the record holding the motion track.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "VideoProperties": {
+      "title": "VideoProperties",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["oriented_size", "duration", "frame_rate"],
+      "properties": {
+        "stored_size": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/PixelSize" }, { "type": "null" }]
+        },
+        "oriented_size": { "$ref": "common.schema.json#/$defs/PixelSize" },
+        "rotation_deg": {
+          "description": "Rotation from the container's display matrix. Phone video is almost always stored landscape with a rotation flag.",
+          "type": "integer",
+          "enum": [0, 90, 180, 270],
+          "default": 0
+        },
+        "duration": { "$ref": "common.schema.json#/$defs/RationalTime" },
+        "frame_rate": {
+          "description": "Exact frame rate as a rational. 30000/1001 must survive as such; storing 29.97 as a float and reconstructing it later is how beat-locked cuts drift.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["numerator", "denominator"],
+          "properties": {
+            "numerator": { "type": "integer", "exclusiveMinimum": 0 },
+            "denominator": { "type": "integer", "exclusiveMinimum": 0 }
+          }
+        },
+        "is_variable_frame_rate": {
+          "description": "True for most phone video. A VFR source must be conformed before frame-accurate cutting, and the renderer needs to be told, not surprised.",
+          "type": "boolean",
+          "default": false
+        },
+        "start_timecode": {
+          "description": "Embedded SMPTE timecode track start, when present. Carried through to OTIO so a professional round-trip lands on the right frame.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "video_codec": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "bit_rate": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "color_primaries": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "transfer_characteristics": {
+          "description": "HLG or PQ here means HDR footage, which changes both the enhancement plan and the encode profile.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "audio_streams": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/AudioStream" },
+          "default": []
+        }
+      }
+    },
+
+    "AudioStream": {
+      "title": "AudioStream",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stream_index", "channels", "sample_rate"],
+      "properties": {
+        "stream_index": { "type": "integer", "minimum": 0 },
+        "channels": { "type": "integer", "minimum": 1 },
+        "sample_rate": { "type": "integer", "exclusiveMinimum": 0 },
+        "codec": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "language": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "is_silent": {
+          "description": "Detected during proxy generation. A silent track means the ambient mix has nothing to preserve and music can sit at full level.",
+          "oneOf": [{ "type": "boolean" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "PerceptualFingerprint": {
+      "title": "PerceptualFingerprint",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image_hash": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/PerceptualHash" }, { "type": "null" }]
+        },
+        "keyframe_hashes": {
+          "description": "Per-keyframe hashes for video, so a clip that appears in two exports of the same trip is recognised as duplicate footage.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["time", "hash"],
+            "properties": {
+              "time": { "$ref": "common.schema.json#/$defs/RationalTime" },
+              "hash": { "$ref": "common.schema.json#/$defs/PerceptualHash" }
+            }
+          },
+          "default": []
+        }
+      }
+    },
+
+    "ProxyRef": {
+      "title": "ProxyRef",
+      "description": "A derived rendition on local disk. Content-addressed like everything else, so a proxy regenerated with the same tool version is recognised as the same artifact.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proxy_id", "kind", "path"],
+      "properties": {
+        "proxy_id": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+        "kind": {
+          "type": "string",
+          "enum": ["thumbnail_512", "preview_2048", "video_proxy_480p", "waveform", "contact_sheet_tile", "audio_wav_16k"]
+        },
+        "path": { "type": "string", "minLength": 1 },
+        "size": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/PixelSize" }, { "type": "null" }]
+        },
+        "byte_size": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "generator_version": {
+          "description": "Tool + settings that produced it. A change here invalidates the proxy without deleting anything.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "frame_index": {
+          "description": "Present on video_proxy_480p only. The proxy is single-pass and may not be frame-exact against the source, so analysis results measured in proxy time must be mapped back through this sidecar before they can address source timecode.",
+          "oneOf": [{ "$ref": "#/$defs/FrameIndexSidecar" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "FrameIndexSidecar": {
+      "title": "FrameIndexSidecar",
+      "description": "Mapping from proxy time to source timecode. The intelligence layer works entirely in proxy time; this is the single point where that is converted to something the renderer can seek to in the original.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "entry_count", "mapping"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "entry_count": { "type": "integer", "minimum": 0 },
+        "mapping": {
+          "description": "`identity` when proxy and source share a frame timeline and no lookup is needed -- the common CFR case. `table` when the sidecar must be consulted per frame, which is the VFR phone-video case.",
+          "type": "string",
+          "enum": ["identity", "table"]
+        },
+        "source_rate": {
+          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+        },
+        "proxy_rate": {
+          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+        }
+      }
+    },
+
+    "ProcessingState": {
+      "title": "ProcessingState",
+      "description": "Per-stage pipeline state. Granular per stage rather than one status field because a 3TB scan is killed and resumed constantly, and 'hashed but not yet proxied' has to be a first-class, restartable position.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "stages"],
+      "properties": {
+        "state": {
+          "description": "Rollup for UI and query. `quarantined` means the file is unreadable or hostile (zero-byte, truncated, symlink loop) and must never be retried automatically.",
+          "type": "string",
+          "enum": ["discovered", "hashed", "proxied", "analyzing", "analyzed", "failed", "quarantined"]
+        },
+        "stages": {
+          "type": "object",
+          "additionalProperties": false,
+          "propertyNames": { "$ref": "common.schema.json#/$defs/Slug" },
+          "properties": {
+            "hash": { "$ref": "#/$defs/StageState" },
+            "metadata": { "$ref": "#/$defs/StageState" },
+            "thumbnail": { "$ref": "#/$defs/StageState" },
+            "video_proxy": { "$ref": "#/$defs/StageState" },
+            "perceptual_hash": { "$ref": "#/$defs/StageState" },
+            "classical_quality": { "$ref": "#/$defs/StageState" },
+            "image_embedding": { "$ref": "#/$defs/StageState" },
+            "face_detection": { "$ref": "#/$defs/StageState" },
+            "iqa": { "$ref": "#/$defs/StageState" },
+            "aesthetic": { "$ref": "#/$defs/StageState" },
+            "tagging": { "$ref": "#/$defs/StageState" },
+            "safety": { "$ref": "#/$defs/StageState" },
+            "ocr": { "$ref": "#/$defs/StageState" },
+            "shot_detection": { "$ref": "#/$defs/StageState" },
+            "transcription": { "$ref": "#/$defs/StageState" },
+            "audio_events": { "$ref": "#/$defs/StageState" },
+            "moment_scoring": { "$ref": "#/$defs/StageState" }
+          }
+        }
+      }
+    },
+
+    "StageState": {
+      "title": "StageState",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["pending", "running", "done", "failed", "skipped", "not_applicable"]
+        },
+        "attempts": { "type": "integer", "minimum": 0, "default": 0 },
+        "completed_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "job_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+        },
+        "skip_reason": {
+          "description": "Why a stage was skipped. Required reading for 'no silent anything': a skipped stage must be explicable without reading logs.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "last_error": {
+          "oneOf": [{ "$ref": "#/$defs/ErrorInfo" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "ErrorInfo": {
+      "title": "ErrorInfo",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "$ref": "common.schema.json#/$defs/Slug" },
+        "message": {
+          "description": "Human-readable, already redacted: no paths, no filenames, no EXIF. Crash reporting forwards this verbatim.",
+          "type": "string"
+        },
+        "retryable": { "type": "boolean" },
+        "occurred_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "QualityScores": {
+      "title": "QualityScores",
+      "description": "Technical quality, cheapest measures first. The classical measures alone reject most of the junk for free (build plan 4.2), so they are required and the learned scores are optional.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sharpness", "exposure"],
+      "properties": {
+        "sharpness": {
+          "description": "Laplacian-variance derived, normalised. Low means blurred, whether from focus or motion.",
+          "$ref": "common.schema.json#/$defs/Score"
+        },
+        "exposure": {
+          "description": "Histogram-derived. Penalises clipped highlights and crushed shadows; 1.0 is a well-distributed histogram.",
+          "$ref": "common.schema.json#/$defs/Score"
+        },
+        "noise": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }] },
+        "contrast": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }] },
+        "technical_iqa": {
+          "description": "Learned no-reference IQA (MUSIQ/TOPIQ class).",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }]
+        },
+        "aesthetic": {
+          "description": "Aesthetic prior. Explicitly a PRIOR: the ranking engine reweights this per user from PrefEvents, so it must never be treated as ground truth.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }]
+        },
+        "composition": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }] },
+        "face_quality": {
+          "description": "Best face quality in the frame: eyes open, unblurred, forward-facing. Null when there are no faces.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }]
+        },
+        "is_black_frame": { "type": "boolean", "default": false },
+        "is_lens_obstructed": {
+          "description": "Lens cap, pocket footage, finger over the lens. Cheap to detect and enormously common on action-camera cards.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+
+    "ContentAnalysis": {
+      "title": "ContentAnalysis",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "embedding": {
+          "description": "One SigLIP embedding powers search, dedupe refinement, diversity constraints and zero-shot tagging. This single field is the highest-leverage thing in the record.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/VectorRef" }, { "type": "null" }]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "score", "source"],
+            "properties": {
+              "label": { "type": "string", "minLength": 1 },
+              "score": { "$ref": "common.schema.json#/$defs/Unit" },
+              "source": {
+                "type": "string",
+                "enum": ["zero_shot_siglip", "ocr", "exif", "user", "tier2_vlm", "tier3_model"]
+              }
+            }
+          },
+          "default": []
+        },
+        "scene_type": {
+          "oneOf": [
+            { "type": "string", "enum": ["indoor", "outdoor", "portrait", "landscape", "food", "document", "screenshot", "night", "underwater", "aerial", "unknown"] },
+            { "type": "null" }
+          ]
+        },
+        "ocr": {
+          "description": "Present when text was found. Screenshot and document detection ride on this, and both are auto-excluded from memories.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["has_text", "text_area_ratio"],
+              "properties": {
+                "has_text": { "type": "boolean" },
+                "text_area_ratio": { "$ref": "common.schema.json#/$defs/Unit" },
+                "languages": { "type": "array", "items": { "type": "string" }, "default": [] },
+                "is_screenshot": { "type": "boolean", "default": false },
+                "is_document": { "type": "boolean", "default": false }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "safety": {
+          "oneOf": [{ "$ref": "#/$defs/SafetyAssessment" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "SafetyAssessment": {
+      "title": "SafetyAssessment",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nsfw_score", "auto_excluded"],
+      "properties": {
+        "nsfw_score": { "$ref": "common.schema.json#/$defs/Confidence" },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["nudity", "sexual", "violence", "gore", "medical", "document_pii", "unknown"]
+          },
+          "default": []
+        },
+        "auto_excluded": {
+          "description": "Excluded by default from all automated output. The user can override per item; the override is recorded in UserAnnotations, never by mutating this field.",
+          "type": "boolean"
+        },
+        "threshold_used": { "$ref": "common.schema.json#/$defs/Confidence" }
+      }
+    },
+
+    "FaceSummary": {
+      "title": "FaceSummary",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["face_count", "face_ids"],
+      "properties": {
+        "face_count": { "type": "integer", "minimum": 0 },
+        "face_ids": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" }
+        },
+        "confirmed_person_ids": {
+          "description": "Only people whose assignment is eligible for automated output. A person appearing here is safe to use for 'album of Avika'; anything less certain is deliberately absent.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Uuid" },
+          "default": []
+        },
+        "pending_review_count": { "type": "integer", "minimum": 0, "default": 0 },
+        "largest_face_area_ratio": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "DedupeMembership": {
+      "title": "DedupeMembership",
+      "description": "Near-duplicate grouping. Exactly one member of a group is primary; the ranking engine picks it, and only the primary is eligible for automated output so a burst of 12 near-identical frames contributes one photo, not twelve.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group_id", "is_primary", "method"],
+      "properties": {
+        "group_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "is_primary": { "type": "boolean" },
+        "primary_media_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+        },
+        "similarity_to_primary": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "group_size": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "method": {
+          "type": "string",
+          "enum": ["exact_content_hash", "phash_bucket", "phash_bucket_embedding_refined", "burst_metadata", "user_grouped"]
+        }
+      }
+    },
+
+    "ExclusionState": {
+      "title": "ExclusionState",
+      "description": "Whether this file may appear in unattended output. Separate from user hiding: exclusion is a system judgement with a stated reason, and every reason is individually overridable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["excluded_from_automation"],
+      "properties": {
+        "excluded_from_automation": { "type": "boolean" },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["screenshot", "document", "nsfw", "sensitive", "corrupt", "unreadable", "duplicate_secondary", "below_quality_floor", "black_frame", "lens_obstructed", "too_short", "user_hidden", "unsupported_codec"]
+          },
+          "default": []
+        },
+        "user_override": {
+          "description": "Tri-state on purpose. null = no opinion, true = user forced it in, false = user forced it out. Distinguishing 'user said include' from 'system did not exclude' matters when the exclusion rules later change.",
+          "oneOf": [{ "type": "boolean" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "UserAnnotations": {
+      "title": "UserAnnotations",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "favorite": { "type": "boolean", "default": false },
+        "hidden": { "type": "boolean", "default": false },
+        "rating": {
+          "oneOf": [{ "type": "integer", "minimum": 0, "maximum": 5 }, { "type": "null" }]
+        },
+        "tags": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "caption": { "oneOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    }
+  }
+}

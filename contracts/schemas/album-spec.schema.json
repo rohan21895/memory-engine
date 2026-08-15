@@ -1,0 +1,736 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memory-engine.local/contracts/v0/album-spec.schema.json",
+  "title": "AlbumSpec",
+  "description": "The deterministic plan for one printed album: which photos, on which pages, cropped how, enhanced how, against which vendor's physical spec.",
+  "$comment": "Same AlbumSpec + same sources = identical PDF. Two things follow from that and shape the whole schema.\n\n FIRST: geometry is in MILLIMETRES, not pixels or normalised page units. A print job is a physical object; the DPI floor, the bleed, the trim and the gutter are all statements about millimetres of paper. Placements therefore carry BOTH the mm frame on the page and the normalised crop box into the source image, and `effective_dpi` is the computed bridge between them. That is the number the hard validator gates on.\n\n SECOND: the validation report is part of the spec, not a side effect of rendering it. workers/render-print refuses to export a PDF whose AlbumSpec does not carry a passing report, and there is no override flag. Print failures are refunds; this is the one artifact that cannot be patched after it ships.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "album_id",
+    "vendor_profile",
+    "pages",
+    "determinism",
+    "validation"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/SchemaVersion" },
+
+    "album_id": {
+      "description": "BLAKE3 over the canonical JSON of this spec with volatile fields removed. Two specs with the same id produce the same PDF.",
+      "$ref": "common.schema.json#/$defs/Blake3Hash"
+    },
+
+    "title": { "type": "string", "default": "" },
+    "subtitle": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+
+    "event": {
+      "oneOf": [{ "$ref": "#/$defs/EventContext" }, { "type": "null" }]
+    },
+
+    "vendor_profile": { "$ref": "#/$defs/VendorProfile" },
+
+    "pages": {
+      "description": "Ordered pages. Page 0 is the front cover when the vendor profile includes one. Spreads are expressed by pairing pages via spread_id rather than by modelling a spread as a single wide page, because the gutter falls between two physically separate sheets and each has its own safe zone.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/Page" },
+      "minItems": 1
+    },
+
+    "selection": {
+      "oneOf": [{ "$ref": "#/$defs/SelectionReport" }, { "type": "null" }]
+    },
+
+    "spread_harmony": {
+      "oneOf": [{ "$ref": "#/$defs/SpreadHarmony" }, { "type": "null" }]
+    },
+
+    "determinism": { "$ref": "common.schema.json#/$defs/Determinism" },
+
+    "validation": { "$ref": "#/$defs/PrintValidationReport" },
+
+    "review": {
+      "oneOf": [{ "$ref": "#/$defs/SpreadReview" }, { "type": "null" }]
+    }
+  },
+
+  "$defs": {
+    "EventContext": {
+      "title": "EventContext",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event_cluster_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Uuid" }, { "type": "null" }]
+        },
+        "label": {
+          "description": "Human-readable event name, typically produced by a Tier 3 pass over contact sheets: 'beach day', 'night market'.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "date_range": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["start", "end"],
+              "properties": {
+                "start": { "$ref": "common.schema.json#/$defs/Timestamp" },
+                "end": { "$ref": "common.schema.json#/$defs/Timestamp" }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "person_ids": {
+          "description": "People the album is about. Only ids that passed the automated-output face gate appear here.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Uuid" },
+          "default": []
+        },
+        "place_label": { "oneOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+
+    "VendorProfile": {
+      "title": "VendorProfile",
+      "description": "The printer's physical spec sheet, transcribed. Built to one real vendor first (build plan 4.6) because a validator built against an imagined spec validates nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vendor_id",
+        "product_id",
+        "profile_version",
+        "trim_size_mm",
+        "bleed_mm",
+        "safe_margin_mm",
+        "dpi_floor",
+        "color_profile"
+      ],
+      "properties": {
+        "vendor_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "product_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "profile_version": {
+          "description": "Vendors change their spec sheets. A spec validated against v1 is not automatically valid against v2, and the version pin is what makes that detectable.",
+          "type": "string",
+          "minLength": 1
+        },
+        "trim_size_mm": { "$ref": "#/$defs/SizeMm" },
+        "bleed_mm": {
+          "description": "How far artwork must extend beyond the trim line. Under-bleeding produces a white sliver on the finished edge.",
+          "type": "number",
+          "minimum": 0
+        },
+        "safe_margin_mm": {
+          "description": "Inset from trim within which nothing important may sit, because guillotines drift.",
+          "type": "number",
+          "minimum": 0
+        },
+        "gutter_mm": {
+          "description": "Dead zone at the spine. On a perfect-bound book this can swallow 10mm+ of a spread, which is why a face landing in it is a hard failure rather than a warning.",
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        },
+        "spine_mm": {
+          "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }]
+        },
+        "dpi_floor": {
+          "description": "Minimum effective resolution AT PRINTED SIZE. The whole point of the phrase: a 24MP photo blown across a full spread can still fall below this.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "dpi_preferred": {
+          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+        },
+        "color_profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["icc_name", "intent"],
+          "properties": {
+            "icc_name": { "type": "string", "minLength": 1 },
+            "icc_hash": {
+              "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+            },
+            "intent": {
+              "type": "string",
+              "enum": ["perceptual", "relative_colorimetric", "saturation", "absolute_colorimetric"]
+            }
+          }
+        },
+        "page_count": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minimum", "maximum", "increment"],
+          "properties": {
+            "minimum": { "type": "integer", "minimum": 1 },
+            "maximum": { "type": "integer", "minimum": 1 },
+            "increment": {
+              "description": "Pages are added in physical sheets, so a book is typically constrained to multiples of 2 or 4. A spec with a page count off the increment is rejected by the printer, not by us -- so we reject it first.",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "binding": {
+          "type": "string",
+          "enum": ["layflat", "perfect_bound", "saddle_stitch", "spiral", "hardcover_case"],
+          "default": "layflat"
+        },
+        "paper_stock": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "pdf_standard": {
+          "type": "string",
+          "enum": ["pdf_x_1a", "pdf_x_3", "pdf_x_4", "pdf_1_6"],
+          "default": "pdf_x_4"
+        }
+      }
+    },
+
+    "SizeMm": {
+      "title": "SizeMm",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width_mm", "height_mm"],
+      "properties": {
+        "width_mm": { "type": "number", "exclusiveMinimum": 0 },
+        "height_mm": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+
+    "RectMm": {
+      "title": "RectMm",
+      "description": "A rectangle on the page in millimetres. Origin is the top-left of the BLEED box, not the trim box, so a full-bleed placement has negative-free coordinates and the renderer never has to guess which origin a number is relative to.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x_mm", "y_mm", "width_mm", "height_mm"],
+      "properties": {
+        "x_mm": { "type": "number" },
+        "y_mm": { "type": "number" },
+        "width_mm": { "type": "number", "exclusiveMinimum": 0 },
+        "height_mm": { "type": "number", "exclusiveMinimum": 0 },
+        "rotation_deg": {
+          "type": "number",
+          "minimum": -180,
+          "exclusiveMaximum": 180,
+          "default": 0
+        }
+      }
+    },
+
+    "Page": {
+      "title": "Page",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["page_index", "side", "placements"],
+      "properties": {
+        "page_index": { "type": "integer", "minimum": 0 },
+        "spread_id": {
+          "description": "Pages sharing a spread_id are viewed together and are colour-harmonised together. Null for a cover or a single page.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+        "side": {
+          "type": "string",
+          "enum": ["left", "right", "single", "front_cover", "back_cover", "inside_flap"]
+        },
+        "section_id": {
+          "description": "Narrative section this page belongs to, used by the diversity constraints (people/scenery/detail balance per section).",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+        "background": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": {
+                "kind": { "type": "string", "enum": ["solid", "none"] },
+                "color_hex": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "default": "#ffffff" }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "placements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Placement" },
+          "default": []
+        },
+        "text_blocks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/TextBlock" },
+          "default": []
+        },
+        "layout": {
+          "oneOf": [{ "$ref": "#/$defs/LayoutInfo" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "Placement": {
+      "title": "Placement",
+      "description": "One photo on one page. Carries the mm frame it occupies, the normalised crop taken from the source, and the effective DPI that results -- the three numbers the print validator reasons about.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["placement_id", "media_id", "frame", "crop", "effective_dpi"],
+      "properties": {
+        "placement_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "media_id": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+
+        "frame": {
+          "description": "Where it sits on the page, in mm from the bleed-box origin.",
+          "$ref": "#/$defs/RectMm"
+        },
+
+        "crop": {
+          "description": "The region of the SOURCE image used, in normalised oriented-image coordinates. Its aspect ratio must match the frame's, or the renderer would have to decide how to reconcile them -- and the renderer decides nothing.",
+          "$ref": "common.schema.json#/$defs/NormalizedBox"
+        },
+
+        "effective_dpi": {
+          "description": "Computed as (cropped source pixels along an edge) / (printed length of that edge in inches). Compared against vendor_profile.dpi_floor by the hard validator. The whole reason geometry is in mm.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+
+        "z_index": { "type": "integer", "default": 0 },
+
+        "bleeds": {
+          "description": "Which page edges this placement runs off. A full-bleed photo must extend past the trim by the profile's bleed_mm on every edge listed here.",
+          "type": "array",
+          "items": { "type": "string", "enum": ["top", "bottom", "left", "right"] },
+          "default": []
+        },
+
+        "is_hero": {
+          "description": "The anchor image of its spread. Heroes get the DPI headroom and the composition attention; supporting images fill around them.",
+          "type": "boolean",
+          "default": false
+        },
+
+        "face_safety": {
+          "oneOf": [{ "$ref": "#/$defs/FaceSafety" }, { "type": "null" }]
+        },
+
+        "enhancement_ops": {
+          "description": "Ordered ops applied to this image before composition. Order matters: denoise before upscale, upscale before face restore.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/EnhancementOp" },
+          "default": []
+        },
+
+        "caption": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+
+        "border": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["width_mm", "color_hex"],
+              "properties": {
+                "width_mm": { "type": "number", "minimum": 0 },
+                "color_hex": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+              }
+            },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+
+    "FaceSafety": {
+      "title": "FaceSafety",
+      "description": "Where the faces ended up after cropping and placement. Computed by the album engine and checked by the render worker -- a face in the trim zone or the gutter is a hard export block.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["face_count", "all_faces_in_safe_zone"],
+      "properties": {
+        "face_count": { "type": "integer", "minimum": 0 },
+        "all_faces_in_safe_zone": { "type": "boolean" },
+        "faces_in_gutter": { "type": "integer", "minimum": 0, "default": 0 },
+        "faces_in_trim_zone": { "type": "integer", "minimum": 0, "default": 0 },
+        "min_face_margin_mm": {
+          "description": "Distance from the nearest face to the nearest unsafe boundary. Negative means a face has already crossed it.",
+          "oneOf": [{ "type": "number" }, { "type": "null" }]
+        },
+        "cropped_face_ids": {
+          "description": "Faces the crop cut through. Sometimes deliberate on a background figure, never acceptable on a subject -- so it is recorded rather than merely prevented.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        }
+      }
+    },
+
+    "EnhancementOp": {
+      "title": "EnhancementOp",
+      "description": "One planned image improvement. `license_cleared` is required and defaults to nothing: half the popular restoration models are non-commercial (CodeFormer S-Lab, FLUX.1-dev), and the contract is where that gets caught rather than discovered at launch.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op_id", "kind", "order", "license_cleared"],
+      "properties": {
+        "op_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "denoise",
+            "upscale",
+            "face_restore",
+            "sharpen",
+            "exposure",
+            "white_balance",
+            "color_transfer",
+            "spread_harmonize",
+            "outpaint_to_fit",
+            "straighten",
+            "perspective_correct",
+            "dust_removal"
+          ]
+        },
+        "order": {
+          "description": "Execution order within the placement. Explicit integers rather than array position so a re-plan can insert an op without renumbering the world.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "model": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/ModelRef" }, { "type": "null" }]
+        },
+        "license_cleared": {
+          "description": "Whether the model behind this op passed the licence audit for commercial use. False must block export -- an unlicensed enhancement is a legal defect that ships inside a physical book.",
+          "type": "boolean"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "strength": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "reason": {
+          "description": "Why the op was planned: 'source is 1600px on a 300mm edge'. Feeds the user-facing explanation and the review queue.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "TextBlock": {
+      "title": "TextBlock",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["block_id", "text", "frame"],
+      "properties": {
+        "block_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "text": { "type": "string" },
+        "frame": { "$ref": "#/$defs/RectMm" },
+        "role": {
+          "type": "string",
+          "enum": ["title", "subtitle", "caption", "date", "page_number", "quote"],
+          "default": "caption"
+        },
+        "font_family": { "type": "string", "default": "" },
+        "font_size_pt": { "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }] },
+        "color_hex": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "default": "#000000" },
+        "alignment": {
+          "type": "string",
+          "enum": ["left", "center", "right", "justify"],
+          "default": "left"
+        }
+      }
+    },
+
+    "LayoutInfo": {
+      "title": "LayoutInfo",
+      "description": "How the page arrangement was arrived at. Layout is constraint solving, not template filling (build plan 4.6), so the record is of a solver run rather than of a chosen template id.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "solver": {
+          "type": "string",
+          "enum": ["constraint_solver", "template", "manual"],
+          "default": "constraint_solver"
+        },
+        "template_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+        "grid": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["columns", "rows", "gutter_mm"],
+              "properties": {
+                "columns": { "type": "integer", "minimum": 1 },
+                "rows": { "type": "integer", "minimum": 1 },
+                "gutter_mm": { "type": "number", "minimum": 0 }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "constraints_satisfied": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "constraints_relaxed": {
+          "description": "Soft constraints the solver had to give up on, and which therefore deserve a human glance. Recording them is the difference between a solver that reports its compromises and one that hides them.",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "solver_cost": {
+          "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }]
+        }
+      }
+    },
+
+    "SelectionReport": {
+      "title": "SelectionReport",
+      "description": "Why these photos and not others. Kept with the spec because 'why is my best photo missing' is the most common question a user will ever ask about an album.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candidate_count": { "type": "integer", "minimum": 0 },
+        "selected_count": { "type": "integer", "minimum": 0 },
+        "diversity_constraints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["constraint", "satisfied"],
+            "properties": {
+              "constraint": {
+                "type": "string",
+                "enum": [
+                  "no_near_duplicates_on_spread",
+                  "people_scenery_detail_balance",
+                  "max_per_person_per_section",
+                  "chronological_within_section",
+                  "no_consecutive_same_scene",
+                  "min_hero_quality"
+                ]
+              },
+              "satisfied": { "type": "boolean" },
+              "detail": { "type": "string", "default": "" }
+            }
+          },
+          "default": []
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["media_id", "reason"],
+            "properties": {
+              "media_id": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+              "reason": {
+                "type": "string",
+                "enum": ["near_duplicate", "below_quality_floor", "eyes_closed", "excluded_content", "diversity_constraint", "no_space", "person_not_confirmed", "dpi_too_low", "user_hidden"]
+              }
+            }
+          },
+          "default": []
+        }
+      }
+    },
+
+    "SpreadHarmony": {
+      "title": "SpreadHarmony",
+      "description": "Colour and exposure solved jointly across facing pages rather than per image. No consumer tool does this, and the difference is instantly visible in print: two photos of the same afternoon that disagree about white balance look like a mistake when they are 30cm apart on the same sheet.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "spreads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["spread_id", "adjustments"],
+            "properties": {
+              "spread_id": { "$ref": "common.schema.json#/$defs/Slug" },
+              "target_temperature_k": {
+                "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+              },
+              "target_exposure_ev": { "oneOf": [{ "type": "number" }, { "type": "null" }] },
+              "adjustments": {
+                "description": "Per-placement deltas the solver settled on. Deltas rather than absolutes so the original image data stays the reference.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["placement_id"],
+                  "properties": {
+                    "placement_id": { "$ref": "common.schema.json#/$defs/Slug" },
+                    "exposure_ev_delta": { "type": "number", "default": 0 },
+                    "temperature_k_delta": { "type": "number", "default": 0 },
+                    "tint_delta": { "type": "number", "default": 0 },
+                    "saturation_delta": { "type": "number", "default": 0 }
+                  }
+                }
+              }
+            }
+          },
+          "default": []
+        }
+      }
+    },
+
+    "PrintValidationReport": {
+      "title": "PrintValidationReport",
+      "description": "THE HARD GATE. workers/render-print refuses to export a PDF unless status is 'pass'. There is no override flag by design (AGENTS.md): a print defect cannot be patched after the book is in the post, so the only safe place to fail is before the PDF exists.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checks"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["pass", "fail", "not_run"]
+        },
+        "checks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ValidationCheck" }
+        },
+        "validated_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "validator_version": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "error_count": { "type": "integer", "minimum": 0, "default": 0 },
+        "warning_count": { "type": "integer", "minimum": 0, "default": 0 }
+      },
+      "allOf": [
+        {
+          "$comment": "A report may only claim 'pass' with zero errors. Prevents a spec that has counted its own failures and shipped anyway.",
+          "if": {
+            "properties": { "status": { "const": "pass" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": { "error_count": { "const": 0 } }
+          }
+        }
+      ]
+    },
+
+    "ValidationCheck": {
+      "title": "ValidationCheck",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id", "severity", "passed"],
+      "properties": {
+        "check_id": {
+          "description": "The first four are the hard gates named in the build plan: DPI floor, face in trim zone, bleed violation, mismatched colour profile. Any of them failing blocks export outright.",
+          "type": "string",
+          "enum": [
+            "dpi_floor",
+            "face_in_trim_zone",
+            "bleed_coverage",
+            "color_profile_match",
+            "face_in_gutter",
+            "page_count_valid",
+            "placement_within_page",
+            "crop_aspect_matches_frame",
+            "no_duplicate_on_spread",
+            "text_within_safe_margin",
+            "enhancement_license_cleared",
+            "source_media_available",
+            "pdf_standard_supported"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["error", "warning", "info"]
+        },
+        "passed": { "type": "boolean" },
+        "page_index": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "placement_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+        "measured_value": {
+          "description": "What was actually measured, e.g. 214.7 for a DPI check.",
+          "oneOf": [{ "type": "number" }, { "type": "null" }]
+        },
+        "required_value": {
+          "oneOf": [{ "type": "number" }, { "type": "null" }]
+        },
+        "detail": { "type": "string", "default": "" },
+        "remediation": {
+          "description": "What would fix it: 'upscale source' or 'reduce frame to 180mm'. The review UI shows this, and the album engine can often act on it automatically and re-validate.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "SpreadReview": {
+      "title": "SpreadReview",
+      "description": "The automated QA pass: render each spread at low resolution, ask a frontier model for a structured critique, fix, re-check. This is what makes unattended output trustworthy, and like every Tier 3 call it sees only low-res renders and returns only structured decisions against ids.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["not_run", "passed", "issues_found", "issues_fixed", "needs_human"]
+        },
+        "model": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/ModelRef" }, { "type": "null" }]
+        },
+        "consent": {
+          "description": "Required whenever the review ran in the cloud, because low-res spread renders left the device.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/ConsentRef" }, { "type": "null" }]
+        },
+        "prompt_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+        "iterations": { "type": "integer", "minimum": 0, "default": 0 },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["finding_id", "kind", "severity", "resolved"],
+            "properties": {
+              "finding_id": { "$ref": "common.schema.json#/$defs/Slug" },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "crop_hits_face",
+                  "near_identical_pair",
+                  "color_clash",
+                  "exposure_mismatch",
+                  "weak_hero",
+                  "cluttered_spread",
+                  "awkward_crop",
+                  "text_overlaps_subject",
+                  "eyes_closed",
+                  "orientation_mismatch"
+                ]
+              },
+              "severity": { "type": "string", "enum": ["error", "warning", "info"] },
+              "spread_id": {
+                "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+              },
+              "placement_ids": {
+                "type": "array",
+                "items": { "$ref": "common.schema.json#/$defs/Slug" },
+                "default": []
+              },
+              "comment": { "type": "string", "default": "" },
+              "resolved": { "type": "boolean" },
+              "resolution": {
+                "oneOf": [
+                  { "type": "string", "enum": ["recropped", "replaced", "reordered", "harmonized", "removed", "accepted_as_is", "escalated_to_human"] },
+                  { "type": "null" }
+                ]
+              }
+            }
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}

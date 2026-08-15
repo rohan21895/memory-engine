@@ -1,0 +1,144 @@
+{
+  "schema_version": "v0",
+  "media_id": "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
+  "kind": "video",
+  "byte_size": 4160749568,
+  "mime_type": "video/mp4",
+  "file_format": "mp4",
+  "sources": [
+    {
+      "path": "/Volumes/GOPRO/DCIM/100GOPRO/GH011234.MP4",
+      "volume_id": "gopro-sd-256",
+      "adapter": "gopro_card",
+      "sidecar_paths": [
+        "/Volumes/GOPRO/DCIM/100GOPRO/GL011234.LRV",
+        "/Volumes/GOPRO/DCIM/100GOPRO/GH011234.THM"
+      ],
+      "original_filename": "GH011234.MP4",
+      "first_seen_at": "2026-03-15T11:20:03+05:30",
+      "last_verified_at": "2026-03-15T11:20:03+05:30",
+      "present": true
+    }
+  ],
+  "span": {
+    "span_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
+    "role": "member",
+    "span_kind": "gopro_chapter",
+    "index": 0,
+    "member_count": 2,
+    "member_media_ids": [],
+    "offset_in_span": { "value": 0, "rate": 59.94005994005994 },
+    "continuity": "verified_gapless"
+  },
+  "capture": {
+    "captured_at": {
+      "local": "2025-01-18T14:02:11",
+      "utc": null,
+      "timezone": null,
+      "utc_offset_minutes": null,
+      "source": "quicktime_creation_date",
+      "precision": "second",
+      "confidence": 0.9,
+      "inferred_from_media_ids": []
+    },
+    "metadata_present": ["quicktime", "gopro_gpmf"],
+    "gps": {
+      "latitude": 30.0869,
+      "longitude": 78.2676,
+      "altitude_m": 1402.0,
+      "horizontal_accuracy_m": 4.5,
+      "source": "quicktime_location"
+    },
+    "device": {
+      "make": "GoPro",
+      "model": "HERO12 Black",
+      "lens": null,
+      "software": "HD12.01.01.20.00",
+      "body_serial_hash": null
+    },
+    "exposure": null
+  },
+  "image": null,
+  "video": {
+    "stored_size": { "width": 3840, "height": 2160 },
+    "oriented_size": { "width": 3840, "height": 2160 },
+    "rotation_deg": 0,
+    "duration": { "value": 42405, "rate": 59.94005994005994 },
+    "frame_rate": { "numerator": 60000, "denominator": 1001 },
+    "is_variable_frame_rate": false,
+    "start_timecode": { "value": 3025080, "rate": 59.94005994005994 },
+    "video_codec": "hevc",
+    "bit_rate": 78000000,
+    "color_primaries": "bt2020",
+    "transfer_characteristics": "arib-std-b67",
+    "audio_streams": [
+      {
+        "stream_index": 0,
+        "channels": 2,
+        "sample_rate": 48000,
+        "codec": "aac",
+        "language": null,
+        "is_silent": false
+      }
+    ]
+  },
+  "perceptual": {
+    "image_hash": null,
+    "keyframe_hashes": [
+      {
+        "time": { "value": 0, "rate": 59.94005994005994 },
+        "hash": { "algorithm": "phash-dct-64", "bits": 64, "hex": "1e3c78f0e1c38707" }
+      },
+      {
+        "time": { "value": 21000, "rate": 59.94005994005994 },
+        "hash": { "algorithm": "phash-dct-64", "bits": 64, "hex": "78f0e1c387071e3c" }
+      }
+    ]
+  },
+  "proxies": [
+    {
+      "proxy_id": "bd035371d6d1deb00d7a1704e1aa7cbd49c1755d54f953f6e3134588debbfbcc",
+      "kind": "video_proxy_480p",
+      "path": "/Users/example/Library/Application Support/MemoryEngine/proxies/bd/03/bd035371.mp4",
+      "size": { "width": 854, "height": 480 },
+      "byte_size": 68221440,
+      "generator_version": "proxy-gen/1.0.0+ffmpeg7.1+videotoolbox",
+      "frame_index": {
+        "path": "/Users/example/Library/Application Support/MemoryEngine/proxies/bd/03/bd035371.idx",
+        "entry_count": 42405,
+        "mapping": "identity",
+        "source_rate": 59.94005994005994,
+        "proxy_rate": 59.94005994005994
+      }
+    }
+  ],
+  "processing": {
+    "state": "analyzed",
+    "stages": {
+      "hash": { "status": "done", "attempts": 1 },
+      "metadata": { "status": "done", "attempts": 1 },
+      "thumbnail": { "status": "done", "attempts": 1 },
+      "video_proxy": { "status": "done", "attempts": 1, "completed_at": "2026-03-15T11:48:52+05:30" },
+      "perceptual_hash": { "status": "done", "attempts": 1 },
+      "shot_detection": {
+        "status": "skipped",
+        "attempts": 0,
+        "skip_reason": "analysis runs on the span assembly, not on individual chapters"
+      },
+      "moment_scoring": {
+        "status": "skipped",
+        "attempts": 0,
+        "skip_reason": "analysis runs on the span assembly, not on individual chapters"
+      }
+    }
+  },
+  "quality": null,
+  "content": null,
+  "faces": null,
+  "dedupe": null,
+  "exclusion": { "excluded_from_automation": false, "reasons": [], "user_override": null },
+  "user": { "favorite": false, "hidden": false, "rating": null, "tags": [], "caption": null },
+  "model_runs": [],
+  "first_seen_at": "2026-03-15T11:20:03+05:30",
+  "updated_at": "2026-03-15T11:48:52+05:30"
+}

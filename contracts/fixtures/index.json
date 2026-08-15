@@ -1,0 +1,248 @@
+{
+  "contract_version": "v0",
+  "description": "Golden fixtures for the Memory Engine contract layer. Both agents validate against these; a change to any file here is a contract change and requires both sides to re-run their tests. Every fixture file on disk must appear in this manifest and vice versa -- contracts/tests/test_contracts.py enforces that, so a fixture cannot be added without saying what it is for.",
+  "expectations": {
+    "valid": "Must validate cleanly against its schema AND satisfy every cross-field invariant.",
+    "schema-invalid": "Must be REJECTED by JSON Schema validation. `error_path` names the field the rejection must point at, so a fixture cannot pass the test for an accidental reason.",
+    "semantic-invalid": "Must PASS JSON Schema validation but FAIL a cross-field invariant that JSON Schema cannot express."
+  },
+  "schemas": {
+    "media-record": "media-record.schema.json",
+    "face-record": "face-record.schema.json",
+    "moment-record": "moment-record.schema.json",
+    "edl": "edl.schema.json",
+    "album-spec": "album-spec.schema.json",
+    "job-spec": "job-spec.schema.json",
+    "pref-event": "pref-event.schema.json"
+  },
+  "fixtures": [
+    {
+      "path": "media-record/valid/image-beach-sunset.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "The realistic baseline: a well-exposed DSLR photo with full EXIF, GPS, two source locations for the same bytes (drive plus Google Takeout), a dedupe group where it is primary, and a complete analysis pass.",
+      "exercises": ["content-addressed dedupe across two import paths", "full model_runs provenance", "confirmed person present"]
+    },
+    {
+      "path": "media-record/valid/image-no-exif-date.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE required by Phase 0: a photo with no EXIF date. A WhatsApp forward stripped of every metadata block.",
+      "exercises": [
+        "captured_at present but wholly empty rather than absent",
+        "precision 'unknown' so chronological output excludes it instead of sorting it to the epoch",
+        "metadata_present is an empty array, which is normal and not an error",
+        "faces detected but none confirmed, so confirmed_person_ids is empty while pending_review_count is 5"
+      ]
+    },
+    {
+      "path": "media-record/valid/video-gopro-chapter-01.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE required by Phase 0, part 1 of 3: the first physical file of a GoPro chaptered recording.",
+      "exercises": [
+        "span.role = member with index 0 and offset_in_span 0",
+        "exact NTSC frame rate 60000/1001 preserved as a rational",
+        "video proxy carrying a frame-index sidecar",
+        "shot detection deliberately skipped with a stated skip_reason, because analysis runs on the assembly"
+      ]
+    },
+    {
+      "path": "media-record/valid/video-gopro-chapter-02.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE part 2 of 3: the second chapter, offset into the recording by the first chapter's duration.",
+      "exercises": ["span index 1", "offset_in_span 42405 frames", "continuity verified_gapless"]
+    },
+    {
+      "path": "media-record/valid/video-gopro-span-assembly.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE part 3 of 3: the virtual assembly record representing both chapters as one continuous recording. This is the id that MomentRecords and EDL clips reference, so a cut may cross a chapter boundary without any planner knowing chapters exist.",
+      "exercises": [
+        "span.role = assembly with index null and both member ids listed",
+        "duration equals the sum of member durations (42405 + 19188 = 61593)",
+        "hash stage not_applicable because the assembly has no bytes of its own"
+      ]
+    },
+    {
+      "path": "media-record/schema-invalid/unknown-property.json",
+      "schema": "media-record",
+      "expectation": "schema-invalid",
+      "error_path": [],
+      "purpose": "additionalProperties:false must reject an invented field. This is the guard that stops either agent quietly extending a record instead of changing the contract.",
+      "exercises": ["rejection of the undeclared field `rating_out_of_ten`"]
+    },
+    {
+      "path": "face-record/valid/face-confirmed-high-confidence.json",
+      "schema": "face-record",
+      "expectation": "valid",
+      "purpose": "A face a human has confirmed, and therefore the only kind that may appear in unattended output.",
+      "exercises": ["assignment user_confirmed", "eligible_for_automated_output true with person_id, confidence and threshold_used all present"]
+    },
+    {
+      "path": "face-record/valid/face-below-threshold-review-queued.json",
+      "schema": "face-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE required by Phase 0: a face below the confidence threshold. The model has a guess (0.7418) that it is not permitted to act on against the 0.92 automated-output threshold.",
+      "exercises": [
+        "assignment auto_below_threshold with person_id still null",
+        "eligible_for_automated_output false -- precision over recall",
+        "two ranked candidates recorded, which is the sibling-confusion case",
+        "review_reason below_threshold so the item lands in the review queue rather than in an album"
+      ]
+    },
+    {
+      "path": "face-record/schema-invalid/eligible-while-below-threshold.json",
+      "schema": "face-record",
+      "expectation": "schema-invalid",
+      "error_path": ["identity", "eligible_for_automated_output"],
+      "purpose": "The precision-first invariant is machine-checked, not merely documented. A face whose assignment is auto_below_threshold cannot claim eligibility.",
+      "exercises": ["if/then constraint forcing eligible_for_automated_output to false"]
+    },
+    {
+      "path": "face-record/schema-invalid/eligible-without-person-id.json",
+      "schema": "face-record",
+      "expectation": "schema-invalid",
+      "error_path": ["identity", "person_id"],
+      "purpose": "An eligible face must name the person it is eligible as. No unexplained permissions.",
+      "exercises": ["if/then constraint requiring person_id when eligible"]
+    },
+    {
+      "path": "moment-record/valid/moment-emotional-peak.json",
+      "schema": "moment-record",
+      "expectation": "valid",
+      "purpose": "A keepworthy moment scored by a Tier 3 pass: laughter, a confirmed person, speech with word-level timing, and five certified snap points.",
+      "exercises": [
+        "source_range in source timecode alongside proxy_range in proxy time",
+        "snap points with asymmetric cut_direction (a motion onset is an in-point, not an out-point)",
+        "speech_safe_in / speech_safe_out derived from word timestamps -- the no-mid-word-cut mechanism",
+        "preserve_audio_tail true, which the EDL realises as an L-cut"
+      ]
+    },
+    {
+      "path": "moment-record/valid/moment-eliminated-shake.json",
+      "schema": "moment-record",
+      "expectation": "valid",
+      "purpose": "Elimination is first-class. This record exists only to say 'rejected, and here is why', which on a real action-camera library is the outcome for 90-95% of footage.",
+      "exercises": ["eliminated true with three reasons at the free `classical` stage", "no snap points and no safe_trim, because nothing downstream may use it"]
+    },
+    {
+      "path": "edl/valid/reel-beat-locked-vertical-reframe.json",
+      "schema": "edl",
+      "expectation": "valid",
+      "purpose": "EDGE CASE required by Phase 0: an EDL with beat-locked cuts and a vertical reframe keyframe track. A 15-second 9:16 Instagram reel cut from the GoPro span assembly at 128 BPM.",
+      "exercises": [
+        "every one of 8 cuts locked to a downbeat, worst alignment error 7.5ms against the 50ms gate",
+        "exact NTSC rate 60000/1001 throughout, with fractional beat positions and integer frame positions",
+        "8 reframe tracks producing 9:16 from 16:9, SAM 2 subject lock, Savitzky-Golay smoothing, explicit fallback",
+        "one dissolve with handles; every other join is a hard cut expressed as the ABSENCE of a transition, per OTIO",
+        "a linear_speed time effect on the peak clip and an L-cut on the reaction clip",
+        "full audio plan: licensed music cue, ambient with per-clip gain, an explicit-range ducking rule, and a mix target",
+        "a Tier 3 story arc with four acts, five required beats all satisfied, and its ConsentRef",
+        "variant metadata, determinism block, and a passing validation report"
+      ]
+    },
+    {
+      "path": "edl/semantic-invalid/source-range-outside-available.json",
+      "schema": "edl",
+      "expectation": "semantic-invalid",
+      "purpose": "JSON Schema cannot compare a clip's source_range against its media_ref's available_range. This fixture is structurally perfect and still unrenderable, which is exactly the class of bug the semantic validator exists to catch before a render starts rather than at 80%.",
+      "exercises": ["clip-01 ends 227 frames past the end of its source"]
+    },
+    {
+      "path": "album-spec/valid/album-thailand-validated.json",
+      "schema": "album-spec",
+      "expectation": "valid",
+      "purpose": "A cover plus one spread that passes the hard print validator, against a real-shaped vendor profile.",
+      "exercises": [
+        "millimetre page geometry with a normalised crop into the source, bridged by effective_dpi",
+        "every effective_dpi above the 300 DPI floor at printed size",
+        "face safety measured in mm against trim and the 10mm gutter",
+        "spread-level colour harmony solved across facing pages as deltas",
+        "enhancement ops carrying license_cleared",
+        "a Tier 3 spread review that found two issues and fixed both"
+      ]
+    },
+    {
+      "path": "album-spec/schema-invalid/pass-status-with-errors.json",
+      "schema": "album-spec",
+      "expectation": "schema-invalid",
+      "error_path": ["validation", "error_count"],
+      "purpose": "A spec cannot count its own failures and still claim a pass. render-print refuses anything but a genuine pass, and there is no override flag.",
+      "exercises": ["if/then constraint forcing error_count to 0 when status is pass"]
+    },
+    {
+      "path": "job-spec/valid/job-video-proxy-resumed.json",
+      "schema": "job-spec",
+      "expectation": "valid",
+      "purpose": "The resumption case: a proxy job killed mid-run and picked back up, having already finished chapter 1.",
+      "exercises": [
+        "an opaque worker-owned checkpoint cursor",
+        "completed_input_ids so a resume does not redo finished work",
+        "partial_output_ids so the chapter-1 proxy is neither orphaned nor regenerated",
+        "progress in real units (frames) with a stale heartbeat telling the scheduler the job was killed, not hung",
+        "a retryable error retained on attempt 1 while attempt 2 runs"
+      ]
+    },
+    {
+      "path": "job-spec/valid/job-tier3-with-consent.json",
+      "schema": "job-spec",
+      "expectation": "valid",
+      "purpose": "The only kind of job permitted to touch the network: a Tier 3 contact-sheet request with a consent-ledger entry.",
+      "exercises": [
+        "requires_egress true with consent, destination and payload_kind all present",
+        "payload_kind contact_sheet -- thumbnails only, never originals",
+        "a journal recording the consent and both network legs"
+      ]
+    },
+    {
+      "path": "job-spec/schema-invalid/egress-without-consent.json",
+      "schema": "job-spec",
+      "expectation": "schema-invalid",
+      "error_path": ["egress", "consent"],
+      "purpose": "'No network egress without a consent-ledger entry' is enforced by the contract, not only by code. The CI egress test is the second line of defence; this is the first.",
+      "exercises": ["if/then constraint requiring consent when requires_egress is true"]
+    },
+    {
+      "path": "pref-event/valid/pref-variant-picked.json",
+      "schema": "pref-event",
+      "expectation": "valid",
+      "purpose": "The richest preference signal the system gets: the user picked the rank-1 variant over the rank-0 variant the model scored higher. That disagreement is the error signal.",
+      "exercises": [
+        "all three alternatives carried with their presented rank, presented score and feature vector -- the pairwise comparison, not just the outcome",
+        "named features alongside a dense vector, both pinned to feature_set_id",
+        "scores frozen as presented, never recomputed",
+        "deliberation time recorded as evidence strength",
+        "local-only: person ids present, so shareable_for_global_model is false"
+      ]
+    },
+    {
+      "path": "pref-event/valid/pref-recrop-anonymized.json",
+      "schema": "pref-event",
+      "expectation": "valid",
+      "purpose": "A re-crop, which is the strongest signal of all: the human has not merely judged, they have demonstrated the correct answer. Shown here in its exportable, anonymised form.",
+      "exercises": [
+        "crop_before / crop_after as the label",
+        "shareable_for_global_model true, with consent, anonymization_version set and person_ids stripped",
+        "pixel_data_present false -- feature vectors and decisions only"
+      ]
+    },
+    {
+      "path": "pref-event/schema-invalid/shareable-without-anonymization.json",
+      "schema": "pref-event",
+      "expectation": "schema-invalid",
+      "error_path": ["privacy", "contains_local_identifiers"],
+      "purpose": "An event still holding local identifiers cannot be queued for the global training pool, even with consent. The schema blocks it so a bug elsewhere cannot leak it.",
+      "exercises": ["if/then constraint requiring contains_local_identifiers false and an anonymization_version when shareable"]
+    },
+    {
+      "path": "pref-event/schema-invalid/pixel-data-present.json",
+      "schema": "pref-event",
+      "expectation": "schema-invalid",
+      "error_path": ["pixel_data_present"],
+      "purpose": "The privacy promise expressed as a type. A PrefEvent carrying pixel data is structurally invalid, not merely discouraged.",
+      "exercises": ["const false on pixel_data_present"]
+    }
+  ]
+}

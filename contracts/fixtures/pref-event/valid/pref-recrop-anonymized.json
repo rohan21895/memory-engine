@@ -1,0 +1,76 @@
+{
+  "schema_version": "v0",
+  "event_id": "2d7b91e4-5a06-4c38-9e72-1f4a8c05b3d9",
+  "occurred_at": "2026-03-17T14:31:09+05:30",
+  "decision": {
+    "kind": "recropped",
+    "surface": "spread_editor",
+    "explicit": true,
+    "confidence": null,
+    "reversed_at": null
+  },
+  "subject": {
+    "subject_type": "placement",
+    "subject_id": "p1-b",
+    "alternatives": [],
+    "parent_id": "4995f8f46254a30a91bd452be677c893b96d2b1ce7b053b2f67753d88a894c3e"
+  },
+  "context": {
+    "task": "album",
+    "project_id": null,
+    "session_id": null,
+    "candidate_set_size": 1,
+    "presented_count": 1,
+    "subject_presented_rank": 0,
+    "deliberation_ms": 8700.0,
+    "position_in_session": 31,
+    "ranker_version": "ranker-v1.0.0",
+    "fusion_weights_version": "fusion-v1.2.0",
+    "device_class": "desktop"
+  },
+  "features": {
+    "feature_set_id": "placement-features-v1",
+    "named": {
+      "aesthetic": 0.74,
+      "face_count": 1.0,
+      "max_face_area_ratio": 0.061,
+      "saliency_center_x": 0.472,
+      "saliency_center_y": 0.383,
+      "crop_area_fraction": 0.781,
+      "effective_dpi": 571.3,
+      "rule_of_thirds_error": 0.118
+    },
+    "dense": null,
+    "embeddings": [],
+    "scores_at_decision": { "auto_crop_confidence": 0.66 },
+    "person_context": {
+      "confirmed_person_count": 1,
+      "includes_priority_person": true,
+      "person_ids": []
+    }
+  },
+  "delta": {
+    "crop_before": { "x": 0.1094, "y": 0.0, "w": 0.7813, "h": 1.0, "rotation_deg": 0 },
+    "crop_after": { "x": 0.1523, "y": 0.0, "w": 0.7813, "h": 1.0, "rotation_deg": 0 },
+    "position_before": null,
+    "position_after": null,
+    "trim_before": null,
+    "trim_after": null,
+    "replaced_with_subject_id": null,
+    "instruction_text": null
+  },
+  "privacy": {
+    "user_pseudonym": "fb0f34a1205c83df7fd3d76e0d4d22fa6e241f8d48f7c9ce043e40d094b7da0f",
+    "shareable_for_global_model": true,
+    "consent": {
+      "ledger_entry_id": "e0349d17-6b82-4a95-bc31-58f2e7a04c6b",
+      "scope": "anonymized_preference_training",
+      "granted_at": "2026-02-01T10:14:33+05:30",
+      "expires_at": null,
+      "revoked_at": null
+    },
+    "contains_local_identifiers": false,
+    "anonymization_version": "anon-v1"
+  },
+  "pixel_data_present": false
+}
