@@ -21,11 +21,18 @@ JPEG, PNG, GIF, BMP, WebP, and TIFF are decoded in v1. HEIC/HEIF/AVIF are identi
 quarantined as `unsupported_codec` until the platform decoder adapter lands; they are never
 misclassified from a misleading filename extension.
 
+On macOS, `generate_video_proxy` jobs use VideoToolbox for both decode and H.264 encode,
+with software fallback disabled. Scaling stays on VideoToolbox; the same FFmpeg pass emits
+an NDJSON frame-index sidecar from decoded timestamps. Completed media inputs are checkpointed
+individually, so a resumed GoPro chapter set never re-encodes finished chapters.
+
 ## CLI
 
 ```text
 memory-engine-ingest <job-spec.json> <output-dir> <checkpoint.json>
 ```
+
+Set `MEMORY_ENGINE_FFMPEG` when FFmpeg is not on `PATH`.
 
 The source roots in the job must exist and their `source_locator_digest` must match the
 canonical, NFC-normalized, sorted roots joined by a NUL byte and hashed with BLAKE3.

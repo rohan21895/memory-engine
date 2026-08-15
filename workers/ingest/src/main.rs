@@ -1,7 +1,7 @@
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
-use memory_engine_contracts::JobSpec;
-use memory_engine_ingest::{execute_scan, CheckpointStore};
+use memory_engine_contracts::{JobSpec, JobSpecJobType};
+use memory_engine_ingest::{execute_scan, execute_video_proxy, CheckpointStore};
 
 fn main() -> ExitCode {
     match run() {
@@ -27,7 +27,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut job: JobSpec = serde_json::from_slice(&fs::read(job_path)?)?;
     let store = CheckpointStore::new(checkpoint_path);
-    let report = execute_scan(&mut job, &output_dir, &store)?;
+    let report = match job.job_type {
+        JobSpecJobType::ScanSource => {
+            serde_json::to_value(execute_scan(&mut job, &output_dir, &store)?)?
+        }
+        JobSpecJobType::GenerateVideoProxy => {
+            let ffmpeg = env::var_os("MEMORY_ENGINE_FFMPEG")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("ffmpeg"));
+            serde_json::to_value(execute_video_proxy(&mut job, &output_dir, &store, &ffmpeg)?)?
+        }
+        _ => return Err("job type is not handled by the ingest worker".into()),
+    };
     println!("{}", serde_json::to_string(&report)?);
     Ok(())
 }
