@@ -1,0 +1,97 @@
+{
+  "schema_version": "v0",
+  "face_id": "a6950386f5ecb6d5a4213465de36a550058a26299eb44b4b87a86a5dd968f39f",
+  "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+  "frame_time": null,
+  "track": null,
+  "detection": {
+    "bbox": { "x": 0.4128, "y": 0.3016, "w": 0.1042, "h": 0.1563, "rotation_deg": 0 },
+    "detection_score": 0.9942,
+    "detector": {
+      "model_id": "scrfd-10g-bnkps",
+      "version": "1.0.0",
+      "weights_blake3": "c450fc2acdb89952121a46dc9afb23f0bbfe2d875be8accaf1edb2eb69749330",
+      "runtime": "onnxruntime_coreml",
+      "precision": "fp16"
+    },
+    "detected_on": "preview_2048",
+    "face_area_ratio": 0.0163
+  },
+  "landmarks": {
+    "scheme": "insightface_5",
+    "points": [
+      { "x": 0.4381, "y": 0.3512 },
+      { "x": 0.4869, "y": 0.3498 },
+      { "x": 0.4622, "y": 0.3801 },
+      { "x": 0.4419, "y": 0.4082 },
+      { "x": 0.4841, "y": 0.4071 }
+    ],
+    "score": 0.972
+  },
+  "embedding": {
+    "space": "arcface_buffalo_l_512",
+    "dimensions": 512,
+    "storage": "index",
+    "index_key": "vec:face:a6950386:arcface_buffalo_l_512",
+    "values": null,
+    "quantization": "float32",
+    "normalized": true
+  },
+  "attributes": {
+    "yaw_deg": -8.4,
+    "pitch_deg": 3.1,
+    "roll_deg": -1.2,
+    "eyes_open": 0.981,
+    "smile": 0.874,
+    "mouth_open": 0.412,
+    "gaze_on_camera": 0.893,
+    "sharpness": 0.91,
+    "occlusion": 0.02,
+    "wearing_sunglasses": 0.01,
+    "wearing_mask": 0.0,
+    "quality": { "value": 0.93, "run_id": "run-facequality-0221" }
+  },
+  "cluster": {
+    "cluster_id": "d41f8b62-0c3a-4e57-9b18-7a25e6c4f930",
+    "method": "hdbscan_cosine",
+    "membership_strength": 0.968,
+    "is_noise": false,
+    "distance_to_centroid": 0.184,
+    "clustering_run_id": "cluster-run-0042"
+  },
+  "identity": {
+    "person_id": "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03",
+    "assignment": "user_confirmed",
+    "confidence": 0.9891,
+    "threshold_profile": "automated_output",
+    "threshold_used": 0.92,
+    "eligible_for_automated_output": true,
+    "candidates": [],
+    "review_reason": null,
+    "decided_by": "user",
+    "decided_at": "2026-03-16T19:44:12+05:30"
+  },
+  "sensitive": {
+    "minor_status": "confirmed_adult",
+    "labeling_consent": null,
+    "excluded_from_sharing": false
+  },
+  "model_runs": [
+    {
+      "run_id": "run-arcface-0220",
+      "model": {
+        "model_id": "arcface-buffalo-l",
+        "version": "1.0.0",
+        "weights_blake3": "4fc2e4524e83d87635eb21d47698500df72fa1ad9e8b6b523bf30b7baddad82e",
+        "runtime": "onnxruntime_coreml",
+        "precision": "fp32"
+      },
+      "ran_at": "2026-03-14T09:13:41+05:30",
+      "input_proxy_id": "576200e08062715b8e3ab33d6154f91f58c4ff396b53369ca05969fa86833e07",
+      "duration_ms": 12.4,
+      "job_id": null
+    }
+  ],
+  "created_at": "2026-03-14T09:13:41+05:30",
+  "updated_at": "2026-03-16T19:44:12+05:30"
+}

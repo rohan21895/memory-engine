@@ -1,0 +1,374 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memory-engine.local/contracts/v0/pref-event.schema.json",
+  "title": "PrefEvent",
+  "description": "One human reaction, captured with the feature context that existed at the moment of the decision.",
+  "$comment": "This is the training-data schema for the taste model and the compounding asset of the whole product. Four decisions define it.\n\n 1. FEATURE CONTEXT, NEVER PIXELS. `pixel_data_present` is a const false in the schema, so a record carrying image data is structurally invalid rather than merely discouraged. The global model trains on feature vectors and decisions only, which is what keeps the flywheel compatible with the privacy promise.\n\n 2. THE ALTERNATIVES ARE THE SIGNAL. 'Kept photo X' is almost worthless on its own; 'kept X when shown X, Y and Z, where Y scored higher' is a pairwise preference. `alternatives` is therefore required for every decision made from a presented set, and it carries each alternative's score at presentation time. Without it we would be logging outcomes and losing the comparison that makes them learnable.\n\n 3. SCORES AT DECISION TIME, NOT SCORES NOW. Every feature and score is frozen as presented. Re-deriving them later against a newer model would silently relabel historical data with information the human never saw, which is a subtle and permanent way to poison a preference dataset.\n\n 4. THE FEATURE SET IS VERSIONED. `feature_set_id` names the exact ordered feature list a dense vector corresponds to. A dense vector without it is uninterpretable the moment the feature list changes, and it will change.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "occurred_at",
+    "decision",
+    "subject",
+    "context",
+    "features",
+    "privacy",
+    "pixel_data_present"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/SchemaVersion" },
+
+    "event_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+
+    "occurred_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+
+    "decision": { "$ref": "#/$defs/Decision" },
+
+    "subject": { "$ref": "#/$defs/Subject" },
+
+    "context": { "$ref": "#/$defs/DecisionContext" },
+
+    "features": { "$ref": "#/$defs/FeatureContext" },
+
+    "delta": {
+      "description": "What actually changed, for decisions that are an edit rather than a choice: the crop before and after, the position before and after. The edit itself is the label.",
+      "oneOf": [{ "$ref": "#/$defs/DecisionDelta" }, { "type": "null" }]
+    },
+
+    "privacy": { "$ref": "#/$defs/PrivacyEnvelope" },
+
+    "pixel_data_present": {
+      "description": "Structurally false, always. Present as a field rather than as an unwritten rule so that any pipeline stage, any reviewer, and any test can assert the privacy property directly on the record.",
+      "type": "boolean",
+      "const": false
+    }
+  },
+
+  "$defs": {
+    "Decision": {
+      "title": "Decision",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "surface", "explicit"],
+      "properties": {
+        "kind": {
+          "description": "What the human did. Note that `exported`, `printed` and `shared` are included: acting on an output is the strongest positive signal available, far stronger than a thumbs-up, and it costs nothing to capture.",
+          "type": "string",
+          "enum": [
+            "kept",
+            "rejected",
+            "reordered",
+            "recropped",
+            "variant_picked",
+            "hero_swapped",
+            "replaced",
+            "person_confirmed",
+            "person_rejected",
+            "moment_trimmed",
+            "music_changed",
+            "enhancement_accepted",
+            "enhancement_rejected",
+            "page_reordered",
+            "exported",
+            "printed",
+            "shared",
+            "deleted",
+            "favorited",
+            "revision_requested"
+          ]
+        },
+        "surface": {
+          "description": "Where in the product it happened. The same `kept` means different things in a culling sweep and in a final album review, and a model that cannot tell them apart will learn the average of two different tastes.",
+          "type": "string",
+          "enum": [
+            "culling_ui",
+            "library_grid",
+            "album_review",
+            "spread_editor",
+            "variant_picker",
+            "person_labeling",
+            "project_editor",
+            "share_flow",
+            "checkout",
+            "concierge_review"
+          ]
+        },
+        "explicit": {
+          "description": "True when the human deliberately expressed a preference. False for inferred signals such as dwelling on a frame or scrolling past. Inferred events are far weaker evidence and must be weighted accordingly rather than mixed in silently.",
+          "type": "boolean"
+        },
+        "confidence": {
+          "description": "How much to trust an inferred signal. Null for explicit ones, which need no discount.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }]
+        },
+        "reversed_at": {
+          "description": "Set when the human undid this within the session. A reversed decision is training data about the reversal, not about the original action, and must never be fed in as a plain positive.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "Subject": {
+      "title": "Subject",
+      "description": "What was decided about, and crucially what it was decided AGAINST.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_type", "subject_id"],
+      "properties": {
+        "subject_type": {
+          "type": "string",
+          "enum": ["media", "moment", "face", "person", "placement", "spread", "page", "edl_variant", "album", "enhancement_op", "music_cue"]
+        },
+        "subject_id": {
+          "description": "Content hash for content-addressed subjects, uuid or slug otherwise. Kept as a string so one field serves every subject type.",
+          "type": "string",
+          "minLength": 1
+        },
+        "alternatives": {
+          "description": "The other options on screen when the decision was made, each with the score it was presented with. This is what converts an outcome into a pairwise preference, and it is the single most valuable field in the record. Empty only for decisions with genuinely no alternatives, such as favouriting one photo in a grid.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Alternative" },
+          "default": []
+        },
+        "parent_id": {
+          "description": "Containing entity: the album a placement is on, the reel a variant belongs to.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "Alternative": {
+      "title": "Alternative",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_id", "chosen"],
+      "properties": {
+        "subject_id": { "type": "string", "minLength": 1 },
+        "chosen": {
+          "description": "True for the option that won. Included in the list rather than only in Subject so a single array fully describes the comparison.",
+          "type": "boolean"
+        },
+        "presented_rank": {
+          "description": "Position as shown, 0-based. Position bias is real and strong; a model trained without it will learn that the top-left option is beautiful.",
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "presented_score": {
+          "description": "The score the system assigned at presentation time. The gap between this and the human's choice is the error signal.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "feature_vector": {
+          "description": "Features for this alternative, in the same feature_set_id as the subject's. Required for pairwise training; a comparison where only the winner has features cannot be learned from.",
+          "oneOf": [{ "$ref": "#/$defs/DenseFeatures" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "DecisionContext": {
+      "title": "DecisionContext",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task"],
+      "properties": {
+        "task": {
+          "description": "What the human was trying to accomplish. Taste is task-relative: a photo rejected for a print album may be perfectly good for a reel.",
+          "type": "string",
+          "enum": ["cull", "album", "reel", "film", "person_labeling", "search", "share", "concierge"]
+        },
+        "project_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Uuid" }, { "type": "null" }]
+        },
+        "session_id": {
+          "description": "Groups decisions made in one sitting. Decisions late in a long session are noisier -- fatigue is measurable and worth modelling rather than ignoring.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Uuid" }, { "type": "null" }]
+        },
+        "candidate_set_size": {
+          "description": "How many options existed in total, which may exceed the number displayed.",
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "presented_count": {
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "subject_presented_rank": {
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "deliberation_ms": {
+          "description": "Time from presentation to decision. A 400ms rejection and a 30s agonised one are different strengths of evidence.",
+          "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }]
+        },
+        "position_in_session": {
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "ranker_version": {
+          "description": "Which ranking model produced the scores the human was reacting to. Without it, an event cannot be attributed to the model that generated the ordering, and offline evaluation becomes guesswork.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "fusion_weights_version": {
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "device_class": {
+          "description": "Screen size changes what a person can even perceive; a crop judged on a phone is not a crop judged on a 27-inch display.",
+          "oneOf": [
+            { "type": "string", "enum": ["desktop", "laptop", "tablet", "phone"] },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+
+    "FeatureContext": {
+      "title": "FeatureContext",
+      "description": "The subject's features as they stood at decision time. Both a named map and an optional dense vector: the named map keeps the data interpretable and debuggable for years, the dense vector keeps training cheap. The named map is the source of truth.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["feature_set_id", "named"],
+      "properties": {
+        "feature_set_id": {
+          "description": "Names the exact ordered feature list in use. Bumped whenever a feature is added, removed or redefined. A dense vector is meaningless without it.",
+          "$ref": "common.schema.json#/$defs/Slug"
+        },
+        "named": {
+          "description": "Feature name to value. Values are numeric and normalised. Deliberately an open map rather than a fixed property list, because the feature set is expected to grow -- but every key must be declared in the named feature_set_id, and the eval harness checks that.",
+          "type": "object",
+          "additionalProperties": { "type": "number" },
+          "propertyNames": { "$ref": "common.schema.json#/$defs/Slug" }
+        },
+        "dense": {
+          "oneOf": [{ "$ref": "#/$defs/DenseFeatures" }, { "type": "null" }]
+        },
+        "embeddings": {
+          "description": "Embedding references, not the floats themselves for local storage, and resolved to values only when a training export is built under an explicit consent scope. An embedding is derived from pixels but is not pixels; treating it as sensitive anyway is the conservative reading of the privacy promise.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/VectorRef" },
+          "default": []
+        },
+        "scores_at_decision": {
+          "description": "The system's own scores as presented. Frozen: never recomputed against a later model.",
+          "type": "object",
+          "additionalProperties": { "type": "number" },
+          "propertyNames": { "$ref": "common.schema.json#/$defs/Slug" },
+          "default": {}
+        },
+        "person_context": {
+          "description": "Whether confirmed people were present, and how many. Who is in a photo is often the entire reason it was kept, and this captures that without naming anybody in an exportable record -- ids stay local, counts travel.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "confirmed_person_count": { "type": "integer", "minimum": 0, "default": 0 },
+                "includes_priority_person": {
+                  "description": "True when someone the user has marked as important is present. The single strongest predictor of a keep decision in family libraries.",
+                  "type": "boolean",
+                  "default": false
+                },
+                "person_ids": {
+                  "description": "Local-only. Stripped by the anonymisation pass before any event leaves the device.",
+                  "type": "array",
+                  "items": { "$ref": "common.schema.json#/$defs/Uuid" },
+                  "default": []
+                }
+              }
+            },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+
+    "DenseFeatures": {
+      "title": "DenseFeatures",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["feature_set_id", "values"],
+      "properties": {
+        "feature_set_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "values": {
+          "type": "array",
+          "items": { "type": "number" },
+          "maxItems": 1024
+        }
+      }
+    },
+
+    "DecisionDelta": {
+      "title": "DecisionDelta",
+      "description": "The before and after of an edit. A re-crop is the richest signal the system ever receives: the human has not merely judged, they have demonstrated the correct answer.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "crop_before": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/NormalizedBox" }, { "type": "null" }]
+        },
+        "crop_after": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/NormalizedBox" }, { "type": "null" }]
+        },
+        "position_before": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "position_after": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "trim_before": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/TimeRange" }, { "type": "null" }]
+        },
+        "trim_after": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/TimeRange" }, { "type": "null" }]
+        },
+        "replaced_with_subject_id": {
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "instruction_text": {
+          "description": "For revision_requested: the human's own words, such as 'more of her' or 'less drone'. Free text, local-only, and stripped before any export -- it can contain names.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "PrivacyEnvelope": {
+      "title": "PrivacyEnvelope",
+      "description": "Who this event belongs to and how far it is allowed to travel. Present on every event because the decision about sharing is made once, at write time, and never re-litigated by whatever code later reads the record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user_pseudonym", "shareable_for_global_model"],
+      "properties": {
+        "user_pseudonym": {
+          "description": "A per-install salted hash, not a user id and not an email. Sufficient to group one person's events for a per-user model, insufficient to identify them.",
+          "$ref": "common.schema.json#/$defs/Blake3Hash"
+        },
+        "shareable_for_global_model": {
+          "description": "Whether this event may join the anonymised global training pool. Defaults to false in practice: the user opts in, and the absence of a decision is not consent.",
+          "type": "boolean"
+        },
+        "consent": {
+          "description": "Required when shareable_for_global_model is true. Same rule as everywhere else -- nothing leaves without a ledger entry.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/ConsentRef" }, { "type": "null" }]
+        },
+        "contains_local_identifiers": {
+          "description": "True when the record still holds person ids or free text. Such an event must pass the anonymisation step before export; this flag is what makes that check cheap and unambiguous.",
+          "type": "boolean",
+          "default": true
+        },
+        "anonymization_version": {
+          "description": "Which redaction pass was applied. Set once the event has been stripped for export.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "An event may only be marked shareable if it names its consent and has already been stripped of local identifiers. Both conditions, checked in the schema, so an un-anonymised event cannot be queued for upload by a bug elsewhere.",
+          "if": {
+            "properties": { "shareable_for_global_model": { "const": true } },
+            "required": ["shareable_for_global_model"]
+          },
+          "then": {
+            "required": ["consent", "anonymization_version"],
+            "properties": {
+              "consent": { "$ref": "common.schema.json#/$defs/ConsentRef" },
+              "contains_local_identifiers": { "const": false },
+              "anonymization_version": { "type": "string" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

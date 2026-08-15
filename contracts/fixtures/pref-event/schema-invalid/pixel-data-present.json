@@ -1,0 +1,22 @@
+{
+  "schema_version": "v0",
+  "event_id": "7a1e93c0-4b56-4d82-91f3-0c8e5a2b7d64",
+  "occurred_at": "2026-03-17T14:35:00+05:30",
+  "decision": { "kind": "kept", "surface": "culling_ui", "explicit": true },
+  "subject": {
+    "subject_type": "media",
+    "subject_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+    "alternatives": []
+  },
+  "context": { "task": "cull" },
+  "features": {
+    "feature_set_id": "media-features-v1",
+    "named": { "aesthetic": 0.74, "sharpness": 0.87 }
+  },
+  "privacy": {
+    "user_pseudonym": "fb0f34a1205c83df7fd3d76e0d4d22fa6e241f8d48f7c9ce043e40d094b7da0f",
+    "shareable_for_global_model": false,
+    "contains_local_identifiers": true
+  },
+  "pixel_data_present": true
+}

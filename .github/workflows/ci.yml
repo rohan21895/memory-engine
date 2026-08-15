@@ -35,6 +35,15 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # run-workspace-check.mjs discovers every pyproject.toml and runs its
+      # tests. contracts/ validates fixtures against the schemas and round-trips
+      # them through the generated pydantic models, so those two libraries have
+      # to be present here as well as in the Contracts job.
+      - run: python3 -m pip install --upgrade pip
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20"
       - run: npm ci --ignore-scripts
       - run: npm test
 
@@ -49,8 +58,26 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: npm ci --ignore-scripts
       - run: npm run codegen:check
+
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install --upgrade pip
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20"
+      # Golden tests: schemas are well formed, every fixture behaves as the
+      # manifest declares, cross-field invariants hold, and the committed
+      # bindings both parse and round-trip the fixtures.
+      - run: python3 -m unittest discover -s contracts/tests -v
 
   egress-test:
     name: Egress Test

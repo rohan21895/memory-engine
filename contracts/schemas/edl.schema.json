@@ -1,0 +1,1039 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memory-engine.local/contracts/v0/edl.schema.json",
+  "title": "EDL",
+  "description": "The deterministic edit plan for one video output. Every creative decision in the finished film or reel is expressed here; the renderer executes it and decides nothing.",
+
+  "$comment": "=====================================================================\n OPENTIMELINEIO MAPPING -- READ BEFORE CHANGING ANY FIELD IN THIS FILE\n=====================================================================\n\n Requirement: an EDL must be losslessly exportable to OpenTimelineIO, so a\n pro user can open our auto-cut in Resolve or Premiere and finish it by hand.\n 'Losslessly' here means: export to .otio, re-import, and get a byte-identical\n EDL back. Two rules make that achievable.\n\n RULE 1 -- Structure maps onto OTIO natives, never onto metadata.\n Anything OTIO models natively (clips, gaps, transitions, time, speed,\n markers, media references) uses the OTIO shape exactly, including its\n half-open TimeRange convention and its RationalTime value/rate pair. This is\n why nothing in this contract stores seconds as a float: 30000/1001 has no\n float representation that survives a round trip, and a drifting frame is a\n missed beat.\n\n RULE 2 -- Everything else round-trips through one metadata namespace.\n Beat grids, story arcs, reframe keyframe tracks and ducking rules have no\n OTIO equivalent. They are written into the OTIO `metadata` dict under the\n single key \"memory_engine\", which OTIO preserves verbatim across read/write\n and which every NLE ignores safely. An importer reconstructs the EDL from\n that namespace; an editor who never looks at it still gets a correct cut.\n\n FIELD-BY-FIELD MAPPING\n\n EDL                          -> otio.schema.Timeline\n  .name                       ->   Timeline.name\n  .global_start_time          ->   Timeline.global_start_time (RationalTime)\n  .tracks[]                   ->   Timeline.tracks (a Stack of Tracks)\n  .story_arc                  ->   Timeline.metadata.memory_engine.story_arc\n                                   (+ one Marker per act on the arc track,\n                                    for editor visibility only -- the\n                                    authoritative copy is the metadata)\n  .beat_grid                  ->   Timeline.metadata.memory_engine.beat_grid\n                                   (+ one Marker per downbeat, same rule)\n  .audio_plan.ducking         ->   Timeline.metadata.memory_engine.ducking\n  .audio_plan.mix             ->   Timeline.metadata.memory_engine.mix\n  .reframe_tracks[]           ->   Timeline.metadata.memory_engine.reframe_tracks\n  .determinism                ->   Timeline.metadata.memory_engine.determinism\n  .variant                    ->   Timeline.metadata.memory_engine.variant\n  .target                     ->   Timeline.metadata.memory_engine.target\n\n Track                        -> otio.schema.Track\n  .kind                       ->   Track.kind (\"Video\" | \"Audio\")\n  .name                       ->   Track.name\n  .items[]                    ->   Track (children list, in order)\n\n Clip (item_type=\"clip\")      -> otio.schema.Clip\n  .name                       ->   Clip.name\n  .source_range               ->   Clip.source_range (TimeRange, half-open)\n  .media_ref_id -> MediaRef   ->   Clip.media_reference (ExternalReference)\n  .enabled                    ->   Clip.enabled\n  .markers[]                  ->   Clip.markers[] (otio.schema.Marker)\n  .time_effect (linear_speed) ->   Clip.effects += otio.schema.LinearTimeWarp\n                                     (time_scalar)\n  .time_effect (freeze)       ->   Clip.effects += otio.schema.FreezeFrame\n  .color_ops[]                ->   Clip.effects += otio.schema.Effect with\n                                     effect_name \"memory_engine.color\" and the\n                                     op in its metadata\n  .moment_id, .beat_lock,\n  .reframe_track_id,\n  .source_media_id            ->   Clip.metadata.memory_engine.*\n\n Gap (item_type=\"gap\")        -> otio.schema.Gap\n  .duration                   ->   Gap.source_range.duration\n\n Transition                   -> otio.schema.Transition\n  (item_type=\"transition\")\n  .transition_type            ->   Transition.transition_type\n                                   (\"SMPTE_Dissolve\" | \"Custom\")\n  .in_offset                  ->   Transition.in_offset\n  .out_offset                 ->   Transition.out_offset\n  .parameters                 ->   Transition.metadata.memory_engine\n\n MediaRef                     -> otio.schema.ExternalReference\n  .available_range            ->   ExternalReference.available_range\n  .media_id (BLAKE3)          ->   ExternalReference.metadata.memory_engine\n                                     .media_id\n  (resolved local path)       ->   ExternalReference.target_url, written as a\n                                   file:// URL AT EXPORT TIME ONLY. The EDL\n                                   itself stores no paths -- it is portable\n                                   between machines precisely because it\n                                   addresses content by hash. On import the\n                                   hash in metadata wins over target_url.\n\n CONVENTIONS THAT KEEP THE ROUND TRIP EXACT\n\n - A plain cut is the ABSENCE of a Transition, matching OTIO, where adjacent\n   clips simply butt together. Never emit a zero-length Transition for a cut.\n - Transitions sit between their two neighbours in the items list and overlap\n   them by in_offset/out_offset. The clips' source_ranges already include the\n   handles the overlap consumes.\n - `timeline_range` on a Clip is derived (it is the running sum of preceding\n   durations, minus transition overlaps) and is NOT exported -- OTIO computes\n   it. It is carried here only so a validator can catch a planner that emitted\n   an inconsistent timeline, and it is excluded from the determinism digest.\n - Every RationalTime on a video track should share the timeline `rate`.\n   Audio-track times may use the audio sample rate. OTIO permits mixed rates;\n   this contract permits them only in that one place.\n\n See docs/otio-mapping.md for the exporter/importer pseudocode and the\n round-trip test plan.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "edl_id",
+    "kind",
+    "rate",
+    "target",
+    "media_refs",
+    "tracks",
+    "determinism"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/SchemaVersion" },
+
+    "edl_id": {
+      "description": "BLAKE3 over the canonical JSON of this EDL with volatile fields (generated_at, timeline_range) removed. Two EDLs with the same id render identically.",
+      "$ref": "common.schema.json#/$defs/Blake3Hash"
+    },
+
+    "name": { "type": "string" },
+
+    "kind": {
+      "type": "string",
+      "enum": ["reel", "film", "highlight", "chapter_preview", "custom"]
+    },
+
+    "rate": {
+      "description": "Timeline rate in units per second. All video-track RationalTimes are expressed at this rate. Use exact NTSC rationals where the source demands it (30000/1001), never the rounded decimal.",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+
+    "global_start_time": {
+      "description": "Timeline zero, exported as OTIO Timeline.global_start_time. Normally 0; non-zero when the output must carry a broadcast start timecode such as 01:00:00:00.",
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+    },
+
+    "target": { "$ref": "#/$defs/RenderTarget" },
+
+    "media_refs": {
+      "description": "Every source this EDL touches, addressed by content hash. Declared once at the top so a renderer can resolve, verify and pre-open all sources before it starts, and so a missing source is a clean up-front failure rather than a crash at 80%.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/MediaRef" },
+      "minItems": 1
+    },
+
+    "tracks": {
+      "description": "Ordered tracks. Index 0 is the bottom video layer, matching OTIO Stack ordering.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/Track" },
+      "minItems": 1
+    },
+
+    "reframe_tracks": {
+      "description": "Crop/reframe keyframe tracks, referenced by clips. Held at EDL level rather than inline on the clip so one subject-lock track can drive several clips from the same source shot.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/ReframeTrack" },
+      "default": []
+    },
+
+    "audio_plan": {
+      "oneOf": [{ "$ref": "#/$defs/AudioPlan" }, { "type": "null" }]
+    },
+
+    "beat_grid": {
+      "oneOf": [{ "$ref": "#/$defs/BeatGrid" }, { "type": "null" }]
+    },
+
+    "story_arc": {
+      "oneOf": [{ "$ref": "#/$defs/StoryArc" }, { "type": "null" }]
+    },
+
+    "color_pipeline": {
+      "oneOf": [{ "$ref": "#/$defs/ColorPipeline" }, { "type": "null" }]
+    },
+
+    "variant": {
+      "description": "Present when this EDL is one of several alternatives offered to the user. The reel planner emits 3-5; whichever the user picks becomes a PrefEvent, and the losers are training signal too.",
+      "oneOf": [{ "$ref": "#/$defs/VariantInfo" }, { "type": "null" }]
+    },
+
+    "determinism": { "$ref": "common.schema.json#/$defs/Determinism" },
+
+    "validation": {
+      "oneOf": [{ "$ref": "#/$defs/EdlValidation" }, { "type": "null" }]
+    },
+
+    "otio": {
+      "oneOf": [{ "$ref": "#/$defs/OtioExportInfo" }, { "type": "null" }]
+    }
+  },
+
+  "$defs": {
+    "RenderTarget": {
+      "title": "RenderTarget",
+      "description": "What this cut is for. Destination is part of the plan because the reframe, the loudness target and the duration are all chosen for it -- an Instagram cut is not a YouTube cut at a different bitrate.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination", "resolution", "aspect_ratio"],
+      "properties": {
+        "destination": {
+          "type": "string",
+          "enum": ["master", "instagram_reel", "instagram_feed", "youtube", "youtube_shorts", "tiktok", "whatsapp_status", "web_preview"]
+        },
+        "resolution": { "$ref": "common.schema.json#/$defs/PixelSize" },
+        "aspect_ratio": { "$ref": "common.schema.json#/$defs/AspectRatio" },
+        "target_duration": {
+          "description": "What the planner was asked for. The realised duration is the sum of the timeline and may differ slightly, because landing a cut on a beat matters more than hitting exactly 30.000s.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "max_duration": {
+          "description": "Hard ceiling imposed by the platform. Exceeding it is a validation failure, not a warning.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "loudness_target_lufs": {
+          "description": "Integrated loudness the mix is normalised to. -14 for most social platforms, -23 for broadcast-style masters.",
+          "oneOf": [{ "type": "number", "minimum": -40, "maximum": 0 }, { "type": "null" }]
+        }
+      }
+    },
+
+    "MediaRef": {
+      "title": "MediaRef",
+      "description": "One source, addressed by content hash rather than by path. This is what makes an EDL portable: the same plan renders on any machine that has the same footage, wherever it happens to live.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["media_ref_id", "media_id", "available_range"],
+      "properties": {
+        "media_ref_id": {
+          "description": "Local alias used by clips within this EDL.",
+          "$ref": "common.schema.json#/$defs/Slug"
+        },
+        "media_id": {
+          "description": "BLAKE3 of the source file, i.e. a MediaRecord primary key. For chaptered footage this is the span ASSEMBLY id; the renderer expands it to the ordered member files.",
+          "$ref": "common.schema.json#/$defs/Blake3Hash"
+        },
+        "media_kind": {
+          "type": "string",
+          "enum": ["video", "image", "audio", "music", "generated"],
+          "default": "video"
+        },
+        "available_range": {
+          "description": "The full extent of the source, in source time. Exported as ExternalReference.available_range. A clip whose source_range escapes this is invalid and must fail validation before render, not during it.",
+          "$ref": "common.schema.json#/$defs/TimeRange"
+        },
+        "is_span_assembly": {
+          "description": "True when media_id names a virtual assembly of chaptered files rather than a single file on disk.",
+          "type": "boolean",
+          "default": false
+        },
+        "expected_frame_rate": {
+          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+        },
+        "label": {
+          "description": "Human-readable name for the NLE bin. Cosmetic only -- never used for resolution.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "Track": {
+      "title": "Track",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["track_id", "kind", "items"],
+      "properties": {
+        "track_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "kind": {
+          "description": "Maps to OTIO Track.kind, which recognises exactly \"Video\" and \"Audio\".",
+          "type": "string",
+          "enum": ["video", "audio"]
+        },
+        "name": { "type": "string", "default": "" },
+        "role": {
+          "description": "What the track is for. Purely ours -- it rides in metadata -- but it lets the renderer build the filtergraph without inspecting contents.",
+          "type": "string",
+          "enum": ["primary", "overlay", "titles", "ambient", "music", "voiceover", "sfx"],
+          "default": "primary"
+        },
+        "enabled": { "type": "boolean", "default": true },
+        "items": {
+          "description": "Ordered children. Clips and gaps tile the track; transitions sit between two neighbours and overlap them.",
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/Clip" },
+              { "$ref": "#/$defs/Gap" },
+              { "$ref": "#/$defs/Transition" }
+            ]
+          }
+        }
+      }
+    },
+
+    "Clip": {
+      "title": "Clip",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_type", "clip_id", "media_ref_id", "source_range"],
+      "properties": {
+        "item_type": { "type": "string", "const": "clip" },
+        "clip_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "name": { "type": "string", "default": "" },
+
+        "media_ref_id": { "$ref": "common.schema.json#/$defs/Slug" },
+
+        "source_range": {
+          "description": "In and out in SOURCE time, half-open. The single most important field in the contract: it is what the renderer seeks to, and it must round-trip through OTIO unchanged.",
+          "$ref": "common.schema.json#/$defs/TimeRange"
+        },
+
+        "timeline_range": {
+          "description": "Derived position on the timeline. Carried for validation only; excluded from the determinism digest and not exported to OTIO, which recomputes it.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/TimeRange" }, { "type": "null" }]
+        },
+
+        "moment_id": {
+          "description": "The MomentRecord this clip realises. The provenance link that lets 'more of her' re-plan against the same candidate pool instead of starting over.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+        },
+
+        "enabled": { "type": "boolean", "default": true },
+
+        "time_effect": {
+          "oneOf": [{ "$ref": "#/$defs/TimeEffect" }, { "type": "null" }]
+        },
+
+        "reframe_track_id": {
+          "description": "Reframe track driving this clip's crop. Null means full frame, letterboxed or pillarboxed per the target.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+
+        "color_ops": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ColorOp" },
+          "default": []
+        },
+
+        "audio": {
+          "oneOf": [{ "$ref": "#/$defs/ClipAudio" }, { "type": "null" }]
+        },
+
+        "beat_lock": {
+          "description": "Present when this clip's in-point was snapped to the beat grid. Carries the alignment error so the <50ms quality gate is measurable from the plan alone, without rendering anything.",
+          "oneOf": [{ "$ref": "#/$defs/BeatLock" }, { "type": "null" }]
+        },
+
+        "story_beat_id": {
+          "description": "Which story-arc beat this clip satisfies. Null on clips that are connective tissue rather than a required beat.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+
+        "markers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Marker" },
+          "default": []
+        }
+      }
+    },
+
+    "Gap": {
+      "title": "Gap",
+      "description": "Explicit silence or black. Modelled explicitly, exactly as OTIO does, so a hold at the end of a film is a stated intention rather than an accident of arithmetic.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_type", "duration"],
+      "properties": {
+        "item_type": { "type": "string", "const": "gap" },
+        "gap_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+        "duration": { "$ref": "common.schema.json#/$defs/RationalTime" },
+        "fill": {
+          "type": "string",
+          "enum": ["black", "white", "transparent", "silence"],
+          "default": "black"
+        }
+      }
+    },
+
+    "Transition": {
+      "title": "Transition",
+      "description": "An overlap between the two neighbouring items. A hard cut is the absence of one of these, never a zero-length instance -- that is OTIO's convention and departing from it breaks the round trip.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["item_type", "transition_type", "in_offset", "out_offset"],
+      "properties": {
+        "item_type": { "type": "string", "const": "transition" },
+        "transition_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+        "transition_type": {
+          "description": "`dissolve` maps to OTIO's standard SMPTE_Dissolve. Everything else maps to OTIO \"Custom\" with the specific kind preserved in metadata, which is how OTIO itself handles non-standard transitions.",
+          "type": "string",
+          "enum": ["dissolve", "dip_to_black", "dip_to_white", "wipe", "push", "blur_dissolve", "match_cut", "custom"]
+        },
+        "in_offset": {
+          "description": "How far the transition extends backwards into the outgoing item.",
+          "$ref": "common.schema.json#/$defs/RationalTime"
+        },
+        "out_offset": {
+          "description": "How far it extends forwards into the incoming item.",
+          "$ref": "common.schema.json#/$defs/RationalTime"
+        },
+        "easing": {
+          "type": "string",
+          "enum": ["linear", "ease_in", "ease_out", "ease_in_out"],
+          "default": "linear"
+        },
+        "parameters": {
+          "description": "Kind-specific settings, e.g. wipe angle. Free-form because the set is open-ended; it rides in OTIO metadata untouched.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      }
+    },
+
+    "TimeEffect": {
+      "title": "TimeEffect",
+      "description": "Speed change. Restricted to what OTIO models natively, because a speed ramp that cannot round-trip is a speed ramp that silently disappears in Resolve.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["linear_speed", "freeze_frame"]
+        },
+        "time_scalar": {
+          "description": "OTIO LinearTimeWarp.time_scalar. 0.5 is half speed, 2.0 is double. Required for linear_speed.",
+          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+        },
+        "freeze_at": {
+          "description": "Source time to hold. Required for freeze_frame.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "audio_handling": {
+          "description": "What happens to this clip's audio under a speed change. Almost always `mute` for slow motion, because pitch-shifted ambient sounds broken.",
+          "type": "string",
+          "enum": ["mute", "resample", "preserve_pitch"],
+          "default": "mute"
+        }
+      }
+    },
+
+    "ColorOp": {
+      "title": "ColorOp",
+      "description": "A per-clip colour adjustment, planned by the intelligence layer and merely applied by the renderer.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "amount"],
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": ["exposure", "contrast", "saturation", "temperature", "tint", "highlights", "shadows", "lift", "gamma", "gain", "lut", "auto_white_balance", "match_to_reference"]
+        },
+        "amount": {
+          "description": "Signed, normalised to [-1,1] where 0 is no change. A single normalised scale keeps ops composable and makes 'is this grade aggressive' a question with an answer.",
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "lut_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+        "reference_clip_id": {
+          "description": "For match_to_reference: the clip whose look this one is being matched to. Shot-to-shot consistency inside a scene is planned, not left to the encoder.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "ClipAudio": {
+      "title": "ClipAudio",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gain_db": { "type": "number", "minimum": -96, "maximum": 24, "default": 0 },
+        "muted": { "type": "boolean", "default": false },
+        "fade_in": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "fade_out": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "audio_extends_past_out": {
+          "description": "L-cut: hold this clip's audio past its visual out-point, so a laugh finishes over the next shot. Realises MomentRecord.safe_trim.preserve_audio_tail.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "BeatLock": {
+      "title": "BeatLock",
+      "description": "Records that a cut was placed against the music rather than merely near it. `alignment_error_ms` is the audit trail for the <50ms downbeat quality gate.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["beat_index", "alignment_error_ms"],
+      "properties": {
+        "beat_index": {
+          "description": "Index into BeatGrid.beats.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "is_downbeat": { "type": "boolean", "default": false },
+        "alignment_error_ms": {
+          "description": "Signed distance from the clip's timeline in-point to the beat. Negative is early. Non-zero because a cut must also land on a certified snap point, and the nearest snap point is rarely exactly on the beat -- the planner trades a few milliseconds of beat error for a cut that lands on a real motion onset.",
+          "type": "number"
+        },
+        "snap_point_kind": {
+          "description": "Which MomentRecord snap point the cut actually landed on.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "Marker": {
+      "title": "Marker",
+      "description": "Maps to otio.schema.Marker. Markers are how our reasoning becomes visible to a human editor who opens the timeline in Resolve.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "marked_range"],
+      "properties": {
+        "name": { "type": "string" },
+        "marked_range": { "$ref": "common.schema.json#/$defs/TimeRange" },
+        "color": {
+          "type": "string",
+          "enum": ["RED", "GREEN", "BLUE", "CYAN", "MAGENTA", "YELLOW", "ORANGE", "PURPLE", "WHITE", "BLACK", "PINK", "MINT"],
+          "default": "GREEN"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["beat", "downbeat", "story_beat", "emotional_peak", "speech", "warning", "note"],
+          "default": "note"
+        },
+        "comment": { "type": "string", "default": "" }
+      }
+    },
+
+    "ReframeTrack": {
+      "title": "ReframeTrack",
+      "description": "A crop keyframe track that turns landscape footage into a vertical cut with the subject held in frame. This is core IP and has no OTIO equivalent, so it round-trips through metadata.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reframe_track_id", "target_aspect_ratio", "keyframes"],
+      "properties": {
+        "reframe_track_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "target_aspect_ratio": { "$ref": "common.schema.json#/$defs/AspectRatio" },
+        "keyframes": {
+          "description": "Ordered by time, at least one. A single keyframe is a static crop; the interesting case is a moving crop that tracks a subject across the frame.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ReframeKeyframe" }
+        },
+        "subject_lock": {
+          "oneOf": [{ "$ref": "#/$defs/SubjectLock" }, { "type": "null" }]
+        },
+        "smoothing": {
+          "oneOf": [{ "$ref": "#/$defs/ReframeSmoothing" }, { "type": "null" }]
+        },
+        "fallback": {
+          "description": "What to do if subject tracking fails at render time. Never leave this implicit: a reframe that silently falls back to a centre crop can decapitate the subject of the shot.",
+          "type": "string",
+          "enum": ["center_crop", "saliency_crop", "letterbox", "hold_last_keyframe"],
+          "default": "hold_last_keyframe"
+        }
+      }
+    },
+
+    "ReframeKeyframe": {
+      "title": "ReframeKeyframe",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time", "crop"],
+      "properties": {
+        "time": {
+          "description": "SOURCE time of the keyframe, so the track stays valid if the clip is later trimmed or retimed.",
+          "$ref": "common.schema.json#/$defs/RationalTime"
+        },
+        "crop": {
+          "description": "Crop window in normalised source coordinates. Its aspect must match the track's target_aspect_ratio; a mismatch is a validation failure because the renderer must not be the one deciding how to reconcile it.",
+          "$ref": "common.schema.json#/$defs/NormalizedBox"
+        },
+        "interpolation": {
+          "description": "How to reach the NEXT keyframe. `hold` produces a snap, which is occasionally what a hard beat wants.",
+          "type": "string",
+          "enum": ["linear", "smooth", "bezier", "hold"],
+          "default": "smooth"
+        },
+        "bezier_control": {
+          "description": "Control points for bezier interpolation, as (x,y) in normalised keyframe-interval space.",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": { "$ref": "common.schema.json#/$defs/Point2D" },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            { "type": "null" }
+          ]
+        },
+        "confidence": {
+          "description": "Tracker confidence at this keyframe. Low-confidence stretches are where the fallback earns its keep.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "SubjectLock": {
+      "title": "SubjectLock",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["sam2_track", "face_track", "saliency", "manual"]
+        },
+        "subject_ref": {
+          "description": "The tracked entity: a SAM 2 object id, a face track uuid, or null for saliency.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "person_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Uuid" }, { "type": "null" }]
+        },
+        "keep_in_frame": {
+          "description": "The part of the subject that must never leave the crop. `head` is the one that matters for people: a technically-centred crop that clips a forehead reads as a mistake.",
+          "type": "string",
+          "enum": ["head", "full_body", "bbox_center", "bbox_full"],
+          "default": "head"
+        },
+        "headroom": {
+          "description": "Fraction of the crop height kept above the subject's head. Composition rule, planned rather than hard-coded in the renderer.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "ReframeSmoothing": {
+      "title": "ReframeSmoothing",
+      "description": "Constraints that stop a reframe from looking like a nervous camera operator. Raw per-frame subject centroids are far too jittery to use directly.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["none", "moving_average", "savitzky_golay", "kalman", "spring_damper"],
+          "default": "savitzky_golay"
+        },
+        "window_frames": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "max_velocity_per_second": {
+          "description": "Cap on crop travel, in normalised units per second. The difference between a considered pan and a whip.",
+          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+        },
+        "deadzone": {
+          "description": "Subject movement smaller than this does not move the crop at all, which is what keeps a mostly-still subject from causing constant micro-drift.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "AudioPlan": {
+      "title": "AudioPlan",
+      "description": "The complete audio intention: what music plays, how much of the original scene survives under it, and how the two are balanced against each other over time.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mix"],
+      "properties": {
+        "music": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/MusicCue" },
+          "default": []
+        },
+        "ambient": { "$ref": "#/$defs/AmbientPlan" },
+        "ducking": {
+          "description": "Ordered ducking rules. Later rules win where they overlap, which keeps the resolution deterministic instead of depending on the renderer's mixer implementation.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/DuckingRule" },
+          "default": []
+        },
+        "mix": { "$ref": "#/$defs/MixPlan" }
+      }
+    },
+
+    "MusicCue": {
+      "title": "MusicCue",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cue_id", "media_ref_id", "source_range", "timeline_range", "license"],
+      "properties": {
+        "cue_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "media_ref_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "source_range": { "$ref": "common.schema.json#/$defs/TimeRange" },
+        "timeline_range": { "$ref": "common.schema.json#/$defs/TimeRange" },
+        "license": {
+          "description": "Required, not optional. Music licensing is a Phase 0 decision precisely because an unlicensed track in a shared reel is a legal problem, and the plan is the place it becomes checkable.",
+          "$ref": "#/$defs/MusicLicense"
+        },
+        "gain_db": { "type": "number", "minimum": -96, "maximum": 24, "default": 0 },
+        "fade_in": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "fade_out": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "loop": { "type": "boolean", "default": false }
+      }
+    },
+
+    "MusicLicense": {
+      "title": "MusicLicense",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "license_type", "cleared_for"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["catalog_partner", "creative_commons", "public_domain", "generated_score", "user_supplied", "platform_library"]
+        },
+        "license_id": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "track_title": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "attribution_required": { "type": "boolean", "default": false },
+        "attribution_text": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "license_type": {
+          "type": "string",
+          "enum": ["royalty_free", "cc_by", "cc_by_sa", "cc0", "rights_managed", "personal_use_only", "unknown"]
+        },
+        "cleared_for": {
+          "description": "Where this cut may legally be published. `user_supplied` music is typically personal_use only, and a share flow must be able to refuse rather than discover the problem after upload.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["private_playback", "social_share", "commercial_use", "broadcast"]
+          },
+          "minItems": 1
+        }
+      }
+    },
+
+    "AmbientPlan": {
+      "title": "AmbientPlan",
+      "description": "How much of the original location sound survives. Keeping real ambient under music is most of what separates a film that feels like a memory from a slideshow with a soundtrack.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "default_gain_db": { "type": "number", "minimum": -96, "maximum": 24, "default": -12 },
+        "preserve_speech": {
+          "description": "When true, clips containing speech keep their ambient at full level and the music ducks under them instead.",
+          "type": "boolean",
+          "default": true
+        },
+        "high_pass_hz": {
+          "description": "Removes wind rumble, which otherwise dominates every outdoor action clip.",
+          "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }]
+        },
+        "noise_suppression": {
+          "type": "string",
+          "enum": ["none", "light", "moderate", "aggressive"],
+          "default": "light"
+        },
+        "per_clip_gain_db": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["clip_id", "gain_db"],
+            "properties": {
+              "clip_id": { "$ref": "common.schema.json#/$defs/Slug" },
+              "gain_db": { "type": "number", "minimum": -96, "maximum": 24 }
+            }
+          },
+          "default": []
+        }
+      }
+    },
+
+    "DuckingRule": {
+      "title": "DuckingRule",
+      "description": "One sidechain relationship, expressed as intent (duck music under speech by 9dB) rather than as a rendered gain curve, so the renderer stays dumb and the decision stays auditable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "target", "trigger", "reduction_db"],
+      "properties": {
+        "rule_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "target": {
+          "description": "What gets turned down.",
+          "type": "string",
+          "enum": ["music", "ambient", "sfx"]
+        },
+        "trigger": {
+          "description": "What turns it down. `explicit_ranges` means the planner decided the ranges itself rather than relying on detection at render time -- always preferred, because it is deterministic.",
+          "type": "string",
+          "enum": ["speech", "music", "ambient", "explicit_ranges"]
+        },
+        "reduction_db": {
+          "description": "Positive number of dB to reduce by.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 96
+        },
+        "threshold_db": {
+          "oneOf": [{ "type": "number", "minimum": -96, "maximum": 0 }, { "type": "null" }]
+        },
+        "ratio": { "oneOf": [{ "type": "number", "minimum": 1 }, { "type": "null" }] },
+        "attack_ms": { "type": "number", "minimum": 0, "default": 80 },
+        "release_ms": { "type": "number", "minimum": 0, "default": 300 },
+        "ranges": {
+          "description": "Timeline ranges the rule applies over. Required when trigger is explicit_ranges; when empty with another trigger, the rule applies for the whole timeline.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/TimeRange" },
+          "default": []
+        }
+      }
+    },
+
+    "MixPlan": {
+      "title": "MixPlan",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["loudness_target_lufs"],
+      "properties": {
+        "master_gain_db": { "type": "number", "minimum": -96, "maximum": 24, "default": 0 },
+        "loudness_target_lufs": { "type": "number", "minimum": -40, "maximum": 0 },
+        "true_peak_ceiling_db": { "type": "number", "minimum": -20, "maximum": 0, "default": -1 },
+        "limiter": { "type": "boolean", "default": true },
+        "channels": {
+          "type": "string",
+          "enum": ["mono", "stereo"],
+          "default": "stereo"
+        },
+        "sample_rate": { "type": "integer", "enum": [44100, 48000], "default": 48000 }
+      }
+    },
+
+    "BeatGrid": {
+      "title": "BeatGrid",
+      "description": "The musical skeleton the cut is hung on. Stored as explicit per-beat times rather than as a BPM to be extrapolated, because real tracks drift and an extrapolated grid is 200ms out by the end of a 30-second reel.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_cue_id", "bpm", "beats"],
+      "properties": {
+        "source_cue_id": {
+          "description": "Which MusicCue this grid describes.",
+          "$ref": "common.schema.json#/$defs/Slug"
+        },
+        "bpm": { "type": "number", "exclusiveMinimum": 0 },
+        "bpm_confidence": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }]
+        },
+        "time_signature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["beats_per_bar", "beat_unit"],
+          "properties": {
+            "beats_per_bar": { "type": "integer", "minimum": 1, "maximum": 32 },
+            "beat_unit": { "type": "integer", "enum": [1, 2, 4, 8, 16] }
+          }
+        },
+        "beats": {
+          "description": "Every beat, in TIMELINE time, ordered. Downbeats are flagged rather than stored separately so a cut can reference one index regardless of which it turned out to be.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Beat" },
+          "minItems": 1
+        },
+        "analyzer": {
+          "description": "Which beat tracker produced this. Recorded partly for reproducibility and partly because the licence-safe analyser (librosa, ISC) and the more accurate but non-commercial ones (madmom) must never be confused.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/ModelRef" }, { "type": "null" }]
+        },
+        "tolerance_ms": {
+          "description": "Maximum acceptable beat-alignment error for a cut claiming to be beat-locked. The quality gate is 50ms on downbeats.",
+          "type": "number",
+          "minimum": 0,
+          "default": 50
+        }
+      }
+    },
+
+    "Beat": {
+      "title": "Beat",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "time", "is_downbeat"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "time": { "$ref": "common.schema.json#/$defs/RationalTime" },
+        "is_downbeat": { "type": "boolean" },
+        "bar": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "beat_in_bar": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "strength": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "section": {
+          "description": "Musical section this beat falls in. Lets the planner put the visual peak on the drop rather than merely on a loud beat.",
+          "oneOf": [
+            { "type": "string", "enum": ["intro", "verse", "pre_chorus", "chorus", "drop", "bridge", "breakdown", "outro"] },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+
+    "StoryArc": {
+      "title": "StoryArc",
+      "description": "The narrative intention, kept with the plan so that a revision instruction such as 'more of her' or 'less drone' re-satisfies the SAME arc instead of re-planning from scratch. That persistence is what makes iterative editing feel like direction rather than dice-rolling.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["arc_id", "template", "acts", "source"],
+      "properties": {
+        "arc_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "template": {
+          "type": "string",
+          "enum": ["hook_build_peak_button", "three_act", "chronological", "day_in_the_life", "before_after", "montage", "custom"]
+        },
+        "title": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "logline": {
+          "description": "One sentence the arc is trying to say. Written by the frontier model and shown to the user, so a plan can be judged before it is rendered.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "acts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Act" },
+          "minItems": 1
+        },
+        "energy_curve": {
+          "description": "Target energy over the timeline, as sampled control points. The planner satisfies it mechanically by choosing moments whose features match; it is a specification, not a description.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["time", "energy"],
+            "properties": {
+              "time": { "$ref": "common.schema.json#/$defs/RationalTime" },
+              "energy": { "$ref": "common.schema.json#/$defs/Unit" }
+            }
+          },
+          "default": []
+        },
+        "source": {
+          "description": "Who authored the arc. A tier3_model arc must carry its ConsentRef, because producing it meant sending a contact sheet off the device.",
+          "type": "string",
+          "enum": ["template", "tier2_vlm", "tier3_model", "user"]
+        },
+        "model": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/ModelRef" }, { "type": "null" }]
+        },
+        "prompt_id": {
+          "description": "Which prompt-engine template produced it, so a prompt regression is traceable to the outputs it affected.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+        },
+        "consent": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/ConsentRef" }, { "type": "null" }]
+        },
+        "rationale": {
+          "description": "The model's stated reasoning, kept for the user-facing 'why this cut' explanation and for eval review.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "Act": {
+      "title": "Act",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["act_id", "name", "beats"],
+      "properties": {
+        "act_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "name": { "type": "string" },
+        "intent": {
+          "description": "What this act is for, in plain language: 'arrival, establish where we are'.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "timeline_range": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/TimeRange" }, { "type": "null" }]
+        },
+        "target_energy": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "beats": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StoryBeat" },
+          "default": []
+        }
+      }
+    },
+
+    "StoryBeat": {
+      "title": "StoryBeat",
+      "description": "A required narrative element and the clips that satisfy it. An unsatisfied required beat is a validation failure -- that is the mechanism by which 'the film has an arc' is checked rather than hoped for.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["beat_id", "description", "required"],
+      "properties": {
+        "beat_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "description": { "type": "string" },
+        "required": { "type": "boolean" },
+        "satisfied_by_clip_ids": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Slug" },
+          "default": []
+        },
+        "candidate_moment_ids": {
+          "description": "Moments the planner considered for this beat. Retained so a revision can swap in an alternative without re-running retrieval.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        }
+      }
+    },
+
+    "ColorPipeline": {
+      "title": "ColorPipeline",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input_transform": { "type": "string", "default": "auto" },
+        "working_space": {
+          "type": "string",
+          "enum": ["srgb", "rec709", "rec2020", "aces_cct", "linear"],
+          "default": "rec709"
+        },
+        "output_transform": { "type": "string", "default": "rec709" },
+        "tone_map_hdr_to_sdr": {
+          "description": "Required when any source is HLG or PQ and the target is SDR. Left implicit, HDR sources render washed out.",
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+
+    "VariantInfo": {
+      "title": "VariantInfo",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variant_id", "variant_index", "strategy"],
+      "properties": {
+        "variant_id": { "$ref": "common.schema.json#/$defs/Slug" },
+        "variant_index": { "type": "integer", "minimum": 0 },
+        "sibling_edl_ids": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        },
+        "strategy": {
+          "description": "What was varied. Variants must differ along a stated axis, so the user's pick is interpretable as a preference rather than as noise.",
+          "type": "string",
+          "enum": ["moment_subset", "pacing_seed", "energy_template", "music_alternate", "reframe_style", "duration_alternate"]
+        },
+        "description": {
+          "description": "One line the variant picker shows: 'faster, more action'.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "EdlValidation": {
+      "title": "EdlValidation",
+      "description": "Result of the pre-render checks. The renderer refuses an EDL that has not passed, which keeps 'the renderer is dumb' from meaning 'the renderer is trusting'.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checks"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["pass", "warn", "fail", "not_run"]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["check_id", "passed", "severity"],
+            "properties": {
+              "check_id": {
+                "type": "string",
+                "enum": [
+                  "source_range_within_available",
+                  "media_refs_resolvable",
+                  "timeline_contiguous",
+                  "transition_handles_available",
+                  "beat_alignment_within_tolerance",
+                  "no_mid_word_cut",
+                  "reframe_aspect_matches_target",
+                  "reframe_keyframes_ordered",
+                  "duration_within_max",
+                  "music_license_covers_destination",
+                  "required_story_beats_satisfied",
+                  "audio_loudness_target_set",
+                  "determinism_digest_present"
+                ]
+              },
+              "passed": { "type": "boolean" },
+              "severity": { "type": "string", "enum": ["error", "warning", "info"] },
+              "detail": { "type": "string", "default": "" },
+              "clip_id": {
+                "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+              }
+            }
+          }
+        },
+        "validated_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "validator_version": { "oneOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+
+    "OtioExportInfo": {
+      "title": "OtioExportInfo",
+      "description": "Bookkeeping for the OTIO round trip. `unmapped_fields` must be empty for an export to be called lossless; if it is not, the exporter is telling us exactly which part of the contract has outgrown the mapping.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "otio_schema_version": { "type": "string", "default": "OTIO_SCHEMA:Timeline.1" },
+        "metadata_namespace": { "type": "string", "const": "memory_engine", "default": "memory_engine" },
+        "unmapped_fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "round_trip_verified": {
+          "description": "Set by the exporter after re-importing its own output and comparing to the source EDL. The claim of losslessness is tested per export, not assumed.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+[package]
+name = "memory-engine-contracts"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Generated Rust bindings for the Memory Engine contract schemas"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

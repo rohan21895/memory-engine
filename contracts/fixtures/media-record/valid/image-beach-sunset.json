@@ -1,0 +1,344 @@
+{
+  "schema_version": "v0",
+  "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+  "asset_kind": "physical_file",
+  "kind": "image",
+  "byte_size": 8412663,
+  "mime_type": "image/jpeg",
+  "file_format": "jpeg",
+  "sources": [
+    {
+      "path": "/Volumes/Archive/Photos/2024/Thailand/IMG_4821.JPG",
+      "volume_id": "disk-archive-4tb",
+      "adapter": "filesystem",
+      "sidecar_paths": [],
+      "original_filename": "IMG_4821.JPG",
+      "first_seen_at": "2026-03-14T09:12:04+05:30",
+      "last_verified_at": "2026-03-14T09:12:04+05:30",
+      "present": true
+    },
+    {
+      "path": "/Users/example/Pictures/Takeout/Google Photos/Thailand 2024/IMG_4821.JPG",
+      "volume_id": "disk-internal",
+      "adapter": "google_takeout",
+      "sidecar_paths": [
+        "/Users/example/Pictures/Takeout/Google Photos/Thailand 2024/IMG_4821.JPG.json"
+      ],
+      "original_filename": "IMG_4821.JPG",
+      "first_seen_at": "2026-03-14T09:41:55+05:30",
+      "last_verified_at": "2026-03-14T09:41:55+05:30",
+      "present": true
+    }
+  ],
+  "span": null,
+  "capture": {
+    "captured_at": {
+      "local": "2024-11-22T17:48:31",
+      "utc": "2024-11-22T10:48:31+00:00",
+      "timezone": "Asia/Bangkok",
+      "utc_offset_minutes": 420,
+      "source": "exif_datetime_original",
+      "precision": "second",
+      "confidence": 1.0,
+      "inferred_from_media_ids": []
+    },
+    "metadata_present": [
+      "exif",
+      "xmp",
+      "takeout_json"
+    ],
+    "gps": {
+      "latitude": 7.8804,
+      "longitude": 98.3923,
+      "altitude_m": 12.4,
+      "horizontal_accuracy_m": 8.0,
+      "source": "exif_gps"
+    },
+    "device": {
+      "make": "Canon",
+      "model": "EOS R6",
+      "lens": "RF24-105mm F4 L IS USM",
+      "software": "Adobe Lightroom 13.2",
+      "body_serial_hash": "ca1189d89cfdff0145560018fded1bedc74510d1f6ccc3ff3f6521b8a3dff475"
+    },
+    "exposure": {
+      "iso": 400,
+      "exposure_time_s": 0.004,
+      "f_number": 5.6,
+      "focal_length_mm": 47.0,
+      "focal_length_35mm": 47.0,
+      "flash_fired": false,
+      "metering_mode": "evaluative"
+    }
+  },
+  "image": {
+    "stored_size": {
+      "width": 6000,
+      "height": 4000
+    },
+    "oriented_size": {
+      "width": 6000,
+      "height": 4000
+    },
+    "orientation": 1,
+    "bit_depth": 8,
+    "color_space": "srgb",
+    "icc_profile_name": "sRGB IEC61966-2.1",
+    "has_alpha": false,
+    "is_raw": false,
+    "is_hdr": false,
+    "paired_motion_media_id": null
+  },
+  "video": null,
+  "perceptual": {
+    "image_hash": {
+      "algorithm": "phash-dct-64",
+      "bits": 64,
+      "hex": "f0e1c3878f1e3c78"
+    },
+    "keyframe_hashes": []
+  },
+  "proxies": [
+    {
+      "proxy_id": "576200e08062715b8e3ab33d6154f91f58c4ff396b53369ca05969fa86833e07",
+      "kind": "thumbnail_512",
+      "path": "/Users/example/Library/Application Support/MemoryEngine/proxies/57/62/576200e0.jpg",
+      "size": {
+        "width": 512,
+        "height": 341
+      },
+      "byte_size": 48211,
+      "generator_version": "proxy-gen/1.0.0+libvips8.15",
+      "frame_index": null
+    }
+  ],
+  "processing": {
+    "state": "analyzed",
+    "stages": {
+      "hash": {
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-14T09:12:06+05:30"
+      },
+      "metadata": {
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-14T09:12:07+05:30"
+      },
+      "thumbnail": {
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-14T09:12:09+05:30"
+      },
+      "perceptual_hash": {
+        "status": "done",
+        "attempts": 1
+      },
+      "classical_quality": {
+        "status": "done",
+        "attempts": 1
+      },
+      "image_embedding": {
+        "status": "done",
+        "attempts": 1
+      },
+      "face_detection": {
+        "status": "done",
+        "attempts": 1
+      },
+      "iqa": {
+        "status": "done",
+        "attempts": 1
+      },
+      "aesthetic": {
+        "status": "done",
+        "attempts": 1
+      },
+      "tagging": {
+        "status": "done",
+        "attempts": 1
+      },
+      "safety": {
+        "status": "done",
+        "attempts": 1
+      },
+      "ocr": {
+        "status": "done",
+        "attempts": 1
+      },
+      "video_proxy": {
+        "status": "not_applicable",
+        "skip_reason": "media kind is image"
+      },
+      "shot_detection": {
+        "status": "not_applicable",
+        "skip_reason": "media kind is image"
+      },
+      "transcription": {
+        "status": "not_applicable",
+        "skip_reason": "media kind is image"
+      },
+      "audio_events": {
+        "status": "not_applicable",
+        "skip_reason": "media kind is image"
+      },
+      "moment_scoring": {
+        "status": "not_applicable",
+        "skip_reason": "media kind is image"
+      }
+    }
+  },
+  "quality": {
+    "sharpness": {
+      "value": 0.87,
+      "run_id": "run-classical-0412",
+      "raw_value": 1284.6
+    },
+    "exposure": {
+      "value": 0.79,
+      "run_id": "run-classical-0412",
+      "raw_value": null
+    },
+    "noise": {
+      "value": 0.88,
+      "run_id": "run-classical-0412"
+    },
+    "contrast": {
+      "value": 0.72,
+      "run_id": "run-classical-0412"
+    },
+    "technical_iqa": {
+      "value": 0.81,
+      "run_id": "run-musiq-0413",
+      "raw_value": 68.4
+    },
+    "aesthetic": {
+      "value": 0.74,
+      "run_id": "run-aesthetic-0414",
+      "raw_value": 6.12
+    },
+    "composition": {
+      "value": 0.83,
+      "run_id": "run-aesthetic-0414"
+    },
+    "face_quality": {
+      "value": 0.91,
+      "run_id": "run-scrfd-0415"
+    },
+    "is_black_frame": false,
+    "is_lens_obstructed": false
+  },
+  "content": {
+    "embedding": {
+      "space": "siglip2_so400m_1152",
+      "dimensions": 1152,
+      "storage": "index",
+      "index_key": "vec:media:19679a1a:siglip2_so400m_1152",
+      "values": null,
+      "quantization": "float16",
+      "normalized": true
+    },
+    "tags": [
+      {
+        "label": "sunset",
+        "score": 0.94,
+        "source": "zero_shot_siglip"
+      },
+      {
+        "label": "beach",
+        "score": 0.91,
+        "source": "zero_shot_siglip"
+      },
+      {
+        "label": "two people",
+        "score": 0.77,
+        "source": "zero_shot_siglip"
+      },
+      {
+        "label": "silhouette",
+        "score": 0.68,
+        "source": "zero_shot_siglip"
+      }
+    ],
+    "scene_type": "outdoor",
+    "ocr": {
+      "has_text": false,
+      "text_area_ratio": 0.0,
+      "languages": [],
+      "is_screenshot": false,
+      "is_document": false
+    },
+    "safety": {
+      "nsfw_score": 0.01,
+      "categories": [],
+      "auto_excluded": false,
+      "threshold_used": 0.85
+    }
+  },
+  "faces": {
+    "face_count": 2,
+    "face_ids": [
+      "a6950386f5ecb6d5a4213465de36a550058a26299eb44b4b87a86a5dd968f39f",
+      "b071b7bbff209db4c81f00ed39199f8c9ed32d584d0dffb44b4722e2736d497f"
+    ],
+    "confirmed_person_ids": [
+      "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03"
+    ],
+    "pending_review_count": 1,
+    "largest_face_area_ratio": 0.041
+  },
+  "dedupe": {
+    "group_id": "8c1d5e2a-4f39-4b70-a6c1-9d2e5f8b3a41",
+    "is_primary": true,
+    "primary_media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+    "similarity_to_primary": 1.0,
+    "group_size": 4,
+    "method": "phash_bucket_embedding_refined"
+  },
+  "exclusion": {
+    "excluded_from_automation": false,
+    "reasons": [],
+    "user_override": null
+  },
+  "user": {
+    "favorite": true,
+    "hidden": false,
+    "rating": 5,
+    "tags": [
+      "thailand"
+    ],
+    "caption": null
+  },
+  "model_runs": [
+    {
+      "run_id": "run-siglip-0410",
+      "model": {
+        "model_id": "siglip2-so400m",
+        "version": "2.0.0",
+        "weights_blake3": "b6c349b4cec129bb0a11578a6afb9cf33bc8bf886ab81741542fa36497369597",
+        "runtime": "onnxruntime_coreml",
+        "precision": "fp16"
+      },
+      "ran_at": "2026-03-14T09:13:22+05:30",
+      "input_proxy_id": "576200e08062715b8e3ab33d6154f91f58c4ff396b53369ca05969fa86833e07",
+      "duration_ms": 41.7,
+      "job_id": null
+    },
+    {
+      "run_id": "run-musiq-0413",
+      "model": {
+        "model_id": "musiq-koniq",
+        "version": "1.0.0",
+        "weights_blake3": "83ee4b182bd04d04866a1a712b12049e571f48132178521f19dd6fda1dabb728",
+        "runtime": "onnxruntime_coreml",
+        "precision": "fp16"
+      },
+      "ran_at": "2026-03-14T09:13:24+05:30",
+      "input_proxy_id": "576200e08062715b8e3ab33d6154f91f58c4ff396b53369ca05969fa86833e07",
+      "duration_ms": 28.3,
+      "job_id": null
+    }
+  ],
+  "first_seen_at": "2026-03-14T09:12:04+05:30",
+  "updated_at": "2026-03-14T09:13:30+05:30"
+}

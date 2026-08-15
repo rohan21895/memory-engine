@@ -1,0 +1,191 @@
+{
+  "schema_version": "v0",
+  "media_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
+  "asset_kind": "virtual_assembly",
+  "kind": "video",
+  "byte_size": 0,
+  "mime_type": null,
+  "file_format": null,
+  "sources": [],
+  "span": {
+    "span_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
+    "role": "assembly",
+    "span_kind": "gopro_chapter",
+    "index": null,
+    "member_count": 2,
+    "member_media_ids": [
+      "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
+      "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8"
+    ],
+    "offset_in_span": {
+      "value": 0,
+      "rate": 59.94005994005994
+    },
+    "continuity": "verified_gapless"
+  },
+  "capture": {
+    "captured_at": {
+      "local": "2025-01-18T14:02:11",
+      "utc": null,
+      "timezone": null,
+      "utc_offset_minutes": null,
+      "source": "quicktime_creation_date",
+      "precision": "second",
+      "confidence": 0.9,
+      "inferred_from_media_ids": []
+    },
+    "metadata_present": [
+      "quicktime",
+      "gopro_gpmf"
+    ],
+    "gps": {
+      "latitude": 30.0869,
+      "longitude": 78.2676,
+      "altitude_m": 1402.0,
+      "horizontal_accuracy_m": 4.5,
+      "source": "quicktime_location"
+    },
+    "device": {
+      "make": "GoPro",
+      "model": "HERO12 Black",
+      "lens": null,
+      "software": "HD12.01.01.20.00",
+      "body_serial_hash": null
+    },
+    "exposure": null
+  },
+  "image": null,
+  "video": {
+    "stored_size": {
+      "width": 3840,
+      "height": 2160
+    },
+    "oriented_size": {
+      "width": 3840,
+      "height": 2160
+    },
+    "rotation_deg": 0,
+    "duration": {
+      "value": 61593,
+      "rate": 59.94005994005994
+    },
+    "frame_rate": {
+      "numerator": 60000,
+      "denominator": 1001
+    },
+    "is_variable_frame_rate": false,
+    "start_timecode": {
+      "value": 3025080,
+      "rate": 59.94005994005994
+    },
+    "video_codec": "hevc",
+    "bit_rate": 78000000,
+    "color_primaries": "bt2020",
+    "transfer_characteristics": "arib-std-b67",
+    "audio_streams": [
+      {
+        "stream_index": 0,
+        "channels": 2,
+        "sample_rate": 48000,
+        "codec": "aac",
+        "language": null,
+        "is_silent": false
+      }
+    ]
+  },
+  "perceptual": {
+    "image_hash": null,
+    "keyframe_hashes": []
+  },
+  "proxies": [],
+  "processing": {
+    "state": "analyzed",
+    "stages": {
+      "hash": {
+        "status": "not_applicable",
+        "skip_reason": "virtual assembly has no bytes of its own"
+      },
+      "metadata": {
+        "status": "done",
+        "attempts": 1
+      },
+      "video_proxy": {
+        "status": "not_applicable",
+        "skip_reason": "assembly reads the members' proxies in order"
+      },
+      "shot_detection": {
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-15T12:14:07+05:30"
+      },
+      "transcription": {
+        "status": "done",
+        "attempts": 1
+      },
+      "audio_events": {
+        "status": "done",
+        "attempts": 1
+      },
+      "moment_scoring": {
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-15T12:21:44+05:30"
+      }
+    }
+  },
+  "quality": null,
+  "content": {
+    "embedding": null,
+    "tags": [
+      {
+        "label": "mountain biking",
+        "score": 0.89,
+        "source": "zero_shot_siglip"
+      },
+      {
+        "label": "forest trail",
+        "score": 0.84,
+        "source": "zero_shot_siglip"
+      }
+    ],
+    "scene_type": "outdoor",
+    "safety": {
+      "nsfw_score": 0.0,
+      "categories": [],
+      "auto_excluded": false,
+      "threshold_used": 0.85
+    }
+  },
+  "faces": null,
+  "dedupe": null,
+  "exclusion": {
+    "excluded_from_automation": false,
+    "reasons": [],
+    "user_override": null
+  },
+  "user": {
+    "favorite": false,
+    "hidden": false,
+    "rating": null,
+    "tags": [],
+    "caption": null
+  },
+  "model_runs": [
+    {
+      "run_id": "run-transnet-0891",
+      "model": {
+        "model_id": "transnetv2",
+        "version": "2.0.0",
+        "weights_blake3": "1e5492a4be90f117aeddde8a7cc61904b01b372e6e64fdba4d4ce87b46be51fa",
+        "runtime": "onnxruntime_coreml",
+        "precision": "fp16"
+      },
+      "ran_at": "2026-03-15T12:14:07+05:30",
+      "input_proxy_id": "bd035371d6d1deb00d7a1704e1aa7cbd49c1755d54f953f6e3134588debbfbcc",
+      "duration_ms": 18422.0,
+      "job_id": null
+    }
+  ],
+  "first_seen_at": "2026-03-15T11:20:41+05:30",
+  "updated_at": "2026-03-15T12:21:44+05:30"
+}

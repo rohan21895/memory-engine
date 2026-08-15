@@ -1,0 +1,80 @@
+{
+  "schema_version": "v0",
+  "job_id": "2a5e981341bc16a3374a157abc427464ee68b9f55f7cf6e8c9e368ac94f2cbfe",
+  "job_type": "scan_source",
+  "inputs": {
+    "media_ids": [],
+    "moment_ids": [],
+    "face_ids": [],
+    "edl_id": null,
+    "album_id": null,
+    "source_paths": [
+      "/Volumes/Archive/Photos"
+    ],
+    "source_locator_digest": "64cfddd4e46fde33cf2681bd1557093ca76efa2c5fc5e48655d54d28633cfac1",
+    "parent_job_id": null,
+    "depends_on_job_ids": [],
+    "models": []
+  },
+  "params": {
+    "follow_symlinks": false,
+    "include_hidden": false,
+    "max_depth": 32
+  },
+  "params_digest": "9a183443c7330d8fa3bbbf73c8579312bb43ce34e21fbe78e04902c74c46db43",
+  "scope": "library:default",
+  "priority": 300,
+  "requirements": {
+    "compute": "cpu",
+    "min_vram_mb": null,
+    "min_ram_mb": 512,
+    "min_disk_mb": 1024,
+    "hardware_decode": false,
+    "requires_source_file": true,
+    "estimated_duration_ms": null
+  },
+  "egress": {
+    "requires_egress": false,
+    "consent": null,
+    "destination": null,
+    "payload_kind": null,
+    "estimated_bytes": null
+  },
+  "state": {
+    "status": "running",
+    "attempts": 1,
+    "worker_id": "ingest-worker-01",
+    "started_at": "2026-03-14T09:10:00+05:30",
+    "heartbeat_at": "2026-03-14T09:31:12+05:30",
+    "finished_at": null,
+    "progress": {
+      "units_done": 12400.0,
+      "units_total": null,
+      "unit": "files",
+      "bytes_processed": 268435456000,
+      "message": "still walking; total unknown until the walk completes"
+    }
+  },
+  "checkpoint": {
+    "resumable": true,
+    "cursor": "walk:/Volumes/Archive/Photos:cursor=2024/11/IMG_4821.JPG",
+    "checkpoint_version": 1,
+    "updated_at": "2026-03-14T09:31:12+05:30",
+    "completed_input_ids": [],
+    "partial_output_ids": []
+  },
+  "outputs": [],
+  "error": null,
+  "retry_policy": {
+    "max_attempts": 3,
+    "backoff": "exponential",
+    "initial_delay_ms": 1000.0,
+    "max_delay_ms": 60000.0,
+    "quarantine_after_max": true
+  },
+  "journal": {
+    "entries": []
+  },
+  "created_at": "2026-03-14T09:09:58+05:30",
+  "deadline": null
+}

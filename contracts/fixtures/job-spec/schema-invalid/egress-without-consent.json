@@ -1,0 +1,38 @@
+{
+  "schema_version": "v0",
+  "job_id": "fcf14c811b6fed5e097668247abcad3c3ee2c586c4fa4200accbe31bf1b186af",
+  "job_type": "tier3_request",
+  "inputs": {
+    "media_ids": [],
+    "moment_ids": [
+      "b8a3f2ac42d376a8af7f54946248f305343c486dfecc27c8687b4fa703fd1947"
+    ],
+    "face_ids": [],
+    "source_paths": [],
+    "depends_on_job_ids": [],
+    "models": []
+  },
+  "params": { "prompt_id": "reel-arc-v3" },
+  "params_digest": "445523e5b31e98dfc311e6691b8debd78d9f9c6925a7eb1fb2d1f6bd7d6b1e99",
+  "scope": "project:reel-ridge-15s",
+  "priority": 400,
+  "egress": {
+    "requires_egress": true,
+    "consent": null,
+    "destination": "tier3_inference",
+    "payload_kind": "contact_sheet",
+    "estimated_bytes": 384000
+  },
+  "state": {
+    "status": "pending",
+    "attempts": 0,
+    "worker_id": null,
+    "started_at": null,
+    "heartbeat_at": null,
+    "finished_at": null,
+    "progress": null
+  },
+  "outputs": [],
+  "error": null,
+  "created_at": "2026-03-16T20:02:15+05:30"
+}

@@ -1,0 +1,498 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memory-engine.local/contracts/v0/job-spec.schema.json",
+  "title": "JobSpec",
+  "description": "Any unit of work in the system: what to do, to which inputs, with which parameters, how far it got, and how to pick it up again.",
+  "$comment": "Kill the app at 47% of a 3TB scan; on relaunch it continues. That single requirement drives every design choice here.\n\n IDEMPOTENCY: job_id is a BLAKE3 over (job_type, ordered input hashes, source_locator_digest, params_digest, scope). Submitting the same work twice yields the same id, so 'have we already done this' is a primary-key lookup rather than a heuristic. Re-running a completed job is a no-op by construction, not by convention.\n\n THE SOURCE-LOCATOR DIGEST EXISTS FOR ONE JOB TYPE. scan_source runs BEFORE anything has a content hash -- discovering files is what produces them -- so its `media_ids` are empty and the rest of the identity tuple is identical for every scan with the same parameters. Two different folders would then collide on job_id, and the second scan would be treated as already done: a whole drive silently never imported. source_locator_digest folds the canonicalised source roots into the identity so distinct roots are distinct jobs. It is required for scan_source and meaningless elsewhere, where content hashes already carry the identity.\n\n RESUMPTION: `checkpoint.cursor` is deliberately an opaque string owned by the worker. The contract guarantees that it is durably stored and handed back on resume; it does not presume to know what a file walker or an FFmpeg pass needs to remember. What the contract DOES specify is that partial outputs are recorded as they are produced, so resumption never redoes completed sub-work.\n\n EGRESS: a job whose `requires_egress` is true MUST carry a ConsentRef. This is checked in the schema, not only in code, because 'no network egress without a consent-ledger entry' is verified by an automated CI test and the contract is where that promise is made legible.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "job_type",
+    "inputs",
+    "params_digest",
+    "state",
+    "egress"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/SchemaVersion" },
+
+    "job_id": {
+      "description": "BLAKE3 over (job_type, sorted input ids, source_locator_digest or the empty string, params_digest, scope). Doubles as the idempotency key -- there is deliberately no second field for that, because two sources of truth for identity is how duplicate work gets in.",
+      "$ref": "common.schema.json#/$defs/Blake3Hash"
+    },
+
+    "job_type": {
+      "description": "What kind of work. Enumerated rather than free-form so that a worker cannot be handed a job type it has never heard of and improvise.",
+      "type": "string",
+      "enum": [
+        "scan_source",
+        "hash_file",
+        "extract_metadata",
+        "generate_thumbnail",
+        "generate_video_proxy",
+        "perceptual_hash",
+        "analyze_image",
+        "analyze_video",
+        "detect_faces",
+        "cluster_faces",
+        "transcribe_audio",
+        "detect_shots",
+        "score_moments",
+        "rank_media",
+        "dedupe_cluster",
+        "cluster_events",
+        "plan_reel",
+        "plan_film",
+        "plan_album",
+        "tier3_request",
+        "enhance_image",
+        "render_video",
+        "render_print",
+        "export_otio",
+        "eval_run",
+        "reindex_vectors",
+        "consent_export"
+      ]
+    },
+
+    "inputs": { "$ref": "#/$defs/JobInputs" },
+
+    "params": {
+      "description": "Type-specific parameters. Free-form because the parameter shape of `plan_reel` and `hash_file` have nothing in common, but never anonymous: params_digest pins it. A worker validates its own params against its own local schema.",
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    },
+
+    "params_digest": {
+      "description": "BLAKE3 over the canonical JSON of `params`. Part of job_id, which is what makes 'same job with different settings' a genuinely different job rather than a silent overwrite of the first result.",
+      "$ref": "common.schema.json#/$defs/Blake3Hash"
+    },
+
+    "scope": {
+      "description": "Namespace separating otherwise-identical work: a library id, a project id, or a user id. Without it, two users analysing the same stock photo would collide on job_id.",
+      "oneOf": [{ "type": "string" }, { "type": "null" }]
+    },
+
+    "priority": {
+      "description": "Higher runs first. Interactive work (the user is watching a progress bar) outranks background sweeps.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "default": 100
+    },
+
+    "requirements": {
+      "oneOf": [{ "$ref": "#/$defs/JobRequirements" }, { "type": "null" }]
+    },
+
+    "egress": { "$ref": "#/$defs/EgressDeclaration" },
+
+    "state": { "$ref": "#/$defs/JobState" },
+
+    "checkpoint": {
+      "oneOf": [{ "$ref": "#/$defs/Checkpoint" }, { "type": "null" }]
+    },
+
+    "outputs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/JobOutput" },
+      "default": []
+    },
+
+    "error": {
+      "oneOf": [{ "$ref": "#/$defs/JobError" }, { "type": "null" }]
+    },
+
+    "retry_policy": {
+      "oneOf": [{ "$ref": "#/$defs/RetryPolicy" }, { "type": "null" }]
+    },
+
+    "journal": {
+      "oneOf": [{ "$ref": "#/$defs/Journal" }, { "type": "null" }]
+    },
+
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "deadline": {
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+    }
+  },
+
+  "allOf": [
+    {
+      "$comment": "A scan has no content hashes yet, so without a source-locator digest two scans of different drives share an identity and the second is skipped as already-done. Requiring both the paths and their digest makes that collision unrepresentable.",
+      "if": {
+        "properties": { "job_type": { "const": "scan_source" } },
+        "required": ["job_type"]
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "type": "object",
+            "required": ["source_paths", "source_locator_digest"],
+            "properties": {
+              "source_paths": { "minItems": 1 },
+              "source_locator_digest": { "$ref": "common.schema.json#/$defs/Blake3Hash" }
+            }
+          }
+        }
+      }
+    }
+  ],
+
+  "$defs": {
+    "JobInputs": {
+      "title": "JobInputs",
+      "description": "Everything the job reads, addressed by hash. Content addressing is what makes the whole pipeline idempotent: identical inputs cannot produce a different job.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "media_ids": {
+          "description": "Sorted before hashing into job_id, so input order never changes job identity.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        },
+        "moment_ids": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        },
+        "face_ids": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        },
+        "edl_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+        },
+        "album_id": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+        },
+        "source_paths": {
+          "description": "Only for scan_source, which by definition starts before anything has a hash. Every other job type addresses content, never location.",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+
+        "source_locator_digest": {
+          "description": "BLAKE3 over the canonical form of `source_paths`: each path resolved to absolute, symlinks followed, trailing separators stripped, NFC-normalised, then sorted and joined with a NUL separator. Required for scan_source and the only thing distinguishing two scans of different folders, since neither has content hashes yet. Canonicalisation matters as much as the digest -- '/Volumes/Archive' and '/Volumes/Archive/' must not be two jobs, or a re-scan re-walks a whole drive.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+        },
+        "parent_job_id": {
+          "description": "The job that spawned this one. A scan spawns a hash job per file; the tree is what makes 'cancel this import' a well-defined operation.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+        },
+        "depends_on_job_ids": {
+          "description": "Jobs that must reach completed before this one may start.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        },
+        "models": {
+          "description": "Model pins. Part of the params digest, so re-running with a swapped model is a different job and the old result is never silently reused.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/ModelRef" },
+          "default": []
+        }
+      }
+    },
+
+    "JobRequirements": {
+      "title": "JobRequirements",
+      "description": "What the job needs to run. The scheduler matches these against the machine rather than discovering mid-render that there is no GPU.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "compute": {
+          "type": "string",
+          "enum": ["cpu", "gpu", "neural_engine", "any"],
+          "default": "any"
+        },
+        "min_vram_mb": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "min_ram_mb": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "min_disk_mb": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "hardware_decode": {
+          "description": "Proxy generation must saturate disk I/O rather than CPU, which is only possible with VideoToolbox/NVDEC/QSV. A proxy job that would fall back to software decode should queue rather than crawl.",
+          "type": "boolean",
+          "default": false
+        },
+        "requires_source_file": {
+          "description": "True only for proxy generation and final render. Everything else works on proxies -- sources are opened exactly twice in a file's life.",
+          "type": "boolean",
+          "default": false
+        },
+        "estimated_duration_ms": {
+          "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }]
+        }
+      }
+    },
+
+    "EgressDeclaration": {
+      "title": "EgressDeclaration",
+      "description": "Whether this job talks to the network, and on whose authority. Declared on every job including the overwhelming majority that declare `false`, because an absent declaration and a negative one must not look the same.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requires_egress"],
+      "properties": {
+        "requires_egress": { "type": "boolean" },
+        "consent": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/ConsentRef" }, { "type": "null" }]
+        },
+        "destination": {
+          "oneOf": [
+            { "type": "string", "enum": ["tier3_inference", "cloud_render", "billing", "sync", "share", "print_vendor", "telemetry"] },
+            { "type": "null" }
+          ]
+        },
+        "payload_kind": {
+          "description": "What actually leaves the device. `contact_sheet` and `thumbnail` are the only image-bearing values permitted for Tier 3, and `original_media` requires its own explicit consent scope -- originals never leave without one.",
+          "oneOf": [
+            { "type": "string", "enum": ["contact_sheet", "thumbnail", "feature_vector", "metadata_only", "structured_decision", "original_media", "rendered_output"] },
+            { "type": "null" }
+          ]
+        },
+        "estimated_bytes": {
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "The contract-level expression of 'no network egress without a consent-ledger entry'. A job that wants the network must name its consent, its destination and what it is sending.",
+          "if": {
+            "properties": { "requires_egress": { "const": true } },
+            "required": ["requires_egress"]
+          },
+          "then": {
+            "required": ["consent", "destination", "payload_kind"],
+            "properties": {
+              "consent": { "$ref": "common.schema.json#/$defs/ConsentRef" },
+              "destination": { "type": "string" },
+              "payload_kind": { "type": "string" }
+            }
+          }
+        }
+      ]
+    },
+
+    "JobState": {
+      "title": "JobState",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "attempts"],
+      "properties": {
+        "status": {
+          "description": "`paused` is a deliberate user action; `pending` after a crash is what a killed `running` job becomes on relaunch. Distinguishing them is what makes resumption safe -- a paused job must not restart itself.",
+          "type": "string",
+          "enum": ["pending", "blocked", "running", "paused", "completed", "failed", "cancelled", "quarantined"]
+        },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "worker_id": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "started_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "heartbeat_at": {
+          "description": "Last sign of life. A running job whose heartbeat has gone stale was killed with the process and is safe to reclaim -- without it, a crashed job is indistinguishable from a slow one and blocks its queue forever.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "finished_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "progress": {
+          "oneOf": [{ "$ref": "#/$defs/Progress" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "Progress": {
+      "title": "Progress",
+      "description": "Progress in real units, not a synthetic percentage. '12,400 of 318,000 files' survives a restart honestly; a percentage that jumps backwards does not.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["units_done", "unit"],
+      "properties": {
+        "units_done": { "type": "number", "minimum": 0 },
+        "units_total": {
+          "description": "Null while still being discovered -- a scan does not know how many files exist until it has walked them, and claiming otherwise produces a progress bar that lies.",
+          "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }]
+        },
+        "unit": {
+          "type": "string",
+          "enum": ["files", "bytes", "frames", "seconds", "images", "moments", "pages", "items"]
+        },
+        "bytes_processed": {
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "message": { "oneOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+
+    "Checkpoint": {
+      "title": "Checkpoint",
+      "description": "Durable resumption state. The cursor is opaque on purpose: the contract promises to persist and return it, and declines to speculate about what a directory walker or a video encoder needs to remember.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resumable", "cursor"],
+      "properties": {
+        "resumable": {
+          "description": "False for jobs that must restart from zero -- a short atomic render, say. Stating it explicitly stops a scheduler from assuming either way.",
+          "type": "boolean"
+        },
+        "cursor": {
+          "description": "Worker-owned opaque state. Null means 'resumable but not yet started'.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "checkpoint_version": {
+          "description": "Bumped when a worker changes its cursor format. A cursor from an older version is discarded and the job restarts, rather than being handed to code that will misparse it.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "updated_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "completed_input_ids": {
+          "description": "Inputs already finished. On resume these are skipped, which is what stops a resumed 3TB scan from rehashing the first 2TB.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        },
+        "partial_output_ids": {
+          "description": "Outputs written before the interruption. Recorded so they are neither orphaned nor recreated.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        }
+      }
+    },
+
+    "JobOutput": {
+      "title": "JobOutput",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["media_record", "face_record", "moment_record", "edl", "album_spec", "proxy", "rendered_video", "rendered_pdf", "otio_file", "vector_index_entry", "eval_report", "pref_event"]
+        },
+        "id": {
+          "description": "Content hash of the produced artifact, so an output can be verified rather than trusted.",
+          "$ref": "common.schema.json#/$defs/Blake3Hash"
+        },
+        "path": {
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "byte_size": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "produced_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "JobError": {
+      "title": "JobError",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "file_not_found",
+            "file_unreadable",
+            "file_corrupt",
+            "zero_byte_file",
+            "unsupported_codec",
+            "unsupported_format",
+            "symlink_loop",
+            "permission_denied",
+            "disk_full",
+            "out_of_memory",
+            "gpu_unavailable",
+            "model_load_failed",
+            "model_inference_failed",
+            "timeout",
+            "cancelled_by_user",
+            "dependency_failed",
+            "consent_missing",
+            "consent_revoked",
+            "network_unavailable",
+            "rate_limited",
+            "validation_failed",
+            "internal_error"
+          ]
+        },
+        "message": {
+          "description": "Already redacted: no paths, no filenames, no EXIF. Crash reporting forwards this verbatim, so redaction happens at write time rather than at send time.",
+          "type": "string"
+        },
+        "retryable": { "type": "boolean" },
+        "attempt": { "type": "integer", "minimum": 0, "default": 0 },
+        "occurred_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "failed_input_id": {
+          "description": "Which specific input broke, so a 300k-file scan reports one bad file rather than failing wholesale.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "RetryPolicy": {
+      "title": "RetryPolicy",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts"],
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "default": 3 },
+        "backoff": {
+          "type": "string",
+          "enum": ["none", "linear", "exponential"],
+          "default": "exponential"
+        },
+        "initial_delay_ms": { "type": "number", "minimum": 0, "default": 1000 },
+        "max_delay_ms": { "type": "number", "minimum": 0, "default": 60000 },
+        "quarantine_after_max": {
+          "description": "Move to quarantined rather than failed once attempts are exhausted, so a hostile file is never retried automatically again but is still visible in the diagnostics view. Nothing is dropped silently.",
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+
+    "Journal": {
+      "title": "Journal",
+      "description": "Record of every destructive or externally-visible action the job took. 'No silent data loss' means anything irreversible is written down before it happens, not after it succeeds.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["action", "at"],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": ["delete_file", "overwrite_file", "move_file", "prune_proxy", "network_send", "network_receive", "consent_recorded", "consent_revoked", "model_swapped", "index_rebuilt"]
+              },
+              "at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+              "target_id": {
+                "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+              },
+              "reversible": { "type": "boolean", "default": false },
+              "detail": { "type": "string", "default": "" }
+            }
+          },
+          "default": []
+        }
+      }
+    }
+  }
+}

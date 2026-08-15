@@ -1,0 +1,501 @@
+{
+  "contract_version": "v0",
+  "description": "Golden fixtures for the Memory Engine contract layer. Both agents validate against these; a change to any file here is a contract change and requires both sides to re-run their tests. Every fixture file on disk must appear in this manifest and vice versa -- contracts/tests/test_contracts.py enforces that, so a fixture cannot be added without saying what it is for.",
+  "expectations": {
+    "valid": "Must validate cleanly against its schema AND satisfy every cross-field invariant.",
+    "schema-invalid": "Must be REJECTED by JSON Schema validation. `error_path` names the field the rejection must point at, so a fixture cannot pass the test for an accidental reason. `rejected_by` says whether the rule is type-level (the generated bindings reject it too) or conditional if/then (only jsonschema and the semantic checks can).",
+    "semantic-invalid": "Must PASS JSON Schema validation but FAIL a cross-field invariant that JSON Schema cannot express."
+  },
+  "schemas": {
+    "media-record": "media-record.schema.json",
+    "face-record": "face-record.schema.json",
+    "moment-record": "moment-record.schema.json",
+    "edl": "edl.schema.json",
+    "album-spec": "album-spec.schema.json",
+    "job-spec": "job-spec.schema.json",
+    "pref-event": "pref-event.schema.json"
+  },
+  "fixtures": [
+    {
+      "path": "album-spec/schema-invalid/pass-report-missing-hard-gate.json",
+      "schema": "album-spec",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "validation",
+        "checks"
+      ],
+      "purpose": "A pass report that simply never ran the DPI gate. A pass must be earned, not asserted -- an incomplete checks array would otherwise pass trivially, which is the failure mode where a spec ships because nobody validated it.",
+      "exercises": [
+        "a pass report must contain every hard gate, each passed"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "album-spec/schema-invalid/pass-status-with-errors.json",
+      "schema": "album-spec",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "validation",
+        "error_count"
+      ],
+      "purpose": "A spec cannot count its own failures and still claim a pass. render-print refuses anything but a genuine pass, and there is no override flag.",
+      "exercises": [
+        "if/then constraint forcing error_count to 0 when status is pass"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "album-spec/valid/album-thailand-validated.json",
+      "schema": "album-spec",
+      "expectation": "valid",
+      "purpose": "A vendor-valid album: 20 pages, at the vendor minimum and on the increment of 2, passing every hard print gate.",
+      "exercises": [
+        "page count satisfying the vendor profile without the renderer being asked to pad it later",
+        "millimetre page geometry with a normalised crop into the source, bridged by effective_dpi",
+        "every effective_dpi above the 300 DPI floor at printed size, frame sized from the narrowest source",
+        "a pass report containing every hard gate, each passed",
+        "spread-level colour harmony solved across facing pages as deltas",
+        "enhancement ops carrying license_cleared"
+      ]
+    },
+    {
+      "path": "edl/semantic-invalid/source-range-outside-available.json",
+      "schema": "edl",
+      "expectation": "semantic-invalid",
+      "purpose": "JSON Schema cannot compare a clip's source_range against its media_ref's available_range. This fixture is structurally perfect and still unrenderable, which is exactly the class of bug the semantic validator exists to catch before a render starts rather than at 80%.",
+      "exercises": [
+        "clip-01 ends 227 frames past the end of its source"
+      ]
+    },
+    {
+      "path": "edl/valid/reel-beat-locked-vertical-reframe.json",
+      "schema": "edl",
+      "expectation": "valid",
+      "purpose": "EDGE CASE required by Phase 0: an EDL with beat-locked cuts and a vertical reframe keyframe track. A 15-second 9:16 Instagram reel cut from the GoPro span assembly at 128 BPM.",
+      "exercises": [
+        "every one of 8 cuts locked to a downbeat, worst alignment error 7.5ms against the 50ms gate",
+        "exact NTSC rate 60000/1001 throughout, with fractional beat positions and integer frame positions",
+        "8 reframe tracks producing 9:16 from 16:9, SAM 2 subject lock, Savitzky-Golay smoothing, explicit fallback",
+        "one dissolve with handles; every other join is a hard cut expressed as the ABSENCE of a transition, per OTIO",
+        "a linear_speed time effect on the peak clip and an L-cut on the reaction clip",
+        "full audio plan: licensed music cue, ambient with per-clip gain, an explicit-range ducking rule, and a mix target",
+        "a Tier 3 story arc with four acts, five required beats all satisfied, and its ConsentRef",
+        "variant metadata, determinism block, and a passing validation report",
+        "clip-04 spans the GH01/GH02 chapter boundary at source frame 3067485, proving a cut can cross a chaptered file split via the span assembly"
+      ]
+    },
+    {
+      "path": "face-record/schema-invalid/eligible-while-below-threshold.json",
+      "schema": "face-record",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "identity",
+        "eligible_for_automated_output"
+      ],
+      "purpose": "The precision-first invariant is machine-checked, not merely documented. A face whose assignment is auto_below_threshold cannot claim eligibility.",
+      "exercises": [
+        "if/then constraint forcing eligible_for_automated_output to false"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "face-record/schema-invalid/eligible-without-person-id.json",
+      "schema": "face-record",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "identity",
+        "person_id"
+      ],
+      "purpose": "An eligible face must name the person it is eligible as. No unexplained permissions.",
+      "exercises": [
+        "if/then constraint requiring person_id when eligible"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "face-record/schema-invalid/minor-consent-wrong-scope.json",
+      "schema": "face-record",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "sensitive",
+        "labeling_consent",
+        "scope"
+      ],
+      "purpose": "A consent granted for cloud rendering reused to justify naming a child. Consent is per-scope; a permission for one thing is not a permission for another.",
+      "exercises": [
+        "labeling_consent scope pinned to minor_face_labeling"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "face-record/schema-invalid/minor-labeled-without-consent.json",
+      "schema": "face-record",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "sensitive",
+        "labeling_consent"
+      ],
+      "purpose": "A confirmed minor named with no consent at all. Detection and counting are always fine; naming is not.",
+      "exercises": [
+        "confirmed_minor requires a labeling_consent object"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "face-record/valid/face-below-threshold-review-queued.json",
+      "schema": "face-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE required by Phase 0: a face below the confidence threshold. The model has a guess (0.7418) that it is not permitted to act on against the 0.92 automated-output threshold.",
+      "exercises": [
+        "assignment auto_below_threshold with person_id still null",
+        "eligible_for_automated_output false -- precision over recall",
+        "two ranked candidates recorded, which is the sibling-confusion case",
+        "review_reason below_threshold so the item lands in the review queue rather than in an album"
+      ]
+    },
+    {
+      "path": "face-record/valid/face-confirmed-high-confidence.json",
+      "schema": "face-record",
+      "expectation": "valid",
+      "purpose": "A face a human has confirmed, and therefore the only kind that may appear in unattended output.",
+      "exercises": [
+        "assignment user_confirmed",
+        "eligible_for_automated_output true with person_id, confidence and threshold_used all present"
+      ]
+    },
+    {
+      "path": "face-record/valid/face-confirmed-minor-with-consent.json",
+      "schema": "face-record",
+      "expectation": "valid",
+      "purpose": "A confirmed minor who may be named, because an explicit minor_face_labeling consent exists and is live.",
+      "exercises": [
+        "minor_status confirmed_minor with a correctly scoped, unrevoked consent",
+        "eligible_for_automated_output true only because both the identity gate and the minor gate are satisfied",
+        "excluded_from_sharing true"
+      ]
+    },
+    {
+      "path": "job-spec/schema-invalid/egress-without-consent.json",
+      "schema": "job-spec",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "egress",
+        "consent"
+      ],
+      "purpose": "'No network egress without a consent-ledger entry' is enforced by the contract, not only by code. The CI egress test is the second line of defence; this is the first.",
+      "exercises": [
+        "if/then constraint requiring consent when requires_egress is true"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "job-spec/schema-invalid/scan-source-without-locator-digest.json",
+      "schema": "job-spec",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "inputs"
+      ],
+      "purpose": "A scan job with paths but no locator digest. This is the collision the review caught: its identity would be indistinguishable from any other scan with the same params.",
+      "exercises": [
+        "scan_source requires source_paths and source_locator_digest"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "job-spec/valid/job-scan-source-root-a.json",
+      "schema": "job-spec",
+      "expectation": "valid",
+      "purpose": "A scan of one drive. Half of the pair proving scan identity is per-source-root.",
+      "exercises": [
+        "source_locator_digest over the canonicalised roots",
+        "units_total null while the walk is still discovering, so the progress bar cannot lie",
+        "an opaque resumable walk cursor"
+      ]
+    },
+    {
+      "path": "job-spec/valid/job-scan-source-root-b.json",
+      "schema": "job-spec",
+      "expectation": "valid",
+      "purpose": "A scan of a DIFFERENT drive with identical params, scope and (empty) media ids. Its job_id differs only because of the source-locator digest; without that field these two would collide and the second drive would silently never be imported.",
+      "exercises": [
+        "distinct source_locator_digest yielding a distinct job_id",
+        "identical params_digest and scope, proving the digest is what separates them"
+      ]
+    },
+    {
+      "path": "job-spec/valid/job-tier3-with-consent.json",
+      "schema": "job-spec",
+      "expectation": "valid",
+      "purpose": "The only kind of job permitted to touch the network: a Tier 3 contact-sheet request with a consent-ledger entry.",
+      "exercises": [
+        "requires_egress true with consent, destination and payload_kind all present",
+        "payload_kind contact_sheet -- thumbnails only, never originals",
+        "a journal recording the consent and both network legs"
+      ]
+    },
+    {
+      "path": "job-spec/valid/job-video-proxy-resumed.json",
+      "schema": "job-spec",
+      "expectation": "valid",
+      "purpose": "The resumption case: a proxy job killed mid-run and picked back up, having already finished chapter 1.",
+      "exercises": [
+        "an opaque worker-owned checkpoint cursor",
+        "completed_input_ids so a resume does not redo finished work",
+        "partial_output_ids so the chapter-1 proxy is neither orphaned nor regenerated",
+        "progress in real units (frames) with a stale heartbeat telling the scheduler the job was killed, not hung",
+        "a retryable error retained on attempt 1 while attempt 2 runs"
+      ]
+    },
+    {
+      "path": "media-record/schema-invalid/assembly-with-bytes-and-source.json",
+      "schema": "media-record",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "byte_size"
+      ],
+      "purpose": "The identity conflict raised in review: an assembly claiming a byte size it does not have and exposing a member's path as its own. A size matching no file on disk breaks anything that verifies a record against the filesystem.",
+      "exercises": [
+        "conditional validation on asset_kind virtual_assembly"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "media-record/schema-invalid/perceptual-hash-length-mismatch.json",
+      "schema": "media-record",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "perceptual"
+      ],
+      "purpose": "A hash declaring 256 bits while carrying 16 hex characters. Left unchecked, Hamming distance against a truncated digest is meaningless and silently merges unrelated photos.",
+      "exercises": [
+        "bits/hex length agreement enforced by if/then"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "media-record/schema-invalid/unknown-property.json",
+      "schema": "media-record",
+      "expectation": "schema-invalid",
+      "error_path": [],
+      "purpose": "additionalProperties:false must reject an invented field. This is the guard that stops either agent quietly extending a record instead of changing the contract.",
+      "exercises": [
+        "rejection of the undeclared field `rating_out_of_ten`"
+      ],
+      "rejected_by": "schema_type"
+    },
+    {
+      "path": "media-record/valid/file-truncated-quarantined.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE: a truncated file from a recovered drive. It hashes fine and decodes to nothing, and the record exists precisely so the failure is visible rather than silent.",
+      "exercises": [
+        "processing state quarantined, so it is never retried automatically",
+        "per-stage failures with a redacted, non-retryable file_corrupt error",
+        "perceptual_hash skipped with a reason -- hashing a partial decode would poison dedupe buckets",
+        "excluded_from_automation with reason 'corrupt'"
+      ]
+    },
+    {
+      "path": "media-record/valid/file-zero-byte-quarantined.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE: a zero-byte file. Also shows content-addressing doing its job at the extreme: every empty file on the drive collapses into this one record with several paths.",
+      "exercises": [
+        "byte_size 0 on a physical_file, which is legal",
+        "two sources on one record, because all empty files share a content hash",
+        "zero_byte_file error, non-retryable",
+        "thumbnail skipped before any decode was attempted"
+      ]
+    },
+    {
+      "path": "media-record/valid/image-beach-sunset.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "The realistic baseline: a well-exposed DSLR photo with full EXIF, GPS, two source locations for the same bytes (drive plus Google Takeout), a dedupe group where it is primary, and a complete analysis pass.",
+      "exercises": [
+        "content-addressed dedupe across two import paths",
+        "full model_runs provenance",
+        "confirmed person present"
+      ]
+    },
+    {
+      "path": "media-record/valid/image-heic-mislabeled-extension.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "HEIC from an iCloud export, saved with a .JPG extension. Format is detected from content, never from the extension -- trusting the extension here would hand a HEIC to a JPEG decoder.",
+      "exercises": [
+        "file_format heic while the path ends .JPG",
+        "orientation 6, with stored_size and oriented_size swapped accordingly",
+        "Display P3 with 10-bit depth and is_hdr true",
+        "a 256-bit perceptual hash with the matching 64 hex characters"
+      ]
+    },
+    {
+      "path": "media-record/valid/image-no-exif-date.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE: a photo with genuinely no recoverable date. A flatbed scan of a print -- no EXIF, and nothing in the filename to infer from either, which is what separates it from the WhatsApp fixture.",
+      "exercises": [
+        "captured_at present but wholly empty rather than absent",
+        "source 'unknown' with confidence 0.0 and precision 'unknown'",
+        "chronological output must exclude it rather than sort it to the epoch",
+        "metadata_present is an empty array, which is normal and not an error"
+      ]
+    },
+    {
+      "path": "media-record/valid/image-whatsapp-filename-date.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE: the WhatsApp adapter recovering a date from the filename convention when the file has no EXIF at all. Distinct from the undated fixture: here a date IS recoverable, just weakly.",
+      "exercises": [
+        "source filename_pattern parsed from IMG-20230812-WA0037.jpg",
+        "precision 'day' rather than 'second' -- the filename carries no clock time",
+        "confidence 0.72, so event clustering weights it below an EXIF original",
+        "local set with utc and timezone still null, because a filename implies no zone"
+      ]
+    },
+    {
+      "path": "media-record/valid/live-photo-motion.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "The motion half of the same Live Photo. The pairing is bidirectional so either file can be found from the other.",
+      "exercises": [
+        "kind motion_photo with a 3-second 30fps track",
+        "paired_motion_media_id pointing back at the still",
+        "is_variable_frame_rate true with a 'table' frame-index mapping, the real phone-video case",
+        "shot detection skipped with a reason rather than silently"
+      ]
+    },
+    {
+      "path": "media-record/valid/live-photo-still.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE: the still half of a Live Photo, which arrives from an iCloud export as two unrelated files that must be re-paired.",
+      "exercises": [
+        "kind live_photo",
+        "paired_motion_media_id pointing at the motion record",
+        "the .MOV listed as a sidecar_path so the pairing survives a re-scan",
+        "video_proxy not_applicable with a stated reason: the motion track is its own record"
+      ]
+    },
+    {
+      "path": "media-record/valid/video-gopro-chapter-01.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE required by Phase 0, part 1 of 3: the first physical file of a GoPro chaptered recording.",
+      "exercises": [
+        "span.role = member with index 0 and offset_in_span 0",
+        "exact NTSC frame rate 60000/1001 preserved as a rational",
+        "video proxy carrying a frame-index sidecar",
+        "shot detection deliberately skipped with a stated skip_reason, because analysis runs on the assembly"
+      ]
+    },
+    {
+      "path": "media-record/valid/video-gopro-chapter-02.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE part 2 of 3: the second chapter, offset into the recording by the first chapter's duration.",
+      "exercises": [
+        "span index 1",
+        "offset_in_span 42405 frames",
+        "continuity verified_gapless"
+      ]
+    },
+    {
+      "path": "media-record/valid/video-gopro-span-assembly.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE part 3 of 3: the virtual assembly representing both chapters as one continuous recording. This is the id MomentRecords and EDL clips reference, so a cut can cross a chapter boundary without any planner knowing chapters exist.",
+      "exercises": [
+        "asset_kind virtual_assembly, with the conditional identity rules that implies",
+        "media_id equals span_id -- no bytes to hash, so its members' identity is its identity",
+        "byte_size 0, no sources and no proxies: the members own all three",
+        "duration equals the sum of member durations (42405 + 19188 = 61593)"
+      ]
+    },
+    {
+      "path": "moment-record/valid/moment-crosses-chapter-boundary.json",
+      "schema": "moment-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE: a moment straddling the GH01/GH02 chapter boundary. It addresses the span assembly, so the boundary is invisible to scoring and to the planner.",
+      "exercises": [
+        "source_range [3067380, 3067620) spanning the boundary at 3067485",
+        "media_id is the assembly, never a member",
+        "snap points on both sides of the file split"
+      ]
+    },
+    {
+      "path": "moment-record/valid/moment-eliminated-shake.json",
+      "schema": "moment-record",
+      "expectation": "valid",
+      "purpose": "Elimination is first-class. This record exists only to say 'rejected, and here is why', which on a real action-camera library is the outcome for 90-95% of footage.",
+      "exercises": [
+        "eliminated true with three reasons at the free `classical` stage",
+        "no snap points and no safe_trim, because nothing downstream may use it"
+      ]
+    },
+    {
+      "path": "moment-record/valid/moment-emotional-peak.json",
+      "schema": "moment-record",
+      "expectation": "valid",
+      "purpose": "A keepworthy moment scored by a Tier 3 pass: laughter, a confirmed person, speech with word-level timing, and five certified snap points.",
+      "exercises": [
+        "source_range in source timecode alongside proxy_range in proxy time",
+        "snap points with asymmetric cut_direction (a motion onset is an in-point, not an out-point)",
+        "speech_safe_in / speech_safe_out derived from word timestamps -- the no-mid-word-cut mechanism",
+        "preserve_audio_tail true, which the EDL realises as an L-cut"
+      ]
+    },
+    {
+      "path": "pref-event/schema-invalid/pixel-data-present.json",
+      "schema": "pref-event",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "pixel_data_present"
+      ],
+      "purpose": "The privacy promise expressed as a type. A PrefEvent carrying pixel data is structurally invalid, not merely discouraged.",
+      "exercises": [
+        "const false on pixel_data_present"
+      ],
+      "rejected_by": "schema_type"
+    },
+    {
+      "path": "pref-event/schema-invalid/shareable-without-anonymization.json",
+      "schema": "pref-event",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "privacy",
+        "contains_local_identifiers"
+      ],
+      "purpose": "An event still holding local identifiers cannot be queued for the global training pool, even with consent. The schema blocks it so a bug elsewhere cannot leak it.",
+      "exercises": [
+        "if/then constraint requiring contains_local_identifiers false and an anonymization_version when shareable"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "pref-event/valid/pref-recrop-anonymized.json",
+      "schema": "pref-event",
+      "expectation": "valid",
+      "purpose": "A re-crop, which is the strongest signal of all: the human has not merely judged, they have demonstrated the correct answer. Shown here in its exportable, anonymised form.",
+      "exercises": [
+        "crop_before / crop_after as the label",
+        "shareable_for_global_model true, with consent, anonymization_version set and person_ids stripped",
+        "pixel_data_present false -- feature vectors and decisions only"
+      ]
+    },
+    {
+      "path": "pref-event/valid/pref-variant-picked.json",
+      "schema": "pref-event",
+      "expectation": "valid",
+      "purpose": "The richest preference signal the system gets: the user picked the rank-1 variant over the rank-0 variant the model scored higher. That disagreement is the error signal.",
+      "exercises": [
+        "all three alternatives carried with their presented rank, presented score and feature vector -- the pairwise comparison, not just the outcome",
+        "named features alongside a dense vector, both pinned to feature_set_id",
+        "scores frozen as presented, never recomputed",
+        "deliberation time recorded as evidence strength",
+        "local-only: person ids present, so shareable_for_global_model is false"
+      ]
+    }
+  ]
+}

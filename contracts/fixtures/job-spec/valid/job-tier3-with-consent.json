@@ -1,0 +1,125 @@
+{
+  "schema_version": "v0",
+  "job_id": "fcf14c811b6fed5e097668247abcad3c3ee2c586c4fa4200accbe31bf1b186af",
+  "job_type": "tier3_request",
+  "inputs": {
+    "media_ids": [],
+    "moment_ids": [
+      "b8a3f2ac42d376a8af7f54946248f305343c486dfecc27c8687b4fa703fd1947",
+      "366ce4964b8b7b46425a0ac12e93795ac3f5d1e186ff90bb3bb7554719f03b37"
+    ],
+    "face_ids": [],
+    "edl_id": null,
+    "album_id": null,
+    "source_paths": [],
+    "parent_job_id": null,
+    "depends_on_job_ids": [],
+    "models": [
+      {
+        "model_id": "frontier-multimodal",
+        "version": "2026-02",
+        "weights_blake3": "93e2abe19030b118a176b0bca42fb173a34eb175c32903a1cec731a1f02fd659",
+        "runtime": null,
+        "precision": null
+      }
+    ]
+  },
+  "params": {
+    "prompt_id": "reel-arc-v3",
+    "contact_sheet": { "tile_px": 256, "columns": 6, "include_transcript": true },
+    "response_format": "structured_json",
+    "max_output_tokens": 2048
+  },
+  "params_digest": "445523e5b31e98dfc311e6691b8debd78d9f9c6925a7eb1fb2d1f6bd7d6b1e99",
+  "scope": "project:reel-ridge-15s",
+  "priority": 400,
+  "requirements": {
+    "compute": "any",
+    "min_vram_mb": null,
+    "min_ram_mb": 512,
+    "min_disk_mb": 64,
+    "hardware_decode": false,
+    "requires_source_file": false,
+    "estimated_duration_ms": 9000.0
+  },
+  "egress": {
+    "requires_egress": true,
+    "consent": {
+      "ledger_entry_id": "6b1e4d0a-9f37-4c25-b8e1-05a7c3f26d94",
+      "scope": "tier3_contact_sheet",
+      "granted_at": "2026-03-16T20:02:11+05:30",
+      "expires_at": "2026-03-16T21:02:11+05:30",
+      "revoked_at": null
+    },
+    "destination": "tier3_inference",
+    "payload_kind": "contact_sheet",
+    "estimated_bytes": 384000
+  },
+  "state": {
+    "status": "completed",
+    "attempts": 1,
+    "worker_id": "cloud-dispatch-01",
+    "started_at": "2026-03-16T20:04:41+05:30",
+    "heartbeat_at": "2026-03-16T20:04:50+05:30",
+    "finished_at": "2026-03-16T20:04:52+05:30",
+    "progress": {
+      "units_done": 1.0,
+      "units_total": 1.0,
+      "unit": "items",
+      "bytes_processed": 384000,
+      "message": null
+    }
+  },
+  "checkpoint": {
+    "resumable": false,
+    "cursor": null,
+    "checkpoint_version": 0,
+    "updated_at": null,
+    "completed_input_ids": [],
+    "partial_output_ids": []
+  },
+  "outputs": [
+    {
+      "kind": "edl",
+      "id": "ba5a48c7442b26d6e170f74b497de7257652982e5b4bfd2deab6fefa244bfb5e",
+      "path": null,
+      "byte_size": null,
+      "produced_at": "2026-03-16T20:04:52+05:30"
+    }
+  ],
+  "error": null,
+  "retry_policy": {
+    "max_attempts": 2,
+    "backoff": "exponential",
+    "initial_delay_ms": 2000.0,
+    "max_delay_ms": 30000.0,
+    "quarantine_after_max": false
+  },
+  "journal": {
+    "entries": [
+      {
+        "action": "consent_recorded",
+        "at": "2026-03-16T20:02:11+05:30",
+        "target_id": null,
+        "reversible": true,
+        "detail": "user approved contact-sheet upload for this reel"
+      },
+      {
+        "action": "network_send",
+        "at": "2026-03-16T20:04:41+05:30",
+        "target_id": null,
+        "reversible": false,
+        "detail": "contact sheet, 384000 bytes, 40 tiles at 256px, no originals"
+      },
+      {
+        "action": "network_receive",
+        "at": "2026-03-16T20:04:52+05:30",
+        "target_id": null,
+        "reversible": false,
+        "detail": "structured story arc referencing 14 moment ids"
+      }
+    ]
+  },
+  "created_at": "2026-03-16T20:02:15+05:30",
+  "deadline": "2026-03-16T20:07:15+05:30"
+}

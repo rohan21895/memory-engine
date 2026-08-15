@@ -1,0 +1,86 @@
+{
+  "schema_version": "v0",
+  "edl_id": "ba5a48c7442b26d6e170f74b497de7257652982e5b4bfd2deab6fefa244bfb5e",
+  "name": "clip reaches past the end of its source",
+  "kind": "reel",
+  "rate": 59.94005994005994,
+  "target": {
+    "destination": "instagram_reel",
+    "resolution": {
+      "width": 1080,
+      "height": 1920
+    },
+    "aspect_ratio": {
+      "numerator": 9,
+      "denominator": 16
+    }
+  },
+  "media_refs": [
+    {
+      "media_ref_id": "src-ride",
+      "media_id": "4dab7a9f96cea25dc911d6e0be34db33e54c014fa269cc5836b757ef0ee2d623",
+      "media_kind": "video",
+      "available_range": {
+        "start_time": {
+          "value": 3025080,
+          "rate": 59.94005994005994
+        },
+        "duration": {
+          "value": 61593,
+          "rate": 59.94005994005994
+        }
+      },
+      "is_span_assembly": true
+    }
+  ],
+  "tracks": [
+    {
+      "track_id": "v1",
+      "kind": "video",
+      "name": "V1",
+      "role": "primary",
+      "items": [
+        {
+          "item_type": "clip",
+          "clip_id": "clip-01",
+          "name": "runs off the end",
+          "media_ref_id": "src-ride",
+          "source_range": {
+            "start_time": {
+              "value": 3086000,
+              "rate": 59.94005994005994
+            },
+            "duration": {
+              "value": 900,
+              "rate": 59.94005994005994
+            }
+          },
+          "beat_lock": {
+            "beat_index": 0,
+            "is_downbeat": true,
+            "alignment_error_ms": 0.0,
+            "snap_point_kind": "shot_boundary"
+          }
+        }
+      ]
+    }
+  ],
+  "determinism": {
+    "planner": "reel-planner",
+    "planner_version": "1.0.0",
+    "seed": 1,
+    "inputs_digest": "ade3ed501d4b14a36ee805bf5fd036b51ffb33023ca8486f75b46d30e5865007"
+  },
+  "validation": {
+    "status": "fail",
+    "checks": [
+      {
+        "check_id": "source_range_within_available",
+        "passed": false,
+        "severity": "error",
+        "detail": "clip-01 ends at 3086900, past the source end at 3086673",
+        "clip_id": "clip-01"
+      }
+    ]
+  }
+}

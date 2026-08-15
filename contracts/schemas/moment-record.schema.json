@@ -1,0 +1,349 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memory-engine.local/contracts/v0/moment-record.schema.json",
+  "title": "MomentRecord",
+  "description": "A scored time interval in a video: what happens in it, how good it is, and where inside it a cut is allowed to land.",
+  "$comment": "This is the unit the story engine reasons about and the unit the frontier model is shown on a contact sheet. Two design decisions dominate it. First, ELIMINATION IS FIRST-CLASS: on real action-camera libraries 90-95% of footage is discarded before expensive analysis, so a MomentRecord that exists only to say 'rejected, shake' is a normal and valuable record, not a failure. Second, SNAP POINTS AND SAFE TRIM ARE PART OF THE CONTRACT: the planner does not get to invent cut positions, it chooses among the ones the analysis layer has certified as safe, which is how 'never cut mid-word' becomes a property of the data rather than a hope about the code.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "moment_id",
+    "media_id",
+    "source_range",
+    "scores",
+    "elimination"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/SchemaVersion" },
+
+    "moment_id": {
+      "description": "BLAKE3 over (media_id, source_range, scorer model_id+version). Rescoring with a new model yields new ids, so an EDL always points at the exact moment definition it was planned against.",
+      "$ref": "common.schema.json#/$defs/Blake3Hash"
+    },
+
+    "media_id": {
+      "description": "MediaRecord this moment lives in. For chaptered footage this is the span ASSEMBLY id, so a moment may legally straddle a chapter boundary that the planner never has to know about.",
+      "$ref": "common.schema.json#/$defs/Blake3Hash"
+    },
+
+    "source_range": {
+      "description": "The moment's extent in SOURCE timecode -- already mapped back through the proxy frame index. Everything downstream, including the EDL, addresses source time; proxy time never escapes the analysis layer.",
+      "$ref": "common.schema.json#/$defs/TimeRange"
+    },
+
+    "proxy_range": {
+      "description": "The same interval in proxy time, retained so a re-score can be run against the cached proxy without redoing the mapping.",
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/TimeRange" }, { "type": "null" }]
+    },
+
+    "shot_id": {
+      "description": "Shot this moment sits inside, from TransNetV2 boundary detection. A moment never crosses a shot boundary -- crossing one is a cut, and cuts belong to the planner.",
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+    },
+
+    "features": {
+      "oneOf": [{ "$ref": "#/$defs/MomentFeatures" }, { "type": "null" }]
+    },
+
+    "scores": { "$ref": "#/$defs/MomentScores" },
+
+    "snap_points": {
+      "description": "Certified cut positions inside (and at the edges of) this moment. Ordered by time. A beat-locked reel cut is the intersection of a beat grid entry and a snap point of kind motion_onset or audio_onset -- that intersection is what makes a cut feel deliberate rather than arbitrary.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/SnapPoint" },
+      "default": []
+    },
+
+    "safe_trim": {
+      "description": "The bounds a planner may trim to without damaging the moment. Absent only when speech and motion analysis have not run.",
+      "oneOf": [{ "$ref": "#/$defs/SafeTrim" }, { "type": "null" }]
+    },
+
+    "elimination": { "$ref": "#/$defs/Elimination" },
+
+    "people": {
+      "description": "Who is present, resolved through the automated-output face gate. A person named here has passed the precision bar; uncertain faces contribute to face_presence but not to this list.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "person_ids": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Uuid" },
+          "default": []
+        },
+        "face_track_ids": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Uuid" },
+          "default": []
+        },
+        "unidentified_face_count": { "type": "integer", "minimum": 0, "default": 0 }
+      },
+      "default": {}
+    },
+
+    "transcript": {
+      "oneOf": [{ "$ref": "#/$defs/TranscriptSegment" }, { "type": "null" }]
+    },
+
+    "model_runs": {
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/ModelRun" },
+      "default": []
+    },
+
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+  },
+
+  "$defs": {
+    "MomentFeatures": {
+      "title": "MomentFeatures",
+      "description": "The fused feature stream over the moment's window. These are the inputs to score fusion, and they are exactly what a PrefEvent captures as decision context -- which is why they are named, bounded and stable rather than an opaque vector.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "motion_energy": {
+          "description": "Mean optical-flow magnitude, normalised. High is action; near-zero over a long window is tripod dead time and gets eliminated.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "motion_peak": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }] },
+        "shake": {
+          "description": "Camera instability distinct from subject motion. The single most common reason handheld footage is unusable.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "exposure_stability": {
+          "description": "Low when the camera is hunting exposure, e.g. walking from indoors into sun. Such a window looks bad no matter how good the content is.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "sharpness": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }] },
+        "face_presence": {
+          "description": "Fraction of frames in the window containing at least one face.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "max_face_area_ratio": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }] },
+        "smile_intensity": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }] },
+        "audio": {
+          "oneOf": [{ "$ref": "#/$defs/AudioFeatures" }, { "type": "null" }]
+        },
+        "visual_embedding": {
+          "description": "SigLIP embedding of the moment's representative keyframe. Drives diversity constraints, so two moments that look alike cannot both make the cut.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/VectorRef" }, { "type": "null" }]
+        },
+        "novelty": {
+          "description": "Distance from everything already selected. This is what stops a reel being six near-identical drone shots.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "representative_frame_time": {
+          "description": "Best single frame in the window, used as the contact-sheet tile shown to the frontier model.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "AudioFeatures": {
+      "title": "AudioFeatures",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "loudness_lufs": {
+          "oneOf": [{ "type": "number", "minimum": -70, "maximum": 0 }, { "type": "null" }]
+        },
+        "speech_ratio": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }] },
+        "music_ratio": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }] },
+        "noise_ratio": {
+          "description": "Wind and handling noise. High values are why a visually perfect action shot may still need its ambient ducked to nothing.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+        },
+        "events": {
+          "description": "Detected audio events with their own confidences. Laughter and cheering are among the strongest emotional-peak signals available to a local model.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "confidence"],
+            "properties": {
+              "label": {
+                "type": "string",
+                "enum": ["laughter", "cheering", "applause", "crying", "singing", "shouting", "splash", "music", "speech", "wind", "silence", "engine", "animal", "fireworks", "other"]
+              },
+              "confidence": { "$ref": "common.schema.json#/$defs/Confidence" },
+              "time": {
+                "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+              }
+            }
+          },
+          "default": []
+        },
+        "embedding": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/VectorRef" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "MomentScores": {
+      "title": "MomentScores",
+      "description": "Fused judgements. `moment_score` is the only required one; the rest are the decomposition that makes it explainable and per-user reweightable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["moment_score"],
+      "properties": {
+        "moment_score": {
+          "description": "Overall keepworthiness. v1 is a hand-weighted linear fusion because a transparent, tunable model beats an opaque one until PrefEvents exist to train on.",
+          "$ref": "common.schema.json#/$defs/Score"
+        },
+        "technical": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }] },
+        "hook_potential": {
+          "description": "Fitness for the first second of a reel, where retention is won or lost. Rewards immediate motion or an immediate face, and punishes slow builds.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }]
+        },
+        "emotional_peak": {
+          "description": "How much this feels like a moment rather than merely looking like one. Local features approximate it via laughter, smiles and motion onsets; the frontier model is the one that can actually tell 'child sees the ocean' from 'child near ocean', and when it has ruled, `source` says so.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }]
+        },
+        "narrative_value": {
+          "description": "Contribution to a story beat, only ever populated by a Tier 2/3 reasoning pass.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }]
+        },
+        "source": {
+          "description": "Which tier produced the judgement scores. Never let a frontier-model opinion be mistaken for a local measurement.",
+          "type": "string",
+          "enum": ["local_fusion", "local_learned", "tier2_vlm", "tier3_model", "user_override"],
+          "default": "local_fusion"
+        },
+        "fusion_weights_version": {
+          "description": "Which weight set produced moment_score. Per-user reweighting means the same features legitimately yield different scores for different people, and the score is meaningless without knowing which weights applied.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "SnapPoint": {
+      "title": "SnapPoint",
+      "description": "A time at which cutting is defensible, with a reason. The planner may only place cuts on snap points; that constraint is what makes 'beat-alignment error < 50ms' and 'no mid-word cuts' testable properties of a plan rather than emergent behaviour.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time", "kind", "strength"],
+      "properties": {
+        "time": {
+          "description": "Source timecode. Exact rational, never rounded to milliseconds -- the 50ms beat-alignment gate has no headroom to spare on rounding.",
+          "$ref": "common.schema.json#/$defs/RationalTime"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["shot_boundary", "motion_onset", "motion_offset", "audio_onset", "speech_gap", "speech_start", "speech_end", "subject_entry", "subject_exit", "impact", "scene_brightness_change"]
+        },
+        "strength": {
+          "description": "How pronounced the boundary is. Cutting on a weak onset is worse than cutting 40ms later on a strong one.",
+          "$ref": "common.schema.json#/$defs/Unit"
+        },
+        "confidence": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }]
+        },
+        "cut_direction": {
+          "description": "Whether this point is usable as an in-point, an out-point, or both. A motion onset is a great in-point and a poor out-point; encoding that asymmetry stops the planner making technically-legal, visually-wrong cuts.",
+          "type": "string",
+          "enum": ["in", "out", "both"],
+          "default": "both"
+        }
+      }
+    },
+
+    "SafeTrim": {
+      "title": "SafeTrim",
+      "description": "Hard bounds on trimming. `speech_safe_*` are the ones that make the no-mid-word guarantee exact: they are derived from word-level timestamps, not from voice-activity guesses.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["earliest_in", "latest_out"],
+      "properties": {
+        "earliest_in": { "$ref": "common.schema.json#/$defs/RationalTime" },
+        "latest_out": { "$ref": "common.schema.json#/$defs/RationalTime" },
+        "speech_safe_in": {
+          "description": "Earliest in-point that does not land inside a spoken word. Null when the moment contains no speech, in which case earliest_in applies.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "speech_safe_out": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "min_duration": {
+          "description": "Below this the moment reads as a flash frame rather than a shot.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+        },
+        "preserve_audio_tail": {
+          "description": "True when the audio meaningfully continues past the visual out-point -- a laugh that lands after the cut. The renderer honours this with an audio-only extension (an L-cut), which is a decision that must live in the plan.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+
+    "Elimination": {
+      "title": "Elimination",
+      "description": "Elimination-first is the biggest cost and quality lever in the system, so its result is a required, structured field rather than the absence of a record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eliminated"],
+      "properties": {
+        "eliminated": { "type": "boolean" },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["shake", "blown_exposure", "crushed_exposure", "black_frame", "lens_obstructed", "no_motion", "too_short", "no_subject", "duplicate_footage", "wind_noise_dominant", "below_score_floor", "user_rejected"]
+          },
+          "default": []
+        },
+        "stage": {
+          "description": "How far the moment got before being dropped. `classical` eliminations are the free ones and should account for the overwhelming majority.",
+          "oneOf": [
+            { "type": "string", "enum": ["classical", "local_model", "fusion", "planner", "user"] },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+
+    "TranscriptSegment": {
+      "title": "TranscriptSegment",
+      "description": "Speech inside the moment, with word timing. Word timestamps are not a nicety: they are the mechanism behind speech-aware trimming and the mid-word-cut quality gate.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "language"],
+      "properties": {
+        "text": { "type": "string" },
+        "language": {
+          "description": "BCP-47. Indian-language libraries are a first-class target, so this is required rather than assumed English.",
+          "type": "string"
+        },
+        "words": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["word", "start", "end"],
+            "properties": {
+              "word": { "type": "string" },
+              "start": { "$ref": "common.schema.json#/$defs/RationalTime" },
+              "end": { "$ref": "common.schema.json#/$defs/RationalTime" },
+              "confidence": {
+                "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }]
+              }
+            }
+          },
+          "default": []
+        },
+        "speaker_ids": {
+          "description": "Diarisation labels, mapped to person ids where a confident face-voice association exists.",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "contains_name_mention": {
+          "description": "Someone says a name. A strong and cheap signal that a window matters to the family it belongs to.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
+  }
+}

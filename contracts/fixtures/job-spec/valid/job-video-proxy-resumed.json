@@ -1,0 +1,99 @@
+{
+  "schema_version": "v0",
+  "job_id": "3b22b5271e21d0c1509feccd3dcc5a1736c90c7f3afe30ae12916b696eaf612d",
+  "job_type": "generate_video_proxy",
+  "inputs": {
+    "media_ids": [
+      "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
+      "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8"
+    ],
+    "moment_ids": [],
+    "face_ids": [],
+    "edl_id": null,
+    "album_id": null,
+    "source_paths": [],
+    "parent_job_id": null,
+    "depends_on_job_ids": [],
+    "models": []
+  },
+  "params": {
+    "height": 480,
+    "codec": "h264",
+    "crf": 26,
+    "hardware_decode": "videotoolbox",
+    "emit_frame_index": true
+  },
+  "params_digest": "49a8a332f5a60c61d484dad77faf681766a178d4a12937b3b511a4ec298da1d7",
+  "scope": "library:default",
+  "priority": 200,
+  "requirements": {
+    "compute": "any",
+    "min_vram_mb": null,
+    "min_ram_mb": 2048,
+    "min_disk_mb": 120000,
+    "hardware_decode": true,
+    "requires_source_file": true,
+    "estimated_duration_ms": 1680000.0
+  },
+  "egress": {
+    "requires_egress": false,
+    "consent": null,
+    "destination": null,
+    "payload_kind": null,
+    "estimated_bytes": null
+  },
+  "state": {
+    "status": "running",
+    "attempts": 2,
+    "worker_id": "ingest-worker-01",
+    "started_at": "2026-03-15T11:44:02+05:30",
+    "heartbeat_at": "2026-03-15T11:51:58+05:30",
+    "finished_at": null,
+    "progress": {
+      "units_done": 42405.0,
+      "units_total": 61593.0,
+      "unit": "frames",
+      "bytes_processed": 4160749568,
+      "message": "chapter 2 of 2"
+    }
+  },
+  "checkpoint": {
+    "resumable": true,
+    "cursor": "gh011234:done;gh021234:frame=0;pass=1",
+    "checkpoint_version": 1,
+    "updated_at": "2026-03-15T11:48:52+05:30",
+    "completed_input_ids": [
+      "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013"
+    ],
+    "partial_output_ids": [
+      "bd035371d6d1deb00d7a1704e1aa7cbd49c1755d54f953f6e3134588debbfbcc"
+    ]
+  },
+  "outputs": [
+    {
+      "kind": "proxy",
+      "id": "bd035371d6d1deb00d7a1704e1aa7cbd49c1755d54f953f6e3134588debbfbcc",
+      "path": "/Users/example/Library/Application Support/MemoryEngine/proxies/bd/03/bd035371.mp4",
+      "byte_size": 68221440,
+      "produced_at": "2026-03-15T11:48:52+05:30"
+    }
+  ],
+  "error": {
+    "code": "timeout",
+    "message": "hardware decode session stalled; retried from checkpoint",
+    "retryable": true,
+    "attempt": 1,
+    "occurred_at": "2026-03-15T11:43:40+05:30",
+    "failed_input_id": "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013"
+  },
+  "retry_policy": {
+    "max_attempts": 3,
+    "backoff": "exponential",
+    "initial_delay_ms": 1000.0,
+    "max_delay_ms": 60000.0,
+    "quarantine_after_max": true
+  },
+  "journal": { "entries": [] },
+  "created_at": "2026-03-15T11:21:00+05:30",
+  "deadline": null
+}

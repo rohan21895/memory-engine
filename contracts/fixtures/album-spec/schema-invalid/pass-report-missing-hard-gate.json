@@ -1,0 +1,1502 @@
+{
+  "schema_version": "v0",
+  "album_id": "4995f8f46254a30a91bd452be677c893b96d2b1ce7b053b2f67753d88a894c3e",
+  "title": "Thailand",
+  "subtitle": "November 2024",
+  "event": {
+    "event_cluster_id": "9d4e1a07-6c82-4b35-a190-3f7e2b8c5d64",
+    "label": "beach day",
+    "date_range": {
+      "start": "2024-11-22T00:00:00+07:00",
+      "end": "2024-11-22T23:59:59+07:00"
+    },
+    "person_ids": [
+      "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03"
+    ],
+    "place_label": "Kata Beach, Phuket"
+  },
+  "vendor_profile": {
+    "vendor_id": "vendor-primary",
+    "product_id": "layflat-300-square",
+    "profile_version": "2026.1",
+    "trim_size_mm": {
+      "width_mm": 300.0,
+      "height_mm": 300.0
+    },
+    "bleed_mm": 3.0,
+    "safe_margin_mm": 8.0,
+    "gutter_mm": 10.0,
+    "spine_mm": 14.0,
+    "dpi_floor": 300.0,
+    "dpi_preferred": 350.0,
+    "color_profile": {
+      "icc_name": "FOGRA39 Coated",
+      "icc_hash": "57100d93e9f70e7414d12e23fc1485ca14b25b11cf7017d2842d1cc5ecc86093",
+      "intent": "relative_colorimetric"
+    },
+    "page_count": {
+      "minimum": 20,
+      "maximum": 100,
+      "increment": 2
+    },
+    "binding": "layflat",
+    "paper_stock": "170gsm silk",
+    "pdf_standard": "pdf_x_4"
+  },
+  "pages": [
+    {
+      "page_index": 0,
+      "spread_id": null,
+      "side": "front_cover",
+      "section_id": null,
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "cover-hero",
+          "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+          "frame": {
+            "x_mm": 0.0,
+            "y_mm": 0.0,
+            "width_mm": 306.0,
+            "height_mm": 306.0,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.1667,
+            "y": 0.0,
+            "w": 0.6667,
+            "h": 1.0,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 332.0,
+          "z_index": 0,
+          "bleeds": [
+            "top",
+            "bottom",
+            "left",
+            "right"
+          ],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 2,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": 41.2,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [
+            {
+              "op_id": "op-cover-denoise",
+              "kind": "denoise",
+              "order": 0,
+              "model": {
+                "model_id": "learned-denoise",
+                "version": "1.1.0",
+                "weights_blake3": "f95d55c5b95e9f5ad8d225d439f2871d775ccf5c6e5b9517047cc47d64d24b8f",
+                "runtime": "onnxruntime_coreml",
+                "precision": "fp16"
+              },
+              "license_cleared": true,
+              "parameters": {
+                "luma_strength": 0.3,
+                "chroma_strength": 0.5
+              },
+              "strength": 0.35,
+              "reason": "ISO 400 at dusk; visible chroma noise in the sky gradient"
+            }
+          ],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [
+        {
+          "block_id": "cover-title",
+          "text": "Thailand",
+          "frame": {
+            "x_mm": 24.0,
+            "y_mm": 236.0,
+            "width_mm": 258.0,
+            "height_mm": 34.0,
+            "rotation_deg": 0
+          },
+          "role": "title",
+          "font_family": "S\u00f6hne",
+          "font_size_pt": 48.0,
+          "color_hex": "#ffffff",
+          "alignment": "left"
+        }
+      ],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": null,
+        "constraints_satisfied": [
+          "full_bleed_hero",
+          "title_within_safe_margin"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.08
+      }
+    },
+    {
+      "page_index": 1,
+      "spread_id": "spread-01",
+      "side": "left",
+      "section_id": "section-arrival",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p1-hero",
+          "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 642.8,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 2,
+      "spread_id": "spread-01",
+      "side": "right",
+      "section_id": "section-arrival",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p2-hero",
+          "media_id": "0e91f050fec39c6abc0e4e18fe01dc1c6f42ebae81e2b2b551d61371fad2ee1c",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 432.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 3,
+      "spread_id": "spread-02",
+      "side": "left",
+      "section_id": "section-arrival",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p3-hero",
+          "media_id": "d98b239423d217ef98c1572e009f04878002197c96cd9e8c4468fe684e7b73c1",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 432.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 4,
+      "spread_id": "spread-02",
+      "side": "right",
+      "section_id": "section-arrival",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p4-hero",
+          "media_id": "a632aab3dfd7dc461178d4463adf056ee13a4a1a78dc64bab09ddce623cdfbd5",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 642.8,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 5,
+      "spread_id": "spread-03",
+      "side": "left",
+      "section_id": "section-arrival",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p5-hero",
+          "media_id": "50180f0ce32808e24d48b05dce8eb8e95ca7530ca65c7f9706a3c3079e5d90b0",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 324.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 6,
+      "spread_id": "spread-03",
+      "side": "right",
+      "section_id": "section-arrival",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p6-hero",
+          "media_id": "9149e85b907d9b3e5c76c1dfb91ec944120cf8adaba81eb8e31c3ceb09c4e226",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 432.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 7,
+      "spread_id": "spread-04",
+      "side": "left",
+      "section_id": "section-arrival",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p7-hero",
+          "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 642.8,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 8,
+      "spread_id": "spread-04",
+      "side": "right",
+      "section_id": "section-arrival",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p8-hero",
+          "media_id": "0e91f050fec39c6abc0e4e18fe01dc1c6f42ebae81e2b2b551d61371fad2ee1c",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 432.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 9,
+      "spread_id": "spread-05",
+      "side": "left",
+      "section_id": "section-arrival",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p9-hero",
+          "media_id": "d98b239423d217ef98c1572e009f04878002197c96cd9e8c4468fe684e7b73c1",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 432.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 10,
+      "spread_id": "spread-05",
+      "side": "right",
+      "section_id": "section-arrival",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p10-hero",
+          "media_id": "a632aab3dfd7dc461178d4463adf056ee13a4a1a78dc64bab09ddce623cdfbd5",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 642.8,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 11,
+      "spread_id": "spread-06",
+      "side": "left",
+      "section_id": "section-departure",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p11-hero",
+          "media_id": "50180f0ce32808e24d48b05dce8eb8e95ca7530ca65c7f9706a3c3079e5d90b0",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 324.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 12,
+      "spread_id": "spread-06",
+      "side": "right",
+      "section_id": "section-departure",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p12-hero",
+          "media_id": "9149e85b907d9b3e5c76c1dfb91ec944120cf8adaba81eb8e31c3ceb09c4e226",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 432.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 13,
+      "spread_id": "spread-07",
+      "side": "left",
+      "section_id": "section-departure",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p13-hero",
+          "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 642.8,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 14,
+      "spread_id": "spread-07",
+      "side": "right",
+      "section_id": "section-departure",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p14-hero",
+          "media_id": "0e91f050fec39c6abc0e4e18fe01dc1c6f42ebae81e2b2b551d61371fad2ee1c",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 432.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 15,
+      "spread_id": "spread-08",
+      "side": "left",
+      "section_id": "section-departure",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p15-hero",
+          "media_id": "d98b239423d217ef98c1572e009f04878002197c96cd9e8c4468fe684e7b73c1",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 432.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 16,
+      "spread_id": "spread-08",
+      "side": "right",
+      "section_id": "section-departure",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p16-hero",
+          "media_id": "a632aab3dfd7dc461178d4463adf056ee13a4a1a78dc64bab09ddce623cdfbd5",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 642.8,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 17,
+      "spread_id": "spread-09",
+      "side": "left",
+      "section_id": "section-departure",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p17-hero",
+          "media_id": "50180f0ce32808e24d48b05dce8eb8e95ca7530ca65c7f9706a3c3079e5d90b0",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 324.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": false,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 18,
+      "spread_id": "spread-09",
+      "side": "right",
+      "section_id": "section-departure",
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [
+        {
+          "placement_id": "p18-hero",
+          "media_id": "9149e85b907d9b3e5c76c1dfb91ec944120cf8adaba81eb8e31c3ceb09c4e226",
+          "frame": {
+            "x_mm": 51.0,
+            "y_mm": 86.0,
+            "width_mm": 203.9,
+            "height_mm": 135.9,
+            "rotation_deg": 0
+          },
+          "crop": {
+            "x": 0.07,
+            "y": 0.07,
+            "w": 0.86,
+            "h": 0.86,
+            "rotation_deg": 0
+          },
+          "effective_dpi": 432.0,
+          "z_index": 0,
+          "bleeds": [],
+          "is_hero": true,
+          "face_safety": {
+            "face_count": 0,
+            "all_faces_in_safe_zone": true,
+            "faces_in_gutter": 0,
+            "faces_in_trim_zone": 0,
+            "min_face_margin_mm": null,
+            "cropped_face_ids": []
+          },
+          "enhancement_ops": [],
+          "caption": null,
+          "border": null
+        }
+      ],
+      "text_blocks": [],
+      "layout": {
+        "solver": "constraint_solver",
+        "template_id": null,
+        "grid": {
+          "columns": 1,
+          "rows": 1,
+          "gutter_mm": 12.0
+        },
+        "constraints_satisfied": [
+          "dpi_floor_met",
+          "no_near_duplicates_on_spread"
+        ],
+        "constraints_relaxed": [],
+        "solver_cost": 0.12
+      }
+    },
+    {
+      "page_index": 19,
+      "spread_id": null,
+      "side": "back_cover",
+      "section_id": null,
+      "background": {
+        "kind": "solid",
+        "color_hex": "#ffffff"
+      },
+      "placements": [],
+      "text_blocks": [],
+      "layout": null
+    }
+  ],
+  "selection": {
+    "candidate_count": 412,
+    "selected_count": 19,
+    "diversity_constraints": [
+      {
+        "constraint": "no_near_duplicates_on_spread",
+        "satisfied": true,
+        "detail": ""
+      },
+      {
+        "constraint": "people_scenery_detail_balance",
+        "satisfied": true,
+        "detail": "2 people / 1 scenery / 1 detail in section-arrival"
+      },
+      {
+        "constraint": "chronological_within_section",
+        "satisfied": true,
+        "detail": ""
+      },
+      {
+        "constraint": "min_hero_quality",
+        "satisfied": true,
+        "detail": "heroes above 0.72 aesthetic"
+      }
+    ],
+    "rejected": [
+      {
+        "media_id": "4086a6f2bc6cc368bbcdf98be7ce7cf39b8b1ddb5ebd3e26d91e86fb56bba93c",
+        "reason": "dpi_too_low"
+      },
+      {
+        "media_id": "4441146b0fe1d5c6845af126ba5ce6003ea77d6b4cb04d14114f86a925c5dbca",
+        "reason": "excluded_content"
+      }
+    ]
+  },
+  "spread_harmony": {
+    "enabled": true,
+    "spreads": [
+      {
+        "spread_id": "spread-01",
+        "target_temperature_k": 5400.0,
+        "target_exposure_ev": 0.0,
+        "adjustments": [
+          {
+            "placement_id": "p1-hero",
+            "exposure_ev_delta": -0.12,
+            "temperature_k_delta": -180.0,
+            "tint_delta": 0.0,
+            "saturation_delta": -0.03
+          },
+          {
+            "placement_id": "p2-hero",
+            "exposure_ev_delta": 0.08,
+            "temperature_k_delta": 160.0,
+            "tint_delta": -0.01,
+            "saturation_delta": 0.02
+          }
+        ]
+      }
+    ]
+  },
+  "determinism": {
+    "planner": "album-planner",
+    "planner_version": "1.0.0",
+    "seed": 20260317,
+    "inputs_digest": "8a2a6b9078fe3be576f28ea9019483d184f1156f7663bf81ff3b4939e52a74b0",
+    "generated_at": "2026-03-17T14:22:08+05:30"
+  },
+  "validation": {
+    "status": "pass",
+    "checks": [
+      {
+        "check_id": "face_in_trim_zone",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": 18.4,
+        "required_value": 8.0,
+        "detail": "closest face sits 18.4mm inside the trim line",
+        "remediation": null
+      },
+      {
+        "check_id": "face_in_gutter",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": 0.0,
+        "required_value": 0.0,
+        "detail": "no faces within the 10mm gutter",
+        "remediation": null
+      },
+      {
+        "check_id": "bleed_coverage",
+        "severity": "error",
+        "passed": true,
+        "page_index": 0,
+        "placement_id": "cover-hero",
+        "measured_value": 3.0,
+        "required_value": 3.0,
+        "detail": "full-bleed cover extends 3mm past trim on all four edges",
+        "remediation": null
+      },
+      {
+        "check_id": "color_profile_match",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "FOGRA39 Coated embedded, matches vendor profile 2026.1",
+        "remediation": null
+      },
+      {
+        "check_id": "crop_aspect_matches_frame",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "19 placements within 0.5% aspect tolerance",
+        "remediation": null
+      },
+      {
+        "check_id": "placement_within_page",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "",
+        "remediation": null
+      },
+      {
+        "check_id": "no_duplicate_on_spread",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "",
+        "remediation": null
+      },
+      {
+        "check_id": "text_within_safe_margin",
+        "severity": "error",
+        "passed": true,
+        "page_index": 0,
+        "placement_id": null,
+        "measured_value": 21.0,
+        "required_value": 8.0,
+        "detail": "cover title inset 21mm from trim",
+        "remediation": null
+      },
+      {
+        "check_id": "enhancement_license_cleared",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "2 ops, both cleared for commercial use",
+        "remediation": null
+      },
+      {
+        "check_id": "source_media_available",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "6 sources resolved by content hash",
+        "remediation": null
+      },
+      {
+        "check_id": "page_count_valid",
+        "severity": "error",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": 20.0,
+        "required_value": 20.0,
+        "detail": "20 pages: at the vendor minimum and on the increment of 2",
+        "remediation": null
+      },
+      {
+        "check_id": "pdf_standard_supported",
+        "severity": "info",
+        "passed": true,
+        "page_index": null,
+        "placement_id": null,
+        "measured_value": null,
+        "required_value": null,
+        "detail": "PDF/X-4",
+        "remediation": null
+      }
+    ],
+    "validated_at": "2026-03-17T14:22:11+05:30",
+    "validator_version": "print-validator/1.0.0",
+    "error_count": 0,
+    "warning_count": 0
+  },
+  "review": {
+    "status": "issues_fixed",
+    "model": {
+      "model_id": "frontier-multimodal",
+      "version": "2026-02",
+      "weights_blake3": "93e2abe19030b118a176b0bca42fb173a34eb175c32903a1cec731a1f02fd659",
+      "runtime": null,
+      "precision": null
+    },
+    "consent": {
+      "ledger_entry_id": "c47a1e93-8b25-4f60-9d31-6e02a7b5c8f4",
+      "scope": "tier3_contact_sheet",
+      "granted_at": "2026-03-17T14:20:02+05:30",
+      "expires_at": null,
+      "revoked_at": null
+    },
+    "prompt_id": "album-spread-review-v2",
+    "iterations": 2,
+    "findings": [
+      {
+        "finding_id": "find-01",
+        "kind": "exposure_mismatch",
+        "severity": "warning",
+        "spread_id": "spread-01",
+        "placement_ids": [
+          "p1-hero",
+          "p2-hero"
+        ],
+        "comment": "Left page reads noticeably cooler than the facing hero.",
+        "resolved": true,
+        "resolution": "harmonized"
+      }
+    ]
+  }
+}

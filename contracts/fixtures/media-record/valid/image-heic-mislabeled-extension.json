@@ -1,0 +1,130 @@
+{
+  "schema_version": "v0",
+  "media_id": "50180f0ce32808e24d48b05dce8eb8e95ca7530ca65c7f9706a3c3079e5d90b0",
+  "asset_kind": "physical_file",
+  "kind": "image",
+  "byte_size": 2183044,
+  "mime_type": "image/heic",
+  "file_format": "heic",
+  "sources": [
+    {
+      "path": "/Users/example/Pictures/iCloud Export/2025/IMG_0912.JPG",
+      "volume_id": "disk-internal",
+      "adapter": "icloud_export",
+      "sidecar_paths": [],
+      "original_filename": "IMG_0912.JPG",
+      "first_seen_at": "2026-03-14T11:02:44+05:30",
+      "last_verified_at": "2026-03-14T11:02:44+05:30",
+      "present": true
+    }
+  ],
+  "span": null,
+  "capture": {
+    "captured_at": {
+      "local": "2025-06-09T18:31:07",
+      "utc": "2025-06-09T13:01:07+00:00",
+      "timezone": "Asia/Kolkata",
+      "utc_offset_minutes": 330,
+      "source": "exif_datetime_original",
+      "precision": "second",
+      "confidence": 1.0,
+      "inferred_from_media_ids": []
+    },
+    "metadata_present": ["exif", "quicktime"],
+    "gps": {
+      "latitude": 28.6129,
+      "longitude": 77.2295,
+      "altitude_m": 216.0,
+      "horizontal_accuracy_m": 5.0,
+      "source": "exif_gps"
+    },
+    "device": {
+      "make": "Apple",
+      "model": "iPhone 15 Pro",
+      "lens": "iPhone 15 Pro back triple camera 6.765mm f/1.78",
+      "software": "18.2",
+      "body_serial_hash": null
+    },
+    "exposure": {
+      "iso": 64,
+      "exposure_time_s": 0.0083,
+      "f_number": 1.78,
+      "focal_length_mm": 6.765,
+      "focal_length_35mm": 24.0,
+      "flash_fired": false,
+      "metering_mode": "pattern"
+    }
+  },
+  "image": {
+    "stored_size": { "width": 4032, "height": 3024 },
+    "oriented_size": { "width": 3024, "height": 4032 },
+    "orientation": 6,
+    "bit_depth": 10,
+    "color_space": "display_p3",
+    "icc_profile_name": "Display P3",
+    "has_alpha": false,
+    "is_raw": false,
+    "is_hdr": true,
+    "paired_motion_media_id": null
+  },
+  "video": null,
+  "perceptual": {
+    "image_hash": { "algorithm": "phash-dct-256", "bits": 256, "hex": "3c78f0e1c387071e3c78f0e1c387071e3c78f0e1c387071e3c78f0e1c387071e" },
+    "keyframe_hashes": []
+  },
+  "proxies": [
+    {
+      "proxy_id": "4533d9569148b9dfb996a3460f8d10d3307cc1be95f400604de7431560486950",
+      "kind": "thumbnail_512",
+      "path": "/Users/example/Library/Application Support/MemoryEngine/proxies/45/33/4533d956.jpg",
+      "size": { "width": 384, "height": 512 },
+      "byte_size": 44120,
+      "generator_version": "proxy-gen/1.0.0+libheif1.18",
+      "frame_index": null
+    }
+  ],
+  "processing": {
+    "state": "analyzed",
+    "stages": {
+      "hash": { "status": "done", "attempts": 1 },
+      "metadata": { "status": "done", "attempts": 1 },
+      "thumbnail": { "status": "done", "attempts": 1 },
+      "perceptual_hash": { "status": "done", "attempts": 1 },
+      "classical_quality": { "status": "done", "attempts": 1 },
+      "image_embedding": { "status": "done", "attempts": 1 },
+      "face_detection": { "status": "done", "attempts": 1 },
+      "iqa": { "status": "done", "attempts": 1 },
+      "aesthetic": { "status": "done", "attempts": 1 },
+      "safety": { "status": "done", "attempts": 1 }
+    }
+  },
+  "quality": {
+    "sharpness": { "value": 0.92 },
+    "exposure": { "value": 0.85 },
+    "noise": { "value": 0.94 },
+    "technical_iqa": { "value": 0.89, "raw_value": 74.1 },
+    "aesthetic": { "value": 0.71 },
+    "is_black_frame": false,
+    "is_lens_obstructed": false
+  },
+  "content": {
+    "embedding": {
+      "space": "siglip2_so400m_1152",
+      "dimensions": 1152,
+      "storage": "index",
+      "index_key": "vec:media:50180f0c:siglip2_so400m_1152",
+      "quantization": "float16",
+      "normalized": true
+    },
+    "tags": [{ "label": "portrait", "score": 0.88, "source": "zero_shot_siglip" }],
+    "scene_type": "portrait",
+    "safety": { "nsfw_score": 0.0, "categories": [], "auto_excluded": false, "threshold_used": 0.85 }
+  },
+  "faces": null,
+  "dedupe": null,
+  "exclusion": { "excluded_from_automation": false, "reasons": [], "user_override": null },
+  "user": { "favorite": false, "hidden": false, "rating": null, "tags": [], "caption": null },
+  "model_runs": [],
+  "first_seen_at": "2026-03-14T11:02:44+05:30",
+  "updated_at": "2026-03-14T11:03:20+05:30"
+}
