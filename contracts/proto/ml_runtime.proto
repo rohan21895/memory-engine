@@ -1,0 +1,357 @@
+syntax = "proto3";
+
+package memory_engine.ml_runtime.v0;
+
+// The local gRPC interface between the intelligence packages (Claude) and the
+// model-hosting process (Codex). Loopback only; this service never listens on a
+// routable interface.
+//
+// FOUR PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
+//
+// 1. ANALYSIS NEVER TOUCHES ORIGINAL MEDIA.
+//    There is deliberately no field anywhere in this file that accepts a
+//    filesystem path, a URL, or an original media id. An InferRequest carries
+//    either a proxy id -- which the host resolves through media-db against the
+//    proxy store only -- or an already-decoded tensor. A caller cannot ask this
+//    service to open a source file, because the request type has nowhere to put
+//    one. Source files are opened exactly twice in their life: at proxy
+//    generation and at final render, and neither goes through here.
+//
+// 2. EVERY RESULT IS PINNED TO THE WEIGHTS THAT PRODUCED IT.
+//    InferResponse carries the ModelPin actually used, including the weights
+//    hash. A caller that requested a model version and silently got another can
+//    detect it. This is what makes "why is this photo ranked 0.82" answerable
+//    after a model swap.
+//
+// 3. ERRORS SAY WHETHER RETRYING COULD HELP.
+//    A JobSpec is resumable and every step idempotent, so the scheduler needs to
+//    distinguish "GPU was busy" from "these weights are unlicensed". Retrying a
+//    terminal error forever is how a queue dies quietly.
+//
+// 4. REQUESTS CARRY DEADLINES AND ARE CANCELLABLE.
+//    A 300k-file scan must stay interruptible. Deadlines are expressed in the
+//    request as well as in gRPC metadata so the host can reject work it cannot
+//    finish rather than starting it.
+
+// ---------------------------------------------------------------- service ---
+
+service MlRuntime {
+  // What can this host load right now, and why not the rest.
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+
+  // Liveness plus loaded-model state. Cheap enough to poll.
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Batched inference. One request, one response, N items.
+  rpc Infer(InferRequest) returns (InferResponse);
+
+  // Streaming variant for long sweeps: results arrive per batch so a 200-hour
+  // library does not accumulate a single enormous response, and cancelling the
+  // stream cancels the work.
+  rpc InferStream(stream InferRequest) returns (stream InferResponse);
+
+  // Load or evict explicitly. The host may also load lazily on first Infer;
+  // this exists so a scan can warm the models it is about to hammer.
+  rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
+  rpc UnloadModel(UnloadModelRequest) returns (UnloadModelResponse);
+}
+
+// ------------------------------------------------------------------ pins ---
+
+// Identifies exactly which weights produced a result. Mirrors ModelRef in
+// contracts/schemas/common.schema.json.
+message ModelPin {
+  string model_id = 1;
+  string version = 2;
+
+  // Lowercase hex BLAKE3 of the weights file. Empty means the entry is
+  // unpinned, which the load policy permits only in development mode.
+  string weights_blake3 = 3;
+
+  ExecutionProvider provider = 4;
+  Precision precision = 5;
+}
+
+enum ExecutionProvider {
+  EXECUTION_PROVIDER_UNSPECIFIED = 0;
+  EXECUTION_PROVIDER_COREML = 1;
+  EXECUTION_PROVIDER_CUDA = 2;
+  EXECUTION_PROVIDER_DIRECTML = 3;
+  EXECUTION_PROVIDER_CPU = 4;
+  EXECUTION_PROVIDER_CTRANSLATE2 = 5;
+}
+
+enum Precision {
+  PRECISION_UNSPECIFIED = 0;
+  PRECISION_FP32 = 1;
+  PRECISION_FP16 = 2;
+  PRECISION_INT8 = 3;
+}
+
+// --------------------------------------------------------------- discovery ---
+
+message ListModelsRequest {
+  // Filter by task, e.g. "image_embedding". Empty returns everything.
+  string task = 1;
+
+  // When true, include entries the current load policy refuses, with the reason
+  // set. Diagnostics need to show why a model is unavailable, not just omit it.
+  bool include_unloadable = 2;
+}
+
+message ListModelsResponse {
+  repeated ModelInfo models = 1;
+
+  // Which gate the host is running under. A caller can tell whether it is
+  // talking to a permissive development host before trusting its results.
+  LoadMode load_mode = 2;
+}
+
+enum LoadMode {
+  LOAD_MODE_UNSPECIFIED = 0;
+  LOAD_MODE_RELEASE = 1;
+  LOAD_MODE_DEVELOPMENT = 2;
+}
+
+message ModelInfo {
+  ModelPin pin = 1;
+  string task = 2;
+
+  // False when the load policy refuses this entry. `unloadable_reason` says why.
+  bool loadable = 3;
+  UnloadableReason unloadable_reason = 4;
+
+  bool currently_loaded = 5;
+
+  // Providers this host can actually offer for this model, best first, after
+  // intersecting the config's declared targets with what the machine has.
+  repeated ExecutionProvider available_providers = 6;
+
+  int32 max_batch = 7;
+
+  // True when the entry would block a commercial release. Surfaced so a build
+  // or a QA dashboard can see it without parsing the registry.
+  bool blocks_commercial_release = 8;
+}
+
+enum UnloadableReason {
+  UNLOADABLE_REASON_UNSPECIFIED = 0;
+  UNLOADABLE_REASON_NOT_REGISTERED = 1;
+  UNLOADABLE_REASON_WEIGHTS_MISSING = 2;
+  UNLOADABLE_REASON_HASH_MISMATCH = 3;
+  UNLOADABLE_REASON_HASH_UNPINNED = 4;
+  UNLOADABLE_REASON_LICENSE_UNVERIFIED = 5;
+  UNLOADABLE_REASON_LICENSE_BLOCKS_RELEASE = 6;
+  UNLOADABLE_REASON_NO_PROVIDER_AVAILABLE = 7;
+  UNLOADABLE_REASON_CONFIG_INVALID = 8;
+}
+
+// ------------------------------------------------------------------ health ---
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool serving = 1;
+  LoadMode load_mode = 2;
+  repeated ModelPin loaded = 3;
+
+  int64 queue_depth = 4;
+  int64 uptime_seconds = 5;
+
+  // Non-fatal conditions worth surfacing: a model running on a slower provider
+  // than requested, a development-mode load, a nearly-full cache.
+  repeated string warnings = 6;
+}
+
+// --------------------------------------------------------------- inference ---
+
+message InferRequest {
+  // Idempotency key. Re-sending a request with the same id after a timeout must
+  // not run the work twice.
+  string request_id = 1;
+
+  string model_id = 2;
+
+  // Pin the caller expects. When set, the host must fail rather than silently
+  // serving a different version -- a swapped model changes every score, and
+  // discovering that after the fact is a data-quality incident.
+  ModelPin expected_pin = 3;
+
+  repeated InferItem items = 4;
+
+  // Preferred providers, best first. CoreML is requested first on Apple silicon
+  // per the build plan. The host falls back down the list and reports what it
+  // actually used in the response.
+  repeated ExecutionProvider preferred_providers = 5;
+
+  // Wall-clock budget. The host must refuse work it cannot start in time rather
+  // than accepting it and blowing the deadline.
+  int64 deadline_ms = 6;
+
+  // Best-effort priority, matching JobSpec.priority. Interactive work outranks
+  // background sweeps.
+  int32 priority = 7;
+}
+
+// One unit of work.
+//
+// NOTE THE ABSENCE: there is no `path`, no `url`, no `media_id`. The only ways
+// in are a proxy id or an inline tensor. This is the structural half of
+// "analysis never touches originals" -- the other half is that the host
+// resolves proxy ids against the proxy store only.
+message InferItem {
+  // Caller's correlation id, echoed on the result.
+  string item_id = 1;
+
+  oneof input {
+    // Content hash of a PROXY (thumbnail, preview, 480p video proxy, audio
+    // wav). The host resolves it through media-db's proxy table. A hash that
+    // names an original rather than a proxy resolves to nothing and fails.
+    string proxy_id = 2;
+
+    // Already-decoded input, for callers that have the tensor in hand -- an
+    // aesthetic head consuming an embedding produced moments earlier, or a face
+    // crop already aligned by the caller.
+    Tensor tensor = 3;
+  }
+
+  // For video proxies: the frame or window to run on, in PROXY time. Mapping
+  // back to source timecode is the caller's job via the frame-index sidecar.
+  optional TimeWindow window = 4;
+
+  // Face-crop inputs need their landmarks so the host can apply the alignment
+  // template from the model config. Without these an embedding is confidently
+  // wrong rather than absent, so the host must reject a face_embedding request
+  // whose items carry no landmarks.
+  repeated Point2D landmarks = 5;
+}
+
+message TimeWindow {
+  // Rational time, matching contracts/schemas/common.schema.json RationalTime.
+  double start_value = 1;
+  double start_rate = 2;
+  double duration_value = 3;
+  double duration_rate = 4;
+}
+
+message Point2D {
+  float x = 1;
+  float y = 2;
+}
+
+message Tensor {
+  repeated int32 shape = 1;
+  DType dtype = 2;
+
+  // Row-major, little-endian, packed. Large payloads should use InferStream
+  // rather than a single enormous message.
+  bytes data = 3;
+
+  // Optional name, for models with several inputs.
+  string name = 4;
+}
+
+enum DType {
+  DTYPE_UNSPECIFIED = 0;
+  DTYPE_FLOAT32 = 1;
+  DTYPE_FLOAT16 = 2;
+  DTYPE_INT64 = 3;
+  DTYPE_INT32 = 4;
+  DTYPE_UINT8 = 5;
+}
+
+message InferResponse {
+  string request_id = 1;
+
+  // The pin ACTUALLY used, which may differ from expected_pin only if the
+  // caller left it unset. Always populated.
+  ModelPin pin = 2;
+
+  // Provider actually used, which may be a fallback from preferred_providers.
+  ExecutionProvider provider_used = 3;
+
+  repeated InferResult results = 4;
+
+  int64 duration_ms = 5;
+  int32 batch_size = 6;
+}
+
+message InferResult {
+  string item_id = 1;
+
+  // Per-item failure. Items are independent: one corrupt proxy in a batch of 64
+  // must not fail the other 63, which is the difference between a scan that
+  // reports one bad file and one that fails wholesale.
+  optional InferError error = 2;
+
+  repeated Tensor outputs = 3;
+}
+
+// ------------------------------------------------------------------ errors ---
+
+message InferError {
+  ErrorCode code = 1;
+
+  // Already redacted: no paths, no filenames, no EXIF. Crash reporting forwards
+  // this verbatim, so redaction happens where the message is written.
+  string message = 2;
+
+  // Whether retrying could plausibly succeed. A scheduler that retries a
+  // terminal error forever is a queue that dies quietly.
+  bool retryable = 3;
+
+  // Hint for backoff. Zero means the caller decides.
+  int64 retry_after_ms = 4;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+
+  // Terminal -- retrying cannot help.
+  ERROR_CODE_MODEL_NOT_REGISTERED = 1;
+  ERROR_CODE_MODEL_UNLOADABLE = 2;
+  ERROR_CODE_PIN_MISMATCH = 3;
+  ERROR_CODE_PROXY_NOT_FOUND = 4;
+  ERROR_CODE_INPUT_INVALID = 5;
+  ERROR_CODE_LANDMARKS_REQUIRED = 6;
+  ERROR_CODE_UNSUPPORTED_INPUT = 7;
+  ERROR_CODE_LICENSE_BLOCKED = 8;
+
+  // Retryable -- the same request may succeed later.
+  ERROR_CODE_RESOURCE_EXHAUSTED = 100;
+  ERROR_CODE_PROVIDER_UNAVAILABLE = 101;
+  ERROR_CODE_DEADLINE_EXCEEDED = 102;
+  ERROR_CODE_CANCELLED = 103;
+  ERROR_CODE_MODEL_LOADING = 104;
+  ERROR_CODE_INTERNAL = 105;
+}
+
+// ------------------------------------------------------------ load / unload ---
+
+message LoadModelRequest {
+  string model_id = 1;
+  repeated ExecutionProvider preferred_providers = 2;
+  ModelPin expected_pin = 3;
+}
+
+message LoadModelResponse {
+  bool loaded = 1;
+  ModelPin pin = 2;
+  ExecutionProvider provider_used = 3;
+  optional InferError error = 4;
+  int64 load_duration_ms = 5;
+
+  // Set when the model loaded under a relaxed development gate. The host must
+  // populate this whenever it loads something release mode would refuse, so
+  // running with a blocked model is never silent.
+  string relaxed_gate_warning = 6;
+}
+
+message UnloadModelRequest {
+  string model_id = 1;
+}
+
+message UnloadModelResponse {
+  bool unloaded = 1;
+  int64 freed_bytes = 2;
+}

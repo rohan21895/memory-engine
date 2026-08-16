@@ -1,0 +1,72 @@
+{
+  "config_version": "v0",
+  "model_id": "yunet-2023mar",
+  "version": "2023.03",
+  "task": "face_detection",
+  "description": "YuNet face detector from OpenCV Zoo. THE SELECTED DETECTOR: chosen over SCRFD because its weights are permissively licensed, and issue #3 leaves SCRFD's pretrained weights unusable for anything but development.",
+  "weights": {
+    "filename": "face_detection_yunet_2023mar.onnx",
+    "format": "onnx",
+    "source_url": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet",
+    "blake3": null,
+    "byte_size": null,
+    "quantization": "fp32"
+  },
+  "runtime_targets": ["onnxruntime_coreml", "onnxruntime_cuda", "onnxruntime_directml", "onnxruntime_cpu", "opencv"],
+  "preprocessing": {
+    "kind": "image",
+    "input_name": "input",
+    "input_size": { "width": 640, "height": 640 },
+    "resize": "letterbox",
+    "interpolation": "bilinear",
+    "color_order": "bgr",
+    "layout": "nchw",
+    "scale": 1.0,
+    "mean": [],
+    "std": [],
+    "face_alignment": null,
+    "audio": null,
+    "sequence_length": null
+  },
+  "postprocessing": {
+    "steps": ["distance2bbox", "distance2kps", "nms"],
+    "nms_threshold": 0.3,
+    "score_threshold": 0.6,
+    "strides": [8, 16, 32],
+    "normalisation": null
+  },
+  "outputs": [
+    { "name": "cls_8", "meaning": "scores", "shape": [-1, 1], "dimensions": null, "vector_space": null },
+    { "name": "cls_16", "meaning": "scores", "shape": [-1, 1], "dimensions": null, "vector_space": null },
+    { "name": "cls_32", "meaning": "scores", "shape": [-1, 1], "dimensions": null, "vector_space": null },
+    { "name": "obj_8", "meaning": "scores", "shape": [-1, 1], "dimensions": null, "vector_space": null },
+    { "name": "obj_16", "meaning": "scores", "shape": [-1, 1], "dimensions": null, "vector_space": null },
+    { "name": "obj_32", "meaning": "scores", "shape": [-1, 1], "dimensions": null, "vector_space": null },
+    { "name": "bbox_8", "meaning": "bboxes", "shape": [-1, 4], "dimensions": null, "vector_space": null },
+    { "name": "bbox_16", "meaning": "bboxes", "shape": [-1, 4], "dimensions": null, "vector_space": null },
+    { "name": "bbox_32", "meaning": "bboxes", "shape": [-1, 4], "dimensions": null, "vector_space": null },
+    { "name": "kps_8", "meaning": "keypoints", "shape": [-1, 10], "dimensions": null, "vector_space": null },
+    { "name": "kps_16", "meaning": "keypoints", "shape": [-1, 10], "dimensions": null, "vector_space": null },
+    { "name": "kps_32", "meaning": "keypoints", "shape": [-1, 10], "dimensions": null, "vector_space": null }
+  ],
+  "batching": { "supported": true, "max_batch": 8, "dynamic_axes": true },
+  "license": {
+    "code_license": "MIT",
+    "weights_license": "MIT",
+    "commercial_use": "permitted",
+    "verified": false,
+    "verified_at": null,
+    "license_url": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet",
+    "training_data": "WIDER FACE. Its terms are separate from the model's and need their own check.",
+    "blocks_commercial_release": false,
+    "note": "Desk assessment: OpenCV Zoo publishes YuNet under MIT for both code and weights, which is why it is the selected detector rather than SCRFD. NOT VERIFIED at source -- a human must read the current licence and set verified/verified_at before this can be promoted past candidate."
+  },
+  "rollout": { "state": "candidate", "replaces": null, "promoted_at": null },
+  "eval": {
+    "benchmark": "not_yet_run",
+    "metrics": {},
+    "measured_at": null,
+    "note": "No benchmark has been run. YuNet is expected to trail SCRFD on small faces, which is the case that matters in group photos. The cost lands as recall, not precision: a missed face is absent from an album, while the precision-first threshold and review queue keep a wrong face out. Quantifying the gap is the first eval-harness job."
+  },
+  "notes": "YuNet emits separate classification and objectness scores per stride; the final confidence is their product, which is why both appear in outputs. Score threshold 0.6 and NMS 0.3 are the OpenCV Zoo defaults and are starting points, not tuned values -- they must be re-tuned against our own benchmark libraries before promotion. Coordinates are decoded against the letterboxed 640x640 input and must be un-letterboxed before being normalised against the ORIENTED image for FaceRecord."
+}

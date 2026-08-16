@@ -1,0 +1,50 @@
+{
+  "fixture_version": "v0",
+  "model_id": "yunet-2023mar",
+  "input": {
+    "generator": "models/reference/preprocess.py::synthetic_image",
+    "width": 64,
+    "height": 64,
+    "seed": 7,
+    "note": "Image defined by formula, not shipped as bytes: auditable in the diff and reproducible in any language. Per-channel gradients differ so an RGB/BGR swap changes the statistics instead of cancelling out. Size 64 rather than 640 for the same reason."
+  },
+  "applied": {
+    "color_order": "bgr",
+    "layout": "nchw",
+    "scale": 1.0,
+    "mean": [],
+    "std": [],
+    "order": "(pixel * scale - mean) / std",
+    "resize": "identity -- input is already at the model input size, so resampling is excluded on purpose; see the module docstring"
+  },
+  "expected": {
+    "shape": [
+      1,
+      3,
+      64,
+      64
+    ],
+    "count": 12288,
+    "mean": 129.0,
+    "min": 0.0,
+    "max": 255.0,
+    "first_values": [
+      21.0,
+      34.0,
+      47.0,
+      60.0,
+      73.0,
+      86.0
+    ],
+    "sampled": {
+      "0": 21.0,
+      "1536": 141.0,
+      "3072": 5.0,
+      "4608": 102.0,
+      "6144": 110.0,
+      "7680": 118.0,
+      "9216": 55.0,
+      "10752": 127.0
+    }
+  }
+}

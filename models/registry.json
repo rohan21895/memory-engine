@@ -1,16 +1,39 @@
 {
   "registry_version": "v0",
-  "description": "Index of every model workers/ml-runtime may load. Claude owns the contents; Codex owns the loader. A model that is not listed here cannot be loaded -- that is the whole point of a registry.",
+  "description": "Index of every model workers/ml-runtime may load, and the policy governing what may be loaded. Claude owns the contents; Codex owns the loader. A model not listed here cannot be loaded.",
+
+  "load_policy": {
+    "hash_mismatch_is_always_fatal": true,
+    "modes": {
+      "release": {
+        "require_registered": true,
+        "require_pinned_hash": true,
+        "require_license_verified": true,
+        "allow_blocks_commercial_release": false,
+        "opt_in_env": null,
+        "warn_per_load": false
+      },
+      "development": {
+        "require_registered": true,
+        "require_pinned_hash": false,
+        "require_license_verified": false,
+        "allow_blocks_commercial_release": true,
+        "opt_in_env": "MEMORY_ENGINE_ALLOW_UNVERIFIED_MODELS",
+        "warn_per_load": true
+      }
+    }
+  },
+
   "pipelines": {
     "photo_analysis": [
       "classical_quality",
       "siglip2-so400m-384",
-      "scrfd-10g-bnkps",
-      "arcface-buffalo-l",
+      "yunet-2023mar",
       "laion-aesthetic-v2"
     ],
-    "video_analysis": ["transnetv2", "siglip2-so400m-384", "scrfd-10g-bnkps"]
+    "video_analysis": ["transnetv2", "siglip2-so400m-384", "yunet-2023mar"]
   },
+
   "entries": [
     {
       "model_id": "siglip2-so400m-384",
@@ -19,10 +42,16 @@
       "required_for": ["search", "dedupe_refinement", "diversity", "zero_shot_tags"]
     },
     {
+      "model_id": "yunet-2023mar",
+      "config": "configs/yunet-2023mar.json",
+      "task": "face_detection",
+      "required_for": ["faces", "album_hero_selection", "person_labeling"]
+    },
+    {
       "model_id": "scrfd-10g-bnkps",
       "config": "configs/scrfd-10g-bnkps.json",
       "task": "face_detection",
-      "required_for": ["faces", "album_hero_selection", "person_labeling"]
+      "required_for": []
     },
     {
       "model_id": "arcface-buffalo-l",

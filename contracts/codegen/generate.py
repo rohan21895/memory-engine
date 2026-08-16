@@ -91,6 +91,25 @@ def _targets() -> dict[Path, str]:
     return files
 
 
+def _run_proto_generator(check: bool) -> int:
+    """Chain the .proto generator so `npm run codegen` covers both contracts.
+
+    Kept as a subprocess rather than an import because it needs a pinned
+    grpcio-tools that this generator deliberately does not depend on -- schema
+    codegen must keep working on a bare Python.
+    """
+    import subprocess
+
+    script = HERE.parent / "proto" / "generate.py"
+    if not script.exists():
+        return 0
+    argv = [sys.executable, str(script)] + (["--check"] if check else [])
+    result = subprocess.run(argv, capture_output=True, text=True)
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    return result.returncode
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -115,14 +134,14 @@ def main() -> int:
             print("Run `npm run codegen` and commit the result.", file=sys.stderr)
             return 1
         print(f"Generated bindings are fresh ({len(files)} files).")
-        return 0
+        return _run_proto_generator(check=True)
 
     for path, content in sorted(files.items()):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         print(f"wrote {path.relative_to(HERE.parent.parent)}")
 
-    return 0
+    return _run_proto_generator(check=False)
 
 
 if __name__ == "__main__":

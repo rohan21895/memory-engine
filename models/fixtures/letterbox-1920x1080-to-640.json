@@ -1,0 +1,77 @@
+{
+  "fixture_version": "v0",
+  "source": {
+    "width": 1920,
+    "height": 1080
+  },
+  "target": {
+    "width": 640,
+    "height": 640
+  },
+  "expected": {
+    "scale": 0.333333333,
+    "pad_x": 0.0,
+    "pad_y": 140.0,
+    "scaled_width": 640.0,
+    "scaled_height": 360.0,
+    "inverse_map": [
+      {
+        "letterboxed": [
+          0.0,
+          0.0
+        ],
+        "source": [
+          0.0,
+          -420.0
+        ],
+        "normalised": [
+          0.0,
+          -0.388888889
+        ]
+      },
+      {
+        "letterboxed": [
+          640.0,
+          640.0
+        ],
+        "source": [
+          1920.0,
+          1500.0
+        ],
+        "normalised": [
+          1.0,
+          1.388888889
+        ]
+      },
+      {
+        "letterboxed": [
+          320.0,
+          320.0
+        ],
+        "source": [
+          960.0,
+          540.0
+        ],
+        "normalised": [
+          0.5,
+          0.5
+        ]
+      },
+      {
+        "letterboxed": [
+          0.0,
+          140.0
+        ],
+        "source": [
+          0.0,
+          0.0
+        ],
+        "normalised": [
+          0.0,
+          0.0
+        ]
+      }
+    ]
+  },
+  "note": "Boxes come back in letterboxed space and must be mapped home before they mean anything. A wrong scale or pad does not error -- it produces plausibly-placed wrong boxes, which reach a user as a crop through a face."
+}
