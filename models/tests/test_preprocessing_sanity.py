@@ -8,6 +8,7 @@ a golden test has to catch, because nothing downstream would have complained.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -98,7 +99,10 @@ class TestLoadGateIsProductionCode(unittest.TestCase):
     exercise the importable one, including the three gaps they identified."""
 
     POLICY = load_policy()
-    GOOD = Candidate(True, True, "a" * 64, "a" * 64, True, False)
+    GOOD = Candidate(
+        True, True, "a" * 64, "a" * 64, True, False,
+        pinned_config_digest="c" * 64, actual_config_digest="c" * 64,
+    )
 
     def test_missing_weights_are_distinct_from_unpinned_ones(self):
         missing = Candidate(True, False, "a" * 64, None, True, False)
@@ -122,18 +126,73 @@ class TestLoadGateIsProductionCode(unittest.TestCase):
         for value in ("0", "false", "", "no", "maybe"):
             self.assertEqual("release", resolve_mode(self.POLICY, {var: value}))
 
-    def test_every_declared_unloadable_reason_is_reachable(self):
-        """The proto declares these; each needs a path to being returned."""
-        cases = {
-            "UNLOADABLE_REASON_NOT_REGISTERED": Candidate(False, True, "a"*64, "a"*64, True, False),
-            "UNLOADABLE_REASON_CONFIG_INVALID": Candidate(True, True, "a"*64, "a"*64, True, False, config_valid=False),
-            "UNLOADABLE_REASON_WEIGHTS_MISSING": Candidate(True, False, "a"*64, "a"*64, True, False),
-            "UNLOADABLE_REASON_HASH_MISMATCH": Candidate(True, True, "a"*64, "b"*64, True, False),
-            "UNLOADABLE_REASON_NO_PROVIDER_AVAILABLE": Candidate(True, True, "a"*64, "a"*64, True, False, available_providers=()),
+    def _case(self, mode: str = "development", **overrides) -> tuple[Candidate, str]:
+        fields = {
+            "registered": True,
+            "weights_present": True,
+            "pinned_hash": "a" * 64,
+            "actual_hash": "a" * 64,
+            "license_verified": True,
+            "blocks_commercial_release": False,
+            "pinned_config_digest": "c" * 64,
+            "actual_config_digest": "c" * 64,
         }
-        for expected, candidate in cases.items():
+        fields.update(overrides)
+        return Candidate(**fields), mode
+
+    def test_every_declared_unloadable_reason_is_reachable(self):
+        """A reason the proto declares but the gate can never return is a lie in
+        the contract: a caller writes a branch for it that is dead, or worse
+        assumes the condition cannot occur.
+
+        The expected set is read from the proto rather than listed here, so
+        adding a reason there without a path to returning it fails immediately
+        instead of whenever someone next reads both files.
+        """
+        proto = (
+            Path(__file__).resolve().parents[2]
+            / "contracts" / "proto" / "ml_runtime.proto"
+        ).read_text(encoding="utf-8")
+        declared = {
+            name
+            for name in re.findall(r"(UNLOADABLE_REASON_\w+)\s*=\s*\d+;", proto)
+            if not name.endswith("_UNSPECIFIED")
+        }
+
+        cases = {
+            "UNLOADABLE_REASON_NOT_REGISTERED": self._case(registered=False),
+            "UNLOADABLE_REASON_CONFIG_MISSING": self._case(config_present=False),
+            "UNLOADABLE_REASON_CONFIG_INVALID": self._case(config_valid=False),
+            "UNLOADABLE_REASON_WEIGHTS_MISSING": self._case(weights_present=False),
+            "UNLOADABLE_REASON_HASH_MISMATCH": self._case(actual_hash="b" * 64),
+            "UNLOADABLE_REASON_CONFIG_MISMATCH": self._case(
+                actual_config_digest="d" * 64
+            ),
+            "UNLOADABLE_REASON_HASH_UNPINNED": self._case(
+                "release", pinned_hash=None, actual_hash=None
+            ),
+            "UNLOADABLE_REASON_CONFIG_UNPINNED": self._case(
+                "release", pinned_config_digest=None, actual_config_digest=None
+            ),
+            "UNLOADABLE_REASON_LICENSE_UNVERIFIED": self._case(
+                "release", license_verified=False
+            ),
+            "UNLOADABLE_REASON_LICENSE_BLOCKS_RELEASE": self._case(
+                "release", blocks_commercial_release=True
+            ),
+            "UNLOADABLE_REASON_NO_PROVIDER_AVAILABLE": self._case(
+                available_providers=()
+            ),
+        }
+
+        self.assertEqual(
+            set(),
+            declared - set(cases),
+            "the proto declares reasons the gate has no path to returning",
+        )
+        for expected, (candidate, mode) in cases.items():
             with self.subTest(reason=expected):
-                self.assertEqual(expected, decide_load(candidate, "development", self.POLICY))
+                self.assertEqual(expected, decide_load(candidate, mode, self.POLICY))
 
     def test_integrity_outranks_licensing(self):
         corrupt_and_unlicensed = Candidate(True, True, "a" * 64, "b" * 64, False, True)

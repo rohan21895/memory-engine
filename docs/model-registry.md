@@ -107,6 +107,7 @@ Every model in the registry carries, per build plan §3:
 |---|---|
 | `model_id`, `version` | Stable identity |
 | `weights_blake3` | The actual bytes. "The same version" of a HuggingFace repo has changed weights under people before — a record produced by an unpinned model is not reproducible, and reproducibility is the product. |
+| `config_blake3` | The other half of the same guarantee. Input size, mean/std/scale, score threshold, NMS IoU, alignment template and detection cap all live in the config, and changing any of them changes every downstream decision while the weights hash stays byte-identical. Computed over a canonical serialisation by `models/policy/digest.py`, so reformatting a config is not a behaviour change. |
 | `task` | What it is for |
 | `licence`, `licence_url`, `licence_verified_at`, `licence_verified_by` | The audit trail. `licence_verified_at` being null means unaudited, and unaudited means unloadable. |
 | `runtime_targets` | ONNX / CoreML / DirectML / CUDA / CTranslate2 |
@@ -114,7 +115,17 @@ Every model in the registry carries, per build plan §3:
 | `eval_scores` | Against our benchmark libraries |
 | `rollout_state` | `candidate` → `shadow` → `default` → `deprecated` |
 
-`ModelRef` in `contracts/schemas/common.schema.json` already pins `model_id`, `version`, `weights_blake3`, `runtime` and `precision` on every score the system produces, so "why is this photo ranked 0.82" stays answerable after a model swap.
+`ModelRef` in `contracts/schemas/common.schema.json` already pins `model_id`, `version`, `weights_blake3`, `runtime` and `precision` on every score the system produces, so "why is this photo ranked 0.82" stays answerable after a model swap. `ModelPin` in `contracts/proto/ml_runtime.proto` is that same record plus `config_blake3`, and `contracts/tests/test_ml_runtime_proto.py` asserts the two stay field-for-field identical rather than leaving it to be maintained by hand.
+
+### Why the config digest is not optional provenance
+
+This is not hypothetical. The SCRFD/ArcFace preprocessing defect Codex found applied the `1/128` scale twice — once as `scalefactor` and again via `mean`/`std` — collapsing the whole 0–255 input range into a 0.016-wide sliver where black mapped to −0.9961 and white to −0.9805. It touched no weights byte, it never raised, and it would have produced quietly wrong embeddings for as long as nobody looked. A provenance record that could not have distinguished before from after is not a provenance record.
+
+So a config digest mismatch is **always fatal, in every mode**, exactly like a weights mismatch — and in practice it is the likelier of the two, because weights are downloaded once and never touched while thresholds get tuned by hand. Restamp deliberately after a real change:
+
+```bash
+python3 models/policy/digest.py --write
+```
 
 ---
 

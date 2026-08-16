@@ -38,6 +38,9 @@ class UnloadableReason(str):
     LICENSE_BLOCKS_RELEASE = "UNLOADABLE_REASON_LICENSE_BLOCKS_RELEASE"
     NO_PROVIDER_AVAILABLE = "UNLOADABLE_REASON_NO_PROVIDER_AVAILABLE"
     CONFIG_INVALID = "UNLOADABLE_REASON_CONFIG_INVALID"
+    CONFIG_MISSING = "UNLOADABLE_REASON_CONFIG_MISSING"
+    CONFIG_MISMATCH = "UNLOADABLE_REASON_CONFIG_MISMATCH"
+    CONFIG_UNPINNED = "UNLOADABLE_REASON_CONFIG_UNPINNED"
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,10 @@ class Candidate:
     `weights_present` is separate from `actual_hash` on purpose: a file that is
     absent and a file that is present but unhashed are different failures, and
     conflating them was one of the defects Codex found.
+
+    The config digest fields mirror the weights ones for the same reason they
+    exist in ModelPin: the config is half of what determines behaviour, and a
+    gate that checks only the weights certifies half a model.
     """
 
     registered: bool
@@ -56,6 +63,9 @@ class Candidate:
     license_verified: bool
     blocks_commercial_release: bool
     config_valid: bool = True
+    config_present: bool = True
+    pinned_config_digest: str | None = None
+    actual_config_digest: str | None = None
     available_providers: tuple[str, ...] = ("onnxruntime_cpu",)
 
 
@@ -85,8 +95,9 @@ def decide_load(candidate: Candidate, mode: str, policy: dict | None = None) -> 
     Precedence is deliberate and deterministic, because `ListModels` must give
     one reason when several gates fail:
 
-        registration -> config -> file present -> integrity -> pinning
-        -> licence -> providers
+        registration -> config present/valid -> weights present -> integrity
+        (weights, then config) -> pinning (weights, then config) -> licence
+        -> providers
 
     Integrity outranks licensing: a corrupt file is a worse problem than an
     unresolved licence and should be reported as itself.
@@ -95,6 +106,9 @@ def decide_load(candidate: Candidate, mode: str, policy: dict | None = None) -> 
 
     if gate["require_registered"] and not candidate.registered:
         return UnloadableReason.NOT_REGISTERED
+
+    if not candidate.config_present:
+        return UnloadableReason.CONFIG_MISSING
 
     if not candidate.config_valid:
         return UnloadableReason.CONFIG_INVALID
@@ -111,8 +125,27 @@ def decide_load(candidate: Candidate, mode: str, policy: dict | None = None) -> 
     ):
         return UnloadableReason.HASH_MISMATCH
 
+    # Same rule, same reason. An edited config is the likelier of the two in
+    # practice -- weights are downloaded once and never touched, thresholds get
+    # tuned by hand at 1am -- so waving this through would be the more common
+    # way to run something other than what the pin claims.
+    if (
+        candidate.pinned_config_digest is not None
+        and candidate.actual_config_digest is not None
+        and candidate.pinned_config_digest != candidate.actual_config_digest
+    ):
+        return UnloadableReason.CONFIG_MISMATCH
+
     if gate["require_pinned_hash"] and candidate.pinned_hash is None:
         return UnloadableReason.HASH_UNPINNED
+
+    # Defaults to the weights-pinning gate when the mode predates this key, so
+    # a mode that requires pinned weights never silently accepts an unpinned
+    # config.
+    if gate.get("require_pinned_config", gate["require_pinned_hash"]) and (
+        candidate.pinned_config_digest is None
+    ):
+        return UnloadableReason.CONFIG_UNPINNED
 
     if gate["require_license_verified"] and not candidate.license_verified:
         return UnloadableReason.LICENSE_UNVERIFIED

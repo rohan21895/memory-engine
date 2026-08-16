@@ -36,32 +36,66 @@ class MlRuntimeStub(object):
     model-hosting process (Codex). Loopback only; this service never listens on a
     routable interface.
 
-    FOUR PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
+    SIX PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
 
     1. ANALYSIS NEVER TOUCHES ORIGINAL MEDIA.
     There is deliberately no field anywhere in this file that accepts a
     filesystem path, a URL, or an original media id. An InferRequest carries
     either a proxy id -- which the host resolves through media-db against the
-    proxy store only -- or an already-decoded tensor. A caller cannot ask this
+    proxy store only -- or already-decoded tensors. A caller cannot ask this
     service to open a source file, because the request type has nowhere to put
     one. Source files are opened exactly twice in their life: at proxy
     generation and at final render, and neither goes through here.
 
-    2. EVERY RESULT IS PINNED TO THE WEIGHTS THAT PRODUCED IT.
-    InferResponse carries the ModelPin actually used, including the weights
-    hash. A caller that requested a model version and silently got another can
-    detect it. This is what makes "why is this photo ranked 0.82" answerable
-    after a model swap.
+    2. EVERY RESULT IS PINNED TO THE WEIGHTS *AND THE CONFIG* THAT PRODUCED IT.
+    InferResponse carries the ModelPin actually used. That pin includes both
+    weights_blake3 and config_blake3, because weights alone do not determine
+    behaviour: the detector's score threshold, NMS IoU, input size and
+    normalisation live in the model config, and changing any of them changes
+    every downstream decision while the weights hash stays identical. A pin
+    that cannot distinguish "same weights, threshold moved from 0.5 to 0.6"
+    is not a reproducibility guarantee, it is the appearance of one.
 
     3. ERRORS SAY WHETHER RETRYING COULD HELP.
     A JobSpec is resumable and every step idempotent, so the scheduler needs to
     distinguish "GPU was busy" from "these weights are unlicensed". Retrying a
-    terminal error forever is how a queue dies quietly.
+    terminal error forever is how a queue dies quietly. Terminal codes are
+    numbered 1-99 and retryable ones 100+, so a switch that has not been
+    updated for a new code still classifies it correctly.
 
     4. REQUESTS CARRY DEADLINES AND ARE CANCELLABLE.
     A 300k-file scan must stay interruptible. Deadlines are expressed in the
     request as well as in gRPC metadata so the host can reject work it cannot
     finish rather than starting it.
+
+    5. POSTPROCESSING HAPPENS ONCE, IN THE HOST, AND ITS OUTPUT IS TYPED.
+    A detector's raw head is a pile of anchor deltas that must be decoded and
+    NMS'd before it means anything. If that decoding lived on the caller's
+    side it would be written twice -- once in Python for the pipeline, once in
+    Rust for the desktop shell -- and the two would drift silently, because a
+    box that is wrong by an anchor stride still looks like a box. So the host
+    returns DetectionSet, not raw tensors, and reports the thresholds it
+    actually applied. Raw TensorSet output remains available for embeddings
+    and for heads whose postprocessing genuinely belongs to the caller.
+
+    6. ONE COORDINATE SPACE, DECLARED IN THE TYPE.
+    Every box and every landmark in this file is normalised to [0,1] against
+    the ORIENTED image (EXIF rotation already applied), origin top-left, x
+    right, y down -- identical to NormalizedBox and Point2D in
+    contracts/schemas/common.schema.json. This is what lets a face detected on
+    a 512px proxy be cropped from a 6000px original without a rescale step
+    that someone will eventually forget. Landmarks may fall slightly outside
+    [0,1] when a face is clipped by the frame edge; the bounds are loose on
+    purpose. Pixel coordinates never cross this interface in either direction.
+
+    SCHEMA PARITY
+    ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
+    and TimeRange mirror definitions in contracts/schemas/common.schema.json
+    field-for-field and value-for-value, so a pin round-trips losslessly into
+    a ModelRef and a detection round-trips into a FaceRecord. That parity is
+    asserted mechanically by contracts/tests/test_ml_runtime_proto.py rather
+    than maintained by hand -- two vocabularies for one concept is how they
+    drift.
 
     ---------------------------------------------------------------- service ---
 
@@ -110,32 +144,66 @@ class MlRuntimeServicer(object):
     model-hosting process (Codex). Loopback only; this service never listens on a
     routable interface.
 
-    FOUR PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
+    SIX PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
 
     1. ANALYSIS NEVER TOUCHES ORIGINAL MEDIA.
     There is deliberately no field anywhere in this file that accepts a
     filesystem path, a URL, or an original media id. An InferRequest carries
     either a proxy id -- which the host resolves through media-db against the
-    proxy store only -- or an already-decoded tensor. A caller cannot ask this
+    proxy store only -- or already-decoded tensors. A caller cannot ask this
     service to open a source file, because the request type has nowhere to put
     one. Source files are opened exactly twice in their life: at proxy
     generation and at final render, and neither goes through here.
 
-    2. EVERY RESULT IS PINNED TO THE WEIGHTS THAT PRODUCED IT.
-    InferResponse carries the ModelPin actually used, including the weights
-    hash. A caller that requested a model version and silently got another can
-    detect it. This is what makes "why is this photo ranked 0.82" answerable
-    after a model swap.
+    2. EVERY RESULT IS PINNED TO THE WEIGHTS *AND THE CONFIG* THAT PRODUCED IT.
+    InferResponse carries the ModelPin actually used. That pin includes both
+    weights_blake3 and config_blake3, because weights alone do not determine
+    behaviour: the detector's score threshold, NMS IoU, input size and
+    normalisation live in the model config, and changing any of them changes
+    every downstream decision while the weights hash stays identical. A pin
+    that cannot distinguish "same weights, threshold moved from 0.5 to 0.6"
+    is not a reproducibility guarantee, it is the appearance of one.
 
     3. ERRORS SAY WHETHER RETRYING COULD HELP.
     A JobSpec is resumable and every step idempotent, so the scheduler needs to
     distinguish "GPU was busy" from "these weights are unlicensed". Retrying a
-    terminal error forever is how a queue dies quietly.
+    terminal error forever is how a queue dies quietly. Terminal codes are
+    numbered 1-99 and retryable ones 100+, so a switch that has not been
+    updated for a new code still classifies it correctly.
 
     4. REQUESTS CARRY DEADLINES AND ARE CANCELLABLE.
     A 300k-file scan must stay interruptible. Deadlines are expressed in the
     request as well as in gRPC metadata so the host can reject work it cannot
     finish rather than starting it.
+
+    5. POSTPROCESSING HAPPENS ONCE, IN THE HOST, AND ITS OUTPUT IS TYPED.
+    A detector's raw head is a pile of anchor deltas that must be decoded and
+    NMS'd before it means anything. If that decoding lived on the caller's
+    side it would be written twice -- once in Python for the pipeline, once in
+    Rust for the desktop shell -- and the two would drift silently, because a
+    box that is wrong by an anchor stride still looks like a box. So the host
+    returns DetectionSet, not raw tensors, and reports the thresholds it
+    actually applied. Raw TensorSet output remains available for embeddings
+    and for heads whose postprocessing genuinely belongs to the caller.
+
+    6. ONE COORDINATE SPACE, DECLARED IN THE TYPE.
+    Every box and every landmark in this file is normalised to [0,1] against
+    the ORIENTED image (EXIF rotation already applied), origin top-left, x
+    right, y down -- identical to NormalizedBox and Point2D in
+    contracts/schemas/common.schema.json. This is what lets a face detected on
+    a 512px proxy be cropped from a 6000px original without a rescale step
+    that someone will eventually forget. Landmarks may fall slightly outside
+    [0,1] when a face is clipped by the frame edge; the bounds are loose on
+    purpose. Pixel coordinates never cross this interface in either direction.
+
+    SCHEMA PARITY
+    ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
+    and TimeRange mirror definitions in contracts/schemas/common.schema.json
+    field-for-field and value-for-value, so a pin round-trips losslessly into
+    a ModelRef and a detection round-trips into a FaceRecord. That parity is
+    asserted mechanically by contracts/tests/test_ml_runtime_proto.py rather
+    than maintained by hand -- two vocabularies for one concept is how they
+    drift.
 
     ---------------------------------------------------------------- service ---
 
@@ -231,32 +299,66 @@ class MlRuntime(object):
     model-hosting process (Codex). Loopback only; this service never listens on a
     routable interface.
 
-    FOUR PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
+    SIX PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
 
     1. ANALYSIS NEVER TOUCHES ORIGINAL MEDIA.
     There is deliberately no field anywhere in this file that accepts a
     filesystem path, a URL, or an original media id. An InferRequest carries
     either a proxy id -- which the host resolves through media-db against the
-    proxy store only -- or an already-decoded tensor. A caller cannot ask this
+    proxy store only -- or already-decoded tensors. A caller cannot ask this
     service to open a source file, because the request type has nowhere to put
     one. Source files are opened exactly twice in their life: at proxy
     generation and at final render, and neither goes through here.
 
-    2. EVERY RESULT IS PINNED TO THE WEIGHTS THAT PRODUCED IT.
-    InferResponse carries the ModelPin actually used, including the weights
-    hash. A caller that requested a model version and silently got another can
-    detect it. This is what makes "why is this photo ranked 0.82" answerable
-    after a model swap.
+    2. EVERY RESULT IS PINNED TO THE WEIGHTS *AND THE CONFIG* THAT PRODUCED IT.
+    InferResponse carries the ModelPin actually used. That pin includes both
+    weights_blake3 and config_blake3, because weights alone do not determine
+    behaviour: the detector's score threshold, NMS IoU, input size and
+    normalisation live in the model config, and changing any of them changes
+    every downstream decision while the weights hash stays identical. A pin
+    that cannot distinguish "same weights, threshold moved from 0.5 to 0.6"
+    is not a reproducibility guarantee, it is the appearance of one.
 
     3. ERRORS SAY WHETHER RETRYING COULD HELP.
     A JobSpec is resumable and every step idempotent, so the scheduler needs to
     distinguish "GPU was busy" from "these weights are unlicensed". Retrying a
-    terminal error forever is how a queue dies quietly.
+    terminal error forever is how a queue dies quietly. Terminal codes are
+    numbered 1-99 and retryable ones 100+, so a switch that has not been
+    updated for a new code still classifies it correctly.
 
     4. REQUESTS CARRY DEADLINES AND ARE CANCELLABLE.
     A 300k-file scan must stay interruptible. Deadlines are expressed in the
     request as well as in gRPC metadata so the host can reject work it cannot
     finish rather than starting it.
+
+    5. POSTPROCESSING HAPPENS ONCE, IN THE HOST, AND ITS OUTPUT IS TYPED.
+    A detector's raw head is a pile of anchor deltas that must be decoded and
+    NMS'd before it means anything. If that decoding lived on the caller's
+    side it would be written twice -- once in Python for the pipeline, once in
+    Rust for the desktop shell -- and the two would drift silently, because a
+    box that is wrong by an anchor stride still looks like a box. So the host
+    returns DetectionSet, not raw tensors, and reports the thresholds it
+    actually applied. Raw TensorSet output remains available for embeddings
+    and for heads whose postprocessing genuinely belongs to the caller.
+
+    6. ONE COORDINATE SPACE, DECLARED IN THE TYPE.
+    Every box and every landmark in this file is normalised to [0,1] against
+    the ORIENTED image (EXIF rotation already applied), origin top-left, x
+    right, y down -- identical to NormalizedBox and Point2D in
+    contracts/schemas/common.schema.json. This is what lets a face detected on
+    a 512px proxy be cropped from a 6000px original without a rescale step
+    that someone will eventually forget. Landmarks may fall slightly outside
+    [0,1] when a face is clipped by the frame edge; the bounds are loose on
+    purpose. Pixel coordinates never cross this interface in either direction.
+
+    SCHEMA PARITY
+    ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
+    and TimeRange mirror definitions in contracts/schemas/common.schema.json
+    field-for-field and value-for-value, so a pin round-trips losslessly into
+    a ModelRef and a detection round-trips into a FaceRecord. That parity is
+    asserted mechanically by contracts/tests/test_ml_runtime_proto.py rather
+    than maintained by hand -- two vocabularies for one concept is how they
+    drift.
 
     ---------------------------------------------------------------- service ---
 

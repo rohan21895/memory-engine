@@ -28,7 +28,9 @@ from reference.postprocess import (  # noqa: E402
     distance2bbox,
     filter_by_score,
     iou,
+    letterboxed_to_normalized,
     nms,
+    to_normalized_box,
 )
 from reference.preprocess import (  # noqa: E402
     apply_transform,
@@ -262,6 +264,118 @@ class TestFaceAlignmentFixture(unittest.TestCase):
         self.assertAlmostEqual(0.0, b, places=9)
         self.assertAlmostEqual(0.0, tx, places=6)
         self.assertAlmostEqual(0.0, ty, places=6)
+
+
+class TestDetectionsToNormalizedBoxes(unittest.TestCase):
+    """The last postprocessing stage, and the one that reaches a user fastest.
+
+    Everything upstream of here fails as "the detector seems mediocre". This
+    step fails as a crop through somebody's face in a printed album, because a
+    wrong scale or pad produces a box that is plausibly placed and wrong.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = json.loads(
+            (MODELS_ROOT / "fixtures" / "detections-to-normalized-boxes.json")
+            .read_text(encoding="utf-8")
+        )
+        lb = cls.data["letterbox"]
+        cls.geom = {
+            "scale": lb["scale"],
+            "pad_x": lb["pad_x"],
+            "pad_y": lb["pad_y"],
+            "source_width": lb["source"]["width"],
+            "source_height": lb["source"]["height"],
+        }
+
+    def _case(self, name: str) -> dict:
+        return next(c for c in self.data["cases"] if c["name"] == name)
+
+    def _box(self, case: dict) -> dict | None:
+        b = case["letterboxed_box"]
+        return to_normalized_box(
+            Detection(b["x1"], b["y1"], b["x2"], b["y2"], case["score"]), **self.geom
+        )
+
+    def _assert_box(self, expected: dict, actual: dict | None):
+        self.assertIsNotNone(actual)
+        for key in ("x", "y", "w", "h"):
+            # The fixture records `scale` rounded to nine places, exactly as the
+            # letterbox fixture does, so agreement is asserted to eight.
+            self.assertAlmostEqual(expected[key], actual[key], places=8, msg=key)
+
+    def test_every_case_agrees_with_the_fixture(self):
+        for case in self.data["cases"]:
+            with self.subTest(case=case["name"]):
+                actual = self._box(case)
+                if case["expected_action"] == "drop":
+                    self.assertIsNone(
+                        actual,
+                        "a detection in the padding band must be dropped, not "
+                        "clamped onto the frame edge",
+                    )
+                else:
+                    self._assert_box(case["expected_normalized_box"], actual)
+
+    def test_a_box_over_the_edge_is_clipped_but_kept(self):
+        """Half a face at the frame edge is still a face."""
+        case = self._case("clipped at the top-left edge")
+        actual = self._box(case)
+        self._assert_box(case["expected_normalized_box"], actual)
+        self.assertEqual(0.0, actual["x"])
+        self.assertEqual(0.0, actual["y"])
+
+    def test_clipping_actually_changed_something(self):
+        """Guards the guard: if the fixture's edge case stopped straddling the
+        edge, the clipping test above would pass without exercising clipping."""
+        case = self._case("clipped at the top-left edge")
+        unclipped = case["expected_unclipped_box"]
+        self.assertLess(unclipped["x"], 0.0)
+        self.assertLess(unclipped["y"], 0.0)
+        self.assertNotAlmostEqual(
+            unclipped["w"], case["expected_normalized_box"]["w"], places=6
+        )
+
+    def test_landmarks_are_not_clipped_with_their_box(self):
+        """The asymmetry that matters. Point2D bounds are loose on purpose: a
+        face clipped by the frame really does have an eye off-frame, and moving
+        it onto the border shifts the alignment template, which produces an
+        embedding that is confidently wrong rather than absent."""
+        case = self._case("clipped at the top-left edge")
+        actual = [
+            letterboxed_to_normalized(x, y, **self.geom)
+            for x, y in case["letterboxed_landmarks"]
+        ]
+        for (ex, ey), (ax, ay) in zip(case["expected_normalized_landmarks"], actual):
+            self.assertAlmostEqual(ex, ax, places=8)
+            self.assertAlmostEqual(ey, ay, places=8)
+
+        outside = [p for p in actual if p[0] < 0.0 or p[1] < 0.0]
+        self.assertTrue(outside, "the clipped case must retain off-frame landmarks")
+        for x, y in actual:
+            self.assertGreaterEqual(x, -0.5)
+            self.assertGreaterEqual(y, -0.5)
+
+    def test_emitted_boxes_satisfy_the_normalized_box_schema(self):
+        """Not just numerically right -- valid against the contract they are
+        about to be written into."""
+        from jsonschema import Draft202012Validator
+
+        common = json.loads(
+            (MODELS_ROOT.parent / "contracts" / "schemas" / "common.schema.json")
+            .read_text(encoding="utf-8")
+        )
+        schema = dict(common["$defs"]["NormalizedBox"])
+        schema["$defs"] = common["$defs"]
+        validator = Draft202012Validator(schema)
+
+        for case in self.data["cases"]:
+            if case["expected_action"] != "emit":
+                continue
+            with self.subTest(case=case["name"]):
+                errors = list(validator.iter_errors(self._box(case)))
+                self.assertEqual([], [e.message for e in errors])
 
 
 if __name__ == "__main__":

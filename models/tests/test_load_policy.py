@@ -9,73 +9,71 @@ is two named modes plus one rule that holds in both -- a hash mismatch is always
 fatal -- and these tests pin the resulting truth table so the Python host and
 this policy cannot drift apart.
 
-`decide_load` here is the reference implementation of the gate. Codex should
-make the host agree with it, not reimplement the reasoning.
+The gate itself lives in models/policy/load_gate.py and is imported here rather
+than reimplemented. It was previously copied into this module, which meant these
+tests proved things about the copy while `ml-runtime` would have imported the
+other one -- the exact drift Codex objected to when the gate lived only in a
+test. Codex should make the host agree with the imported module.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 import unittest
-from dataclasses import dataclass
 from pathlib import Path
 
 MODELS_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(MODELS_ROOT.parent))
+
+from models.policy.load_gate import Candidate, decide_load as _decide_load  # noqa: E402
+
 REGISTRY = json.loads((MODELS_ROOT / "registry.json").read_text(encoding="utf-8"))
 POLICY = REGISTRY["load_policy"]
 
-
-@dataclass(frozen=True)
-class Candidate:
-    """Everything the gate needs to know about a load attempt."""
-
-    registered: bool
-    pinned_hash: str | None
-    actual_hash: str | None
-    license_verified: bool
-    blocks_commercial_release: bool
+# Digests the registry claims, not digests recomputed here -- recomputing would
+# make every test agree with whatever the configs currently say, which is the
+# one thing these tests must not do.
+DIGESTS = {
+    entry["model_id"]: entry.get("config_blake3") for entry in REGISTRY["entries"]
+}
 
 
 def decide_load(candidate: Candidate, mode: str) -> str | None:
-    """Return None to permit the load, or the UnloadableReason that refuses it.
+    """Bind the gate to the registry this test module loaded."""
+    return _decide_load(candidate, mode, POLICY)
 
-    Order matters: integrity is checked before licensing, because a corrupt file
-    is a worse problem than an unresolved licence and should be reported as
-    itself rather than masked by a licence complaint.
+
+def candidate(
+    registered: bool = True,
+    pinned_hash: str | None = "a" * 64,
+    actual_hash: str | None = "a" * 64,
+    license_verified: bool = True,
+    blocks_commercial_release: bool = False,
+    **overrides: object,
+) -> Candidate:
+    """A clean candidate by default; pass only the field under test.
+
+    Weights and config are both present and both pinned to the same value they
+    hash to, so any refusal a test sees comes from the thing it varied.
     """
-    gate = POLICY["modes"][mode]
-
-    if gate["require_registered"] and not candidate.registered:
-        return "UNLOADABLE_REASON_NOT_REGISTERED"
-
-    # Always fatal, in every mode. A file disagreeing with its pin is corrupt or
-    # tampered with, and no build flag may wave that through.
-    if (
-        candidate.pinned_hash is not None
-        and candidate.actual_hash is not None
-        and candidate.pinned_hash != candidate.actual_hash
-    ):
-        return "UNLOADABLE_REASON_HASH_MISMATCH"
-
-    if gate["require_pinned_hash"] and candidate.pinned_hash is None:
-        return "UNLOADABLE_REASON_HASH_UNPINNED"
-
-    if gate["require_license_verified"] and not candidate.license_verified:
-        return "UNLOADABLE_REASON_LICENSE_UNVERIFIED"
-
-    if not gate["allow_blocks_commercial_release"] and candidate.blocks_commercial_release:
-        return "UNLOADABLE_REASON_LICENSE_BLOCKS_RELEASE"
-
-    return None
+    defaults: dict[str, object] = {
+        "registered": registered,
+        "weights_present": True,
+        "pinned_hash": pinned_hash,
+        "actual_hash": actual_hash,
+        "license_verified": license_verified,
+        "blocks_commercial_release": blocks_commercial_release,
+        "config_present": True,
+        "config_valid": True,
+        "pinned_config_digest": "c" * 64,
+        "actual_config_digest": "c" * 64,
+    }
+    defaults.update(overrides)
+    return Candidate(**defaults)  # type: ignore[arg-type]
 
 
-GOOD = Candidate(
-    registered=True,
-    pinned_hash="a" * 64,
-    actual_hash="a" * 64,
-    license_verified=True,
-    blocks_commercial_release=False,
-)
+GOOD = candidate()
 
 
 class TestPolicyShape(unittest.TestCase):
@@ -130,47 +128,169 @@ class TestGateDecisions(unittest.TestCase):
                 self.assertIsNone(decide_load(GOOD, mode))
 
     def test_unregistered_is_refused_everywhere(self):
-        candidate = Candidate(False, "a" * 64, "a" * 64, True, False)
+        cand = candidate(registered=False)
         for mode in ("release", "development"):
             with self.subTest(mode=mode):
                 self.assertEqual(
-                    "UNLOADABLE_REASON_NOT_REGISTERED", decide_load(candidate, mode)
+                    "UNLOADABLE_REASON_NOT_REGISTERED", decide_load(cand, mode)
                 )
 
     def test_hash_mismatch_is_refused_everywhere(self):
         """The one rule no mode may relax. A file that disagrees with its pin is
         corrupt or tampered with."""
-        candidate = Candidate(True, "a" * 64, "b" * 64, True, False)
+        cand = candidate(actual_hash="b" * 64)
         for mode in ("release", "development"):
             with self.subTest(mode=mode):
                 self.assertEqual(
-                    "UNLOADABLE_REASON_HASH_MISMATCH", decide_load(candidate, mode)
+                    "UNLOADABLE_REASON_HASH_MISMATCH", decide_load(cand, mode)
                 )
 
     def test_integrity_is_reported_before_licensing(self):
         """A corrupt file that also has an unresolved licence must report the
         corruption, not the licence."""
-        candidate = Candidate(True, "a" * 64, "b" * 64, False, True)
-        self.assertEqual("UNLOADABLE_REASON_HASH_MISMATCH", decide_load(candidate, "release"))
+        cand = candidate(actual_hash="b" * 64, license_verified=False,
+                         blocks_commercial_release=True)
+        self.assertEqual("UNLOADABLE_REASON_HASH_MISMATCH", decide_load(cand, "release"))
 
     def test_unpinned_weights_are_release_blocked_but_development_allowed(self):
-        candidate = Candidate(True, None, None, True, False)
-        self.assertEqual("UNLOADABLE_REASON_HASH_UNPINNED", decide_load(candidate, "release"))
-        self.assertIsNone(decide_load(candidate, "development"))
+        cand = candidate(pinned_hash=None, actual_hash=None)
+        self.assertEqual("UNLOADABLE_REASON_HASH_UNPINNED", decide_load(cand, "release"))
+        self.assertIsNone(decide_load(cand, "development"))
 
     def test_unverified_licence_is_release_blocked_but_development_allowed(self):
-        candidate = Candidate(True, "a" * 64, "a" * 64, False, False)
+        cand = candidate(license_verified=False)
         self.assertEqual(
-            "UNLOADABLE_REASON_LICENSE_UNVERIFIED", decide_load(candidate, "release")
+            "UNLOADABLE_REASON_LICENSE_UNVERIFIED", decide_load(cand, "release")
         )
-        self.assertIsNone(decide_load(candidate, "development"))
+        self.assertIsNone(decide_load(cand, "development"))
 
     def test_a_blocked_model_cannot_reach_a_release(self):
-        candidate = Candidate(True, "a" * 64, "a" * 64, True, True)
+        cand = candidate(blocks_commercial_release=True)
         self.assertEqual(
-            "UNLOADABLE_REASON_LICENSE_BLOCKS_RELEASE", decide_load(candidate, "release")
+            "UNLOADABLE_REASON_LICENSE_BLOCKS_RELEASE", decide_load(cand, "release")
         )
-        self.assertIsNone(decide_load(candidate, "development"))
+        self.assertIsNone(decide_load(cand, "development"))
+
+
+class TestConfigDigestGate(unittest.TestCase):
+    """The config is half of what determines behaviour, so the gate checks it.
+
+    The SCRFD/ArcFace preprocessing defect -- 1/128 applied twice, collapsing the
+    input range to a 0.016-wide sliver -- changed no weights byte, raised no
+    error, and would have produced quietly wrong embeddings indefinitely. These
+    tests exist so that class of change cannot pass as the pinned model.
+    """
+
+    def test_config_mismatch_is_refused_in_every_mode(self):
+        cand = candidate(actual_config_digest="d" * 64)
+        for mode in ("release", "development"):
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    "UNLOADABLE_REASON_CONFIG_MISMATCH", decide_load(cand, mode)
+                )
+
+    def test_the_policy_declares_config_mismatch_always_fatal(self):
+        self.assertTrue(POLICY["config_mismatch_is_always_fatal"])
+
+    def test_weights_integrity_is_reported_before_config_integrity(self):
+        """Both broken means the weights are reported. Arbitrary but fixed: one
+        reason has to win, and a caller comparing two hosts must get the same
+        one from both."""
+        cand = candidate(actual_hash="b" * 64, actual_config_digest="d" * 64)
+        self.assertEqual("UNLOADABLE_REASON_HASH_MISMATCH", decide_load(cand, "release"))
+
+    def test_an_unpinned_config_blocks_release_but_not_development(self):
+        cand = candidate(pinned_config_digest=None, actual_config_digest=None)
+        self.assertEqual(
+            "UNLOADABLE_REASON_CONFIG_UNPINNED", decide_load(cand, "release")
+        )
+        self.assertIsNone(decide_load(cand, "development"))
+
+    def test_a_missing_config_is_distinct_from_an_invalid_one(self):
+        """Same distinction as weights_present vs actual_hash: an absent file and
+        a malformed one are different failures with different remedies."""
+        self.assertEqual(
+            "UNLOADABLE_REASON_CONFIG_MISSING",
+            decide_load(candidate(config_present=False), "release"),
+        )
+        self.assertEqual(
+            "UNLOADABLE_REASON_CONFIG_INVALID",
+            decide_load(candidate(config_valid=False), "release"),
+        )
+
+    def test_a_mode_that_pins_weights_never_silently_accepts_an_unpinned_config(self):
+        """The default when a mode predates `require_pinned_config`. Without it,
+        adding the key to the policy later would leave older modes quietly
+        certifying half a model."""
+        legacy = {"modes": {"legacy": dict(POLICY["modes"]["release"])}}
+        del legacy["modes"]["legacy"]["require_pinned_config"]
+        cand = candidate(pinned_config_digest=None, actual_config_digest=None)
+        self.assertEqual(
+            "UNLOADABLE_REASON_CONFIG_UNPINNED", _decide_load(cand, "legacy", legacy)
+        )
+
+
+class TestConfigDigestCanonicalisation(unittest.TestCase):
+    """The digest is over a canonical form, so it means "behaviour changed"
+    rather than "someone reindented the file"."""
+
+    def setUp(self):
+        from models.policy import digest as module
+
+        self.module = module
+        try:
+            module.blake3_hex(b"")
+        except module.Blake3Missing:
+            self.skipTest("blake3 is not installed")
+
+    def _config(self) -> dict:
+        return json.loads(
+            (MODELS_ROOT / "configs" / "scrfd-10g-bnkps.json").read_text(encoding="utf-8")
+        )
+
+    def test_reformatting_does_not_change_the_digest(self):
+        """Reindenting and reordering keys is not a behaviour change, and a
+        digest that flagged it would be restamped reflexively until nobody read
+        the diff -- which is how a real change gets waved through."""
+        original = self._config()
+        shuffled = dict(reversed(list(original.items())))
+        self.assertEqual(
+            self.module.blake3_hex(self.module.canonical_bytes(original)),
+            self.module.blake3_hex(self.module.canonical_bytes(shuffled)),
+        )
+
+    def test_a_threshold_change_does_change_the_digest(self):
+        """The whole point. Same weights, moved decision boundary, different
+        pin."""
+        original = self._config()
+        edited = json.loads(json.dumps(original))
+        target = edited.get("postprocessing", edited)
+        key = next(
+            (k for k in ("score_threshold", "nms_threshold", "nms_iou_threshold")
+             if k in target),
+            None,
+        )
+        if key is None:  # pragma: no cover - config shape changed
+            self.skipTest("no threshold key in the SCRFD config to perturb")
+        target[key] = float(target[key]) + 0.1
+        self.assertNotEqual(
+            self.module.blake3_hex(self.module.canonical_bytes(original)),
+            self.module.blake3_hex(self.module.canonical_bytes(edited)),
+        )
+
+    def test_every_registry_entry_pins_the_config_on_disk(self):
+        stale = [
+            entry["model_id"]
+            for entry in REGISTRY["entries"]
+            if entry.get("config_blake3")
+            != self.module.config_digest(MODELS_ROOT / entry["config"])
+        ]
+        self.assertEqual(
+            [],
+            stale,
+            "config changed without restamping; run "
+            "python3 models/policy/digest.py --write",
+        )
 
 
 class TestRegistryAgainstPolicy(unittest.TestCase):
@@ -189,15 +309,16 @@ class TestRegistryAgainstPolicy(unittest.TestCase):
         so out loud is the point of the gate."""
         for model_id, config in self._configs().items():
             with self.subTest(model=model_id):
-                candidate = Candidate(
-                    registered=True,
+                cand = candidate(
                     pinned_hash=config["weights"]["blake3"],
                     actual_hash=config["weights"]["blake3"],
                     license_verified=config["license"]["verified"],
                     blocks_commercial_release=config["license"]["blocks_commercial_release"],
+                    pinned_config_digest=DIGESTS.get(model_id),
+                    actual_config_digest=DIGESTS.get(model_id),
                 )
                 self.assertIsNotNone(
-                    decide_load(candidate, "release"),
+                    decide_load(cand, "release"),
                     f"{model_id} claims to be release-ready; verify that is intended",
                 )
 
@@ -205,14 +326,15 @@ class TestRegistryAgainstPolicy(unittest.TestCase):
         """Velocity is not blocked: the deferral is recorded, not enforced."""
         for model_id, config in self._configs().items():
             with self.subTest(model=model_id):
-                candidate = Candidate(
-                    registered=True,
+                cand = candidate(
                     pinned_hash=config["weights"]["blake3"],
                     actual_hash=config["weights"]["blake3"],
                     license_verified=config["license"]["verified"],
                     blocks_commercial_release=config["license"]["blocks_commercial_release"],
+                    pinned_config_digest=DIGESTS.get(model_id),
+                    actual_config_digest=DIGESTS.get(model_id),
                 )
-                self.assertIsNone(decide_load(candidate, "development"))
+                self.assertIsNone(decide_load(cand, "development"))
 
     def test_the_selected_face_detector_is_licence_cleared(self):
         """A licence-clean detector must remain available and working.
