@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "job_id": "6d5615e61812b581c62aedf70ea4b75552057d3dbe22df777042364d895d5e9b",
+  "job_id": "21f1fa38f1dd0cda4fcc19b9cdfc4a3059abaf9c204f921f3427b21fe136f647",
   "job_type": "scan_source",
   "inputs": {
     "media_ids": [],
@@ -11,7 +11,7 @@
     "source_paths": [
       "/Volumes/Backup2019/Photos"
     ],
-    "source_locator_digest": "9ce58ecfbda3e1023e7d9d5955b1e60f50727cda4cfe58b6f929696cf3ba12b4",
+    "source_locator_digest": "5ba4ca10696c3baff957dd75e56da7c1d39631de1f710f33a893af1d57f21453",
     "parent_job_id": null,
     "depends_on_job_ids": [],
     "models": []
@@ -21,7 +21,7 @@
     "include_hidden": false,
     "max_depth": 32
   },
-  "params_digest": "9a183443c7330d8fa3bbbf73c8579312bb43ce34e21fbe78e04902c74c46db43",
+  "params_digest": "1f5d55602fdab85a6ca4488c3d13276ed719196615421a6bf0d66c46901fd61a",
   "scope": "library:default",
   "priority": 300,
   "requirements": {
