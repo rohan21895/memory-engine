@@ -36,7 +36,9 @@ Configure the repository's `main` ruleset with the following settings:
 2. Require these status checks to pass and require the branch to be up to date:
    - `Lint`
    - `Test`
+   - `Windows Ingest`
    - `Codegen Freshness`
+   - `Contracts`
    - `Egress Test`
 3. Require all review conversations to be resolved and dismiss approvals when new commits are pushed.
 4. Require code-owner review after GitHub teams or accounts for Claude Code and Codex are mapped to the ownership table above.

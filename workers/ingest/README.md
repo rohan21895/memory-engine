@@ -21,10 +21,13 @@ JPEG, PNG, GIF, BMP, WebP, and TIFF are decoded in v1. HEIC/HEIF/AVIF are identi
 quarantined as `unsupported_codec` until the platform decoder adapter lands; they are never
 misclassified from a misleading filename extension.
 
-On macOS, `generate_video_proxy` jobs use VideoToolbox for both decode and H.264 encode,
-with software fallback disabled. Scaling stays on VideoToolbox; the same FFmpeg pass emits
-an NDJSON frame-index sidecar from decoded timestamps. Completed media inputs are checkpointed
-individually, so a resumed GoPro chapter set never re-encodes finished chapters.
+`generate_video_proxy` jobs use VideoToolbox on macOS and NVDEC/NVENC or QSV on Windows.
+Decode, 480p scaling, and H.264 encode must all be exposed by FFmpeg for the selected backend;
+missing hardware capability fails the job instead of falling back to software. The same FFmpeg
+pass emits an NDJSON frame-index sidecar from decoded timestamps. Completed media inputs are
+checkpointed individually, so a resumed GoPro chapter set never re-encodes finished chapters.
+
+Set `params.hardware_decode` to `videotoolbox` on macOS, or to `nvdec` or `qsv` on Windows.
 
 ## CLI
 
