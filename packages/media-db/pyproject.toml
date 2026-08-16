@@ -1,0 +1,21 @@
+[project]
+name = "memory-engine-media-db"
+version = "0.0.0"
+description = "SQLite store, FTS index, vector index and query API for the Memory Engine"
+requires-python = ">=3.12"
+dependencies = []
+
+# No runtime dependencies on purpose. media-db is the layer every worker and
+# every intelligence package talks to, so it must import on a bare Python. The
+# sqlite-vec extension is optional and detected at runtime; without it the
+# vector index falls back to an exact brute-force scan (see vectors.py).
+
+[project.optional-dependencies]
+vec = ["sqlite-vec>=0.1.6"]
+dev = ["pytest>=8.0", "pydantic>=2.7", "jsonschema>=4.20"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["memory_engine_media_db"]
