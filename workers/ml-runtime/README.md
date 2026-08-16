@@ -31,3 +31,24 @@ variable; the host delegates that decision to the policy module too.
 
 Omit `--database` only for tensor-only callers. A `proxy_id` request against a host without a
 database fails with `PROXY_NOT_FOUND`; it never falls back to a media path or accepts a caller path.
+
+## Real-photo smoke path
+
+Run the local spine against a folder rather than another synthetic fixture:
+
+```sh
+memory-engine-photo-smoke /path/to/photos \
+  --weights-dir /path/to/development/weights \
+  --runtime coreml
+```
+
+The command creates a resumable scan JobSpec from the golden fixture, runs the Rust ingest worker,
+writes its MediaRecords and proxy references through media-db's public API, starts the loopback
+runtime, resolves those proxies back through media-db, and prints a JSON report containing every
+detection and every blocked stage. Work is content-addressed under the system temporary directory
+by default; pass `--work-dir` for a persistent location.
+
+This is deliberately a development command. It enables the registry's named development gate but
+does not download weights or make network requests. Detections are currently reported but not
+written as FaceRecords: issue #34 must freeze the canonical `face_id` encoding before a writer can
+do that without inventing a contract.

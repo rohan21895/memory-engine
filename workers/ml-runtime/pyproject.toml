@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 memory-engine-ml-runtime = "memory_engine_ml_runtime.__main__:main"
+memory-engine-photo-smoke = "memory_engine_ml_runtime.smoke:main"
 
 [tool.setuptools.packages.find]
 include = ["memory_engine_ml_runtime*"]
