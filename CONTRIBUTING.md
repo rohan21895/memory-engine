@@ -37,6 +37,7 @@ Configure the repository's `main` ruleset with the following settings:
    - `Lint`
    - `Test`
    - `Windows Ingest`
+   - `Windows Desktop`
    - `Codegen Freshness`
    - `Contracts`
    - `Egress Test`

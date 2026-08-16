@@ -18,8 +18,12 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - name: Install Tauri Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -30,12 +34,16 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - name: Install Tauri Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # run-workspace-check.mjs discovers every pyproject.toml and runs its
@@ -51,24 +59,31 @@ jobs:
     name: Windows Ingest
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The Windows proxy backends are selected at runtime, so this native build
       # keeps their cfg path and command-construction tests exercised without
       # requiring a GPU on the hosted runner.
       - run: cargo test --manifest-path workers/ingest/Cargo.toml --all-features
 
+  windows-desktop:
+    name: Windows Desktop
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-features
+
   codegen-freshness:
     name: Codegen Freshness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: npm ci --ignore-scripts
@@ -78,8 +93,8 @@ jobs:
     name: Contracts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python3 -m pip install --upgrade pip
@@ -93,8 +108,8 @@ jobs:
     name: Egress Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
