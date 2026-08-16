@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 //! Narrow, audited safe wrapper around macOS ImageIO/CoreGraphics.
 //!
 //! The public API owns every buffer it exposes. Unsafe code is confined to the framework calls
