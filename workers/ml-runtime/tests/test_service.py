@@ -9,20 +9,25 @@ from pathlib import Path
 
 try:
     import blake3 as _blake3_dependency  # noqa: F401
+    import google.protobuf as _protobuf_dependency  # noqa: F401
     import grpc
     import jsonschema as _jsonschema_dependency  # noqa: F401
-    import google.protobuf as _protobuf_dependency  # noqa: F401
-except ModuleNotFoundError as error:  # The repository CI does not install worker projects yet.
-    raise unittest.SkipTest(f"install workers/ml-runtime dependencies: {error.name}") from error
+except (
+    ModuleNotFoundError
+) as error:  # The repository CI does not install worker projects yet.
+    raise unittest.SkipTest(
+        f"install workers/ml-runtime dependencies: {error.name}"
+    ) from error
 
 WORKER_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = WORKER_ROOT.parents[1]
 sys.path.insert(0, str(WORKER_ROOT))
 
-from contracts.proto.generated.python import ml_runtime_pb2 as pb2
-from contracts.proto.generated.python import ml_runtime_pb2_grpc as pb2_grpc
 from memory_engine_ml_runtime.catalog import ModelCatalog
 from memory_engine_ml_runtime.service import MlRuntimeService, start_server
+
+from contracts.proto.generated.python import ml_runtime_pb2 as pb2
+from contracts.proto.generated.python import ml_runtime_pb2_grpc as pb2_grpc
 
 
 class TestLoopbackService(unittest.TestCase):
@@ -55,7 +60,8 @@ class TestLoopbackService(unittest.TestCase):
     def test_server_is_loopback_only_and_lists_registry_models(self) -> None:
         self.assertEqual("127.0.0.1", self.running.host)
         response = self.stub.ListModels(
-            pb2.ListModelsRequest(task="face_detection", include_unloadable=False), timeout=5
+            pb2.ListModelsRequest(task="face_detection", include_unloadable=False),
+            timeout=5,
         )
         self.assertEqual(pb2.LOAD_MODE_DEVELOPMENT, response.load_mode)
         self.assertEqual(
@@ -77,21 +83,26 @@ class TestLoopbackService(unittest.TestCase):
         self.assertEqual(0, health.queue_depth)
         self.assertIn("development load gate enabled", health.warnings)
 
-    def test_infer_is_explicitly_unimplemented(self) -> None:
-        with self.assertRaises(grpc.RpcError) as raised:
-            self.stub.Infer(pb2.InferRequest(), timeout=5)
-        self.assertEqual(grpc.StatusCode.UNIMPLEMENTED, raised.exception.code())
+    def test_infer_returns_a_typed_validation_error(self) -> None:
+        response = self.stub.Infer(pb2.InferRequest(), timeout=5)
+        self.assertEqual(pb2.ERROR_CODE_INPUT_INVALID, response.error.code)
+        self.assertEqual([], list(response.results))
 
     def test_load_model_returns_gate_refusal_before_execution(self) -> None:
-        missing = self.stub.LoadModel(pb2.LoadModelRequest(model_id="not-registered"), timeout=5)
+        missing = self.stub.LoadModel(
+            pb2.LoadModelRequest(model_id="not-registered"), timeout=5
+        )
         self.assertFalse(missing.loaded)
         self.assertEqual(pb2.ERROR_CODE_MODEL_NOT_REGISTERED, missing.error.code)
 
-        with self.assertRaises(grpc.RpcError) as raised:
-            self.stub.LoadModel(
-                pb2.LoadModelRequest(model_id="siglip2-so400m-384"), timeout=5
-            )
-        self.assertEqual(grpc.StatusCode.UNIMPLEMENTED, raised.exception.code())
+        failed = self.stub.LoadModel(
+            pb2.LoadModelRequest(model_id="siglip2-so400m-384"), timeout=5
+        )
+        self.assertFalse(failed.loaded)
+        self.assertIn(
+            failed.error.code,
+            (pb2.ERROR_CODE_PROVIDER_UNAVAILABLE, pb2.ERROR_CODE_CONFIG_MISMATCH),
+        )
 
 
 if __name__ == "__main__":
