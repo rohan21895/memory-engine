@@ -31,7 +31,7 @@ pub enum VideoProxyError {
     NotResumable,
     #[error("video proxy parameters are invalid")]
     InvalidParameters(#[source] serde_json::Error),
-    #[error("only the macOS VideoToolbox backend is available in this phase")]
+    #[error("the requested hardware video backend is unsupported on this host")]
     UnsupportedBackend,
     #[error("video proxy job has no media inputs")]
     MissingInputs,
@@ -39,7 +39,7 @@ pub enum VideoProxyError {
     MissingRecord,
     #[error("input MediaRecord has no present source")]
     MissingSource,
-    #[error("FFmpeg with VideoToolbox is unavailable")]
+    #[error("FFmpeg does not expose the required hardware video pipeline")]
     FfmpegUnavailable,
     #[error("hardware proxy generation failed without software fallback")]
     FfmpegFailed,
@@ -71,6 +71,65 @@ struct VideoProxyParams {
     crf: i32,
     hardware_decode: String,
     emit_frame_index: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HardwareBackend {
+    VideoToolbox,
+    Nvdec,
+    Qsv,
+}
+
+impl HardwareBackend {
+    fn parse(value: &str) -> Result<Self, VideoProxyError> {
+        match value {
+            "videotoolbox" => Ok(Self::VideoToolbox),
+            "nvdec" => Ok(Self::Nvdec),
+            "qsv" => Ok(Self::Qsv),
+            _ => Err(VideoProxyError::UnsupportedBackend),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::VideoToolbox => "videotoolbox",
+            Self::Nvdec => "nvdec",
+            Self::Qsv => "qsv",
+        }
+    }
+
+    fn capabilities(self) -> [(&'static str, &'static str); 3] {
+        match self {
+            Self::VideoToolbox => [
+                ("-hwaccels", "videotoolbox"),
+                ("-filters", "scale_vt"),
+                ("-encoders", "h264_videotoolbox"),
+            ],
+            Self::Nvdec => [
+                ("-hwaccels", "cuda"),
+                ("-filters", "scale_cuda"),
+                ("-encoders", "h264_nvenc"),
+            ],
+            Self::Qsv => [
+                ("-hwaccels", "qsv"),
+                ("-filters", "scale_qsv"),
+                ("-encoders", "h264_qsv"),
+            ],
+        }
+    }
+
+    fn supported_on_host(self) -> bool {
+        match self {
+            Self::VideoToolbox => cfg!(target_os = "macos"),
+            Self::Nvdec | Self::Qsv => cfg!(target_os = "windows"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ProxyCommandArgs {
+    before_input: Vec<String>,
+    after_input: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,7 +169,8 @@ pub fn execute_video_proxy(
     ffmpeg_path: &Path,
 ) -> Result<VideoProxyReport, VideoProxyError> {
     let params = validate_job(job)?;
-    verify_videotoolbox(ffmpeg_path)?;
+    let backend = HardwareBackend::parse(&params.hardware_decode)?;
+    verify_backend(ffmpeg_path, backend)?;
     if job.state.status == JobStateStatus::Completed {
         return Ok(VideoProxyReport {
             complete: true,
@@ -159,6 +219,7 @@ pub fn execute_video_proxy(
             checkpoint_store,
             ffmpeg_path,
             &params,
+            backend,
         ) {
             Ok(generated) => generated,
             Err(error) => {
@@ -212,6 +273,7 @@ fn generate_one(
     checkpoint_store: &CheckpointStore,
     ffmpeg_path: &Path,
     params: &VideoProxyParams,
+    backend: HardwareBackend,
 ) -> Result<GeneratedProxy, VideoProxyError> {
     let work = output_dir.join("proxies").join("work");
     fs::create_dir_all(&work)?;
@@ -219,51 +281,11 @@ fn generate_one(
     let partial_video = work.join(format!("{media_id}-{nonce}.mp4"));
     let rows_path = work.join(format!("{media_id}-{nonce}.rows"));
     let mut rows = BufWriter::new(File::create(&rows_path)?);
-    let bitrate = videotoolbox_bitrate(params.crf);
-    let filter = format!(
-        "scale_vt=w=ceil(iw*{0}/ih/2)*2:h={0},hwdownload,format=nv12,setsar=1,showinfo",
-        params.height
-    );
+    let command_args = proxy_command_args(backend, params.height, params.crf);
     let mut child = Command::new(ffmpeg_path)
-        .args([
-            "-hide_banner",
-            "-nostdin",
-            "-loglevel",
-            "info",
-            "-hwaccel",
-            "videotoolbox",
-            "-hwaccel_output_format",
-            "videotoolbox_vld",
-            "-i",
-        ])
+        .args(&command_args.before_input)
         .arg(source)
-        .args([
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-map_metadata",
-            "-1",
-            "-vf",
-            &filter,
-            "-fps_mode",
-            "passthrough",
-            "-c:v",
-            "h264_videotoolbox",
-            "-allow_sw",
-            "0",
-            "-profile:v",
-            "high",
-            "-b:v",
-            &bitrate.to_string(),
-            "-c:a",
-            "aac",
-            "-b:a",
-            "96k",
-            "-movflags",
-            "+faststart",
-            "-y",
-        ])
+        .args(&command_args.after_input)
         .arg(&partial_video)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -333,7 +355,8 @@ fn generate_one(
         size: stats.first_size,
         byte_size: Some(fs::metadata(&final_video)?.len() as i64),
         generator_version: Some(format!(
-            "memory-engine-ingest/0.1.0+ffmpeg+videotoolbox+crf{}",
+            "memory-engine-ingest/0.1.0+ffmpeg+{}+crf{}",
+            backend.name(),
             params.crf
         )),
         frame_index: Some(frame_index.clone()),
@@ -371,7 +394,7 @@ fn validate_job(job: &JobSpec) -> Result<VideoProxyParams, VideoProxyError> {
         serde_json::from_value(value).map_err(VideoProxyError::InvalidParameters)?;
     if params.height != 480
         || params.codec != "h264"
-        || params.hardware_decode != "videotoolbox"
+        || HardwareBackend::parse(&params.hardware_decode).is_err()
         || !params.emit_frame_index
     {
         return Err(VideoProxyError::UnsupportedBackend);
@@ -379,23 +402,115 @@ fn validate_job(job: &JobSpec) -> Result<VideoProxyParams, VideoProxyError> {
     Ok(params)
 }
 
-fn verify_videotoolbox(ffmpeg_path: &Path) -> Result<(), VideoProxyError> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = ffmpeg_path;
-        Err(VideoProxyError::UnsupportedBackend)
+fn verify_backend(ffmpeg_path: &Path, backend: HardwareBackend) -> Result<(), VideoProxyError> {
+    if !backend.supported_on_host() {
+        return Err(VideoProxyError::UnsupportedBackend);
     }
-    #[cfg(target_os = "macos")]
-    {
+    for (listing, capability) in backend.capabilities() {
         let output = Command::new(ffmpeg_path)
-            .args(["-hide_banner", "-hwaccels"])
+            .args(["-hide_banner", listing])
             .output()
             .map_err(|_| VideoProxyError::FfmpegUnavailable)?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !output.status.success() || !stdout.lines().any(|line| line.trim() == "videotoolbox") {
+        let mut listing_text = String::from_utf8_lossy(&output.stdout).into_owned();
+        listing_text.push_str(&String::from_utf8_lossy(&output.stderr));
+        if !output.status.success() || !listing_has_capability(&listing_text, capability) {
             return Err(VideoProxyError::FfmpegUnavailable);
         }
-        Ok(())
+    }
+    Ok(())
+}
+
+fn listing_has_capability(listing: &str, capability: &str) -> bool {
+    listing.split_whitespace().any(|token| {
+        token.trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            == capability
+    })
+}
+
+fn proxy_command_args(backend: HardwareBackend, height: u32, crf: i32) -> ProxyCommandArgs {
+    let bitrate = hardware_bitrate(crf).to_string();
+    let (hwaccel, output_format, scaler, encoder, encoder_options): (
+        &str,
+        &str,
+        &str,
+        &str,
+        &[&str],
+    ) = match backend {
+        HardwareBackend::VideoToolbox => (
+            "videotoolbox",
+            "videotoolbox_vld",
+            "scale_vt",
+            "h264_videotoolbox",
+            &["-allow_sw", "0", "-profile:v", "high"],
+        ),
+        HardwareBackend::Nvdec => (
+            "cuda",
+            "cuda",
+            "scale_cuda",
+            "h264_nvenc",
+            &["-preset:v", "p4", "-profile:v", "high"],
+        ),
+        HardwareBackend::Qsv => (
+            "qsv",
+            "qsv",
+            "scale_qsv",
+            "h264_qsv",
+            &["-preset:v", "medium", "-profile:v", "high"],
+        ),
+    };
+    let scaled_width = if backend == HardwareBackend::VideoToolbox {
+        format!("ceil(iw*{height}/ih/2)*2")
+    } else {
+        "-2".to_owned()
+    };
+    let filter =
+        format!("{scaler}=w={scaled_width}:h={height},hwdownload,format=nv12,setsar=1,showinfo");
+    let before_input = [
+        "-hide_banner",
+        "-nostdin",
+        "-loglevel",
+        "info",
+        "-hwaccel",
+        hwaccel,
+        "-hwaccel_output_format",
+        output_format,
+        "-i",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let mut after_input: Vec<String> = [
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-map_metadata",
+        "-1",
+        "-vf",
+        &filter,
+        "-fps_mode",
+        "passthrough",
+        "-c:v",
+        encoder,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    after_input.extend(encoder_options.iter().map(|value| (*value).to_owned()));
+    after_input.extend([
+        "-b:v".to_owned(),
+        bitrate,
+        "-c:a".to_owned(),
+        "aac".to_owned(),
+        "-b:a".to_owned(),
+        "96k".to_owned(),
+        "-movflags".to_owned(),
+        "+faststart".to_owned(),
+        "-y".to_owned(),
+    ]);
+    ProxyCommandArgs {
+        before_input,
+        after_input,
     }
 }
 
@@ -650,7 +765,7 @@ fn record_failure(job: &mut JobSpec, media_id: &str, error: &VideoProxyError) {
     job.state.heartbeat_at = Some(now);
 }
 
-fn videotoolbox_bitrate(crf: i32) -> i64 {
+fn hardware_bitrate(crf: i32) -> i64 {
     let scale = 2_f64.powf(f64::from(23 - crf) / 6.0);
     (1_500_000.0 * scale).round().clamp(400_000.0, 6_000_000.0) as i64
 }
@@ -695,12 +810,89 @@ mod tests {
     }
 
     #[test]
-    fn golden_proxy_job_requires_videotoolbox_without_egress() {
+    fn golden_proxy_job_requires_hardware_without_egress() {
         let fixture =
             include_str!("../../../contracts/fixtures/job-spec/valid/job-video-proxy-resumed.json");
         let job: JobSpec = serde_json::from_str(fixture).expect("golden JobSpec");
         let params = validate_job(&job).expect("supported parameters");
         assert_eq!(params.height, 480);
-        assert_eq!(videotoolbox_bitrate(params.crf), 1_060_660);
+        assert_eq!(hardware_bitrate(params.crf), 1_060_660);
+    }
+
+    #[test]
+    fn builds_fail_closed_hardware_commands_for_each_platform_backend() {
+        for (backend, hwaccel, scaler, encoder) in [
+            (
+                HardwareBackend::VideoToolbox,
+                "videotoolbox",
+                "scale_vt",
+                "h264_videotoolbox",
+            ),
+            (HardwareBackend::Nvdec, "cuda", "scale_cuda", "h264_nvenc"),
+            (HardwareBackend::Qsv, "qsv", "scale_qsv", "h264_qsv"),
+        ] {
+            let args = proxy_command_args(backend, 480, 26);
+            assert!(args
+                .before_input
+                .windows(2)
+                .any(|pair| pair == ["-hwaccel", hwaccel]));
+            assert!(args.after_input.iter().any(|arg| arg.contains(scaler)));
+            assert!(args
+                .after_input
+                .windows(2)
+                .any(|pair| pair == ["-c:v", encoder]));
+            assert!(!args
+                .after_input
+                .windows(2)
+                .any(|pair| pair == ["-c:v", "libx264"]));
+        }
+
+        let videotoolbox = proxy_command_args(HardwareBackend::VideoToolbox, 480, 26);
+        assert!(videotoolbox
+            .after_input
+            .windows(2)
+            .any(|pair| pair == ["-allow_sw", "0"]));
+    }
+
+    #[test]
+    fn parses_ffmpeg_capability_tables_without_substring_matches() {
+        assert!(listing_has_capability(
+            " V..... h264_nvenc NVIDIA NVENC H.264 encoder",
+            "h264_nvenc"
+        ));
+        assert!(listing_has_capability(
+            "Hardware acceleration methods:\nqsv\ncuda\n",
+            "qsv"
+        ));
+        assert!(!listing_has_capability("h264_nvenc_extra", "h264_nvenc"));
+    }
+
+    #[test]
+    fn rejects_unknown_backend_but_accepts_windows_backends() {
+        assert_eq!(
+            HardwareBackend::parse("nvdec").unwrap(),
+            HardwareBackend::Nvdec
+        );
+        assert_eq!(HardwareBackend::parse("qsv").unwrap(), HardwareBackend::Qsv);
+        assert!(matches!(
+            HardwareBackend::parse("software"),
+            Err(VideoProxyError::UnsupportedBackend)
+        ));
+    }
+
+    #[test]
+    fn host_backend_allowlist_matches_the_compiled_platform() {
+        assert_eq!(
+            HardwareBackend::VideoToolbox.supported_on_host(),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(
+            HardwareBackend::Nvdec.supported_on_host(),
+            cfg!(target_os = "windows")
+        );
+        assert_eq!(
+            HardwareBackend::Qsv.supported_on_host(),
+            cfg!(target_os = "windows")
+        );
     }
 }

@@ -47,6 +47,16 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm test
 
+  windows-ingest:
+    name: Windows Ingest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The Windows proxy backends are selected at runtime, so this native build
+      # keeps their cfg path and command-construction tests exercised without
+      # requiring a GPU on the hosted runner.
+      - run: cargo test --manifest-path workers/ingest/Cargo.toml --all-features
+
   codegen-freshness:
     name: Codegen Freshness
     runs-on: ubuntu-latest
