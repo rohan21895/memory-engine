@@ -1,0 +1,72 @@
+{
+  "config_version": "v0",
+  "model_id": "arcface-buffalo-l",
+  "version": "1.0.0",
+  "task": "face_embedding",
+  "description": "ArcFace recognition embedding, InsightFace buffalo_l. 512-d, clustered with HDBSCAN over cosine distance.",
+  "weights": {
+    "filename": "w600k_r50.onnx",
+    "format": "onnx",
+    "source_url": "https://github.com/deepinsight/insightface/tree/master/model_zoo",
+    "blake3": null,
+    "byte_size": null,
+    "quantization": "fp32"
+  },
+  "runtime_targets": ["onnxruntime_coreml", "onnxruntime_cuda", "onnxruntime_directml", "onnxruntime_cpu"],
+  "preprocessing": {
+    "kind": "face_crop",
+    "input_name": "input.1",
+    "input_size": { "width": 112, "height": 112 },
+    "resize": "none",
+    "interpolation": "bilinear",
+    "color_order": "bgr",
+    "layout": "nchw",
+    "scale": 0.0078125,
+    "mean": [127.5, 127.5, 127.5],
+    "std": [127.5, 127.5, 127.5],
+    "face_alignment": {
+      "template": [
+        [38.2946, 51.6963],
+        [73.5318, 51.5014],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041]
+      ],
+      "output_size": { "width": 112, "height": 112 },
+      "landmark_scheme": "insightface_5"
+    },
+    "audio": null,
+    "sequence_length": null
+  },
+  "postprocessing": {
+    "steps": ["l2_normalize"],
+    "nms_threshold": null,
+    "score_threshold": null,
+    "strides": [],
+    "normalisation": null
+  },
+  "outputs": [
+    {
+      "name": "embedding",
+      "meaning": "embedding",
+      "shape": [-1, 512],
+      "dimensions": 512,
+      "vector_space": "arcface_buffalo_l_512"
+    }
+  ],
+  "batching": { "supported": true, "max_batch": 32, "dynamic_axes": true },
+  "license": {
+    "code_license": "MIT",
+    "weights_license": "Non-commercial research use only",
+    "commercial_use": "requires_license_purchase",
+    "verified": false,
+    "verified_at": null,
+    "license_url": "https://www.insightface.ai/solutions/face-recognition-licensing",
+    "training_data": "WebFace600K, a WebFace260M derivative. Research-use terms, and separate from the model licence -- a permissive model trained on a restricted dataset is still restricted in practice.",
+    "blocks_commercial_release": true,
+    "note": "DEVELOPMENT USE ONLY. Licensing deliberately deferred -- see issue #3. Candidate replacement is dlib's public-domain recognition ResNet; the architecture's precision-first threshold and review queue absorb a weaker embedding as more human labelling rather than as wrong faces in albums."
+  },
+  "rollout": { "state": "candidate", "replaces": null, "promoted_at": null },
+  "eval": null,
+  "notes": "ALIGNMENT IS NOT OPTIONAL. The template above is the standard ArcFace 112x112 canonical five-point destination; the detected landmarks are mapped onto it with a similarity transform (estimateAffinePartial2D / umeyama), and the warped crop is what the model sees. Feeding an unaligned crop does not fail -- it returns a confidently wrong embedding, which then clusters wrongly and puts the wrong person in an album. Verify the template against the upstream arcface_src constant before pinning weights."
+}
