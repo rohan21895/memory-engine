@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memory-engine-ml-runtime"
+version = "0.1.0"
+description = "Loopback-only model hosting service for Memory Engine"
+requires-python = ">=3.12"
+dependencies = [
+  "blake3>=0.4",
+  "grpcio>=1.68.1",
+  "jsonschema>=4.23",
+  "protobuf>=5.28.1,<6",
+]
+
+[project.scripts]
+memory-engine-ml-runtime = "memory_engine_ml_runtime.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["memory_engine_ml_runtime*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
