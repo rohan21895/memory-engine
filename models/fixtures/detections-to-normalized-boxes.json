@@ -1,0 +1,101 @@
+{
+  "fixture_version": "v0",
+  "description": "The last stage of detector postprocessing, and the one with no fixture until now: boxes leave NMS in letterboxed network pixels and must arrive as NormalizedBox in oriented-image coordinates before they mean anything to anyone.",
+  "letterbox": {
+    "source": {
+      "width": 1920,
+      "height": 1080
+    },
+    "target": {
+      "width": 640,
+      "height": 640
+    },
+    "scale": 0.333333333,
+    "pad_x": 0.0,
+    "pad_y": 140.0,
+    "valid_region_in_letterboxed_space": {
+      "x": [0.0, 640.0],
+      "y": [140.0, 500.0]
+    }
+  },
+  "transform": [
+    "source_x = (letterboxed_x - pad_x) / scale",
+    "source_y = (letterboxed_y - pad_y) / scale",
+    "normalised_x = source_x / source_width",
+    "normalised_y = source_y / source_height"
+  ],
+  "rules": {
+    "boxes_are_clipped": "A NormalizedBox is a location in the image, so it is clipped to [0,1]. A box claiming to extend past the frame is not describing anything a renderer can crop.",
+    "landmarks_are_not_clipped": "Point2D bounds are deliberately loose ([-0.5, 1.5]). A face clipped by the frame edge genuinely has an eye off-frame, and clamping it onto the border would move the alignment template and produce a subtly wrong warp -- confidently wrong rather than absent, the worst failure mode here.",
+    "empty_intersection_is_dropped": "A detection with no overlap with the oriented image is not a detection. It cannot be clipped into a valid NormalizedBox (w and h are exclusiveMinimum 0), so it must be dropped rather than emitted degenerate."
+  },
+  "cases": [
+    {
+      "name": "fully inside",
+      "letterboxed_box": {
+        "x1": 100.0,
+        "y1": 200.0,
+        "x2": 180.0,
+        "y2": 300.0
+      },
+      "score": 0.91,
+      "expected_action": "emit",
+      "expected_normalized_box": {
+        "x": 0.15625,
+        "y": 0.166666667,
+        "w": 0.125,
+        "h": 0.277777778
+      }
+    },
+    {
+      "name": "clipped at the top-left edge",
+      "letterboxed_box": {
+        "x1": -20.0,
+        "y1": 120.0,
+        "x2": 60.0,
+        "y2": 260.0
+      },
+      "score": 0.77,
+      "letterboxed_landmarks": [
+        [-10.0, 130.0],
+        [40.0, 130.0],
+        [15.0, 170.0],
+        [-5.0, 210.0],
+        [35.0, 210.0]
+      ],
+      "expected_action": "emit",
+      "expected_normalized_box": {
+        "x": 0.0,
+        "y": 0.0,
+        "w": 0.09375,
+        "h": 0.333333333
+      },
+      "expected_unclipped_box": {
+        "x": -0.03125,
+        "y": -0.055555556,
+        "w": 0.125,
+        "h": 0.388888889
+      },
+      "expected_normalized_landmarks": [
+        [-0.015625, -0.027777778],
+        [0.0625, -0.027777778],
+        [0.0234375, 0.083333333],
+        [-0.0078125, 0.194444444],
+        [0.0546875, 0.194444444]
+      ]
+    },
+    {
+      "name": "entirely above the image, inside the letterbox padding",
+      "letterboxed_box": {
+        "x1": 100.0,
+        "y1": 20.0,
+        "x2": 180.0,
+        "y2": 100.0
+      },
+      "score": 0.68,
+      "expected_action": "drop",
+      "expected_normalized_box": null
+    }
+  ],
+  "note": "The padding band is not empty to a detector: it is uniform grey, and a detector will occasionally fire on it. The third case is what that looks like. A host that clamps instead of dropping emits a zero-height box at y=0, which passes as a face at the top edge of every affected photo."
+}

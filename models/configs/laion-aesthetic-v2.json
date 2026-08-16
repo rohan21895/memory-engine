@@ -12,7 +12,10 @@
     "byte_size": null,
     "quantization": "fp32"
   },
-  "runtime_targets": ["onnxruntime_cpu", "onnxruntime_coreml"],
+  "runtime_targets": [
+    "onnxruntime_cpu",
+    "onnxruntime_coreml"
+  ],
   "preprocessing": {
     "kind": "none",
     "input_name": "embedding",
@@ -29,16 +32,38 @@
     "sequence_length": null
   },
   "postprocessing": {
-    "steps": ["scale_to_unit"],
+    "steps": [
+      "scale_to_unit"
+    ],
     "nms_threshold": null,
     "score_threshold": null,
     "strides": [],
-    "normalisation": { "method": "linear_rescale", "input_range": [1.0, 10.0], "calibration_note": "Head emits a 1-10 rating. Rescaled linearly to [0,1] for the contract's Unit; raw_value is retained on the Score so a recalibration needs no re-run." }
+    "normalisation": {
+      "method": "linear_rescale",
+      "input_range": [
+        1.0,
+        10.0
+      ],
+      "calibration_note": "Head emits a 1-10 rating. Rescaled linearly to [0,1] for the contract's Unit; raw_value is retained on the Score so a recalibration needs no re-run."
+    }
   },
   "outputs": [
-    { "name": "score", "meaning": "score", "shape": [-1, 1], "dimensions": null, "vector_space": null }
+    {
+      "name": "score",
+      "meaning": "score",
+      "shape": [
+        -1,
+        1
+      ],
+      "dimensions": null,
+      "vector_space": null
+    }
   ],
-  "batching": { "supported": true, "max_batch": 256, "dynamic_axes": true },
+  "batching": {
+    "supported": true,
+    "max_batch": 256,
+    "dynamic_axes": true
+  },
   "license": {
     "code_license": "MIT",
     "weights_license": "MIT",
@@ -50,7 +75,11 @@
     "blocks_commercial_release": false,
     "note": "Desk assessment only."
   },
-  "rollout": { "state": "candidate", "replaces": null, "promoted_at": null },
+  "rollout": {
+    "state": "candidate",
+    "replaces": null,
+    "promoted_at": null
+  },
   "eval": null,
   "notes": "Consumes an embedding, not pixels, so it is nearly free once SigLIP has run -- which is why the pipeline orders embedding before aesthetic. The original head was trained on CLIP ViT-L/14 features; running it on SigLIP 2 features requires retraining the linear head, and until that is done this entry is a placeholder for the shape of the config rather than a working model."
 }

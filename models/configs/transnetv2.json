@@ -12,11 +12,18 @@
     "byte_size": null,
     "quantization": "fp16"
   },
-  "runtime_targets": ["onnxruntime_coreml", "onnxruntime_cuda", "onnxruntime_cpu"],
+  "runtime_targets": [
+    "onnxruntime_coreml",
+    "onnxruntime_cuda",
+    "onnxruntime_cpu"
+  ],
   "preprocessing": {
     "kind": "image_sequence",
     "input_name": "input",
-    "input_size": { "width": 48, "height": 27 },
+    "input_size": {
+      "width": 48,
+      "height": 27
+    },
     "resize": "stretch",
     "interpolation": "bilinear",
     "color_order": "rgb",
@@ -29,17 +36,50 @@
     "sequence_length": 100
   },
   "postprocessing": {
-    "steps": ["sigmoid"],
+    "steps": [
+      "sigmoid"
+    ],
     "nms_threshold": null,
     "score_threshold": 0.5,
     "strides": [],
-    "normalisation": { "method": "identity", "input_range": [0.0, 1.0], "calibration_note": "sigmoid output is already a probability per frame" }
+    "normalisation": {
+      "method": "identity",
+      "input_range": [
+        0.0,
+        1.0
+      ],
+      "calibration_note": "sigmoid output is already a probability per frame"
+    }
   },
   "outputs": [
-    { "name": "single_frame_pred", "meaning": "frame_predictions", "shape": [-1, 100, 1], "dimensions": null, "vector_space": null },
-    { "name": "all_frames_pred", "meaning": "frame_predictions", "shape": [-1, 100, 1], "dimensions": null, "vector_space": null }
+    {
+      "name": "single_frame_pred",
+      "meaning": "frame_predictions",
+      "shape": [
+        -1,
+        100,
+        1
+      ],
+      "dimensions": null,
+      "vector_space": null
+    },
+    {
+      "name": "all_frames_pred",
+      "meaning": "frame_predictions",
+      "shape": [
+        -1,
+        100,
+        1
+      ],
+      "dimensions": null,
+      "vector_space": null
+    }
   ],
-  "batching": { "supported": true, "max_batch": 4, "dynamic_axes": true },
+  "batching": {
+    "supported": true,
+    "max_batch": 4,
+    "dynamic_axes": true
+  },
   "license": {
     "code_license": "MIT",
     "weights_license": "MIT",
@@ -51,7 +91,11 @@
     "blocks_commercial_release": false,
     "note": "Desk assessment only."
   },
-  "rollout": { "state": "candidate", "replaces": null, "promoted_at": null },
+  "rollout": {
+    "state": "candidate",
+    "replaces": null,
+    "promoted_at": null
+  },
   "eval": null,
   "notes": "Windows overlap by 25 frames on each side; only the centre 50 predictions of each 100-frame window are kept, because the model is unreliable at window edges. Raw pixel values in [0,255] with no normalisation -- this model does its own scaling internally, and applying a mean/std here silently degrades it."
 }

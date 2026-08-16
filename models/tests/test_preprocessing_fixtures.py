@@ -14,6 +14,7 @@ resize convention is documented instead of pretended-about.
 from __future__ import annotations
 
 import json
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -24,14 +25,23 @@ sys.path.insert(0, str(MODELS_ROOT))
 from reference.postprocess import (  # noqa: E402
     Detection,
     anchor_centers,
+    num_anchors_for,
+    yunet_decode_bbox,
+    yunet_decode_landmarks,
     combine_scores,
     distance2bbox,
     filter_by_score,
     iou,
+    letterboxed_to_normalized,
     nms,
+    integer_rect_iou,
+    integer_rect_nms,
+    to_integer_rect,
+    to_normalized_box,
 )
 from reference.preprocess import (  # noqa: E402
     apply_transform,
+    integer_letterbox,
     letterbox,
     preprocess_image,
     similarity_transform,
@@ -155,6 +165,99 @@ class TestLetterboxFixture(unittest.TestCase):
         self.assertAlmostEqual(640.0, box.scaled_height + 2 * box.pad_y, places=6)
 
 
+class TestIntegerLetterbox(unittest.TestCase):
+    """Letterbox onto a real raster, using the dimensions ingest actually emits.
+
+    The float fixture uses 1920x1080 -> 640x640, where everything lands exactly
+    and so specifies neither the rounding convention nor the odd-padding split.
+    Codex flagged that and supplied the real proxy geometry: fixed 480 height,
+    width rounded to a multiple of two.
+    """
+
+    def setUp(self):
+        self.data = fixture("letterbox-integer-raster.json")
+
+    def _boxes(self):
+        for case in self.data["cases"]:
+            proxy, target = case["proxy"], case["target"]
+            yield case, integer_letterbox(
+                proxy["width"], proxy["height"], target["width"], target["height"]
+            )
+
+    def test_every_case_reproduces_the_fixture(self):
+        for case, box in self._boxes():
+            with self.subTest(proxy=case["proxy"], backend=case["backend"]):
+                self.assertEqual(case["expected"], box.to_json())
+
+    def test_padding_accounts_for_every_pixel(self):
+        """The property that makes the split convention checkable rather than
+        merely stated."""
+        for case, box in self._boxes():
+            with self.subTest(proxy=case["proxy"]):
+                self.assertEqual(
+                    case["target"]["height"],
+                    box.pad_top + box.scaled_height + box.pad_bottom,
+                )
+                self.assertEqual(
+                    case["target"]["width"],
+                    box.pad_left + box.scaled_width + box.pad_right,
+                )
+
+    def test_an_odd_pad_puts_the_extra_pixel_at_the_bottom(self):
+        """A host that split it the other way would place every box one pixel
+        out on odd-padded proxies -- invisible in review, visible as a crop that
+        clips a chin."""
+        asymmetric = [
+            (c, b) for c, b in self._boxes() if not b.is_padding_symmetric
+        ]
+        self.assertTrue(
+            asymmetric,
+            "no case exercises an odd pad, so the split convention is untested",
+        )
+        for case, box in asymmetric:
+            with self.subTest(proxy=case["proxy"]):
+                self.assertEqual(box.pad_bottom, box.pad_top + 1)
+
+    def test_the_same_source_pads_differently_on_different_backends(self):
+        """4096x2160 becomes 912x480 on VideoToolbox and 910x480 on NVDEC/QSV,
+        which pad asymmetrically and symmetrically respectively. Same video,
+        different machine, different geometry -- so a box computed on one host
+        and applied with the other's assumptions is wrong."""
+        by_source = {}
+        for case, box in self._boxes():
+            key = (case["source"]["width"], case["source"]["height"])
+            by_source.setdefault(key, []).append((case["backend"], box))
+        divergent = [v for v in by_source.values() if len({b.pad_top for _, b in v}) > 0
+                     and len({(b.scaled_width, b.scaled_height) for _, b in v}) > 1]
+        self.assertTrue(divergent, "the backend divergence case has been lost")
+
+    def test_the_inverse_map_uses_the_effective_scale(self):
+        for case, box in self._boxes():
+            for probe in case["probes"]:
+                x, y = probe["letterboxed"]
+                with self.subTest(proxy=case["proxy"], point=(x, y)):
+                    nx, ny = box.to_normalized(x, y)
+                    self.assertAlmostEqual(probe["normalised"][0], nx, places=9)
+                    self.assertAlmostEqual(probe["normalised"][1], ny, places=9)
+
+    def test_using_the_ideal_scale_would_shift_coordinates(self):
+        """Why `effective_scale` exists. Once the resized dimension is rounded,
+        the image really is at the rounded scale; un-letterboxing with the ideal
+        one reintroduces the rounding as a coordinate offset."""
+        worst = max(c["ideal_scale_error_px_at_centre"] for c in self.data["cases"])
+        self.assertGreater(
+            worst, 0.0,
+            "no case has a rounding error, so this distinction is untested",
+        )
+
+    def test_rounding_is_nearest_not_floor(self):
+        """Flooring shrinks by up to a pixel and biases every mapped coordinate
+        one way rather than cancelling out."""
+        box = integer_letterbox(854, 480, 640, 640)
+        self.assertEqual(360, box.scaled_height)   # 359.719 rounds up
+        self.assertNotEqual(359, box.scaled_height)
+
+
 class TestPostprocessFixture(unittest.TestCase):
     def setUp(self):
         self.data = fixture("postprocess-yunet-nms.json")
@@ -204,8 +307,34 @@ class TestPostprocessFixture(unittest.TestCase):
             places=9,
         )
 
-    def test_confidence_is_the_product_of_classification_and_objectness(self):
-        self.assertAlmostEqual(0.72, combine_scores(0.9, 0.8), places=9)
+    def test_confidence_is_the_clamped_geometric_mean(self):
+        """WAS: `assertAlmostEqual(0.72, combine_scores(0.9, 0.8))` -- asserting
+        the product, which is not what YuNet does.
+
+        OpenCV's face_detect.cpp clamps each score to [0,1] and takes
+        sqrt(cls*obj). The wrong formula was not a rounding difference: at
+        YuNet's configured threshold of 0.6 the product rule discards roughly
+        84% of the detections YuNet accepts, and this test was what made that
+        look correct. Found by Codex; confirmed against the OpenCV source.
+        """
+        self.assertAlmostEqual(
+            math.sqrt(0.9 * 0.8), combine_scores(0.9, 0.8), places=9
+        )
+        self.assertNotAlmostEqual(0.72, combine_scores(0.9, 0.8), places=3)
+
+    def test_scores_are_clamped_before_the_square_root(self):
+        """Part of the formula, not defensive coding: raw sigmoid outputs can
+        land marginally outside [0,1], and sqrt of a negative product is not a
+        number."""
+        self.assertEqual(1.0, combine_scores(1.4, 1.2))
+        self.assertEqual(0.0, combine_scores(-0.1, 0.9))
+
+    def test_the_wrong_formula_would_have_dropped_most_faces(self):
+        """Kept as a number rather than a comment, so the cost of regressing is
+        legible to whoever next touches this."""
+        threshold = 0.6
+        self.assertLess(0.7 * 0.7, threshold)          # dropped by the product
+        self.assertGreater(combine_scores(0.7, 0.7), threshold)  # kept, correctly
 
     def test_thresholds_match_the_model_config(self):
         post = config(self.data["model_id"])["postprocessing"]
@@ -262,6 +391,274 @@ class TestFaceAlignmentFixture(unittest.TestCase):
         self.assertAlmostEqual(0.0, b, places=9)
         self.assertAlmostEqual(0.0, tx, places=6)
         self.assertAlmostEqual(0.0, ty, places=6)
+
+
+class TestYuNetDecode(unittest.TestCase):
+    """YuNet decoding, from RAW network outputs.
+
+    The older fixture started from already-decoded boxes, so it tested NMS and
+    nothing else -- and two real decode bugs sat underneath it, green, for as
+    long as it existed. Codex caught both: YuNet uses centre-offset plus
+    exponentiated size (not SCRFD's distance-to-four-sides) and its confidence
+    is the clamped geometric mean (not the product).
+    """
+
+    def setUp(self):
+        self.data = fixture("postprocess-yunet-decode.json")
+
+    def test_boxes_decode_by_centre_offset_and_exponentiated_size(self):
+        for case in self.data["cases"]:
+            with self.subTest(cell=case["cell"]):
+                box = yunet_decode_bbox(
+                    tuple(case["cell"]), tuple(case["bbox_raw"]), self.data["stride"]
+                )
+                self.assertEqual(case["decoded_box"], box.to_json())
+
+    def test_scrfd_decoder_would_have_produced_different_boxes(self):
+        """Guard on the guard. If the two decoders happened to agree on this
+        fixture, the test above would prove nothing about which one is used."""
+        case = self.data["cases"][0]
+        yunet = yunet_decode_bbox(
+            tuple(case["cell"]), tuple(case["bbox_raw"]), self.data["stride"]
+        )
+        scrfd = distance2bbox(
+            (float(case["cell"][0] * self.data["stride"]),
+             float(case["cell"][1] * self.data["stride"])),
+            tuple(case["bbox_raw"]),
+            self.data["stride"],
+        )
+        self.assertNotEqual(yunet.to_json(), scrfd.to_json())
+
+    def test_landmarks_decode_cell_relative_and_linear(self):
+        for case in self.data["cases"]:
+            with self.subTest(cell=case["cell"]):
+                points = yunet_decode_landmarks(
+                    tuple(case["cell"]), case["landmarks_raw"], self.data["stride"]
+                )
+                self.assertEqual(
+                    case["decoded_landmarks"],
+                    [[round(x, 6), round(y, 6)] for x, y in points],
+                )
+
+    def test_confidence_uses_the_geometric_mean(self):
+        for case in self.data["cases"]:
+            with self.subTest(cell=case["cell"]):
+                self.assertAlmostEqual(
+                    case["score"], combine_scores(case["cls"], case["obj"]), places=6
+                )
+
+    def test_nms_uses_opencv_integer_rectangles(self):
+        """OpenCV builds a cv::Rect2i before NMSBoxes, so IoU is computed on
+        integers -- not the float formula with rounded inputs."""
+        d = Detection(1.7, 2.9, 21.4, 22.2, 0.9)
+        self.assertEqual((1, 2, 20, 20), to_integer_rect(d))
+
+    def test_the_two_nms_conventions_actually_disagree(self):
+        """The case that makes the choice observable.
+
+        The four decode cases survive either implementation, so on their own
+        they prove nothing about which is used -- Codex's point. Rounding moves
+        the IoU across the threshold for boxes sitting near it, which is exactly
+        where NMS decides: one face becomes two, or two adjacent faces in a
+        group photo become one.
+        """
+        case = self.data["nms_convention_divergence"]
+        a, b = (Detection(x["x1"], x["y1"], x["x2"], x["y2"], x["score"])
+                for x in case["boxes"])
+        self.assertAlmostEqual(case["float_iou"], iou(a, b), places=6)
+        self.assertAlmostEqual(case["integer_rect_iou"], integer_rect_iou(a, b), places=6)
+        self.assertEqual(case["float_nms_keeps"], len(nms([a, b], case["nms_threshold"])))
+        self.assertEqual(
+            case["integer_rect_nms_keeps"],
+            len(integer_rect_nms([a, b], case["nms_threshold"])),
+        )
+        self.assertNotEqual(case["float_nms_keeps"], case["integer_rect_nms_keeps"])
+
+    def test_top_k_is_applied_before_suppression(self):
+        """OpenCV caps the score-sorted candidates before NMS. Dropping the cap
+        changes which detections survive whenever the list is long, which on a
+        crowd shot is always."""
+        boxes = [Detection(i * 100.0, 0.0, i * 100.0 + 20.0, 20.0, 0.9 - i * 0.01)
+                 for i in range(10)]
+        self.assertEqual(10, len(integer_rect_nms(boxes, 0.3)))
+        self.assertEqual(3, len(integer_rect_nms(boxes, 0.3, top_k=3)))
+
+    def test_the_full_chain_reproduces_the_fixture(self):
+        decoded = [
+            Detection(
+                *(yunet_decode_bbox(tuple(c["cell"]), tuple(c["bbox_raw"]),
+                                    self.data["stride"]).to_json()[k]
+                  for k in ("x1", "y1", "x2", "y2")),
+                combine_scores(c["cls"], c["obj"]),
+            )
+            for c in self.data["cases"]
+        ]
+        kept = integer_rect_nms(
+            filter_by_score(decoded, self.data["score_threshold"]),
+            self.data["nms_threshold"],
+            self.data["top_k"],
+        )
+        self.assertEqual(self.data["expected_after_nms"], [d.to_json() for d in kept])
+
+    def test_the_product_rule_would_have_dropped_most_of_these_faces(self):
+        """The cost, in this fixture's own numbers."""
+        summary = self.data["what_the_wrong_formulas_would_do"]
+        self.assertLess(summary["product_confidence_keeps"],
+                        summary["geometric_mean_keeps"])
+
+
+class TestScrfdAnchorMultiplicity(unittest.TestCase):
+    """SCRFD variants with 6 or 9 ONNX outputs predict TWO anchors per location.
+
+    The reference generated one, so the centre list was half the length of the
+    score and box arrays and every prediction past the first row paired with the
+    wrong centre. scrfd-10g-bnkps is a nine-output variant, so this was live.
+    Found by Codex; confirmed against InsightFace's scrfd.py.
+    """
+
+    def test_nine_output_variants_use_two_anchors(self):
+        self.assertEqual(2, num_anchors_for(9))
+        self.assertEqual(2, num_anchors_for(6))
+        self.assertEqual(1, num_anchors_for(10))
+        self.assertEqual(1, num_anchors_for(15))
+
+    def test_an_unrecognised_output_count_refuses_to_guess(self):
+        """A swapped checkpoint must fail loudly rather than inherit the old
+        anchor count."""
+        with self.assertRaises(ValueError):
+            num_anchors_for(7)
+
+    def test_centres_are_duplicated_in_place_not_concatenated(self):
+        """InsightFace's stack-then-reshape gives [c0, c0, c1, c1, ...].
+        Concatenating instead would misalign every prediction by half the
+        array."""
+        doubled = anchor_centers(8, 2, 1, num_anchors=2)
+        self.assertEqual([(0.0, 0.0), (0.0, 0.0), (8.0, 0.0), (8.0, 0.0)], doubled)
+
+    def test_the_centre_count_matches_the_prediction_count(self):
+        """The property the bug violated: one centre per predicted row."""
+        width, height, anchors = 4, 4, num_anchors_for(9)
+        centres = anchor_centers(8, width, height, num_anchors=anchors)
+        self.assertEqual(width * height * anchors, len(centres))
+
+    def test_the_scrfd_config_declares_enough_outputs_to_derive_this(self):
+        """The host derives the anchor count from the config rather than
+        hardcoding it per model id."""
+        outputs = config("scrfd-10g-bnkps")["outputs"]
+        self.assertIn(len(outputs), (6, 9, 10, 15))
+        self.assertEqual(2, num_anchors_for(len(outputs)))
+
+
+class TestDetectionsToNormalizedBoxes(unittest.TestCase):
+    """The last postprocessing stage, and the one that reaches a user fastest.
+
+    Everything upstream of here fails as "the detector seems mediocre". This
+    step fails as a crop through somebody's face in a printed album, because a
+    wrong scale or pad produces a box that is plausibly placed and wrong.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = json.loads(
+            (MODELS_ROOT / "fixtures" / "detections-to-normalized-boxes.json")
+            .read_text(encoding="utf-8")
+        )
+        lb = cls.data["letterbox"]
+        cls.geom = {
+            "scale": lb["scale"],
+            "pad_x": lb["pad_x"],
+            "pad_y": lb["pad_y"],
+            "source_width": lb["source"]["width"],
+            "source_height": lb["source"]["height"],
+        }
+
+    def _case(self, name: str) -> dict:
+        return next(c for c in self.data["cases"] if c["name"] == name)
+
+    def _box(self, case: dict) -> dict | None:
+        b = case["letterboxed_box"]
+        return to_normalized_box(
+            Detection(b["x1"], b["y1"], b["x2"], b["y2"], case["score"]), **self.geom
+        )
+
+    def _assert_box(self, expected: dict, actual: dict | None):
+        self.assertIsNotNone(actual)
+        for key in ("x", "y", "w", "h"):
+            # The fixture records `scale` rounded to nine places, exactly as the
+            # letterbox fixture does, so agreement is asserted to eight.
+            self.assertAlmostEqual(expected[key], actual[key], places=8, msg=key)
+
+    def test_every_case_agrees_with_the_fixture(self):
+        for case in self.data["cases"]:
+            with self.subTest(case=case["name"]):
+                actual = self._box(case)
+                if case["expected_action"] == "drop":
+                    self.assertIsNone(
+                        actual,
+                        "a detection in the padding band must be dropped, not "
+                        "clamped onto the frame edge",
+                    )
+                else:
+                    self._assert_box(case["expected_normalized_box"], actual)
+
+    def test_a_box_over_the_edge_is_clipped_but_kept(self):
+        """Half a face at the frame edge is still a face."""
+        case = self._case("clipped at the top-left edge")
+        actual = self._box(case)
+        self._assert_box(case["expected_normalized_box"], actual)
+        self.assertEqual(0.0, actual["x"])
+        self.assertEqual(0.0, actual["y"])
+
+    def test_clipping_actually_changed_something(self):
+        """Guards the guard: if the fixture's edge case stopped straddling the
+        edge, the clipping test above would pass without exercising clipping."""
+        case = self._case("clipped at the top-left edge")
+        unclipped = case["expected_unclipped_box"]
+        self.assertLess(unclipped["x"], 0.0)
+        self.assertLess(unclipped["y"], 0.0)
+        self.assertNotAlmostEqual(
+            unclipped["w"], case["expected_normalized_box"]["w"], places=6
+        )
+
+    def test_landmarks_are_not_clipped_with_their_box(self):
+        """The asymmetry that matters. Point2D bounds are loose on purpose: a
+        face clipped by the frame really does have an eye off-frame, and moving
+        it onto the border shifts the alignment template, which produces an
+        embedding that is confidently wrong rather than absent."""
+        case = self._case("clipped at the top-left edge")
+        actual = [
+            letterboxed_to_normalized(x, y, **self.geom)
+            for x, y in case["letterboxed_landmarks"]
+        ]
+        for (ex, ey), (ax, ay) in zip(case["expected_normalized_landmarks"], actual):
+            self.assertAlmostEqual(ex, ax, places=8)
+            self.assertAlmostEqual(ey, ay, places=8)
+
+        outside = [p for p in actual if p[0] < 0.0 or p[1] < 0.0]
+        self.assertTrue(outside, "the clipped case must retain off-frame landmarks")
+        for x, y in actual:
+            self.assertGreaterEqual(x, -0.5)
+            self.assertGreaterEqual(y, -0.5)
+
+    def test_emitted_boxes_satisfy_the_normalized_box_schema(self):
+        """Not just numerically right -- valid against the contract they are
+        about to be written into."""
+        from jsonschema import Draft202012Validator
+
+        common = json.loads(
+            (MODELS_ROOT.parent / "contracts" / "schemas" / "common.schema.json")
+            .read_text(encoding="utf-8")
+        )
+        schema = dict(common["$defs"]["NormalizedBox"])
+        schema["$defs"] = common["$defs"]
+        validator = Draft202012Validator(schema)
+
+        for case in self.data["cases"]:
+            if case["expected_action"] != "emit":
+                continue
+            with self.subTest(case=case["name"]):
+                errors = list(validator.iter_errors(self._box(case)))
+                self.assertEqual([], [e.message for e in errors])
 
 
 if __name__ == "__main__":

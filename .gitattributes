@@ -1,0 +1,34 @@
+# Line endings are part of a file's identity here, not a cosmetic detail.
+#
+# models/configs/*.json are content-addressed: registry.json pins a BLAKE3 of
+# each config's raw BYTES, and workers/ml-runtime refuses to load a model whose
+# config does not match its pin. Git's core.autocrlf is on by default on
+# Windows, so without this a Windows checkout of an unchanged commit would
+# materialise CRLF, change every byte offset, and fail the digest on every
+# model -- reading as "someone edited the configs" rather than "your checkout
+# rewrote them". Codex caught this while reviewing the switch to byte hashing.
+#
+# The same applies to contracts/fixtures/*.json, which the golden tests compare
+# byte-wise, and to the generated bindings, whose freshness check is a diff.
+* text=auto eol=lf
+
+*.json text eol=lf
+*.proto text eol=lf
+*.py text eol=lf
+*.rs text eol=lf
+*.ts text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+
+# Binary, so Git must never touch them.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.heic binary
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.mp3 binary
+*.onnx binary
+*.icns binary
+*.ico binary

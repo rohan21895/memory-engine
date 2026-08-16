@@ -2,7 +2,12 @@
 name = "memory-engine-model-registry"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = []
+# blake3 is not optional: the config digests in registry.json are BLAKE3 over
+# the config bytes, and the load gate refuses an entry whose digest it could not
+# verify. Codex flagged that this was undeclared while the digest check quietly
+# exited 0 without it -- an install missing blake3 is an incomplete install, not
+# a reduced-functionality one.
+dependencies = ["blake3>=0.4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

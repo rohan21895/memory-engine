@@ -36,32 +36,95 @@ class MlRuntimeStub(object):
     model-hosting process (Codex). Loopback only; this service never listens on a
     routable interface.
 
-    FOUR PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
+    SIX PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
 
     1. ANALYSIS NEVER TOUCHES ORIGINAL MEDIA.
     There is deliberately no field anywhere in this file that accepts a
     filesystem path, a URL, or an original media id. An InferRequest carries
     either a proxy id -- which the host resolves through media-db against the
-    proxy store only -- or an already-decoded tensor. A caller cannot ask this
+    proxy store only -- or already-decoded tensors. A caller cannot ask this
     service to open a source file, because the request type has nowhere to put
     one. Source files are opened exactly twice in their life: at proxy
     generation and at final render, and neither goes through here.
 
-    2. EVERY RESULT IS PINNED TO THE WEIGHTS THAT PRODUCED IT.
-    InferResponse carries the ModelPin actually used, including the weights
-    hash. A caller that requested a model version and silently got another can
-    detect it. This is what makes "why is this photo ranked 0.82" answerable
-    after a model swap.
+    2. EVERY RESULT IS PINNED TO THE WEIGHTS *AND THE CONFIG* THAT PRODUCED IT.
+    InferResponse carries the ModelPin actually used. That pin includes both
+    weights_blake3 and config_blake3, because weights alone do not determine
+    behaviour: the detector's score threshold, NMS IoU, input size and
+    normalisation live in the model config, and changing any of them changes
+    every downstream decision while the weights hash stays identical. A pin
+    that cannot distinguish "same weights, threshold moved from 0.5 to 0.6"
+    is not a reproducibility guarantee, it is the appearance of one.
 
     3. ERRORS SAY WHETHER RETRYING COULD HELP.
     A JobSpec is resumable and every step idempotent, so the scheduler needs to
     distinguish "GPU was busy" from "these weights are unlicensed". Retrying a
-    terminal error forever is how a queue dies quietly.
+    terminal error forever is how a queue dies quietly. Terminal codes are
+    numbered 1-99 and retryable ones 100+, so a switch that has not been
+    updated for a new code still classifies it correctly.
 
     4. REQUESTS CARRY DEADLINES AND ARE CANCELLABLE.
     A 300k-file scan must stay interruptible. Deadlines are expressed in the
     request as well as in gRPC metadata so the host can reject work it cannot
     finish rather than starting it.
+
+    5. POSTPROCESSING HAPPENS ONCE, IN THE HOST, AND ITS OUTPUT IS TYPED.
+    A detector's raw head is a pile of anchor deltas that must be decoded and
+    NMS'd before it means anything. If that decoding lived on the caller's
+    side it would be written twice -- once in Python for the pipeline, once in
+    Rust for the desktop shell -- and the two would drift silently, because a
+    box that is wrong by an anchor stride still looks like a box. So the host
+    returns DetectionSet, not raw tensors, and reports the thresholds it
+    actually applied. Raw TensorSet output remains available for embeddings
+    and for heads whose postprocessing genuinely belongs to the caller.
+
+    6. NORMALISED COORDINATES ONLY, AGAINST A BASIS THE FIELD NAMES.
+    Pixel coordinates never cross this interface in either direction. Every
+    box and landmark is normalised to [0,1], origin top-left, x right, y down,
+    matching NormalizedBox and Point2D in
+    contracts/schemas/common.schema.json.
+
+    There are exactly TWO bases, and which one applies is determined by what
+    the coordinate is attached to -- never by convention:
+
+    * ORIENTED IMAGE (EXIF rotation applied) for everything that refers to
+    an image: all DetectionSet output, and InferItem.landmarks when the
+    item's input is a `proxy_id`. This is what lets a face detected on a
+    512px proxy be cropped from a 6000px original without a rescale step
+    someone will eventually forget.
+    * THE TENSOR'S OWN EXTENT for InferItem.landmarks when the item's input
+    is `tensors`. A bare 112x112 crop has no oriented image to refer to,
+    and the alternative -- carrying a crop transform back to an original
+    nobody has open -- adds a second thing to get wrong.
+
+    An earlier revision claimed a single universal basis in this header while
+    the tensor path used the second one; Codex caught the contradiction. Two
+    bases stated precisely beat one basis stated falsely.
+
+    Landmarks may fall slightly outside [0,1] when a face is clipped by the
+    frame edge; the bounds are loose on purpose.
+
+    WHY THIS IS v1 AND NOT v0
+    The v0 revision reused field numbers and enum values with incompatible
+    meanings: v0's preferred_providers=1 meant CoreML and v1's value 1 means
+    ONNX-CPU, v0's PRECISION_INT8=3 is now BF16, ModelPin tags 4 and 5 changed
+    type, and InferResult tag 3 went from `repeated Tensor` to a nested
+    message. A v0 client talking to a v1 server would not fail -- it would
+    silently request the wrong runtime at the wrong precision and misparse the
+    results. No workers/ml-runtime implementation exists yet so nothing real
+    breaks, but the package version is what makes that guarantee enforceable
+    rather than a claim in a commit message. Codex caught this; an earlier
+    draft of this file also claimed tag 3 "preserves the wire layout", which
+    was simply false.
+
+    SCHEMA PARITY
+    ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
+    and TimeRange mirror definitions in contracts/schemas/common.schema.json
+    field-for-field and value-for-value, so a pin round-trips losslessly into
+    a ModelRef and a detection round-trips into a FaceRecord. That parity is
+    asserted mechanically by contracts/tests/test_ml_runtime_proto.py rather
+    than maintained by hand -- two vocabularies for one concept is how they
+    drift.
 
     ---------------------------------------------------------------- service ---
 
@@ -74,32 +137,32 @@ class MlRuntimeStub(object):
             channel: A grpc.Channel.
         """
         self.ListModels = channel.unary_unary(
-                '/memory_engine.ml_runtime.v0.MlRuntime/ListModels',
+                '/memory_engine.ml_runtime.v1.MlRuntime/ListModels',
                 request_serializer=ml__runtime__pb2.ListModelsRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.ListModelsResponse.FromString,
                 _registered_method=True)
         self.Health = channel.unary_unary(
-                '/memory_engine.ml_runtime.v0.MlRuntime/Health',
+                '/memory_engine.ml_runtime.v1.MlRuntime/Health',
                 request_serializer=ml__runtime__pb2.HealthRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.HealthResponse.FromString,
                 _registered_method=True)
         self.Infer = channel.unary_unary(
-                '/memory_engine.ml_runtime.v0.MlRuntime/Infer',
+                '/memory_engine.ml_runtime.v1.MlRuntime/Infer',
                 request_serializer=ml__runtime__pb2.InferRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.InferResponse.FromString,
                 _registered_method=True)
         self.InferStream = channel.stream_stream(
-                '/memory_engine.ml_runtime.v0.MlRuntime/InferStream',
+                '/memory_engine.ml_runtime.v1.MlRuntime/InferStream',
                 request_serializer=ml__runtime__pb2.InferRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.InferResponse.FromString,
                 _registered_method=True)
         self.LoadModel = channel.unary_unary(
-                '/memory_engine.ml_runtime.v0.MlRuntime/LoadModel',
+                '/memory_engine.ml_runtime.v1.MlRuntime/LoadModel',
                 request_serializer=ml__runtime__pb2.LoadModelRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.LoadModelResponse.FromString,
                 _registered_method=True)
         self.UnloadModel = channel.unary_unary(
-                '/memory_engine.ml_runtime.v0.MlRuntime/UnloadModel',
+                '/memory_engine.ml_runtime.v1.MlRuntime/UnloadModel',
                 request_serializer=ml__runtime__pb2.UnloadModelRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.UnloadModelResponse.FromString,
                 _registered_method=True)
@@ -110,32 +173,95 @@ class MlRuntimeServicer(object):
     model-hosting process (Codex). Loopback only; this service never listens on a
     routable interface.
 
-    FOUR PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
+    SIX PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
 
     1. ANALYSIS NEVER TOUCHES ORIGINAL MEDIA.
     There is deliberately no field anywhere in this file that accepts a
     filesystem path, a URL, or an original media id. An InferRequest carries
     either a proxy id -- which the host resolves through media-db against the
-    proxy store only -- or an already-decoded tensor. A caller cannot ask this
+    proxy store only -- or already-decoded tensors. A caller cannot ask this
     service to open a source file, because the request type has nowhere to put
     one. Source files are opened exactly twice in their life: at proxy
     generation and at final render, and neither goes through here.
 
-    2. EVERY RESULT IS PINNED TO THE WEIGHTS THAT PRODUCED IT.
-    InferResponse carries the ModelPin actually used, including the weights
-    hash. A caller that requested a model version and silently got another can
-    detect it. This is what makes "why is this photo ranked 0.82" answerable
-    after a model swap.
+    2. EVERY RESULT IS PINNED TO THE WEIGHTS *AND THE CONFIG* THAT PRODUCED IT.
+    InferResponse carries the ModelPin actually used. That pin includes both
+    weights_blake3 and config_blake3, because weights alone do not determine
+    behaviour: the detector's score threshold, NMS IoU, input size and
+    normalisation live in the model config, and changing any of them changes
+    every downstream decision while the weights hash stays identical. A pin
+    that cannot distinguish "same weights, threshold moved from 0.5 to 0.6"
+    is not a reproducibility guarantee, it is the appearance of one.
 
     3. ERRORS SAY WHETHER RETRYING COULD HELP.
     A JobSpec is resumable and every step idempotent, so the scheduler needs to
     distinguish "GPU was busy" from "these weights are unlicensed". Retrying a
-    terminal error forever is how a queue dies quietly.
+    terminal error forever is how a queue dies quietly. Terminal codes are
+    numbered 1-99 and retryable ones 100+, so a switch that has not been
+    updated for a new code still classifies it correctly.
 
     4. REQUESTS CARRY DEADLINES AND ARE CANCELLABLE.
     A 300k-file scan must stay interruptible. Deadlines are expressed in the
     request as well as in gRPC metadata so the host can reject work it cannot
     finish rather than starting it.
+
+    5. POSTPROCESSING HAPPENS ONCE, IN THE HOST, AND ITS OUTPUT IS TYPED.
+    A detector's raw head is a pile of anchor deltas that must be decoded and
+    NMS'd before it means anything. If that decoding lived on the caller's
+    side it would be written twice -- once in Python for the pipeline, once in
+    Rust for the desktop shell -- and the two would drift silently, because a
+    box that is wrong by an anchor stride still looks like a box. So the host
+    returns DetectionSet, not raw tensors, and reports the thresholds it
+    actually applied. Raw TensorSet output remains available for embeddings
+    and for heads whose postprocessing genuinely belongs to the caller.
+
+    6. NORMALISED COORDINATES ONLY, AGAINST A BASIS THE FIELD NAMES.
+    Pixel coordinates never cross this interface in either direction. Every
+    box and landmark is normalised to [0,1], origin top-left, x right, y down,
+    matching NormalizedBox and Point2D in
+    contracts/schemas/common.schema.json.
+
+    There are exactly TWO bases, and which one applies is determined by what
+    the coordinate is attached to -- never by convention:
+
+    * ORIENTED IMAGE (EXIF rotation applied) for everything that refers to
+    an image: all DetectionSet output, and InferItem.landmarks when the
+    item's input is a `proxy_id`. This is what lets a face detected on a
+    512px proxy be cropped from a 6000px original without a rescale step
+    someone will eventually forget.
+    * THE TENSOR'S OWN EXTENT for InferItem.landmarks when the item's input
+    is `tensors`. A bare 112x112 crop has no oriented image to refer to,
+    and the alternative -- carrying a crop transform back to an original
+    nobody has open -- adds a second thing to get wrong.
+
+    An earlier revision claimed a single universal basis in this header while
+    the tensor path used the second one; Codex caught the contradiction. Two
+    bases stated precisely beat one basis stated falsely.
+
+    Landmarks may fall slightly outside [0,1] when a face is clipped by the
+    frame edge; the bounds are loose on purpose.
+
+    WHY THIS IS v1 AND NOT v0
+    The v0 revision reused field numbers and enum values with incompatible
+    meanings: v0's preferred_providers=1 meant CoreML and v1's value 1 means
+    ONNX-CPU, v0's PRECISION_INT8=3 is now BF16, ModelPin tags 4 and 5 changed
+    type, and InferResult tag 3 went from `repeated Tensor` to a nested
+    message. A v0 client talking to a v1 server would not fail -- it would
+    silently request the wrong runtime at the wrong precision and misparse the
+    results. No workers/ml-runtime implementation exists yet so nothing real
+    breaks, but the package version is what makes that guarantee enforceable
+    rather than a claim in a commit message. Codex caught this; an earlier
+    draft of this file also claimed tag 3 "preserves the wire layout", which
+    was simply false.
+
+    SCHEMA PARITY
+    ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
+    and TimeRange mirror definitions in contracts/schemas/common.schema.json
+    field-for-field and value-for-value, so a pin round-trips losslessly into
+    a ModelRef and a detection round-trips into a FaceRecord. That parity is
+    asserted mechanically by contracts/tests/test_ml_runtime_proto.py rather
+    than maintained by hand -- two vocabularies for one concept is how they
+    drift.
 
     ---------------------------------------------------------------- service ---
 
@@ -220,9 +346,9 @@ def add_MlRuntimeServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'memory_engine.ml_runtime.v0.MlRuntime', rpc_method_handlers)
+            'memory_engine.ml_runtime.v1.MlRuntime', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('memory_engine.ml_runtime.v0.MlRuntime', rpc_method_handlers)
+    server.add_registered_method_handlers('memory_engine.ml_runtime.v1.MlRuntime', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -231,32 +357,95 @@ class MlRuntime(object):
     model-hosting process (Codex). Loopback only; this service never listens on a
     routable interface.
 
-    FOUR PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
+    SIX PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
 
     1. ANALYSIS NEVER TOUCHES ORIGINAL MEDIA.
     There is deliberately no field anywhere in this file that accepts a
     filesystem path, a URL, or an original media id. An InferRequest carries
     either a proxy id -- which the host resolves through media-db against the
-    proxy store only -- or an already-decoded tensor. A caller cannot ask this
+    proxy store only -- or already-decoded tensors. A caller cannot ask this
     service to open a source file, because the request type has nowhere to put
     one. Source files are opened exactly twice in their life: at proxy
     generation and at final render, and neither goes through here.
 
-    2. EVERY RESULT IS PINNED TO THE WEIGHTS THAT PRODUCED IT.
-    InferResponse carries the ModelPin actually used, including the weights
-    hash. A caller that requested a model version and silently got another can
-    detect it. This is what makes "why is this photo ranked 0.82" answerable
-    after a model swap.
+    2. EVERY RESULT IS PINNED TO THE WEIGHTS *AND THE CONFIG* THAT PRODUCED IT.
+    InferResponse carries the ModelPin actually used. That pin includes both
+    weights_blake3 and config_blake3, because weights alone do not determine
+    behaviour: the detector's score threshold, NMS IoU, input size and
+    normalisation live in the model config, and changing any of them changes
+    every downstream decision while the weights hash stays identical. A pin
+    that cannot distinguish "same weights, threshold moved from 0.5 to 0.6"
+    is not a reproducibility guarantee, it is the appearance of one.
 
     3. ERRORS SAY WHETHER RETRYING COULD HELP.
     A JobSpec is resumable and every step idempotent, so the scheduler needs to
     distinguish "GPU was busy" from "these weights are unlicensed". Retrying a
-    terminal error forever is how a queue dies quietly.
+    terminal error forever is how a queue dies quietly. Terminal codes are
+    numbered 1-99 and retryable ones 100+, so a switch that has not been
+    updated for a new code still classifies it correctly.
 
     4. REQUESTS CARRY DEADLINES AND ARE CANCELLABLE.
     A 300k-file scan must stay interruptible. Deadlines are expressed in the
     request as well as in gRPC metadata so the host can reject work it cannot
     finish rather than starting it.
+
+    5. POSTPROCESSING HAPPENS ONCE, IN THE HOST, AND ITS OUTPUT IS TYPED.
+    A detector's raw head is a pile of anchor deltas that must be decoded and
+    NMS'd before it means anything. If that decoding lived on the caller's
+    side it would be written twice -- once in Python for the pipeline, once in
+    Rust for the desktop shell -- and the two would drift silently, because a
+    box that is wrong by an anchor stride still looks like a box. So the host
+    returns DetectionSet, not raw tensors, and reports the thresholds it
+    actually applied. Raw TensorSet output remains available for embeddings
+    and for heads whose postprocessing genuinely belongs to the caller.
+
+    6. NORMALISED COORDINATES ONLY, AGAINST A BASIS THE FIELD NAMES.
+    Pixel coordinates never cross this interface in either direction. Every
+    box and landmark is normalised to [0,1], origin top-left, x right, y down,
+    matching NormalizedBox and Point2D in
+    contracts/schemas/common.schema.json.
+
+    There are exactly TWO bases, and which one applies is determined by what
+    the coordinate is attached to -- never by convention:
+
+    * ORIENTED IMAGE (EXIF rotation applied) for everything that refers to
+    an image: all DetectionSet output, and InferItem.landmarks when the
+    item's input is a `proxy_id`. This is what lets a face detected on a
+    512px proxy be cropped from a 6000px original without a rescale step
+    someone will eventually forget.
+    * THE TENSOR'S OWN EXTENT for InferItem.landmarks when the item's input
+    is `tensors`. A bare 112x112 crop has no oriented image to refer to,
+    and the alternative -- carrying a crop transform back to an original
+    nobody has open -- adds a second thing to get wrong.
+
+    An earlier revision claimed a single universal basis in this header while
+    the tensor path used the second one; Codex caught the contradiction. Two
+    bases stated precisely beat one basis stated falsely.
+
+    Landmarks may fall slightly outside [0,1] when a face is clipped by the
+    frame edge; the bounds are loose on purpose.
+
+    WHY THIS IS v1 AND NOT v0
+    The v0 revision reused field numbers and enum values with incompatible
+    meanings: v0's preferred_providers=1 meant CoreML and v1's value 1 means
+    ONNX-CPU, v0's PRECISION_INT8=3 is now BF16, ModelPin tags 4 and 5 changed
+    type, and InferResult tag 3 went from `repeated Tensor` to a nested
+    message. A v0 client talking to a v1 server would not fail -- it would
+    silently request the wrong runtime at the wrong precision and misparse the
+    results. No workers/ml-runtime implementation exists yet so nothing real
+    breaks, but the package version is what makes that guarantee enforceable
+    rather than a claim in a commit message. Codex caught this; an earlier
+    draft of this file also claimed tag 3 "preserves the wire layout", which
+    was simply false.
+
+    SCHEMA PARITY
+    ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
+    and TimeRange mirror definitions in contracts/schemas/common.schema.json
+    field-for-field and value-for-value, so a pin round-trips losslessly into
+    a ModelRef and a detection round-trips into a FaceRecord. That parity is
+    asserted mechanically by contracts/tests/test_ml_runtime_proto.py rather
+    than maintained by hand -- two vocabularies for one concept is how they
+    drift.
 
     ---------------------------------------------------------------- service ---
 
@@ -276,7 +465,7 @@ class MlRuntime(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/ListModels',
+            '/memory_engine.ml_runtime.v1.MlRuntime/ListModels',
             ml__runtime__pb2.ListModelsRequest.SerializeToString,
             ml__runtime__pb2.ListModelsResponse.FromString,
             options,
@@ -303,7 +492,7 @@ class MlRuntime(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/Health',
+            '/memory_engine.ml_runtime.v1.MlRuntime/Health',
             ml__runtime__pb2.HealthRequest.SerializeToString,
             ml__runtime__pb2.HealthResponse.FromString,
             options,
@@ -330,7 +519,7 @@ class MlRuntime(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/Infer',
+            '/memory_engine.ml_runtime.v1.MlRuntime/Infer',
             ml__runtime__pb2.InferRequest.SerializeToString,
             ml__runtime__pb2.InferResponse.FromString,
             options,
@@ -357,7 +546,7 @@ class MlRuntime(object):
         return grpc.experimental.stream_stream(
             request_iterator,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/InferStream',
+            '/memory_engine.ml_runtime.v1.MlRuntime/InferStream',
             ml__runtime__pb2.InferRequest.SerializeToString,
             ml__runtime__pb2.InferResponse.FromString,
             options,
@@ -384,7 +573,7 @@ class MlRuntime(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/LoadModel',
+            '/memory_engine.ml_runtime.v1.MlRuntime/LoadModel',
             ml__runtime__pb2.LoadModelRequest.SerializeToString,
             ml__runtime__pb2.LoadModelResponse.FromString,
             options,
@@ -411,7 +600,7 @@ class MlRuntime(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/UnloadModel',
+            '/memory_engine.ml_runtime.v1.MlRuntime/UnloadModel',
             ml__runtime__pb2.UnloadModelRequest.SerializeToString,
             ml__runtime__pb2.UnloadModelResponse.FromString,
             options,

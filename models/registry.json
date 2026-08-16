@@ -10,7 +10,8 @@
         "require_license_verified": true,
         "allow_blocks_commercial_release": false,
         "opt_in_env": null,
-        "warn_per_load": false
+        "warn_per_load": false,
+        "require_pinned_config": true
       },
       "development": {
         "require_registered": true,
@@ -18,9 +19,11 @@
         "require_license_verified": false,
         "allow_blocks_commercial_release": true,
         "opt_in_env": "MEMORY_ENGINE_ALLOW_UNVERIFIED_MODELS",
-        "warn_per_load": true
+        "warn_per_load": true,
+        "require_pinned_config": false
       }
-    }
+    },
+    "config_mismatch_is_always_fatal": true
   },
   "pipelines": {
     "photo_analysis": {
@@ -62,7 +65,8 @@
         "dedupe_refinement",
         "diversity",
         "zero_shot_tags"
-      ]
+      ],
+      "config_blake3": "c1679cc714503dd23dc4757f2c403a1fac9a60ef12f67a8fc23f0d664716998a"
     },
     {
       "model_id": "yunet-2023mar",
@@ -72,13 +76,15 @@
         "faces",
         "album_hero_selection",
         "person_labeling"
-      ]
+      ],
+      "config_blake3": "cc2cbf43771a65174d8776a594aebefe265a1e9ad267927e7d6be5be0b5799af"
     },
     {
       "model_id": "scrfd-10g-bnkps",
       "config": "configs/scrfd-10g-bnkps.json",
       "task": "face_detection",
-      "required_for": []
+      "required_for": [],
+      "config_blake3": "4add912c1e5705204d40076c2be808e222966c6bd931635d570530f6d53896c2"
     },
     {
       "model_id": "arcface-buffalo-l",
@@ -87,7 +93,8 @@
       "required_for": [
         "face_clustering",
         "person_queries"
-      ]
+      ],
+      "config_blake3": "5814aa0d500092fbe16186f3344f0dc36b1c2196f3171620f4b4c317eabaa518"
     },
     {
       "model_id": "transnetv2",
@@ -96,7 +103,8 @@
       "required_for": [
         "moment_scoring",
         "reel_planning"
-      ]
+      ],
+      "config_blake3": "2d0b04d1c76ede20b9698fc8472040fe6286dc5441e743c9cb7d539ddb9c9c30"
     },
     {
       "model_id": "laion-aesthetic-v2",
@@ -104,7 +112,8 @@
       "task": "aesthetic",
       "required_for": [
         "ranking"
-      ]
+      ],
+      "config_blake3": "5ddde69b895e849e073f405f16f98832fddd11d89f3510007ed910985ba16da7"
     }
   ]
 }

@@ -1,37 +1,100 @@
 syntax = "proto3";
 
-package memory_engine.ml_runtime.v0;
+package memory_engine.ml_runtime.v1;
 
 // The local gRPC interface between the intelligence packages (Claude) and the
 // model-hosting process (Codex). Loopback only; this service never listens on a
 // routable interface.
 //
-// FOUR PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
+// SIX PROPERTIES THIS CONTRACT ENFORCES STRUCTURALLY, NOT BY CONVENTION
 //
 // 1. ANALYSIS NEVER TOUCHES ORIGINAL MEDIA.
 //    There is deliberately no field anywhere in this file that accepts a
 //    filesystem path, a URL, or an original media id. An InferRequest carries
 //    either a proxy id -- which the host resolves through media-db against the
-//    proxy store only -- or an already-decoded tensor. A caller cannot ask this
+//    proxy store only -- or already-decoded tensors. A caller cannot ask this
 //    service to open a source file, because the request type has nowhere to put
 //    one. Source files are opened exactly twice in their life: at proxy
 //    generation and at final render, and neither goes through here.
 //
-// 2. EVERY RESULT IS PINNED TO THE WEIGHTS THAT PRODUCED IT.
-//    InferResponse carries the ModelPin actually used, including the weights
-//    hash. A caller that requested a model version and silently got another can
-//    detect it. This is what makes "why is this photo ranked 0.82" answerable
-//    after a model swap.
+// 2. EVERY RESULT IS PINNED TO THE WEIGHTS *AND THE CONFIG* THAT PRODUCED IT.
+//    InferResponse carries the ModelPin actually used. That pin includes both
+//    weights_blake3 and config_blake3, because weights alone do not determine
+//    behaviour: the detector's score threshold, NMS IoU, input size and
+//    normalisation live in the model config, and changing any of them changes
+//    every downstream decision while the weights hash stays identical. A pin
+//    that cannot distinguish "same weights, threshold moved from 0.5 to 0.6"
+//    is not a reproducibility guarantee, it is the appearance of one.
 //
 // 3. ERRORS SAY WHETHER RETRYING COULD HELP.
 //    A JobSpec is resumable and every step idempotent, so the scheduler needs to
 //    distinguish "GPU was busy" from "these weights are unlicensed". Retrying a
-//    terminal error forever is how a queue dies quietly.
+//    terminal error forever is how a queue dies quietly. Terminal codes are
+//    numbered 1-99 and retryable ones 100+, so a switch that has not been
+//    updated for a new code still classifies it correctly.
 //
 // 4. REQUESTS CARRY DEADLINES AND ARE CANCELLABLE.
 //    A 300k-file scan must stay interruptible. Deadlines are expressed in the
 //    request as well as in gRPC metadata so the host can reject work it cannot
 //    finish rather than starting it.
+//
+// 5. POSTPROCESSING HAPPENS ONCE, IN THE HOST, AND ITS OUTPUT IS TYPED.
+//    A detector's raw head is a pile of anchor deltas that must be decoded and
+//    NMS'd before it means anything. If that decoding lived on the caller's
+//    side it would be written twice -- once in Python for the pipeline, once in
+//    Rust for the desktop shell -- and the two would drift silently, because a
+//    box that is wrong by an anchor stride still looks like a box. So the host
+//    returns DetectionSet, not raw tensors, and reports the thresholds it
+//    actually applied. Raw TensorSet output remains available for embeddings
+//    and for heads whose postprocessing genuinely belongs to the caller.
+//
+// 6. NORMALISED COORDINATES ONLY, AGAINST A BASIS THE FIELD NAMES.
+//    Pixel coordinates never cross this interface in either direction. Every
+//    box and landmark is normalised to [0,1], origin top-left, x right, y down,
+//    matching NormalizedBox and Point2D in
+//    contracts/schemas/common.schema.json.
+//
+//    There are exactly TWO bases, and which one applies is determined by what
+//    the coordinate is attached to -- never by convention:
+//
+//      * ORIENTED IMAGE (EXIF rotation applied) for everything that refers to
+//        an image: all DetectionSet output, and InferItem.landmarks when the
+//        item's input is a `proxy_id`. This is what lets a face detected on a
+//        512px proxy be cropped from a 6000px original without a rescale step
+//        someone will eventually forget.
+//      * THE TENSOR'S OWN EXTENT for InferItem.landmarks when the item's input
+//        is `tensors`. A bare 112x112 crop has no oriented image to refer to,
+//        and the alternative -- carrying a crop transform back to an original
+//        nobody has open -- adds a second thing to get wrong.
+//
+//    An earlier revision claimed a single universal basis in this header while
+//    the tensor path used the second one; Codex caught the contradiction. Two
+//    bases stated precisely beat one basis stated falsely.
+//
+//    Landmarks may fall slightly outside [0,1] when a face is clipped by the
+//    frame edge; the bounds are loose on purpose.
+//
+// WHY THIS IS v1 AND NOT v0
+//    The v0 revision reused field numbers and enum values with incompatible
+//    meanings: v0's preferred_providers=1 meant CoreML and v1's value 1 means
+//    ONNX-CPU, v0's PRECISION_INT8=3 is now BF16, ModelPin tags 4 and 5 changed
+//    type, and InferResult tag 3 went from `repeated Tensor` to a nested
+//    message. A v0 client talking to a v1 server would not fail -- it would
+//    silently request the wrong runtime at the wrong precision and misparse the
+//    results. No workers/ml-runtime implementation exists yet so nothing real
+//    breaks, but the package version is what makes that guarantee enforceable
+//    rather than a claim in a commit message. Codex caught this; an earlier
+//    draft of this file also claimed tag 3 "preserves the wire layout", which
+//    was simply false.
+//
+// SCHEMA PARITY
+//    ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
+//    and TimeRange mirror definitions in contracts/schemas/common.schema.json
+//    field-for-field and value-for-value, so a pin round-trips losslessly into
+//    a ModelRef and a detection round-trips into a FaceRecord. That parity is
+//    asserted mechanically by contracts/tests/test_ml_runtime_proto.py rather
+//    than maintained by hand -- two vocabularies for one concept is how they
+//    drift.
 
 // ---------------------------------------------------------------- service ---
 
@@ -58,8 +121,16 @@ service MlRuntime {
 
 // ------------------------------------------------------------------ pins ---
 
-// Identifies exactly which weights produced a result. Mirrors ModelRef in
-// contracts/schemas/common.schema.json.
+// Identifies exactly which model produced a result. Field-for-field mirror of
+// ModelRef in contracts/schemas/common.schema.json, plus config_blake3.
+//
+// WHY THE CONFIG DIGEST IS NOT OPTIONAL PROVENANCE
+// Two runs with byte-identical weights can legitimately disagree: SCRFD at
+// score_threshold 0.5 and at 0.6 are different detectors as far as every
+// consumer is concerned, and the preprocessing constants are in the config too
+// -- a mean/std/scale change silently rescales the whole input range without
+// ever failing. Recording only the weights hash makes "why did this photo stop
+// matching" unanswerable in exactly the cases where it is asked.
 message ModelPin {
   string model_id = 1;
   string version = 2;
@@ -68,24 +139,100 @@ message ModelPin {
   // unpinned, which the load policy permits only in development mode.
   string weights_blake3 = 3;
 
-  ExecutionProvider provider = 4;
-  Precision precision = 5;
+  // Lowercase hex BLAKE3 of the model config file's BYTES, as committed in
+  // models/configs/.
+  //
+  // Bytes, not a re-serialisation. The first design hashed a "canonical" JSON
+  // form -- sorted keys, compact separators -- and Codex rejected it: Python
+  // writes the float `1.0` as `1.0` while JavaScript writes `1`, and seven of
+  // eight configs contain one. The Rust host and the TypeScript shell would
+  // have computed different digests from identical files, surfacing as
+  // CONFIG_MISMATCH on every model. Byte equality is the one thing every
+  // language agrees on without coordination; the on-disk format is enforced by
+  // models/policy/digest.py so that "reformatted" stays a detectable state.
+  string config_blake3 = 4;
+
+  // Which stack executed the weights. Same vocabulary as RuntimeTarget in
+  // common.schema.json; a pin therefore serialises into a ModelRef unchanged.
+  RuntimeTarget runtime = 5;
+
+  Precision precision = 6;
 }
 
-enum ExecutionProvider {
-  EXECUTION_PROVIDER_UNSPECIFIED = 0;
-  EXECUTION_PROVIDER_COREML = 1;
-  EXECUTION_PROVIDER_CUDA = 2;
-  EXECUTION_PROVIDER_DIRECTML = 3;
-  EXECUTION_PROVIDER_CPU = 4;
-  EXECUTION_PROVIDER_CTRANSLATE2 = 5;
+// Mirror of common.schema.json RuntimeTarget. Kept as one vocabulary for both
+// "what the caller would prefer" and "what the record says ran", because the
+// alternative -- a separate provider enum on the wire, mapped by hand into the
+// schema's enum -- is a mapping table that has to be correct in two places.
+enum RuntimeTarget {
+  RUNTIME_TARGET_UNSPECIFIED = 0;
+  RUNTIME_TARGET_ONNXRUNTIME_CPU = 1;
+  RUNTIME_TARGET_ONNXRUNTIME_COREML = 2;
+  RUNTIME_TARGET_ONNXRUNTIME_DIRECTML = 3;
+  RUNTIME_TARGET_ONNXRUNTIME_CUDA = 4;
+  RUNTIME_TARGET_CTRANSLATE2 = 5;
+  RUNTIME_TARGET_MLX = 6;
+  RUNTIME_TARGET_LLAMA_CPP = 7;
+  RUNTIME_TARGET_OPENCV = 8;
+  RUNTIME_TARGET_LIBROSA = 9;
+  RUNTIME_TARGET_NATIVE = 10;
 }
 
+// Mirror of common.schema.json ModelRef.precision. int8 and fp16 runs can
+// differ from fp32 at the third decimal, which is enough to flip a borderline
+// face match, so precision is part of provenance rather than a tuning knob.
 enum Precision {
   PRECISION_UNSPECIFIED = 0;
   PRECISION_FP32 = 1;
   PRECISION_FP16 = 2;
-  PRECISION_INT8 = 3;
+  PRECISION_BF16 = 3;
+  PRECISION_INT8 = 4;
+  PRECISION_INT4 = 5;
+}
+
+// ------------------------------------------------------- shared geometry ---
+
+// Mirror of common.schema.json NormalizedBox. Axis-aligned rectangle in
+// normalised coordinates against the ORIENTED image: origin top-left, x right,
+// y down, all of x/y/w/h in [0,1].
+message NormalizedBox {
+  float x = 1;
+  float y = 2;
+  float w = 3;
+  float h = 4;
+
+  // Clockwise rotation about the box's own centre, in [-180, 180). Zero for
+  // everything a detector produces; present so the type is the same one album
+  // placement uses when it deliberately straightens a horizon.
+  float rotation_deg = 5;
+}
+
+// Mirror of common.schema.json Point2D. Same normalised, orientation-applied
+// space as NormalizedBox, with loose bounds ([-0.5, 1.5]) because a landmark on
+// a face clipped by the frame edge is legitimately outside the image.
+//
+// The host converts to pixels internally when it applies a model's alignment
+// template -- multiply by the oriented pixel size of whatever it is warping
+// from. That conversion is deliberately not the caller's job: a caller that
+// gets it wrong produces an embedding that is confidently wrong rather than
+// absent, which is the single worst failure mode in this system.
+message Point2D {
+  float x = 1;
+  float y = 2;
+}
+
+// Mirror of common.schema.json RationalTime. Seconds = value / rate. Never a
+// float number of seconds: 30000/1001 has no exact float form, and a video
+// contract that rounds it accumulates drift over a long timeline.
+message RationalTime {
+  double value = 1;
+  double rate = 2;
+}
+
+// Mirror of common.schema.json TimeRange. Half-open [start_time, start_time +
+// duration), matching OTIO, so adjacent windows tile with no off-by-one frame.
+message TimeRange {
+  RationalTime start_time = 1;
+  RationalTime duration = 2;
 }
 
 // --------------------------------------------------------------- discovery ---
@@ -123,15 +270,24 @@ message ModelInfo {
 
   bool currently_loaded = 5;
 
-  // Providers this host can actually offer for this model, best first, after
+  // Runtimes this host can actually offer for this model, best first, after
   // intersecting the config's declared targets with what the machine has.
-  repeated ExecutionProvider available_providers = 6;
+  repeated RuntimeTarget available_runtimes = 6;
 
   int32 max_batch = 7;
 
   // True when the entry would block a commercial release. Surfaced so a build
   // or a QA dashboard can see it without parsing the registry.
   bool blocks_commercial_release = 8;
+
+  // Which InferResult variant this model returns. Declared here so a caller
+  // knows what to expect before it calls, rather than switching on whatever
+  // came back and guessing when the oneof is empty.
+  OutputKind output_kind = 9;
+
+  // Named inputs this model requires, in the order the host expects them. A
+  // single-input model leaves this empty and its one tensor may be unnamed.
+  repeated string input_names = 10;
 }
 
 enum UnloadableReason {
@@ -144,6 +300,18 @@ enum UnloadableReason {
   UNLOADABLE_REASON_LICENSE_BLOCKS_RELEASE = 6;
   UNLOADABLE_REASON_NO_PROVIDER_AVAILABLE = 7;
   UNLOADABLE_REASON_CONFIG_INVALID = 8;
+  UNLOADABLE_REASON_CONFIG_MISSING = 9;
+  // The config file on disk does not match the digest the registry pins. Always
+  // fatal, in every mode, for the same reason a weights mismatch is: a file
+  // disagreeing with its pin is edited or corrupt, and no build flag may wave
+  // that through.
+  UNLOADABLE_REASON_CONFIG_MISMATCH = 10;
+  UNLOADABLE_REASON_CONFIG_UNPINNED = 11;
+  // The entry is pinned to a hash or config digest that the loader never
+  // actually computed. Always fatal: a pin nobody checked is not a pin, and
+  // this is a loader bug rather than a policy choice -- deferred hashing looks
+  // like an ABSENT pin, which development mode already permits.
+  UNLOADABLE_REASON_INTEGRITY_UNVERIFIED = 12;
 }
 
 // ------------------------------------------------------------------ health ---
@@ -158,7 +326,7 @@ message HealthResponse {
   int64 queue_depth = 4;
   int64 uptime_seconds = 5;
 
-  // Non-fatal conditions worth surfacing: a model running on a slower provider
+  // Non-fatal conditions worth surfacing: a model running on a slower runtime
   // than requested, a development-mode load, a nearly-full cache.
   repeated string warnings = 6;
 }
@@ -173,19 +341,28 @@ message InferRequest {
   string model_id = 2;
 
   // Pin the caller expects. When set, the host must fail rather than silently
-  // serving a different version -- a swapped model changes every score, and
-  // discovering that after the fact is a data-quality incident.
+  // serving a different version or a different config -- a swapped model or a
+  // moved threshold changes every score, and discovering that after the fact is
+  // a data-quality incident. Empty fields within the pin are not checked, so a
+  // caller may pin weights without pinning the config, or the reverse.
   ModelPin expected_pin = 3;
 
   repeated InferItem items = 4;
 
-  // Preferred providers, best first. CoreML is requested first on Apple silicon
+  // Preferred runtimes, best first. CoreML is requested first on Apple silicon
   // per the build plan. The host falls back down the list and reports what it
   // actually used in the response.
-  repeated ExecutionProvider preferred_providers = 5;
+  repeated RuntimeTarget preferred_runtimes = 5;
 
-  // Wall-clock budget. The host must refuse work it cannot start in time rather
-  // than accepting it and blowing the deadline.
+  // RELATIVE budget in milliseconds, measured from the moment the host accepts
+  // the request, and INCLUSIVE of queue time. Not an epoch timestamp: the two
+  // processes are on one machine but need not share a clock discipline, and a
+  // wall-clock deadline would behave differently on a retry of the same
+  // request_id after a suspend. Zero means no budget.
+  //
+  // Including queue time is the deliberate half: a request that waits 40s
+  // behind a scan and then runs in 2s has still failed a 10s deadline from the
+  // caller's point of view, and the caller is the one holding the UI.
   int64 deadline_ms = 6;
 
   // Best-effort priority, matching JobSpec.priority. Interactive work outranks
@@ -196,7 +373,7 @@ message InferRequest {
 // One unit of work.
 //
 // NOTE THE ABSENCE: there is no `path`, no `url`, no `media_id`. The only ways
-// in are a proxy id or an inline tensor. This is the structural half of
+// in are a proxy id or inline tensors. This is the structural half of
 // "analysis never touches originals" -- the other half is that the host
 // resolves proxy ids against the proxy store only.
 message InferItem {
@@ -209,34 +386,97 @@ message InferItem {
     // names an original rather than a proxy resolves to nothing and fails.
     string proxy_id = 2;
 
-    // Already-decoded input, for callers that have the tensor in hand -- an
-    // aesthetic head consuming an embedding produced moments earlier, or a face
-    // crop already aligned by the caller.
-    Tensor tensor = 3;
+    // Already-decoded inputs, for callers that have the tensors in hand -- an
+    // aesthetic head consuming an embedding produced moments earlier, or a
+    // face crop the caller has already warped. A set rather than a single
+    // tensor because multi-input models exist (image + text for a SigLIP
+    // similarity head, image + mask for a matting head), and a contract that
+    // can only express one input forces those callers to invent an encoding.
+    TensorSet tensors = 3;
   }
 
-  // For video proxies: the frame or window to run on, in PROXY time. Mapping
-  // back to source timecode is the caller's job via the frame-index sidecar.
-  optional TimeWindow window = 4;
+  // For video proxies: the window to run on, in PROXY time. Mapping back to
+  // source timecode is the caller's job via the frame-index sidecar.
+  optional TimeRange window = 4;
 
-  // Face-crop inputs need their landmarks so the host can apply the alignment
-  // template from the model config. Without these an embedding is confidently
-  // wrong rather than absent, so the host must reject a face_embedding request
-  // whose items carry no landmarks.
+  // Whether the host must apply the model's alignment template, and therefore
+  // whether landmarks are required. An earlier draft of this file said both
+  // that a tensor could be "already aligned" AND that landmarks were mandatory
+  // so the host could align it -- Codex caught the contradiction. They are two
+  // different requests and now say so.
+  //
+  // COMBINATIONS THE HOST MUST REJECT WITH INPUT_INVALID. Proto3 cannot express
+  // cross-field constraints, and every one of these silently bypasses face
+  // alignment, which yields a confident wrong embedding rather than an error:
+  //
+  //   proxy_id + PREALIGNED          -- a stored proxy is a photo, never a
+  //                                     pre-warped crop. Nothing has aligned it.
+  //   PREALIGNED + landmarks present -- the host would warp an already-warped
+  //                                     crop a second time.
+  //   NEEDS_ALIGNMENT + no landmarks -- LANDMARKS_REQUIRED.
+  //   a face-alignment model + NONE  -- asks the host to skip the alignment the
+  //                                     model's embedding space is defined by.
+  //
+  // The last is the one worth stating explicitly: ALIGNMENT_NONE is a property
+  // of models that do not align (embeddings, IQA, detectors), not an opt-out a
+  // caller may apply to one that does.
+  Alignment alignment = 7;
+
+  // Landmarks for the alignment template. Required when `alignment` is
+  // NEEDS_ALIGNMENT; must be empty when it is PREALIGNED. Without them an
+  // embedding is confidently wrong rather than absent, which is the worst
+  // failure mode in this system because nothing downstream detects it.
+  //
+  // COORDINATE BASIS, WHICH DEPENDS ON THE INPUT:
+  //   proxy_id -> normalised against the ORIENTED IMAGE, as everywhere else in
+  //               this file.
+  //   tensors  -> normalised against THE TENSOR'S OWN EXTENT.
+  //
+  // The split is not an inconsistency, it is what removes the need for a crop
+  // transform. Landmarks normalised against a 6000px original cannot be applied
+  // to a bare 112x112 crop tensor without knowing where that crop came from,
+  // and carrying a crop transform would add a second thing to get wrong. A
+  // caller sending a tensor already knows its extent, so it normalises against
+  // it.
   repeated Point2D landmarks = 5;
+
+  // Ordering convention for `landmarks`. Mirrors FaceRecord's Landmarks.scheme.
+  // Required whenever landmarks are present: five points in ArcFace order and
+  // five points in some other order produce a plausible warp and a wrong
+  // embedding, and nothing downstream can tell.
+  LandmarkScheme landmark_scheme = 6;
 }
 
-message TimeWindow {
-  // Rational time, matching contracts/schemas/common.schema.json RationalTime.
-  double start_value = 1;
-  double start_rate = 2;
-  double duration_value = 3;
-  double duration_rate = 4;
+// Whether the host applies the model's alignment template to this item.
+enum Alignment {
+  // Treated as NEEDS_ALIGNMENT for face models and as NONE for everything
+  // else. Present because proto3 has no absent scalar, not because the
+  // ambiguity is acceptable -- a face_embedding request that leaves this unset
+  // and carries no landmarks is rejected with LANDMARKS_REQUIRED.
+  ALIGNMENT_UNSPECIFIED = 0;
+
+  // The host warps the input onto the template in the model config, using
+  // `landmarks`. The normal path for a face crop taken from a proxy.
+  ALIGNMENT_NEEDS_ALIGNMENT = 1;
+
+  // The caller has ALREADY warped the tensor onto the model's template.
+  // `landmarks` must be empty; sending them is INPUT_INVALID rather than a
+  // hint, because a host that re-applied a template to an aligned crop would
+  // warp it twice and return a confident, wrong embedding.
+  ALIGNMENT_PREALIGNED = 2;
+
+  // The model does not align (embeddings, IQA, detectors).
+  ALIGNMENT_NONE = 3;
 }
 
-message Point2D {
-  float x = 1;
-  float y = 2;
+enum LandmarkScheme {
+  LANDMARK_SCHEME_UNSPECIFIED = 0;
+  LANDMARK_SCHEME_INSIGHTFACE_5 = 1;
+  LANDMARK_SCHEME_INSIGHTFACE_106 = 2;
+  LANDMARK_SCHEME_MEDIAPIPE_468 = 3;
+  // YuNet's own five-point ordering. NOT interchangeable with INSIGHTFACE_5
+  // despite both being five points -- see FaceRecord.Landmarks.scheme.
+  LANDMARK_SCHEME_YUNET_5 = 4;
 }
 
 message Tensor {
@@ -247,8 +487,14 @@ message Tensor {
   // rather than a single enormous message.
   bytes data = 3;
 
-  // Optional name, for models with several inputs.
+  // Input name. Required when a TensorSet holds more than one tensor, and must
+  // match one of ModelInfo.input_names; positional binding of several inputs is
+  // an ordering bug waiting to happen.
   string name = 4;
+}
+
+message TensorSet {
+  repeated Tensor tensors = 1;
 }
 
 enum DType {
@@ -263,28 +509,159 @@ enum DType {
 message InferResponse {
   string request_id = 1;
 
-  // The pin ACTUALLY used, which may differ from expected_pin only if the
-  // caller left it unset. Always populated.
+  // The pin ACTUALLY used, which may differ from expected_pin only in fields
+  // the caller left empty. Always populated on success.
   ModelPin pin = 2;
 
-  // Provider actually used, which may be a fallback from preferred_providers.
-  ExecutionProvider provider_used = 3;
+  // Runtime actually used, which may be a fallback from preferred_runtimes.
+  RuntimeTarget runtime_used = 3;
 
   repeated InferResult results = 4;
 
   int64 duration_ms = 5;
   int32 batch_size = 6;
+
+  // Whole-request failure: the model is not registered, the pin did not match,
+  // the deadline passed before any item ran. Exactly one of these holds:
+  //   error set   -> `results` is empty and `pin` may be empty.
+  //   error unset -> every item in the request has a matching InferResult.
+  //
+  // Without this a request that failed before it reached the batch loop can
+  // only be reported as an empty result list, which is indistinguishable from
+  // an empty request -- and "the scan found no faces" is a very different
+  // outcome from "the scan never ran".
+  optional InferError error = 7;
 }
 
+// One item's outcome. Success and failure are the SAME oneof, so a result
+// carrying both an error and a detection set is not merely discouraged, it is
+// unrepresentable.
+//
+// An earlier revision left `error` outside the oneof and relied on a comment to
+// say the two were exclusive. Codex refused to implement from that, correctly:
+// generated protobuf code accepted both, and two clients reading the same bytes
+// could legitimately disagree about whether the item succeeded. Proto3 can
+// express this, so it should.
+//
+// WHAT STILL NEEDS RUNTIME VALIDATION -- only the cases the type system cannot
+// reach:
+//
+//   1. `outcome` is set at all. An empty oneof is a host bug, not "no faces
+//      found": "ran and found nothing" is an EMPTY DetectionSet.
+//   2. `item_id` is non-empty and unique within the response, and every
+//      item_id in the request appears exactly once. Duplicate or missing ids
+//      make batch correlation ambiguous, and a caller that mis-correlates
+//      writes one photo's faces onto another.
+//   3. The outcome variant matches the model's declared ModelInfo.output_kind.
+//
+// A host that cannot satisfy these must fail the whole request with a
+// top-level InferResponse.error rather than emit a response that violates them.
 message InferResult {
   string item_id = 1;
 
-  // Per-item failure. Items are independent: one corrupt proxy in a batch of 64
-  // must not fail the other 63, which is the difference between a scan that
+  // Exactly one outcome. Items are independent: one corrupt proxy in a batch of
+  // 64 must not fail the other 63, which is the difference between a scan that
   // reports one bad file and one that fails wholesale.
-  optional InferError error = 2;
+  //
+  // Which success variant to expect is declared by ModelInfo.output_kind.
+  oneof outcome {
+    // Per-item failure.
+    InferError error = 2;
 
-  repeated Tensor outputs = 3;
+    // Embeddings and heads whose interpretation genuinely belongs to the
+    // caller.
+    TensorSet tensors = 3;
+
+    // Detectors, post-decode and post-NMS.
+    DetectionSet detections = 4;
+
+    // Shot-boundary models (TransNetV2), in proxy time.
+    ShotBoundarySet shots = 5;
+  }
+}
+
+enum OutputKind {
+  OUTPUT_KIND_UNSPECIFIED = 0;
+  OUTPUT_KIND_TENSORS = 1;
+  OUTPUT_KIND_DETECTIONS = 2;
+  OUTPUT_KIND_SHOTS = 3;
+}
+
+// ---------------------------------------------------- postprocessed output ---
+
+// One detection, already decoded from anchor space and already through NMS.
+message Detection {
+  // Normalised against the oriented image. See NormalizedBox.
+  NormalizedBox box = 1;
+
+  // Detector confidence in [0,1].
+  float score = 2;
+
+  // Present for detectors that emit them (SCRFD does, YuNet does). Normalised
+  // in the same space as `box`, and may fall outside [0,1] on a clipped face.
+  //
+  // OUT-OF-RANGE HANDLING. Point2D in common.schema.json bounds landmarks to
+  // [-0.5, 1.5], which is loose enough for a face clipped by the frame and not
+  // loose enough for every prediction a detector can make. When any point of a
+  // set falls outside those bounds the host emits the detection with
+  // `landmarks` EMPTY and `landmarks_out_of_range` set, rather than:
+  //   * clamping -- moves the alignment template and yields a confident wrong
+  //     embedding, the failure this whole file is arranged to prevent;
+  //   * dropping the detection -- a face is still there, and losing it silently
+  //     is worse than losing its landmarks;
+  //   * widening the schema -- the bounds are what make a nonsense landmark
+  //     detectable at all.
+  // Face embedding then skips that face, which is the correct outcome: a face
+  // whose landmarks are nonsense cannot be aligned, and an unaligned embedding
+  // is not a weaker signal, it is a wrong one.
+  repeated Point2D landmarks = 3;
+
+  // Set when landmarks were suppressed by the rule above. Distinguishes "this
+  // detector emits no landmarks" from "it emitted landmarks we refused".
+  bool landmarks_out_of_range = 7;
+  LandmarkScheme landmark_scheme = 4;
+
+  // For multi-class detectors. A single-class face detector leaves class_id 0
+  // and class_label empty.
+  int32 class_id = 5;
+  string class_label = 6;
+}
+
+// The full postprocessed output of one detector run on one item.
+message DetectionSet {
+  // Sorted score-descending. An empty list means "ran, found nothing", which is
+  // distinct from an InferResult carrying an error.
+  repeated Detection detections = 1;
+
+  // The decision boundaries the host ACTUALLY applied, read from the model
+  // config. Reported rather than assumed because they are the difference
+  // between two runs of the same weights, and because a caller comparing
+  // results across a config change needs to see the boundary move rather than
+  // infer it from a changed face count.
+  float score_threshold = 2;
+  float nms_iou_threshold = 3;
+
+  // Set when the host stopped adding detections because it hit
+  // `postprocessing.max_detections` in the model config. That key did not exist
+  // when this field was written, which made the field unimplementable as
+  // documented -- Codex flagged it; the config schema now carries both
+  // `max_detections` (post-NMS cap) and `top_k` (YuNet's pre-NMS candidate cap,
+  // which also changes the output and so must be pinned too). A caller that silently takes the top 100 faces in a crowd
+  // shot and reports "100 people" is wrong in a way no downstream check will
+  // catch, so truncation is stated rather than implied.
+  bool truncated = 4;
+}
+
+// One shot boundary, in PROXY time. Mapping back to source timecode is the
+// caller's job via the frame-index sidecar, exactly as for InferItem.window.
+message ShotBoundary {
+  RationalTime time = 1;
+  float score = 2;
+}
+
+message ShotBoundarySet {
+  repeated ShotBoundary boundaries = 1;
+  float score_threshold = 2;
 }
 
 // ------------------------------------------------------------------ errors ---
@@ -316,6 +693,12 @@ enum ErrorCode {
   ERROR_CODE_LANDMARKS_REQUIRED = 6;
   ERROR_CODE_UNSUPPORTED_INPUT = 7;
   ERROR_CODE_LICENSE_BLOCKED = 8;
+  // The weights matched but the config digest did not. Separate from
+  // PIN_MISMATCH because the remedy is different -- a config drift is usually a
+  // local edit, not a wrong model -- and because conflating them hides the
+  // whole reason the config digest exists.
+  ERROR_CODE_CONFIG_MISMATCH = 9;
+  ERROR_CODE_INPUT_NAME_UNKNOWN = 10;
 
   // Retryable -- the same request may succeed later.
   ERROR_CODE_RESOURCE_EXHAUSTED = 100;
@@ -330,14 +713,14 @@ enum ErrorCode {
 
 message LoadModelRequest {
   string model_id = 1;
-  repeated ExecutionProvider preferred_providers = 2;
+  repeated RuntimeTarget preferred_runtimes = 2;
   ModelPin expected_pin = 3;
 }
 
 message LoadModelResponse {
   bool loaded = 1;
   ModelPin pin = 2;
-  ExecutionProvider provider_used = 3;
+  RuntimeTarget runtime_used = 3;
   optional InferError error = 4;
   int64 load_duration_ms = 5;
 

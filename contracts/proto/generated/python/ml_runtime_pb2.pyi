@@ -12,21 +12,28 @@ from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Map
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
-class ExecutionProvider(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+class RuntimeTarget(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
-    EXECUTION_PROVIDER_UNSPECIFIED: _ClassVar[ExecutionProvider]
-    EXECUTION_PROVIDER_COREML: _ClassVar[ExecutionProvider]
-    EXECUTION_PROVIDER_CUDA: _ClassVar[ExecutionProvider]
-    EXECUTION_PROVIDER_DIRECTML: _ClassVar[ExecutionProvider]
-    EXECUTION_PROVIDER_CPU: _ClassVar[ExecutionProvider]
-    EXECUTION_PROVIDER_CTRANSLATE2: _ClassVar[ExecutionProvider]
+    RUNTIME_TARGET_UNSPECIFIED: _ClassVar[RuntimeTarget]
+    RUNTIME_TARGET_ONNXRUNTIME_CPU: _ClassVar[RuntimeTarget]
+    RUNTIME_TARGET_ONNXRUNTIME_COREML: _ClassVar[RuntimeTarget]
+    RUNTIME_TARGET_ONNXRUNTIME_DIRECTML: _ClassVar[RuntimeTarget]
+    RUNTIME_TARGET_ONNXRUNTIME_CUDA: _ClassVar[RuntimeTarget]
+    RUNTIME_TARGET_CTRANSLATE2: _ClassVar[RuntimeTarget]
+    RUNTIME_TARGET_MLX: _ClassVar[RuntimeTarget]
+    RUNTIME_TARGET_LLAMA_CPP: _ClassVar[RuntimeTarget]
+    RUNTIME_TARGET_OPENCV: _ClassVar[RuntimeTarget]
+    RUNTIME_TARGET_LIBROSA: _ClassVar[RuntimeTarget]
+    RUNTIME_TARGET_NATIVE: _ClassVar[RuntimeTarget]
 
 class Precision(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     PRECISION_UNSPECIFIED: _ClassVar[Precision]
     PRECISION_FP32: _ClassVar[Precision]
     PRECISION_FP16: _ClassVar[Precision]
+    PRECISION_BF16: _ClassVar[Precision]
     PRECISION_INT8: _ClassVar[Precision]
+    PRECISION_INT4: _ClassVar[Precision]
 
 class LoadMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -45,6 +52,25 @@ class UnloadableReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     UNLOADABLE_REASON_LICENSE_BLOCKS_RELEASE: _ClassVar[UnloadableReason]
     UNLOADABLE_REASON_NO_PROVIDER_AVAILABLE: _ClassVar[UnloadableReason]
     UNLOADABLE_REASON_CONFIG_INVALID: _ClassVar[UnloadableReason]
+    UNLOADABLE_REASON_CONFIG_MISSING: _ClassVar[UnloadableReason]
+    UNLOADABLE_REASON_CONFIG_MISMATCH: _ClassVar[UnloadableReason]
+    UNLOADABLE_REASON_CONFIG_UNPINNED: _ClassVar[UnloadableReason]
+    UNLOADABLE_REASON_INTEGRITY_UNVERIFIED: _ClassVar[UnloadableReason]
+
+class Alignment(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ALIGNMENT_UNSPECIFIED: _ClassVar[Alignment]
+    ALIGNMENT_NEEDS_ALIGNMENT: _ClassVar[Alignment]
+    ALIGNMENT_PREALIGNED: _ClassVar[Alignment]
+    ALIGNMENT_NONE: _ClassVar[Alignment]
+
+class LandmarkScheme(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    LANDMARK_SCHEME_UNSPECIFIED: _ClassVar[LandmarkScheme]
+    LANDMARK_SCHEME_INSIGHTFACE_5: _ClassVar[LandmarkScheme]
+    LANDMARK_SCHEME_INSIGHTFACE_106: _ClassVar[LandmarkScheme]
+    LANDMARK_SCHEME_MEDIAPIPE_468: _ClassVar[LandmarkScheme]
+    LANDMARK_SCHEME_YUNET_5: _ClassVar[LandmarkScheme]
 
 class DType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -54,6 +80,13 @@ class DType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DTYPE_INT64: _ClassVar[DType]
     DTYPE_INT32: _ClassVar[DType]
     DTYPE_UINT8: _ClassVar[DType]
+
+class OutputKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    OUTPUT_KIND_UNSPECIFIED: _ClassVar[OutputKind]
+    OUTPUT_KIND_TENSORS: _ClassVar[OutputKind]
+    OUTPUT_KIND_DETECTIONS: _ClassVar[OutputKind]
+    OUTPUT_KIND_SHOTS: _ClassVar[OutputKind]
 
 class ErrorCode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -66,22 +99,31 @@ class ErrorCode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     ERROR_CODE_LANDMARKS_REQUIRED: _ClassVar[ErrorCode]
     ERROR_CODE_UNSUPPORTED_INPUT: _ClassVar[ErrorCode]
     ERROR_CODE_LICENSE_BLOCKED: _ClassVar[ErrorCode]
+    ERROR_CODE_CONFIG_MISMATCH: _ClassVar[ErrorCode]
+    ERROR_CODE_INPUT_NAME_UNKNOWN: _ClassVar[ErrorCode]
     ERROR_CODE_RESOURCE_EXHAUSTED: _ClassVar[ErrorCode]
     ERROR_CODE_PROVIDER_UNAVAILABLE: _ClassVar[ErrorCode]
     ERROR_CODE_DEADLINE_EXCEEDED: _ClassVar[ErrorCode]
     ERROR_CODE_CANCELLED: _ClassVar[ErrorCode]
     ERROR_CODE_MODEL_LOADING: _ClassVar[ErrorCode]
     ERROR_CODE_INTERNAL: _ClassVar[ErrorCode]
-EXECUTION_PROVIDER_UNSPECIFIED: ExecutionProvider
-EXECUTION_PROVIDER_COREML: ExecutionProvider
-EXECUTION_PROVIDER_CUDA: ExecutionProvider
-EXECUTION_PROVIDER_DIRECTML: ExecutionProvider
-EXECUTION_PROVIDER_CPU: ExecutionProvider
-EXECUTION_PROVIDER_CTRANSLATE2: ExecutionProvider
+RUNTIME_TARGET_UNSPECIFIED: RuntimeTarget
+RUNTIME_TARGET_ONNXRUNTIME_CPU: RuntimeTarget
+RUNTIME_TARGET_ONNXRUNTIME_COREML: RuntimeTarget
+RUNTIME_TARGET_ONNXRUNTIME_DIRECTML: RuntimeTarget
+RUNTIME_TARGET_ONNXRUNTIME_CUDA: RuntimeTarget
+RUNTIME_TARGET_CTRANSLATE2: RuntimeTarget
+RUNTIME_TARGET_MLX: RuntimeTarget
+RUNTIME_TARGET_LLAMA_CPP: RuntimeTarget
+RUNTIME_TARGET_OPENCV: RuntimeTarget
+RUNTIME_TARGET_LIBROSA: RuntimeTarget
+RUNTIME_TARGET_NATIVE: RuntimeTarget
 PRECISION_UNSPECIFIED: Precision
 PRECISION_FP32: Precision
 PRECISION_FP16: Precision
+PRECISION_BF16: Precision
 PRECISION_INT8: Precision
+PRECISION_INT4: Precision
 LOAD_MODE_UNSPECIFIED: LoadMode
 LOAD_MODE_RELEASE: LoadMode
 LOAD_MODE_DEVELOPMENT: LoadMode
@@ -94,12 +136,29 @@ UNLOADABLE_REASON_LICENSE_UNVERIFIED: UnloadableReason
 UNLOADABLE_REASON_LICENSE_BLOCKS_RELEASE: UnloadableReason
 UNLOADABLE_REASON_NO_PROVIDER_AVAILABLE: UnloadableReason
 UNLOADABLE_REASON_CONFIG_INVALID: UnloadableReason
+UNLOADABLE_REASON_CONFIG_MISSING: UnloadableReason
+UNLOADABLE_REASON_CONFIG_MISMATCH: UnloadableReason
+UNLOADABLE_REASON_CONFIG_UNPINNED: UnloadableReason
+UNLOADABLE_REASON_INTEGRITY_UNVERIFIED: UnloadableReason
+ALIGNMENT_UNSPECIFIED: Alignment
+ALIGNMENT_NEEDS_ALIGNMENT: Alignment
+ALIGNMENT_PREALIGNED: Alignment
+ALIGNMENT_NONE: Alignment
+LANDMARK_SCHEME_UNSPECIFIED: LandmarkScheme
+LANDMARK_SCHEME_INSIGHTFACE_5: LandmarkScheme
+LANDMARK_SCHEME_INSIGHTFACE_106: LandmarkScheme
+LANDMARK_SCHEME_MEDIAPIPE_468: LandmarkScheme
+LANDMARK_SCHEME_YUNET_5: LandmarkScheme
 DTYPE_UNSPECIFIED: DType
 DTYPE_FLOAT32: DType
 DTYPE_FLOAT16: DType
 DTYPE_INT64: DType
 DTYPE_INT32: DType
 DTYPE_UINT8: DType
+OUTPUT_KIND_UNSPECIFIED: OutputKind
+OUTPUT_KIND_TENSORS: OutputKind
+OUTPUT_KIND_DETECTIONS: OutputKind
+OUTPUT_KIND_SHOTS: OutputKind
 ERROR_CODE_UNSPECIFIED: ErrorCode
 ERROR_CODE_MODEL_NOT_REGISTERED: ErrorCode
 ERROR_CODE_MODEL_UNLOADABLE: ErrorCode
@@ -109,6 +168,8 @@ ERROR_CODE_INPUT_INVALID: ErrorCode
 ERROR_CODE_LANDMARKS_REQUIRED: ErrorCode
 ERROR_CODE_UNSUPPORTED_INPUT: ErrorCode
 ERROR_CODE_LICENSE_BLOCKED: ErrorCode
+ERROR_CODE_CONFIG_MISMATCH: ErrorCode
+ERROR_CODE_INPUT_NAME_UNKNOWN: ErrorCode
 ERROR_CODE_RESOURCE_EXHAUSTED: ErrorCode
 ERROR_CODE_PROVIDER_UNAVAILABLE: ErrorCode
 ERROR_CODE_DEADLINE_EXCEEDED: ErrorCode
@@ -117,18 +178,58 @@ ERROR_CODE_MODEL_LOADING: ErrorCode
 ERROR_CODE_INTERNAL: ErrorCode
 
 class ModelPin(_message.Message):
-    __slots__ = ("model_id", "version", "weights_blake3", "provider", "precision")
+    __slots__ = ("model_id", "version", "weights_blake3", "config_blake3", "runtime", "precision")
     MODEL_ID_FIELD_NUMBER: _ClassVar[int]
     VERSION_FIELD_NUMBER: _ClassVar[int]
     WEIGHTS_BLAKE3_FIELD_NUMBER: _ClassVar[int]
-    PROVIDER_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_BLAKE3_FIELD_NUMBER: _ClassVar[int]
+    RUNTIME_FIELD_NUMBER: _ClassVar[int]
     PRECISION_FIELD_NUMBER: _ClassVar[int]
     model_id: str
     version: str
     weights_blake3: str
-    provider: ExecutionProvider
+    config_blake3: str
+    runtime: RuntimeTarget
     precision: Precision
-    def __init__(self, model_id: _Optional[str] = ..., version: _Optional[str] = ..., weights_blake3: _Optional[str] = ..., provider: _Optional[_Union[ExecutionProvider, str]] = ..., precision: _Optional[_Union[Precision, str]] = ...) -> None: ...
+    def __init__(self, model_id: _Optional[str] = ..., version: _Optional[str] = ..., weights_blake3: _Optional[str] = ..., config_blake3: _Optional[str] = ..., runtime: _Optional[_Union[RuntimeTarget, str]] = ..., precision: _Optional[_Union[Precision, str]] = ...) -> None: ...
+
+class NormalizedBox(_message.Message):
+    __slots__ = ("x", "y", "w", "h", "rotation_deg")
+    X_FIELD_NUMBER: _ClassVar[int]
+    Y_FIELD_NUMBER: _ClassVar[int]
+    W_FIELD_NUMBER: _ClassVar[int]
+    H_FIELD_NUMBER: _ClassVar[int]
+    ROTATION_DEG_FIELD_NUMBER: _ClassVar[int]
+    x: float
+    y: float
+    w: float
+    h: float
+    rotation_deg: float
+    def __init__(self, x: _Optional[float] = ..., y: _Optional[float] = ..., w: _Optional[float] = ..., h: _Optional[float] = ..., rotation_deg: _Optional[float] = ...) -> None: ...
+
+class Point2D(_message.Message):
+    __slots__ = ("x", "y")
+    X_FIELD_NUMBER: _ClassVar[int]
+    Y_FIELD_NUMBER: _ClassVar[int]
+    x: float
+    y: float
+    def __init__(self, x: _Optional[float] = ..., y: _Optional[float] = ...) -> None: ...
+
+class RationalTime(_message.Message):
+    __slots__ = ("value", "rate")
+    VALUE_FIELD_NUMBER: _ClassVar[int]
+    RATE_FIELD_NUMBER: _ClassVar[int]
+    value: float
+    rate: float
+    def __init__(self, value: _Optional[float] = ..., rate: _Optional[float] = ...) -> None: ...
+
+class TimeRange(_message.Message):
+    __slots__ = ("start_time", "duration")
+    START_TIME_FIELD_NUMBER: _ClassVar[int]
+    DURATION_FIELD_NUMBER: _ClassVar[int]
+    start_time: RationalTime
+    duration: RationalTime
+    def __init__(self, start_time: _Optional[_Union[RationalTime, _Mapping]] = ..., duration: _Optional[_Union[RationalTime, _Mapping]] = ...) -> None: ...
 
 class ListModelsRequest(_message.Message):
     __slots__ = ("task", "include_unloadable")
@@ -147,24 +248,28 @@ class ListModelsResponse(_message.Message):
     def __init__(self, models: _Optional[_Iterable[_Union[ModelInfo, _Mapping]]] = ..., load_mode: _Optional[_Union[LoadMode, str]] = ...) -> None: ...
 
 class ModelInfo(_message.Message):
-    __slots__ = ("pin", "task", "loadable", "unloadable_reason", "currently_loaded", "available_providers", "max_batch", "blocks_commercial_release")
+    __slots__ = ("pin", "task", "loadable", "unloadable_reason", "currently_loaded", "available_runtimes", "max_batch", "blocks_commercial_release", "output_kind", "input_names")
     PIN_FIELD_NUMBER: _ClassVar[int]
     TASK_FIELD_NUMBER: _ClassVar[int]
     LOADABLE_FIELD_NUMBER: _ClassVar[int]
     UNLOADABLE_REASON_FIELD_NUMBER: _ClassVar[int]
     CURRENTLY_LOADED_FIELD_NUMBER: _ClassVar[int]
-    AVAILABLE_PROVIDERS_FIELD_NUMBER: _ClassVar[int]
+    AVAILABLE_RUNTIMES_FIELD_NUMBER: _ClassVar[int]
     MAX_BATCH_FIELD_NUMBER: _ClassVar[int]
     BLOCKS_COMMERCIAL_RELEASE_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_KIND_FIELD_NUMBER: _ClassVar[int]
+    INPUT_NAMES_FIELD_NUMBER: _ClassVar[int]
     pin: ModelPin
     task: str
     loadable: bool
     unloadable_reason: UnloadableReason
     currently_loaded: bool
-    available_providers: _containers.RepeatedScalarFieldContainer[ExecutionProvider]
+    available_runtimes: _containers.RepeatedScalarFieldContainer[RuntimeTarget]
     max_batch: int
     blocks_commercial_release: bool
-    def __init__(self, pin: _Optional[_Union[ModelPin, _Mapping]] = ..., task: _Optional[str] = ..., loadable: bool = ..., unloadable_reason: _Optional[_Union[UnloadableReason, str]] = ..., currently_loaded: bool = ..., available_providers: _Optional[_Iterable[_Union[ExecutionProvider, str]]] = ..., max_batch: _Optional[int] = ..., blocks_commercial_release: bool = ...) -> None: ...
+    output_kind: OutputKind
+    input_names: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, pin: _Optional[_Union[ModelPin, _Mapping]] = ..., task: _Optional[str] = ..., loadable: bool = ..., unloadable_reason: _Optional[_Union[UnloadableReason, str]] = ..., currently_loaded: bool = ..., available_runtimes: _Optional[_Iterable[_Union[RuntimeTarget, str]]] = ..., max_batch: _Optional[int] = ..., blocks_commercial_release: bool = ..., output_kind: _Optional[_Union[OutputKind, str]] = ..., input_names: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class HealthRequest(_message.Message):
     __slots__ = ()
@@ -187,56 +292,40 @@ class HealthResponse(_message.Message):
     def __init__(self, serving: bool = ..., load_mode: _Optional[_Union[LoadMode, str]] = ..., loaded: _Optional[_Iterable[_Union[ModelPin, _Mapping]]] = ..., queue_depth: _Optional[int] = ..., uptime_seconds: _Optional[int] = ..., warnings: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class InferRequest(_message.Message):
-    __slots__ = ("request_id", "model_id", "expected_pin", "items", "preferred_providers", "deadline_ms", "priority")
+    __slots__ = ("request_id", "model_id", "expected_pin", "items", "preferred_runtimes", "deadline_ms", "priority")
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     MODEL_ID_FIELD_NUMBER: _ClassVar[int]
     EXPECTED_PIN_FIELD_NUMBER: _ClassVar[int]
     ITEMS_FIELD_NUMBER: _ClassVar[int]
-    PREFERRED_PROVIDERS_FIELD_NUMBER: _ClassVar[int]
+    PREFERRED_RUNTIMES_FIELD_NUMBER: _ClassVar[int]
     DEADLINE_MS_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
     request_id: str
     model_id: str
     expected_pin: ModelPin
     items: _containers.RepeatedCompositeFieldContainer[InferItem]
-    preferred_providers: _containers.RepeatedScalarFieldContainer[ExecutionProvider]
+    preferred_runtimes: _containers.RepeatedScalarFieldContainer[RuntimeTarget]
     deadline_ms: int
     priority: int
-    def __init__(self, request_id: _Optional[str] = ..., model_id: _Optional[str] = ..., expected_pin: _Optional[_Union[ModelPin, _Mapping]] = ..., items: _Optional[_Iterable[_Union[InferItem, _Mapping]]] = ..., preferred_providers: _Optional[_Iterable[_Union[ExecutionProvider, str]]] = ..., deadline_ms: _Optional[int] = ..., priority: _Optional[int] = ...) -> None: ...
+    def __init__(self, request_id: _Optional[str] = ..., model_id: _Optional[str] = ..., expected_pin: _Optional[_Union[ModelPin, _Mapping]] = ..., items: _Optional[_Iterable[_Union[InferItem, _Mapping]]] = ..., preferred_runtimes: _Optional[_Iterable[_Union[RuntimeTarget, str]]] = ..., deadline_ms: _Optional[int] = ..., priority: _Optional[int] = ...) -> None: ...
 
 class InferItem(_message.Message):
-    __slots__ = ("item_id", "proxy_id", "tensor", "window", "landmarks")
+    __slots__ = ("item_id", "proxy_id", "tensors", "window", "alignment", "landmarks", "landmark_scheme")
     ITEM_ID_FIELD_NUMBER: _ClassVar[int]
     PROXY_ID_FIELD_NUMBER: _ClassVar[int]
-    TENSOR_FIELD_NUMBER: _ClassVar[int]
+    TENSORS_FIELD_NUMBER: _ClassVar[int]
     WINDOW_FIELD_NUMBER: _ClassVar[int]
+    ALIGNMENT_FIELD_NUMBER: _ClassVar[int]
     LANDMARKS_FIELD_NUMBER: _ClassVar[int]
+    LANDMARK_SCHEME_FIELD_NUMBER: _ClassVar[int]
     item_id: str
     proxy_id: str
-    tensor: Tensor
-    window: TimeWindow
+    tensors: TensorSet
+    window: TimeRange
+    alignment: Alignment
     landmarks: _containers.RepeatedCompositeFieldContainer[Point2D]
-    def __init__(self, item_id: _Optional[str] = ..., proxy_id: _Optional[str] = ..., tensor: _Optional[_Union[Tensor, _Mapping]] = ..., window: _Optional[_Union[TimeWindow, _Mapping]] = ..., landmarks: _Optional[_Iterable[_Union[Point2D, _Mapping]]] = ...) -> None: ...
-
-class TimeWindow(_message.Message):
-    __slots__ = ("start_value", "start_rate", "duration_value", "duration_rate")
-    START_VALUE_FIELD_NUMBER: _ClassVar[int]
-    START_RATE_FIELD_NUMBER: _ClassVar[int]
-    DURATION_VALUE_FIELD_NUMBER: _ClassVar[int]
-    DURATION_RATE_FIELD_NUMBER: _ClassVar[int]
-    start_value: float
-    start_rate: float
-    duration_value: float
-    duration_rate: float
-    def __init__(self, start_value: _Optional[float] = ..., start_rate: _Optional[float] = ..., duration_value: _Optional[float] = ..., duration_rate: _Optional[float] = ...) -> None: ...
-
-class Point2D(_message.Message):
-    __slots__ = ("x", "y")
-    X_FIELD_NUMBER: _ClassVar[int]
-    Y_FIELD_NUMBER: _ClassVar[int]
-    x: float
-    y: float
-    def __init__(self, x: _Optional[float] = ..., y: _Optional[float] = ...) -> None: ...
+    landmark_scheme: LandmarkScheme
+    def __init__(self, item_id: _Optional[str] = ..., proxy_id: _Optional[str] = ..., tensors: _Optional[_Union[TensorSet, _Mapping]] = ..., window: _Optional[_Union[TimeRange, _Mapping]] = ..., alignment: _Optional[_Union[Alignment, str]] = ..., landmarks: _Optional[_Iterable[_Union[Point2D, _Mapping]]] = ..., landmark_scheme: _Optional[_Union[LandmarkScheme, str]] = ...) -> None: ...
 
 class Tensor(_message.Message):
     __slots__ = ("shape", "dtype", "data", "name")
@@ -250,31 +339,89 @@ class Tensor(_message.Message):
     name: str
     def __init__(self, shape: _Optional[_Iterable[int]] = ..., dtype: _Optional[_Union[DType, str]] = ..., data: _Optional[bytes] = ..., name: _Optional[str] = ...) -> None: ...
 
+class TensorSet(_message.Message):
+    __slots__ = ("tensors",)
+    TENSORS_FIELD_NUMBER: _ClassVar[int]
+    tensors: _containers.RepeatedCompositeFieldContainer[Tensor]
+    def __init__(self, tensors: _Optional[_Iterable[_Union[Tensor, _Mapping]]] = ...) -> None: ...
+
 class InferResponse(_message.Message):
-    __slots__ = ("request_id", "pin", "provider_used", "results", "duration_ms", "batch_size")
+    __slots__ = ("request_id", "pin", "runtime_used", "results", "duration_ms", "batch_size", "error")
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     PIN_FIELD_NUMBER: _ClassVar[int]
-    PROVIDER_USED_FIELD_NUMBER: _ClassVar[int]
+    RUNTIME_USED_FIELD_NUMBER: _ClassVar[int]
     RESULTS_FIELD_NUMBER: _ClassVar[int]
     DURATION_MS_FIELD_NUMBER: _ClassVar[int]
     BATCH_SIZE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
     request_id: str
     pin: ModelPin
-    provider_used: ExecutionProvider
+    runtime_used: RuntimeTarget
     results: _containers.RepeatedCompositeFieldContainer[InferResult]
     duration_ms: int
     batch_size: int
-    def __init__(self, request_id: _Optional[str] = ..., pin: _Optional[_Union[ModelPin, _Mapping]] = ..., provider_used: _Optional[_Union[ExecutionProvider, str]] = ..., results: _Optional[_Iterable[_Union[InferResult, _Mapping]]] = ..., duration_ms: _Optional[int] = ..., batch_size: _Optional[int] = ...) -> None: ...
+    error: InferError
+    def __init__(self, request_id: _Optional[str] = ..., pin: _Optional[_Union[ModelPin, _Mapping]] = ..., runtime_used: _Optional[_Union[RuntimeTarget, str]] = ..., results: _Optional[_Iterable[_Union[InferResult, _Mapping]]] = ..., duration_ms: _Optional[int] = ..., batch_size: _Optional[int] = ..., error: _Optional[_Union[InferError, _Mapping]] = ...) -> None: ...
 
 class InferResult(_message.Message):
-    __slots__ = ("item_id", "error", "outputs")
+    __slots__ = ("item_id", "error", "tensors", "detections", "shots")
     ITEM_ID_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
-    OUTPUTS_FIELD_NUMBER: _ClassVar[int]
+    TENSORS_FIELD_NUMBER: _ClassVar[int]
+    DETECTIONS_FIELD_NUMBER: _ClassVar[int]
+    SHOTS_FIELD_NUMBER: _ClassVar[int]
     item_id: str
     error: InferError
-    outputs: _containers.RepeatedCompositeFieldContainer[Tensor]
-    def __init__(self, item_id: _Optional[str] = ..., error: _Optional[_Union[InferError, _Mapping]] = ..., outputs: _Optional[_Iterable[_Union[Tensor, _Mapping]]] = ...) -> None: ...
+    tensors: TensorSet
+    detections: DetectionSet
+    shots: ShotBoundarySet
+    def __init__(self, item_id: _Optional[str] = ..., error: _Optional[_Union[InferError, _Mapping]] = ..., tensors: _Optional[_Union[TensorSet, _Mapping]] = ..., detections: _Optional[_Union[DetectionSet, _Mapping]] = ..., shots: _Optional[_Union[ShotBoundarySet, _Mapping]] = ...) -> None: ...
+
+class Detection(_message.Message):
+    __slots__ = ("box", "score", "landmarks", "landmarks_out_of_range", "landmark_scheme", "class_id", "class_label")
+    BOX_FIELD_NUMBER: _ClassVar[int]
+    SCORE_FIELD_NUMBER: _ClassVar[int]
+    LANDMARKS_FIELD_NUMBER: _ClassVar[int]
+    LANDMARKS_OUT_OF_RANGE_FIELD_NUMBER: _ClassVar[int]
+    LANDMARK_SCHEME_FIELD_NUMBER: _ClassVar[int]
+    CLASS_ID_FIELD_NUMBER: _ClassVar[int]
+    CLASS_LABEL_FIELD_NUMBER: _ClassVar[int]
+    box: NormalizedBox
+    score: float
+    landmarks: _containers.RepeatedCompositeFieldContainer[Point2D]
+    landmarks_out_of_range: bool
+    landmark_scheme: LandmarkScheme
+    class_id: int
+    class_label: str
+    def __init__(self, box: _Optional[_Union[NormalizedBox, _Mapping]] = ..., score: _Optional[float] = ..., landmarks: _Optional[_Iterable[_Union[Point2D, _Mapping]]] = ..., landmarks_out_of_range: bool = ..., landmark_scheme: _Optional[_Union[LandmarkScheme, str]] = ..., class_id: _Optional[int] = ..., class_label: _Optional[str] = ...) -> None: ...
+
+class DetectionSet(_message.Message):
+    __slots__ = ("detections", "score_threshold", "nms_iou_threshold", "truncated")
+    DETECTIONS_FIELD_NUMBER: _ClassVar[int]
+    SCORE_THRESHOLD_FIELD_NUMBER: _ClassVar[int]
+    NMS_IOU_THRESHOLD_FIELD_NUMBER: _ClassVar[int]
+    TRUNCATED_FIELD_NUMBER: _ClassVar[int]
+    detections: _containers.RepeatedCompositeFieldContainer[Detection]
+    score_threshold: float
+    nms_iou_threshold: float
+    truncated: bool
+    def __init__(self, detections: _Optional[_Iterable[_Union[Detection, _Mapping]]] = ..., score_threshold: _Optional[float] = ..., nms_iou_threshold: _Optional[float] = ..., truncated: bool = ...) -> None: ...
+
+class ShotBoundary(_message.Message):
+    __slots__ = ("time", "score")
+    TIME_FIELD_NUMBER: _ClassVar[int]
+    SCORE_FIELD_NUMBER: _ClassVar[int]
+    time: RationalTime
+    score: float
+    def __init__(self, time: _Optional[_Union[RationalTime, _Mapping]] = ..., score: _Optional[float] = ...) -> None: ...
+
+class ShotBoundarySet(_message.Message):
+    __slots__ = ("boundaries", "score_threshold")
+    BOUNDARIES_FIELD_NUMBER: _ClassVar[int]
+    SCORE_THRESHOLD_FIELD_NUMBER: _ClassVar[int]
+    boundaries: _containers.RepeatedCompositeFieldContainer[ShotBoundary]
+    score_threshold: float
+    def __init__(self, boundaries: _Optional[_Iterable[_Union[ShotBoundary, _Mapping]]] = ..., score_threshold: _Optional[float] = ...) -> None: ...
 
 class InferError(_message.Message):
     __slots__ = ("code", "message", "retryable", "retry_after_ms")
@@ -289,30 +436,30 @@ class InferError(_message.Message):
     def __init__(self, code: _Optional[_Union[ErrorCode, str]] = ..., message: _Optional[str] = ..., retryable: bool = ..., retry_after_ms: _Optional[int] = ...) -> None: ...
 
 class LoadModelRequest(_message.Message):
-    __slots__ = ("model_id", "preferred_providers", "expected_pin")
+    __slots__ = ("model_id", "preferred_runtimes", "expected_pin")
     MODEL_ID_FIELD_NUMBER: _ClassVar[int]
-    PREFERRED_PROVIDERS_FIELD_NUMBER: _ClassVar[int]
+    PREFERRED_RUNTIMES_FIELD_NUMBER: _ClassVar[int]
     EXPECTED_PIN_FIELD_NUMBER: _ClassVar[int]
     model_id: str
-    preferred_providers: _containers.RepeatedScalarFieldContainer[ExecutionProvider]
+    preferred_runtimes: _containers.RepeatedScalarFieldContainer[RuntimeTarget]
     expected_pin: ModelPin
-    def __init__(self, model_id: _Optional[str] = ..., preferred_providers: _Optional[_Iterable[_Union[ExecutionProvider, str]]] = ..., expected_pin: _Optional[_Union[ModelPin, _Mapping]] = ...) -> None: ...
+    def __init__(self, model_id: _Optional[str] = ..., preferred_runtimes: _Optional[_Iterable[_Union[RuntimeTarget, str]]] = ..., expected_pin: _Optional[_Union[ModelPin, _Mapping]] = ...) -> None: ...
 
 class LoadModelResponse(_message.Message):
-    __slots__ = ("loaded", "pin", "provider_used", "error", "load_duration_ms", "relaxed_gate_warning")
+    __slots__ = ("loaded", "pin", "runtime_used", "error", "load_duration_ms", "relaxed_gate_warning")
     LOADED_FIELD_NUMBER: _ClassVar[int]
     PIN_FIELD_NUMBER: _ClassVar[int]
-    PROVIDER_USED_FIELD_NUMBER: _ClassVar[int]
+    RUNTIME_USED_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
     LOAD_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
     RELAXED_GATE_WARNING_FIELD_NUMBER: _ClassVar[int]
     loaded: bool
     pin: ModelPin
-    provider_used: ExecutionProvider
+    runtime_used: RuntimeTarget
     error: InferError
     load_duration_ms: int
     relaxed_gate_warning: str
-    def __init__(self, loaded: bool = ..., pin: _Optional[_Union[ModelPin, _Mapping]] = ..., provider_used: _Optional[_Union[ExecutionProvider, str]] = ..., error: _Optional[_Union[InferError, _Mapping]] = ..., load_duration_ms: _Optional[int] = ..., relaxed_gate_warning: _Optional[str] = ...) -> None: ...
+    def __init__(self, loaded: bool = ..., pin: _Optional[_Union[ModelPin, _Mapping]] = ..., runtime_used: _Optional[_Union[RuntimeTarget, str]] = ..., error: _Optional[_Union[InferError, _Mapping]] = ..., load_duration_ms: _Optional[int] = ..., relaxed_gate_warning: _Optional[str] = ...) -> None: ...
 
 class UnloadModelRequest(_message.Message):
     __slots__ = ("model_id",)

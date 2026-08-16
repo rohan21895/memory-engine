@@ -1,0 +1,321 @@
+{
+  "fixture_version": "v0",
+  "description": "Letterbox onto a REAL raster, where every dimension is a whole pixel. The existing letterbox fixture uses 1920x1080 -> 640x640, where the arithmetic lands exactly and so specifies neither the rounding convention nor the odd-padding split. Codex flagged that and supplied the actual proxy dimensions ingest emits.",
+  "proxy_geometry": {
+    "source": "workers/ingest/src/video.rs",
+    "rule": "Fixed 480 height; width preserves aspect and is rounded to a multiple of two. VideoToolbox uses 2*ceil((w*480/h)/2); NVDEC/QSV uses FFmpeg -2, which can land one step lower."
+  },
+  "conventions": {
+    "resize": "round to nearest, NOT floor -- flooring shrinks by up to a pixel and biases every mapped coordinate one way instead of cancelling out",
+    "pad_split": "pad_before = (target - scaled) // 2, so an odd pad puts the extra pixel at the BOTTOM/RIGHT",
+    "inverse_map": "use effective_scale = scaled / source, NOT the ideal scale -- once the dimension is rounded, the image really is at the rounded scale, and un-letterboxing with the ideal one reintroduces the rounding as a coordinate offset",
+    "axes": "width and height round independently, so effective_scale_x and effective_scale_y can differ; using one for both puts boxes slightly wrong on exactly the proxies where it is hardest to notice"
+  },
+  "cases": [
+    {
+      "source": {
+        "width": 1920,
+        "height": 1080
+      },
+      "proxy": {
+        "width": 854,
+        "height": 480
+      },
+      "backend": "all",
+      "target": {
+        "width": 640,
+        "height": 640
+      },
+      "expected": {
+        "ideal_scale": 0.74941452,
+        "scaled_width": 640,
+        "scaled_height": 360,
+        "pad_left": 0,
+        "pad_top": 140,
+        "pad_right": 0,
+        "pad_bottom": 140,
+        "effective_scale_x": 0.74941452,
+        "effective_scale_y": 0.75,
+        "padding_symmetric": true
+      },
+      "probes": [
+        {
+          "letterboxed": [
+            0.0,
+            140.0
+          ],
+          "normalised": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "letterboxed": [
+            320.0,
+            320.0
+          ],
+          "normalised": [
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "letterboxed": [
+            639.0,
+            500.0
+          ],
+          "normalised": [
+            0.9984375,
+            1.0
+          ]
+        }
+      ],
+      "ideal_scale_error_px_at_centre": 0.1875,
+      "note": "The common case. Lands on an even pad, so it specifies nothing about odd splits on its own."
+    },
+    {
+      "source": {
+        "width": 4000,
+        "height": 3000
+      },
+      "proxy": {
+        "width": 640,
+        "height": 480
+      },
+      "backend": "all",
+      "target": {
+        "width": 640,
+        "height": 640
+      },
+      "expected": {
+        "ideal_scale": 1.0,
+        "scaled_width": 640,
+        "scaled_height": 480,
+        "pad_left": 0,
+        "pad_top": 80,
+        "pad_right": 0,
+        "pad_bottom": 80,
+        "effective_scale_x": 1.0,
+        "effective_scale_y": 1.0,
+        "padding_symmetric": true
+      },
+      "probes": [
+        {
+          "letterboxed": [
+            0.0,
+            80.0
+          ],
+          "normalised": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "letterboxed": [
+            320.0,
+            320.0
+          ],
+          "normalised": [
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "letterboxed": [
+            639.0,
+            560.0
+          ],
+          "normalised": [
+            0.9984375,
+            1.0
+          ]
+        }
+      ],
+      "ideal_scale_error_px_at_centre": 0.0,
+      "note": "4:3 stills source. Fits the target width exactly."
+    },
+    {
+      "source": {
+        "width": 1080,
+        "height": 1920
+      },
+      "proxy": {
+        "width": 270,
+        "height": 480
+      },
+      "backend": "all",
+      "target": {
+        "width": 640,
+        "height": 640
+      },
+      "expected": {
+        "ideal_scale": 1.333333333,
+        "scaled_width": 360,
+        "scaled_height": 640,
+        "pad_left": 140,
+        "pad_top": 0,
+        "pad_right": 140,
+        "pad_bottom": 0,
+        "effective_scale_x": 1.333333333,
+        "effective_scale_y": 1.333333333,
+        "padding_symmetric": true
+      },
+      "probes": [
+        {
+          "letterboxed": [
+            0.0,
+            0.0
+          ],
+          "normalised": [
+            -0.388888889,
+            0.0
+          ]
+        },
+        {
+          "letterboxed": [
+            320.0,
+            320.0
+          ],
+          "normalised": [
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "letterboxed": [
+            639.0,
+            640.0
+          ],
+          "normalised": [
+            1.386111111,
+            1.0
+          ]
+        }
+      ],
+      "ideal_scale_error_px_at_centre": 0.0,
+      "note": "Portrait phone video. Padding is horizontal, not vertical."
+    },
+    {
+      "source": {
+        "width": 4096,
+        "height": 2160
+      },
+      "proxy": {
+        "width": 912,
+        "height": 480
+      },
+      "backend": "videotoolbox",
+      "target": {
+        "width": 640,
+        "height": 640
+      },
+      "expected": {
+        "ideal_scale": 0.701754386,
+        "scaled_width": 640,
+        "scaled_height": 337,
+        "pad_left": 0,
+        "pad_top": 151,
+        "pad_right": 0,
+        "pad_bottom": 152,
+        "effective_scale_x": 0.701754386,
+        "effective_scale_y": 0.702083333,
+        "padding_symmetric": false
+      },
+      "probes": [
+        {
+          "letterboxed": [
+            0.0,
+            151.0
+          ],
+          "normalised": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "letterboxed": [
+            320.0,
+            320.0
+          ],
+          "normalised": [
+            0.5,
+            0.50148368
+          ]
+        },
+        {
+          "letterboxed": [
+            639.0,
+            488.0
+          ],
+          "normalised": [
+            0.9984375,
+            1.0
+          ]
+        }
+      ],
+      "ideal_scale_error_px_at_centre": 0.112834,
+      "note": "THE ASYMMETRIC CASE: 337 scaled rows leave 303 pad, so top and bottom cannot be equal."
+    },
+    {
+      "source": {
+        "width": 4096,
+        "height": 2160
+      },
+      "proxy": {
+        "width": 910,
+        "height": 480
+      },
+      "backend": "nvdec_qsv",
+      "target": {
+        "width": 640,
+        "height": 640
+      },
+      "expected": {
+        "ideal_scale": 0.703296703,
+        "scaled_width": 640,
+        "scaled_height": 338,
+        "pad_left": 0,
+        "pad_top": 151,
+        "pad_right": 0,
+        "pad_bottom": 151,
+        "effective_scale_x": 0.703296703,
+        "effective_scale_y": 0.704166667,
+        "padding_symmetric": true
+      },
+      "probes": [
+        {
+          "letterboxed": [
+            0.0,
+            151.0
+          ],
+          "normalised": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "letterboxed": [
+            320.0,
+            320.0
+          ],
+          "normalised": [
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "letterboxed": [
+            639.0,
+            489.0
+          ],
+          "normalised": [
+            0.9984375,
+            1.0
+          ]
+        }
+      ],
+      "ideal_scale_error_px_at_centre": 0.296875,
+      "note": "The SAME source through a different backend rounds to 910 wide and 338 rows, which pads symmetrically. Same video, different machine, different geometry."
+    }
+  ]
+}

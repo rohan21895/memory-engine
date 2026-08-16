@@ -5,6 +5,7 @@ refused to import from: production code cannot depend on a test, and
 reimplementing it would have meant two copies of one rule drifting apart.
 """
 
+from .digest import Blake3Missing, canonical_bytes, config_digest, digests
 from .load_gate import (
     Candidate,
     load_policy,
@@ -13,4 +14,14 @@ from .load_gate import (
     resolve_mode,
 )
 
-__all__ = ["Candidate", "UnloadableReason", "decide_load", "load_policy", "resolve_mode"]
+__all__ = [
+    "Blake3Missing",
+    "Candidate",
+    "UnloadableReason",
+    "canonical_bytes",
+    "config_digest",
+    "decide_load",
+    "digests",
+    "load_policy",
+    "resolve_mode",
+]

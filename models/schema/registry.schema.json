@@ -4,73 +4,116 @@
   "title": "ModelRegistry",
   "description": "The index of loadable models, and the policy governing what may be loaded.",
   "$comment": "THE LOAD POLICY IS THE POINT OF THIS FILE.\n\n Issue #10 acceptance criterion 2 requires that unverified, blocked, hash-mismatched or unregistered weights are unconditionally unloadable. Taken literally that would make the system unloadable today, because licensing is deliberately deferred (issue #3) and no weight has been hashed yet.\n\n The resolution is two named modes with different gates, and one rule that holds in both:\n\n A HASH MISMATCH IS ALWAYS FATAL. A file whose bytes disagree with its pin is corrupt or tampered with, and no mode may load it. This is the integrity gate and it is not negotiable.\n\n An UNPINNED weight (blake3 null) is a different thing: not yet audited rather than known-wrong. Development may load it with a warning; release may not.\n\n `release` refuses anything unverified or licence-blocked. `development` permits them, but only behind an explicit environment opt-in, and the host must log a warning naming each such model every time it loads one. The point is that shipping with a blocked model requires someone to have deliberately set a variable, and running with one is never silent.",
-
   "type": "object",
   "additionalProperties": false,
-  "required": ["registry_version", "load_policy", "entries"],
+  "required": [
+    "registry_version",
+    "load_policy",
+    "entries"
+  ],
   "properties": {
-    "registry_version": { "type": "string", "const": "v0" },
-    "description": { "type": "string" },
-
-    "load_policy": { "$ref": "#/$defs/LoadPolicy" },
-
+    "registry_version": {
+      "type": "string",
+      "const": "v0"
+    },
+    "description": {
+      "type": "string"
+    },
+    "load_policy": {
+      "$ref": "#/$defs/LoadPolicy"
+    },
     "pipelines": {
       "description": "Named pipelines, each declaring the weakest load mode it is valid under. A pipeline containing a licence-blocked model is development-only BY CONSTRUCTION -- release mode refuses it, rather than someone having to remember not to ship it.",
       "type": "object",
-      "additionalProperties": { "$ref": "#/$defs/Pipeline" }
+      "additionalProperties": {
+        "$ref": "#/$defs/Pipeline"
+      }
     },
-
     "entries": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/Entry" }
+      "items": {
+        "$ref": "#/$defs/Entry"
+      }
     }
   },
-
   "$defs": {
     "Entry": {
       "title": "Entry",
       "type": "object",
       "additionalProperties": false,
-      "required": ["model_id", "config", "task"],
+      "required": [
+        "model_id",
+        "config",
+        "task",
+        "config_blake3"
+      ],
       "properties": {
-        "model_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
-        "config": { "type": "string", "minLength": 1 },
-        "task": { "type": "string", "minLength": 1 },
+        "model_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "config": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1
+        },
         "required_for": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": []
+        },
+        "config_blake3": {
+          "description": "Canonical BLAKE3 of the model config, computed by models/policy/digest.py. Required, because the config decides input size, normalisation constants, score threshold and NMS IoU -- everything the weights hash does not. Two runs with identical weights and different configs are different models to every consumer.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       }
     },
-
     "Pipeline": {
       "title": "Pipeline",
       "type": "object",
       "additionalProperties": false,
-      "required": ["min_load_mode", "steps"],
+      "required": [
+        "min_load_mode",
+        "steps"
+      ],
       "properties": {
         "min_load_mode": {
           "description": "The weakest mode this pipeline may run under. `development` means it contains something release mode refuses -- an unpinned weight, an unverified licence, or a model that blocks a commercial release.",
           "type": "string",
-          "enum": ["development", "release"]
+          "enum": [
+            "development",
+            "release"
+          ]
         },
         "steps": {
           "description": "Ordered. May name registered models plus classical (non-model) steps.",
           "type": "array",
           "minItems": 1,
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
-        "note": { "type": "string" }
+        "note": {
+          "type": "string"
+        }
       }
     },
-
     "LoadPolicy": {
       "title": "LoadPolicy",
       "type": "object",
       "additionalProperties": false,
-      "required": ["hash_mismatch_is_always_fatal", "modes"],
+      "required": [
+        "hash_mismatch_is_always_fatal",
+        "modes",
+        "config_mismatch_is_always_fatal"
+      ],
       "properties": {
         "hash_mismatch_is_always_fatal": {
           "description": "Must be true. A file disagreeing with its pin is corrupt or tampered with; no mode may load it. Kept as an explicit field rather than an unwritten rule so the loader has something to assert against.",
@@ -80,15 +123,26 @@
         "modes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["release", "development"],
+          "required": [
+            "release",
+            "development"
+          ],
           "properties": {
-            "release": { "$ref": "#/$defs/ModeGate" },
-            "development": { "$ref": "#/$defs/ModeGate" }
+            "release": {
+              "$ref": "#/$defs/ModeGate"
+            },
+            "development": {
+              "$ref": "#/$defs/ModeGate"
+            }
           }
+        },
+        "config_mismatch_is_always_fatal": {
+          "description": "Must be true, for the same reason hash_mismatch_is_always_fatal is. An edited config is the likelier of the two in practice: weights are downloaded once and never touched, thresholds get tuned by hand.",
+          "type": "boolean",
+          "const": true
         }
       }
     },
-
     "ModeGate": {
       "title": "ModeGate",
       "type": "object",
@@ -97,7 +151,8 @@
         "require_registered",
         "require_pinned_hash",
         "require_license_verified",
-        "allow_blocks_commercial_release"
+        "allow_blocks_commercial_release",
+        "require_pinned_config"
       ],
       "properties": {
         "require_registered": {
@@ -118,12 +173,24 @@
         },
         "opt_in_env": {
           "description": "Environment variable that must be set for this mode to engage. Present on any mode that relaxes a gate, so a relaxed gate is always a deliberate act rather than a default.",
-          "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "warn_per_load": {
           "description": "When true the host logs a warning naming each model loaded under a relaxed gate, every time. Running with a blocked model is allowed; doing so silently is not.",
           "type": "boolean",
           "default": false
+        },
+        "require_pinned_config": {
+          "description": "Whether this mode refuses an entry with no pinned config digest. Omitted means it follows require_pinned_hash, so a mode that pins weights never silently accepts an unpinned config.",
+          "type": "boolean"
         }
       }
     }
