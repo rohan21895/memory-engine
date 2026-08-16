@@ -1,0 +1,104 @@
+{
+  "config_version": "v0",
+  "model_id": "paddleocr-mobile-det",
+  "version": "4.0.0",
+  "task": "ocr",
+  "description": "PP-OCRv4 mobile text detector. Not here to read text: here to answer 'is this a screenshot, a document, or a photo of a whiteboard'. Build plan §4.2 auto-excludes those from memories, and they are a large fraction of a real phone library.",
+  "weights": {
+    "filename": "ch_PP-OCRv4_det_infer.onnx",
+    "format": "onnx",
+    "source_url": "https://github.com/PaddlePaddle/PaddleOCR",
+    "blake3": null,
+    "byte_size": null,
+    "quantization": "fp16"
+  },
+  "runtime_targets": [
+    "onnxruntime_coreml",
+    "onnxruntime_cuda",
+    "onnxruntime_directml",
+    "onnxruntime_cpu"
+  ],
+  "preprocessing": {
+    "kind": "image",
+    "input_name": "x",
+    "input_size": {
+      "width": 640,
+      "height": 640
+    },
+    "resize": "letterbox",
+    "interpolation": "bilinear",
+    "color_order": "rgb",
+    "layout": "nchw",
+    "scale": 0.00392156862745098,
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "face_alignment": null,
+    "audio": null,
+    "sequence_length": null
+  },
+  "postprocessing": {
+    "steps": [
+      "sigmoid",
+      "clip"
+    ],
+    "nms_threshold": null,
+    "score_threshold": 0.3,
+    "strides": [],
+    "landmark_scheme": null,
+    "max_detections": 1000,
+    "top_k": null,
+    "normalisation": {
+      "method": "identity",
+      "input_range": [
+        0.0,
+        1.0
+      ],
+      "calibration_note": "The detector emits a per-pixel text probability map. What this stack consumes is the FRACTION OF THE FRAME above threshold, not the boxes -- a derived scalar in [0,1] already, so no rescale. 0.3 is PaddleOCR's own default binarisation threshold."
+    }
+  },
+  "outputs": [
+    {
+      "name": "text_probability_map",
+      "meaning": "mask",
+      "shape": [
+        -1,
+        1,
+        640,
+        640
+      ],
+      "dimensions": null,
+      "vector_space": null
+    }
+  ],
+  "batching": {
+    "supported": true,
+    "max_batch": 8,
+    "dynamic_axes": true
+  },
+  "license": {
+    "code_license": "Apache-2.0",
+    "weights_license": "Apache-2.0",
+    "commercial_use": "permitted",
+    "verified": false,
+    "verified_at": null,
+    "license_url": "https://github.com/PaddlePaddle/PaddleOCR/blob/main/LICENSE",
+    "training_data": "PaddleOCR's own Chinese and English corpora. Baidu publishes the detection weights under the repository licence rather than a separate model licence, which is the cleaner of the two arrangements this registry deals with.",
+    "blocks_commercial_release": false,
+    "note": "Desk assessment only. Apache-2.0 on both code and weights, which is why this is the detector of choice over better-scoring alternatives with murkier checkpoints."
+  },
+  "rollout": {
+    "state": "candidate",
+    "replaces": null,
+    "promoted_at": null
+  },
+  "eval": null,
+  "notes": "DETECTION ONLY, NO RECOGNITION. The product question is 'should this image be excluded from a memory', and text COVERAGE answers it. Running the recognition head would mean reading the words -- bank balances, medical results, private messages -- which is exactly the content most people would be least happy to have transcribed and stored, and it would buy nothing the coverage fraction does not already give. Excluding the recogniser is a privacy decision, not a cost one, and it should not be reversed without a specific reason and a consent scope.\n\nTHRESHOLDING IS THE CALLER'S JOB. This config pins the model; it does not pin 'what counts as a screenshot'. That boundary belongs in the ranking engine where it can be tuned and explained, because the failure is asymmetric in an unobvious direction: a whiteboard covered in writing at a family event is text-dense AND a memory, while a screenshot of a chat is text-dense and is not. Coverage alone cannot separate them -- face presence and EXIF (a screenshot has no lens data) are what do, and those live upstream in the fusion, not here."
+}

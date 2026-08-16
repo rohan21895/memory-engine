@@ -162,9 +162,16 @@
           ]
         },
         "source_url": {
-          "description": "Where the weights come from. Required even while unpinned, so the audit and the download are the same fact.",
-          "type": "string",
-          "minLength": 1
+          "description": "Where the weights come from. Null ONLY when no specific checkpoint has been selected yet -- which is a real state for a slot the product needs (a safety classifier) but nobody has chosen a model for. Such an entry is registered so it is licence-audited and visible, and it can never load: there is no file, so the gate refuses it as WEIGHTS_MISSING.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "blake3": {
           "description": "Hash of the exact bytes. Null means UNPINNED: the file has not been downloaded and hashed yet, so this entry is not reproducible and must not be promoted past `candidate`. 'The same version' of a HuggingFace repo has had its weights changed underneath people before.",

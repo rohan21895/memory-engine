@@ -1,0 +1,90 @@
+{
+  "config_version": "v0",
+  "model_id": "nsfw-siglip-head",
+  "version": "1.0.0",
+  "task": "safety_classifier",
+  "description": "Sensitive-content classifier: a small linear head over the SigLIP 2 embedding already computed for every image. Gates what may enter an automated album, a shared reel, or a contact sheet sent to the frontier model.",
+  "weights": {
+    "filename": "nsfw-siglip2-so400m-head.onnx",
+    "format": "onnx",
+    "source_url": null,
+    "blake3": null,
+    "byte_size": null,
+    "quantization": "fp32"
+  },
+  "runtime_targets": [
+    "onnxruntime_coreml",
+    "onnxruntime_cuda",
+    "onnxruntime_directml",
+    "onnxruntime_cpu"
+  ],
+  "preprocessing": {
+    "kind": "none",
+    "input_name": "image_embeds",
+    "input_size": null,
+    "resize": "none",
+    "interpolation": "bilinear",
+    "color_order": "rgb",
+    "layout": "nl",
+    "scale": 1.0,
+    "mean": [],
+    "std": [],
+    "face_alignment": null,
+    "audio": null,
+    "sequence_length": null
+  },
+  "postprocessing": {
+    "steps": [
+      "sigmoid"
+    ],
+    "nms_threshold": null,
+    "score_threshold": 0.3,
+    "strides": [],
+    "normalisation": {
+      "method": "identity",
+      "input_range": [
+        0.0,
+        1.0
+      ],
+      "calibration_note": "Sigmoid output is already a probability, so no rescale. The threshold is 0.3 rather than 0.5 on purpose and is the one number in this file that is a policy decision rather than a technical one -- see notes."
+    },
+    "landmark_scheme": null,
+    "max_detections": null,
+    "top_k": null
+  },
+  "outputs": [
+    {
+      "name": "sensitive_logits",
+      "meaning": "logits",
+      "shape": [
+        -1,
+        3
+      ],
+      "dimensions": null,
+      "vector_space": null
+    }
+  ],
+  "batching": {
+    "supported": true,
+    "max_batch": 256,
+    "dynamic_axes": true
+  },
+  "license": {
+    "code_license": "unknown",
+    "weights_license": "unknown",
+    "commercial_use": "unresolved",
+    "verified": false,
+    "verified_at": null,
+    "license_url": null,
+    "training_data": "Not yet selected. Several open NSFW heads over CLIP/SigLIP features exist under permissive licences, but their training data varies and some are trained on scraped material whose provenance is itself the problem.",
+    "blocks_commercial_release": true,
+    "note": "DELIBERATELY MARKED BLOCKING while unselected. This is the one model in the stack where shipping the wrong thing is a user-visible harm rather than a quality regression, and an unaudited safety classifier is worse than none -- it produces a number that looks like a safety guarantee. `blocks_commercial_release: true` keeps it out of every release pipeline by construction until a human picks a specific head and records why."
+  },
+  "rollout": {
+    "state": "candidate",
+    "replaces": null,
+    "promoted_at": null
+  },
+  "eval": null,
+  "notes": "PLACEHOLDER FOR THE SHAPE: no specific head has been selected. THREE CLASSES, NOT ONE FLAG. The head emits explicit / suggestive / medical-or-artistic rather than a single 'nsfw' bit, because collapsing them is what produces the two classic failures: a breastfeeding photo or a post-surgery record treated as pornography, and a bikini holiday photo treated as safe for a shared reel. A family library contains all three and the right handling differs for each.\n\nTHE THRESHOLD IS ASYMMETRIC ON PURPOSE. 0.3, not 0.5. A false positive quietly omits one photo from an automated album, which the user can override. A false negative puts sensitive content into a printed book, a shared reel, or a contact sheet uploaded to a frontier model -- and the last of those is irreversible the moment it leaves the device. Those costs are not symmetric, so the threshold should not be either.\n\nEXCLUSION IS NOT DELETION. A flagged photo stays in the library, stays searchable by its owner, and is only withheld from automated and shared output. The classifier decides what the system publishes on the user's behalf; it never decides what the user may keep.\n\nRuns on the embedding, so it costs nothing beyond the SigLIP pass that already happened -- which is the reason it can run on everything rather than on a sample, and coverage is what a safety gate needs most."
+}

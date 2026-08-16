@@ -1,0 +1,102 @@
+{
+  "config_version": "v0",
+  "model_id": "musiq-spaq",
+  "version": "1.0.0",
+  "task": "technical_iqa",
+  "description": "MUSIQ (Multi-Scale Image Quality Transformer), SPAQ checkpoint. No-reference technical quality: blur, noise, compression artefacts, exposure problems. Feeds QualityScores.technical_iqa, which carries the second-largest weight in fusion after sharpness.",
+  "weights": {
+    "filename": "musiq-spaq.onnx",
+    "format": "onnx",
+    "source_url": "https://github.com/google-research/google-research/tree/master/musiq",
+    "blake3": null,
+    "byte_size": null,
+    "quantization": "fp32"
+  },
+  "runtime_targets": [
+    "onnxruntime_coreml",
+    "onnxruntime_cuda",
+    "onnxruntime_directml",
+    "onnxruntime_cpu"
+  ],
+  "preprocessing": {
+    "kind": "image",
+    "input_name": "image",
+    "input_size": {
+      "width": 384,
+      "height": 384
+    },
+    "resize": "shortest_side",
+    "interpolation": "bicubic",
+    "color_order": "rgb",
+    "layout": "nhwc",
+    "scale": 0.00392156862745098,
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "face_alignment": null,
+    "audio": null,
+    "sequence_length": null
+  },
+  "postprocessing": {
+    "steps": [
+      "scale_to_unit",
+      "clip"
+    ],
+    "nms_threshold": null,
+    "score_threshold": null,
+    "strides": [],
+    "normalisation": {
+      "method": "linear_rescale",
+      "input_range": [
+        0.0,
+        100.0
+      ],
+      "calibration_note": "The SPAQ checkpoint predicts a mean opinion score on a 0-100 scale, NOT a probability. Writing the raw output into a Score would put 62.4 into a field the contract declares as [0,1], and every consumer that clamps rather than validates would silently read it as 1.0 -- i.e. every photo would look technically perfect. The rescale is linear because MOS is already approximately linear in perceived quality; a sigmoid here would compress exactly the mid-range where photos actually differ. Range 0-100 is the checkpoint's nominal scale, not an observed one: real predictions cluster roughly 20-80, so once a benchmark library exists this should move to percentile_calibrated against it."
+    },
+    "landmark_scheme": null,
+    "max_detections": null,
+    "top_k": null
+  },
+  "outputs": [
+    {
+      "name": "quality_score",
+      "meaning": "score",
+      "shape": [
+        -1,
+        1
+      ],
+      "dimensions": null,
+      "vector_space": null
+    }
+  ],
+  "batching": {
+    "supported": false,
+    "max_batch": 1,
+    "dynamic_axes": true
+  },
+  "license": {
+    "code_license": "Apache-2.0",
+    "weights_license": "Apache-2.0",
+    "commercial_use": "permitted",
+    "verified": false,
+    "verified_at": null,
+    "license_url": "https://github.com/google-research/google-research/blob/master/LICENSE",
+    "training_data": "SPAQ (smartphone photography attribute and quality), released for academic research. The code licence does not cover the training data, and a checkpoint trained on research-only data is the exact trap docs/model-registry.md exists to catch -- see the note.",
+    "blocks_commercial_release": false,
+    "note": "Desk assessment only, and the weaker half of it is the checkpoint rather than the code. google-research is Apache-2.0; the SPAQ dataset it was trained on is academic-use. Whether that restricts the resulting weights is precisely the question a human has to answer before `verified` flips. The KonIQ-10k checkpoint has the same shape of problem. Recorded here rather than discovered later."
+  },
+  "rollout": {
+    "state": "candidate",
+    "replaces": null,
+    "promoted_at": null
+  },
+  "eval": null,
+  "notes": "PLACEHOLDER FOR THE SHAPE, not a working entry. MUSIQ is resolution-preserving by design -- it consumes the native aspect ratio through a multi-scale patch encoder -- and the input size, resize mode and normalisation constants recorded here are the COMMON defaults, not values read off the actual ONNX export. Writing plausible preprocessing constants for a model nobody has run is precisely how the SCRFD double-scaling bug happened, so this entry stays out of every pipeline until the export is inspected and these are replaced with measured values. The score normalisation is the part worth keeping: the SPAQ checkpoint predicts a 0-100 mean opinion score, and writing that raw into a Score field the contract declares as [0,1] would make every photo look technically perfect to any consumer that clamps."
+}
