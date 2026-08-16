@@ -21,11 +21,8 @@
   "preprocessing": {
     "kind": "image",
     "input_name": "image",
-    "input_size": {
-      "width": 384,
-      "height": 384
-    },
-    "resize": "shortest_side",
+    "input_size": null,
+    "resize": "none",
     "interpolation": "bicubic",
     "color_order": "rgb",
     "layout": "nhwc",
@@ -42,7 +39,9 @@
     ],
     "face_alignment": null,
     "audio": null,
-    "sequence_length": null
+    "sequence_length": null,
+    "resize_limit": null,
+    "size_multiple": null
   },
   "postprocessing": {
     "steps": [
@@ -83,17 +82,17 @@
   },
   "license": {
     "code_license": "Apache-2.0",
-    "weights_license": "Apache-2.0",
-    "commercial_use": "permitted",
+    "weights_license": "Apache-2.0 (code); SPAQ-trained checkpoint terms unresolved",
+    "commercial_use": "unresolved",
     "verified": false,
     "verified_at": null,
     "license_url": "https://github.com/google-research/google-research/blob/master/LICENSE",
     "training_data": "SPAQ (smartphone photography attribute and quality), released for academic research. The code licence does not cover the training data, and a checkpoint trained on research-only data is the exact trap docs/model-registry.md exists to catch -- see the note.",
-    "blocks_commercial_release": false,
-    "note": "Desk assessment only, and the weaker half of it is the checkpoint rather than the code. google-research is Apache-2.0; the SPAQ dataset it was trained on is academic-use. Whether that restricts the resulting weights is precisely the question a human has to answer before `verified` flips. The KonIQ-10k checkpoint has the same shape of problem. Recorded here rather than discovered later."
+    "blocks_commercial_release": true,
+    "note": "Codex caught this file contradicting itself: it declared Apache-2.0, commercial_use permitted and blocks_commercial_release false, while its own training-data field said the SPAQ checkpoint's commercial status still needs a human answer. The permissive fields were the desk assessment of the CODE licence leaking into the WEIGHTS fields -- which is the single trap docs/model-registry.md exists to catch, made by the person who wrote that warning. It is now unresolved and release-blocking until someone answers the question."
   },
   "rollout": {
-    "state": "candidate",
+    "state": "placeholder",
     "replaces": null,
     "promoted_at": null
   },

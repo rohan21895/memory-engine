@@ -32,8 +32,7 @@
         "classical_quality",
         "siglip2-so400m-384",
         "scrfd-10g-bnkps",
-        "arcface-buffalo-l",
-        "paddleocr-mobile-det"
+        "arcface-buffalo-l"
       ],
       "note": "The selected stack. SCRFD + ArcFace are the most accurate available and are what the product is built on for internal use. Their weights are non-commercial, so this pipeline is development-only by construction -- release mode refuses it rather than someone remembering not to ship it. laion-aesthetic-v2 is removed until its head is retrained on SigLIP 2 features; a pipeline must be end-to-end runnable, and a known-broken step makes it a plan rather than a pipeline."
     },
@@ -42,8 +41,7 @@
       "steps": [
         "classical_quality",
         "siglip2-so400m-384",
-        "yunet-2023mar",
-        "paddleocr-mobile-det"
+        "yunet-2023mar"
       ],
       "note": "The licence-clean swap path. Detection only -- there is still no commercially-usable recognition model, which is the real open problem behind issue #3. Kept working so the swap is mechanical when it is needed. laion-aesthetic-v2 is removed until its head is retrained on SigLIP 2 features; a pipeline must be end-to-end runnable, and a known-broken step makes it a plan rather than a pipeline. NO SAFETY GATE YET: nsfw-siglip-head is registered but unselected, so this pipeline cannot filter sensitive content. That is a hard release blocker in its own right -- shipping automated albums and shared reels with no sensitive-content gate is a user-visible harm, not a quality gap -- and it is recorded here rather than in somebody's memory."
     },
@@ -115,7 +113,7 @@
       "required_for": [
         "ranking"
       ],
-      "config_blake3": "5ddde69b895e849e073f405f16f98832fddd11d89f3510007ed910985ba16da7"
+      "config_blake3": "9458aa250361a476a0eb4b8eda8865b34ef75fec07b6f7e2687c31a5aaf8b8e5"
     },
     {
       "model_id": "musiq-spaq",
@@ -126,7 +124,7 @@
         "primary_selection",
         "album_selection"
       ],
-      "config_blake3": "6c3c6854890858743f37ecf90360c6517a2de1c58fa6ca8726859448851d9df5"
+      "config_blake3": "f410a25d27b7db49408f4070b9cd9939054b199eeaffbd7ccd0565d84d33f377"
     },
     {
       "model_id": "nsfw-siglip-head",
@@ -137,7 +135,7 @@
         "share_gating",
         "egress_gating"
       ],
-      "config_blake3": "3b5b0ea3afebb5eb95427553e6b634020896086f572071987bf7c3ea9705bf5b"
+      "config_blake3": "566288d93610c2337bfb8d7e2c109bfc213b4413954c57e30251e869a5cfee40"
     },
     {
       "model_id": "paddleocr-mobile-det",
@@ -147,7 +145,7 @@
         "screenshot_exclusion",
         "document_exclusion"
       ],
-      "config_blake3": "1e50e5c0ca6330b64fc65a034b8848f5a68cb10e26759dc6f50ac2648c34fa04"
+      "config_blake3": "7060dfd290c9ac881d6714874a93f5f28ad953160772747377901d576bdf778d"
     }
   ]
 }

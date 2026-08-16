@@ -106,7 +106,35 @@ class TestPreprocessingIsFullySpecified(unittest.TestCase):
             if pre["kind"] not in {"image", "image_sequence", "face_crop"}:
                 continue
             with self.subTest(config=name):
-                self.assertIsNotNone(pre["input_size"], "image models need an input size")
+                if pre["resize"] in {"longest_side", "shortest_side"}:
+                    # Dynamically-sized detectors have no fixed input, so the
+                    # limit and the stride multiple are what must be pinned
+                    # instead. PP-OCRv4 rounds to a multiple of 32 because its
+                    # feature-map strides do not divide arbitrary sizes -- get
+                    # that wrong and the output grid changes rather than raising.
+                    self.assertIsNone(
+                        pre["input_size"],
+                        f"{name} resizes by {pre['resize']} but also fixes an input size",
+                    )
+                    self.assertIsNotNone(pre.get("resize_limit"),
+                                         f"{name} needs a resize_limit")
+                    self.assertIsNotNone(pre.get("size_multiple"),
+                                         f"{name} needs a size_multiple")
+                elif pre["resize"] == "none" and not pre.get("face_alignment"):
+                    # Resolution-preserving by architecture (MUSIQ's multi-scale
+                    # patch encoder). Declaring a fixed input size here would
+                    # contradict the resize mode, which is what that config did.
+                    #
+                    # A face crop is the exception and is excluded above: it
+                    # does not resize because its ALIGNMENT TEMPLATE already
+                    # produces the exact size, so ArcFace's 112x112 with resize
+                    # `none` is correct rather than contradictory.
+                    self.assertIsNone(
+                        pre["input_size"],
+                        f"{name} does not resize but fixes an input size",
+                    )
+                else:
+                    self.assertIsNotNone(pre["input_size"], "image models need an input size")
                 self.assertIn(pre["color_order"], {"rgb", "bgr", "gray"})
                 self.assertIn(pre["layout"], {"nchw", "nhwc"})
 
@@ -203,6 +231,69 @@ class TestPreprocessingIsFullySpecified(unittest.TestCase):
                 )
 
 
+class TestPlaceholdersAreUnloadable(unittest.TestCase):
+    """A placeholder must be refused by the gate, not merely described.
+
+    Codex found that `candidate` + placeholder notes + a null hash + a null
+    source URL are none of them load-gate inputs, so a placeholder whose weights
+    file happened to exist would load in development and return plausible
+    numbers from constants nobody verified -- which is exactly the failure mode
+    the SCRFD double-scaling bug had.
+    """
+
+    def _placeholders(self):
+        return [(n, c) for n, c in configs() if c["rollout"]["state"] == "placeholder"]
+
+    def test_there_are_placeholders_to_check(self):
+        self.assertTrue(self._placeholders(), "this guard has nothing to guard")
+
+    def test_a_placeholder_is_refused_in_every_mode(self):
+        import sys
+        sys.path.insert(0, str(MODELS_ROOT))
+        from policy import Candidate, decide_load, load_policy
+
+        policy = load_policy()
+        for name, config in self._placeholders():
+            with self.subTest(config=name):
+                candidate = Candidate(
+                    registered=True,
+                    weights_present=True,       # pretend the file is there
+                    pinned_hash=None,
+                    actual_hash=None,
+                    license_verified=config["license"]["verified"],
+                    blocks_commercial_release=config["license"]["blocks_commercial_release"],
+                    is_placeholder=True,
+                )
+                for mode in ("release", "development"):
+                    self.assertEqual(
+                        "UNLOADABLE_REASON_PLACEHOLDER",
+                        decide_load(candidate, mode, policy),
+                        f"{name} is a placeholder but loads in {mode}",
+                    )
+
+    def test_a_placeholder_says_so_in_its_notes_too(self):
+        """Data and prose must agree, in both directions."""
+        for name, config in configs():
+            notes = (config.get("notes") or "").lower()
+            declared = config["rollout"]["state"] == "placeholder"
+            documented = "placeholder for the shape" in notes
+            with self.subTest(config=name):
+                self.assertEqual(
+                    declared, documented,
+                    f"{name}: rollout.state placeholder={declared} but notes say "
+                    f"placeholder={documented}",
+                )
+
+    def test_no_pipeline_contains_a_placeholder(self):
+        placeholders = {c["model_id"] for _, c in self._placeholders()}
+        for pipeline, spec in REGISTRY["pipelines"].items():
+            with self.subTest(pipeline=pipeline):
+                self.assertEqual(
+                    set(), placeholders & set(spec["steps"]),
+                    f"{pipeline} contains a placeholder",
+                )
+
+
 class TestLicenceHonesty(unittest.TestCase):
     def test_every_config_states_a_licence(self):
         for name, config in configs():
@@ -260,9 +351,9 @@ class TestLicenceHonesty(unittest.TestCase):
         for name, config in configs():
             with self.subTest(config=name):
                 if config["weights"]["blake3"] is None:
-                    self.assertEqual(
-                        "candidate",
+                    self.assertIn(
                         config["rollout"]["state"],
+                        {"candidate", "placeholder"},
                         "weights must be downloaded and hashed before a model can be "
                         "promoted past candidate",
                     )

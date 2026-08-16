@@ -81,7 +81,7 @@
     "note": "DELIBERATELY MARKED BLOCKING while unselected. This is the one model in the stack where shipping the wrong thing is a user-visible harm rather than a quality regression, and an unaudited safety classifier is worse than none -- it produces a number that looks like a safety guarantee. `blocks_commercial_release: true` keeps it out of every release pipeline by construction until a human picks a specific head and records why."
   },
   "rollout": {
-    "state": "candidate",
+    "state": "placeholder",
     "replaces": null,
     "promoted_at": null
   },
