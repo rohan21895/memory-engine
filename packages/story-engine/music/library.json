@@ -1,0 +1,73 @@
+{
+  "library_version": "0.1.0-default",
+  "policy": {
+    "accepted_license_types": ["cc0", "public_domain"],
+    "default_provider": "creative_commons",
+    "require_attribution": false,
+    "cleared_for": ["private_playback", "social_share", "commercial_use"],
+    "audio_bundled": false,
+    "notes": "CC0 only for now. See README.md for why attribution-required licences are excluded from the default path and what changes if that decision is revisited."
+  },
+  "tracks": [
+    {
+      "track_id": "cc0-upbeat-120",
+      "title": "Placeholder — upbeat, 120 BPM",
+      "status": "placeholder",
+      "audio_path": null,
+      "bpm_hint": 120,
+      "time_signature_hint": { "beats_per_bar": 4, "beat_unit": 4 },
+      "energy_profile": "steady",
+      "suits": ["reel", "highlight"],
+      "license": {
+        "provider": "creative_commons",
+        "license_id": null,
+        "track_title": null,
+        "attribution_required": false,
+        "attribution_text": null,
+        "license_type": "cc0",
+        "cleared_for": ["private_playback", "social_share", "commercial_use"]
+      },
+      "verified": false
+    },
+    {
+      "track_id": "cc0-build-128",
+      "title": "Placeholder — builds to a drop, 128 BPM",
+      "status": "placeholder",
+      "audio_path": null,
+      "bpm_hint": 128,
+      "time_signature_hint": { "beats_per_bar": 4, "beat_unit": 4 },
+      "energy_profile": "build_to_peak",
+      "suits": ["reel"],
+      "license": {
+        "provider": "creative_commons",
+        "license_id": null,
+        "track_title": null,
+        "attribution_required": false,
+        "attribution_text": null,
+        "license_type": "cc0",
+        "cleared_for": ["private_playback", "social_share", "commercial_use"]
+      },
+      "verified": false
+    },
+    {
+      "track_id": "cc0-gentle-90",
+      "title": "Placeholder — gentle, 90 BPM",
+      "status": "placeholder",
+      "audio_path": null,
+      "bpm_hint": 90,
+      "time_signature_hint": { "beats_per_bar": 4, "beat_unit": 4 },
+      "energy_profile": "calm",
+      "suits": ["film", "album_slideshow"],
+      "license": {
+        "provider": "creative_commons",
+        "license_id": null,
+        "track_title": null,
+        "attribution_required": false,
+        "attribution_text": null,
+        "license_type": "cc0",
+        "cleared_for": ["private_playback", "social_share", "commercial_use"]
+      },
+      "verified": false
+    }
+  ]
+}

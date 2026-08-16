@@ -16,22 +16,22 @@
     "place_label": "Kata Beach, Phuket"
   },
   "vendor_profile": {
-    "vendor_id": "vendor-primary",
+    "vendor_id": "default-premium",
     "product_id": "layflat-300-square",
-    "profile_version": "2026.1",
+    "profile_version": "2026.1-default",
     "trim_size_mm": {
       "width_mm": 300.0,
       "height_mm": 300.0
     },
     "bleed_mm": 3.0,
     "safe_margin_mm": 8.0,
-    "gutter_mm": 10.0,
+    "gutter_mm": 5.0,
     "spine_mm": 14.0,
     "dpi_floor": 300.0,
     "dpi_preferred": 350.0,
     "color_profile": {
       "icc_name": "FOGRA39 Coated",
-      "icc_hash": "57100d93e9f70e7414d12e23fc1485ca14b25b11cf7017d2842d1cc5ecc86093",
+      "icc_hash": null,
       "intent": "relative_colorimetric"
     },
     "page_count": {
