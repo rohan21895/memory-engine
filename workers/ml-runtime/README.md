@@ -48,6 +48,10 @@ runtime, resolves those proxies back through media-db, and prints a JSON report 
 detection and every blocked stage. Work is content-addressed under the system temporary directory
 by default; pass `--work-dir` for a persistent location.
 
+The model list reports `registry_loadable` rather than claiming the ONNX graph is loadable before
+a provider creates a session. Session creation separately verifies every configured input and
+output name and reports a typed `CONFIG_MISMATCH` when real weights disagree with registry metadata.
+
 This is deliberately a development command. It enables the registry's named development gate but
 does not download weights or make network requests. Detections are currently reported but not
 written as FaceRecords: issue #34 must freeze the canonical `face_id` encoding before a writer can

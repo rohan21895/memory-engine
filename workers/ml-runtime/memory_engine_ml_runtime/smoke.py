@@ -175,7 +175,10 @@ def _model_report(catalog: ModelCatalog) -> list[dict[str, Any]]:
     return [
         {
             "model_id": inspection.model_id,
-            "loadable": inspection.unloadable_reason is None,
+            # The graph contract is validated only when a provider creates the
+            # real session.  Keep this label honest when registry metadata and
+            # a published checkpoint disagree (issue #36).
+            "registry_loadable": inspection.unloadable_reason is None,
             "reason": inspection.unloadable_reason,
             "runtimes": list(inspection.available_runtimes),
         }
@@ -434,7 +437,11 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if inference.get("status") != "ok":
         report["status"] = "failed"
         report["breakages"].append(
-            {"stage": "ml_runtime", "message": "inference returned a typed error"}
+            {
+                "stage": "ml_runtime",
+                "code": inference.get("code"),
+                "message": inference.get("message", "inference returned a typed error"),
+            }
         )
         return 1, report
 
