@@ -15,12 +15,9 @@
     "load_policy": { "$ref": "#/$defs/LoadPolicy" },
 
     "pipelines": {
-      "description": "Ordered step lists. A pipeline may only name registered models plus the classical (non-model) steps.",
+      "description": "Named pipelines, each declaring the weakest load mode it is valid under. A pipeline containing a licence-blocked model is development-only BY CONSTRUCTION -- release mode refuses it, rather than someone having to remember not to ship it.",
       "type": "object",
-      "additionalProperties": {
-        "type": "array",
-        "items": { "type": "string" }
-      }
+      "additionalProperties": { "$ref": "#/$defs/Pipeline" }
     },
 
     "entries": {
@@ -45,6 +42,27 @@
           "items": { "type": "string" },
           "default": []
         }
+      }
+    },
+
+    "Pipeline": {
+      "title": "Pipeline",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_load_mode", "steps"],
+      "properties": {
+        "min_load_mode": {
+          "description": "The weakest mode this pipeline may run under. `development` means it contains something release mode refuses -- an unpinned weight, an unverified licence, or a model that blocks a commercial release.",
+          "type": "string",
+          "enum": ["development", "release"]
+        },
+        "steps": {
+          "description": "Ordered. May name registered models plus classical (non-model) steps.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "note": { "type": "string" }
       }
     },
 

@@ -215,9 +215,12 @@ class TestRegistryAgainstPolicy(unittest.TestCase):
                 self.assertIsNone(decide_load(candidate, "development"))
 
     def test_the_selected_face_detector_is_licence_cleared(self):
-        """Issue #10 requires a licence-cleared detector, and issue #3 leaves
-        SCRFD's weights unusable. YuNet is selected on that basis; SCRFD stays
-        registered for benchmarking but out of every pipeline."""
+        """A licence-clean detector must remain available and working.
+
+        The selected stack for internal use is SCRFD + ArcFace, on accuracy
+        grounds. YuNet is not shelved by that decision: it stays configured and
+        sits in the release pipeline, so the swap needed to ship commercially is
+        mechanical rather than a rediscovery."""
         configs = self._configs()
         selected = configs["yunet-2023mar"]
         self.assertEqual("permitted", selected["license"]["commercial_use"])
@@ -226,26 +229,66 @@ class TestRegistryAgainstPolicy(unittest.TestCase):
         scrfd = configs["scrfd-10g-bnkps"]
         self.assertTrue(scrfd["license"]["blocks_commercial_release"])
 
-        for pipeline, steps in REGISTRY["pipelines"].items():
-            with self.subTest(pipeline=pipeline):
+        for name, spec in REGISTRY["pipelines"].items():
+            if spec["min_load_mode"] != "release":
+                continue
+            with self.subTest(pipeline=name):
                 self.assertNotIn(
                     "scrfd-10g-bnkps",
-                    steps,
-                    "SCRFD must not sit in a pipeline while issue #3 is unresolved",
+                    spec["steps"],
+                    "SCRFD is non-commercial; it may not sit in a release pipeline",
                 )
 
-    def test_no_pipeline_contains_a_release_blocking_model(self):
+    def test_a_release_pipeline_contains_no_release_blocking_model(self):
+        """The guard that survives the decision.
+
+        Using non-commercial weights internally is a deliberate choice. Shipping
+        them is not, and a pipeline declaring itself release-ready may not
+        contain one -- which makes "we will sort licences later" a mechanical
+        swap rather than an archaeology exercise.
+        """
         configs = self._configs()
-        for pipeline, steps in REGISTRY["pipelines"].items():
-            for step in steps:
+        for name, spec in REGISTRY["pipelines"].items():
+            if spec["min_load_mode"] != "release":
+                continue
+            for step in spec["steps"]:
                 config = configs.get(step)
                 if config is None:
                     continue  # classical, non-model step
-                with self.subTest(pipeline=pipeline, step=step):
+                with self.subTest(pipeline=name, step=step):
                     self.assertFalse(
                         config["license"]["blocks_commercial_release"],
-                        f"{step} blocks a commercial release but sits in {pipeline}",
+                        f"{step} blocks a commercial release but sits in {name}",
                     )
+
+    def test_a_development_pipeline_declares_itself_as_such(self):
+        """A pipeline containing a blocked model must say it is development-only,
+        so the constraint lives in the data rather than in someone's memory."""
+        configs = self._configs()
+        for name, spec in REGISTRY["pipelines"].items():
+            blocked = [
+                step for step in spec["steps"]
+                if configs.get(step, {}).get("license", {}).get("blocks_commercial_release")
+            ]
+            if not blocked:
+                continue
+            with self.subTest(pipeline=name):
+                self.assertEqual(
+                    "development",
+                    spec["min_load_mode"],
+                    f"{name} contains {blocked} but claims to be release-ready",
+                )
+
+    def test_a_licence_clean_path_still_exists(self):
+        """Insurance against the internal decision quietly becoming permanent."""
+        release_pipelines = {
+            name for name, spec in REGISTRY["pipelines"].items()
+            if spec["min_load_mode"] == "release"
+        }
+        self.assertTrue(
+            release_pipelines,
+            "no release-ready pipeline remains; the licence-clean path has been lost",
+        )
 
 
 if __name__ == "__main__":

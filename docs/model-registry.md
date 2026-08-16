@@ -131,6 +131,42 @@ Steps 4–6 are the eval harness's job (`packages/eval-harness`, Phase 6). Steps
 
 ---
 
+## Decision: the face stack, taken 2026-08-16
+
+**Selected: SCRFD (detection) + ArcFace `buffalo_l` (recognition), InsightFace.**
+
+Chosen on accuracy. The product is being built for internal use, the bar is
+industry-leading output, and these are the best available. Licensing is
+deliberately deferred.
+
+**What that costs, stated plainly:** their weights are published for
+non-commercial research use, so this stack cannot ship commercially as it
+stands. That is a known, accepted position — not an oversight.
+
+**What stops it becoming permanent by accident:**
+
+- Both entries keep `blocks_commercial_release: true`.
+- `photo_analysis` and `video_analysis` declare `min_load_mode: development`, so
+  release mode refuses them by construction rather than by anyone remembering.
+- `photo_analysis_release` keeps the licence-clean path (YuNet) working, and a
+  test asserts a release-ready pipeline still exists. If that path rots, CI
+  fails — the swap stays mechanical instead of becoming archaeology.
+
+**The unsolved half.** Detection has a clean answer (YuNet, MIT). Recognition
+does not: dlib's ResNet is public domain and a real candidate, but it trails
+ArcFace, and most alternatives are trained on retracted datasets
+(MS-Celeb-1M, VGGFace2). Whenever commercial release comes onto the table, this
+is the piece that needs real work — see issue #3.
+
+**Why the accuracy gap is survivable when it comes.** The contract splits
+`cluster` from `identity` from `eligible_for_automated_output`. A weaker
+embedding does not put wrong faces in albums; it puts more faces below the
+threshold, which surfaces as extra review-queue work. The cost lands as human
+labelling, not as a catastrophic failure — which is exactly what the
+precision-first design was for.
+
+---
+
 ## Actions before Phase 1
 
 1. **Resolve the InsightFace position.** Blocking for albums, films and person labeling. Licence it, replace it, or train a replacement — and decide now, because every week of integration against it raises the cost of switching.

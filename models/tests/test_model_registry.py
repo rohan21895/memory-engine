@@ -91,8 +91,8 @@ class TestRegistryIndex(unittest.TestCase):
         known = {e["model_id"] for e in REGISTRY["entries"]}
         # Non-model steps (classical CV) are allowed in a pipeline and have no config.
         non_model = {"classical_quality"}
-        for pipeline, steps in REGISTRY["pipelines"].items():
-            for step in steps:
+        for pipeline, spec in REGISTRY["pipelines"].items():
+            for step in spec["steps"]:
                 with self.subTest(pipeline=pipeline, step=step):
                     self.assertIn(step, known | non_model)
 
