@@ -1,0 +1,62 @@
+{
+  "config_version": "v0",
+  "model_id": "siglip2-so400m-384",
+  "version": "2.0.0",
+  "task": "image_embedding",
+  "description": "SigLIP 2 so400m at 384px. The highest-leverage model in the stack: one embedding powers search, near-duplicate refinement, diversity constraints and zero-shot tagging.",
+  "weights": {
+    "filename": "siglip2-so400m-patch14-384-vision.onnx",
+    "format": "onnx",
+    "source_url": "https://huggingface.co/google/siglip2-so400m-patch14-384",
+    "blake3": null,
+    "byte_size": null,
+    "quantization": "fp16"
+  },
+  "runtime_targets": ["onnxruntime_coreml", "onnxruntime_cuda", "onnxruntime_directml", "onnxruntime_cpu"],
+  "preprocessing": {
+    "kind": "image",
+    "input_name": "pixel_values",
+    "input_size": { "width": 384, "height": 384 },
+    "resize": "stretch",
+    "interpolation": "bicubic",
+    "color_order": "rgb",
+    "layout": "nchw",
+    "scale": 0.00392156862745098,
+    "mean": [0.5, 0.5, 0.5],
+    "std": [0.5, 0.5, 0.5],
+    "face_alignment": null,
+    "audio": null,
+    "sequence_length": null
+  },
+  "postprocessing": {
+    "steps": ["l2_normalize"],
+    "nms_threshold": null,
+    "score_threshold": null,
+    "strides": [],
+    "normalisation": null
+  },
+  "outputs": [
+    {
+      "name": "image_embeds",
+      "meaning": "embedding",
+      "shape": [-1, 1152],
+      "dimensions": 1152,
+      "vector_space": "siglip2_so400m_1152"
+    }
+  ],
+  "batching": { "supported": true, "max_batch": 16, "dynamic_axes": true },
+  "license": {
+    "code_license": "Apache-2.0",
+    "weights_license": "Apache-2.0",
+    "commercial_use": "permitted",
+    "verified": false,
+    "verified_at": null,
+    "license_url": "https://huggingface.co/google/siglip2-so400m-patch14-384",
+    "training_data": "WebLI (Google internal web-scale image-text). Terms are the model card's, not a separate dataset licence.",
+    "blocks_commercial_release": false,
+    "note": "Desk assessment only. Apache-2.0 on the model card; not verified at source."
+  },
+  "rollout": { "state": "candidate", "replaces": null, "promoted_at": null },
+  "eval": null,
+  "notes": "SigLIP 2 uses a sigmoid loss rather than CLIP's softmax contrastive loss, so raw logits are not comparable to CLIP's and any threshold tuned on a CLIP model must be re-tuned. Stretch resize rather than centre crop is deliberate: cropping loses the edges of a composition, and composition is part of what we score."
+}

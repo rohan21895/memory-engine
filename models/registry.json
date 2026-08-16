@@ -1,0 +1,46 @@
+{
+  "registry_version": "v0",
+  "description": "Index of every model workers/ml-runtime may load. Claude owns the contents; Codex owns the loader. A model that is not listed here cannot be loaded -- that is the whole point of a registry.",
+  "pipelines": {
+    "photo_analysis": [
+      "classical_quality",
+      "siglip2-so400m-384",
+      "scrfd-10g-bnkps",
+      "arcface-buffalo-l",
+      "laion-aesthetic-v2"
+    ],
+    "video_analysis": ["transnetv2", "siglip2-so400m-384", "scrfd-10g-bnkps"]
+  },
+  "entries": [
+    {
+      "model_id": "siglip2-so400m-384",
+      "config": "configs/siglip2-so400m-384.json",
+      "task": "image_embedding",
+      "required_for": ["search", "dedupe_refinement", "diversity", "zero_shot_tags"]
+    },
+    {
+      "model_id": "scrfd-10g-bnkps",
+      "config": "configs/scrfd-10g-bnkps.json",
+      "task": "face_detection",
+      "required_for": ["faces", "album_hero_selection", "person_labeling"]
+    },
+    {
+      "model_id": "arcface-buffalo-l",
+      "config": "configs/arcface-buffalo-l.json",
+      "task": "face_embedding",
+      "required_for": ["face_clustering", "person_queries"]
+    },
+    {
+      "model_id": "transnetv2",
+      "config": "configs/transnetv2.json",
+      "task": "shot_detection",
+      "required_for": ["moment_scoring", "reel_planning"]
+    },
+    {
+      "model_id": "laion-aesthetic-v2",
+      "config": "configs/laion-aesthetic-v2.json",
+      "task": "aesthetic",
+      "required_for": ["ranking"]
+    }
+  ]
+}
