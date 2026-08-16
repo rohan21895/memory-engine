@@ -11,6 +11,11 @@ Rust worker for local, content-addressed media discovery. It consumes the genera
 - Filename-derived dates for common WhatsApp exports; unknown dates remain explicitly
   unknown rather than falling back to filesystem time.
 - Content sniffing rather than extension trust, including HEIC/HEIF/AVIF ISO-BMFF brands.
+- GoPro chapter recognition for both modern `GH01`/`GX01` and legacy `GOPR` + `GP01`
+  conventions. Once a scan closes, ordered physical members are rewritten with final span
+  membership and a content-addressed virtual assembly is emitted. Incomplete or ambiguous sets
+  never masquerade as verified gapless footage. Completed constant-rate proxy indexes refresh
+  member offsets without another source read.
 - Durable checkpoint JSON after each file. `execute_scan_batch` supports cooperative yield;
   process death follows the same cursor-based resume path.
 - Corrupt, zero-byte, and unsupported inputs are retained as quarantined records. Known

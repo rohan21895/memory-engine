@@ -15,7 +15,7 @@ use memory_engine_contracts::{
 };
 use thiserror::Error;
 
-use crate::{format, metadata, phash};
+use crate::{format, gopro, metadata, phash};
 
 const READ_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_BUFFERED_STILL_BYTES: u64 = 512 * 1024 * 1024;
@@ -286,7 +286,7 @@ fn detect_adapter(path: &Path) -> SourceLocationAdapter {
         || filename.starts_with("VID-") && filename.contains("-WA")
     {
         SourceLocationAdapter::Whatsapp
-    } else if is_gopro_filename(&filename) {
+    } else if gopro::parse_filename(&filename).is_some() {
         SourceLocationAdapter::GoproCard
     } else if full.contains("icloud") {
         SourceLocationAdapter::IcloudExport
@@ -295,13 +295,6 @@ fn detect_adapter(path: &Path) -> SourceLocationAdapter {
     } else {
         SourceLocationAdapter::Filesystem
     }
-}
-
-fn is_gopro_filename(filename: &str) -> bool {
-    let stem = filename.split('.').next().unwrap_or_default().as_bytes();
-    stem.len() == 8
-        && matches!(&stem[..2], b"GH" | b"GX" | b"GP")
-        && stem[2..].iter().all(u8::is_ascii_digit)
 }
 
 fn processing_pending() -> ProcessingState {
