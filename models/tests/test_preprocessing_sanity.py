@@ -187,6 +187,10 @@ class TestLoadGateIsProductionCode(unittest.TestCase):
             # computed. Refused in every mode, because it is a loader bug rather
             # than a policy choice.
             "UNLOADABLE_REASON_INTEGRITY_UNVERIFIED": self._case(actual_hash=None),
+            # A config shape nobody has verified against a real export. Refused
+            # in every mode: development relaxes verification of things that are
+            # merely unverified, not of things known-unverified by construction.
+            "UNLOADABLE_REASON_PLACEHOLDER": self._case(is_placeholder=True),
         }
 
         self.assertEqual(

@@ -42,6 +42,7 @@ class UnloadableReason(str):
     CONFIG_MISMATCH = "UNLOADABLE_REASON_CONFIG_MISMATCH"
     CONFIG_UNPINNED = "UNLOADABLE_REASON_CONFIG_UNPINNED"
     INTEGRITY_UNVERIFIED = "UNLOADABLE_REASON_INTEGRITY_UNVERIFIED"
+    PLACEHOLDER = "UNLOADABLE_REASON_PLACEHOLDER"
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class Candidate:
     config_present: bool = True
     pinned_config_digest: str | None = None
     actual_config_digest: str | None = None
+    is_placeholder: bool = False
     available_providers: tuple[str, ...] = ("onnxruntime_cpu",)
 
 
@@ -107,6 +109,19 @@ def decide_load(candidate: Candidate, mode: str, policy: dict | None = None) -> 
 
     if gate["require_registered"] and not candidate.registered:
         return UnloadableReason.NOT_REGISTERED
+
+    # Before anything else about files: a placeholder is not a model. Its
+    # constants are a documented SHAPE that nobody has verified against a real
+    # export, so loading one returns plausible numbers from guessed
+    # preprocessing -- the SCRFD double-scaling failure mode exactly. Codex
+    # found that placeholder status was recorded in three places and enforced in
+    # none, so an entry whose weights file happened to exist would load.
+    #
+    # Refused in EVERY mode. Development mode relaxes verification of things
+    # that are merely unverified; a placeholder is known-unverified by
+    # construction, which is a different claim.
+    if candidate.is_placeholder:
+        return UnloadableReason.PLACEHOLDER
 
     if not candidate.config_present:
         return UnloadableReason.CONFIG_MISSING
