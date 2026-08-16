@@ -342,6 +342,43 @@ class Database:
         ).fetchone()
         return row["path"] if row else None
 
+    def resolve_proxy(self, proxy_id: str) -> dict | None:
+        """A proxy id to the proxy the ml-runtime should open, or None.
+
+        THE ONLY LOOKUP THE INFERENCE PATH IS ALLOWED TO USE. Codex flagged that
+        `ml_runtime.proto` promises the host resolves `proxy_id` through
+        media-db, while media-db only had `resolve_path`, which returns an
+        ORIGINAL. Handing the inference path a resolver that can return an
+        original defeats the structural guarantee that analysis never touches
+        source files -- so this searches the proxy list only, and a media_id
+        passed here resolves to nothing.
+
+        Returns the ProxyRef as stored, so the caller gets kind, size and the
+        frame-index sidecar without a second query.
+        """
+        row = self._connection.execute(
+            """
+            SELECT record_json FROM media
+            WHERE record_json LIKE '%' || ? || '%'
+            LIMIT 50
+            """,
+            (proxy_id,),
+        ).fetchall()
+        for candidate in row:
+            record = json.loads(candidate["record_json"])
+            for proxy in record.get("proxies") or []:
+                if proxy.get("proxy_id") == proxy_id:
+                    return proxy
+        return None
+
+    def proxies_for_media(self, media_id: str, kind: str | None = None) -> list[dict]:
+        """Every proxy belonging to one record, optionally filtered by kind."""
+        record = self.get_media(media_id)
+        if record is None:
+            return []
+        proxies = record.get("proxies") or []
+        return [p for p in proxies if kind is None or p.get("kind") == kind]
+
     def span_members(self, span_id: str) -> list[str]:
         """Member media ids of a span, in playback order."""
         return [
