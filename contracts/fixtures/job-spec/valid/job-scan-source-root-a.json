@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "job_id": "2a5e981341bc16a3374a157abc427464ee68b9f55f7cf6e8c9e368ac94f2cbfe",
+  "job_id": "dd18c15a64e604d31227e10905b26a21149b2ae97dc8ce4b13588cd5dd8d14cd",
   "job_type": "scan_source",
   "inputs": {
     "media_ids": [],
@@ -11,7 +11,7 @@
     "source_paths": [
       "/Volumes/Archive/Photos"
     ],
-    "source_locator_digest": "64cfddd4e46fde33cf2681bd1557093ca76efa2c5fc5e48655d54d28633cfac1",
+    "source_locator_digest": "8d0e1c3639c18d45a27fbbae57302ce7d370440b355c754efa75daaa66cb3bdb",
     "parent_job_id": null,
     "depends_on_job_ids": [],
     "models": []
@@ -21,7 +21,7 @@
     "include_hidden": false,
     "max_depth": 32
   },
-  "params_digest": "9a183443c7330d8fa3bbbf73c8579312bb43ce34e21fbe78e04902c74c46db43",
+  "params_digest": "1f5d55602fdab85a6ca4488c3d13276ed719196615421a6bf0d66c46901fd61a",
   "scope": "library:default",
   "priority": 300,
   "requirements": {

@@ -42,10 +42,22 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Sequence
 
-# A pHash pair within this many bits is a duplicate candidate. 10/64 is
-# deliberately generous: the embedding pass is what actually decides, and a
-# candidate that turns out to be different costs one comparison.
+# A pHash pair within this many bits is a duplicate CANDIDATE. Deliberately
+# generous, because the embedding pass is what decides and a candidate that
+# turns out to be different costs one comparison.
 DEFAULT_HAMMING_THRESHOLD = 10
+
+# ...but when no embedding exists, the pHash IS the decision, and generous
+# becomes dangerous. Found by running the pipeline on a real library: two
+# genuinely different scenes sat 6 bits apart and merged, which silently drops
+# one of them from every automated output. Near-identical frames of the same
+# moment are typically 0-3 bits apart, so 4 keeps real bursts together while
+# refusing to guess across scenes.
+#
+# Asymmetric on purpose: a false merge deletes a photo and says nothing, a
+# false split shows the user two similar photos. Only one of those is
+# recoverable by the person looking at it.
+DEFAULT_HAMMING_DECISIVE_THRESHOLD = 4
 
 # Cosine distance below which two candidates are the same picture. Tight,
 # because a false merge silently deletes a photo from every automated output
@@ -186,6 +198,7 @@ def find_duplicates(
     items: Sequence[Candidate],
     *,
     hamming_threshold: int = DEFAULT_HAMMING_THRESHOLD,
+    hamming_decisive_threshold: int = DEFAULT_HAMMING_DECISIVE_THRESHOLD,
     embedding_threshold: float = DEFAULT_EMBEDDING_THRESHOLD,
     bands: int = DEFAULT_BANDS,
     group_id_for: Mapping[str, str] | None = None,
@@ -222,6 +235,11 @@ def find_duplicates(
             score = 1.0 - cosine
             method = "phash_bucket_embedding_refined"
         else:
+            # No embedding to arbitrate, so the hash decides alone and the bar
+            # is much higher. Anything between the two thresholds is a
+            # plausible duplicate we decline to guess about.
+            if distance > hamming_decisive_threshold:
+                continue
             score = 1.0 - (distance / (a.phash_bits or 64))
             method = "phash_bucket"
 

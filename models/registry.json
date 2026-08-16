@@ -29,20 +29,18 @@
         "classical_quality",
         "siglip2-so400m-384",
         "scrfd-10g-bnkps",
-        "arcface-buffalo-l",
-        "laion-aesthetic-v2"
+        "arcface-buffalo-l"
       ],
-      "note": "The selected stack. SCRFD + ArcFace are the most accurate available and are what the product is built on for internal use. Their weights are non-commercial, so this pipeline is development-only by construction -- release mode refuses it rather than someone remembering not to ship it."
+      "note": "The selected stack. SCRFD + ArcFace are the most accurate available and are what the product is built on for internal use. Their weights are non-commercial, so this pipeline is development-only by construction -- release mode refuses it rather than someone remembering not to ship it. laion-aesthetic-v2 is removed until its head is retrained on SigLIP 2 features; a pipeline must be end-to-end runnable, and a known-broken step makes it a plan rather than a pipeline."
     },
     "photo_analysis_release": {
       "min_load_mode": "release",
       "steps": [
         "classical_quality",
         "siglip2-so400m-384",
-        "yunet-2023mar",
-        "laion-aesthetic-v2"
+        "yunet-2023mar"
       ],
-      "note": "The licence-clean swap path. Detection only -- there is still no commercially-usable recognition model, which is the real open problem behind issue #3. Kept working so the swap is mechanical when it is needed."
+      "note": "The licence-clean swap path. Detection only -- there is still no commercially-usable recognition model, which is the real open problem behind issue #3. Kept working so the swap is mechanical when it is needed. laion-aesthetic-v2 is removed until its head is retrained on SigLIP 2 features; a pipeline must be end-to-end runnable, and a known-broken step makes it a plan rather than a pipeline."
     },
     "video_analysis": {
       "min_load_mode": "development",

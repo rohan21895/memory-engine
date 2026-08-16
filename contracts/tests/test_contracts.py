@@ -1232,19 +1232,32 @@ class TestScanIdentity(unittest.TestCase):
         )
 
     def test_the_locator_digest_is_reproducible_from_the_paths(self):
-        import hashlib
+        """BLAKE3, not SHA-256.
+
+        These fixtures originally used SHA-256 and this test asserted it.
+        Codex's Rust ingest recomputes the digest and refused a real job, which
+        is how the mismatch surfaced -- the contract says BLAKE3 (`Blake3Hash`),
+        so the fixtures were wrong and the implementation was right. Skips
+        rather than fails where the blake3 package is absent, since the contract
+        tests must keep running on a bare Python.
+        """
         import unicodedata
+
+        try:
+            import blake3
+        except ImportError:
+            self.skipTest("blake3 not installed; digest reproduction not checked here")
 
         for job in self.jobs:
             paths = job["inputs"]["source_paths"]
             canonical = sorted(
                 unicodedata.normalize("NFC", p.rstrip("/")) for p in paths
             )
-            expected = hashlib.sha256("\x00".join(canonical).encode()).hexdigest()
+            expected = blake3.blake3("\x00".join(canonical).encode()).hexdigest()
             self.assertEqual(
                 expected,
                 job["inputs"]["source_locator_digest"],
-                "the fixture's digest is not the documented canonicalisation of its paths",
+                "the fixture's digest is not the documented BLAKE3 canonicalisation",
             )
 
 

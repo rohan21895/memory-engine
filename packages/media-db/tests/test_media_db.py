@@ -625,3 +625,52 @@ class TestDedupe(DatabaseTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProxyResolution(DatabaseTestCase):
+    """The only lookup the inference path may use.
+
+    Codex flagged that ml_runtime.proto promises the host resolves `proxy_id`
+    through media-db, while media-db only had `resolve_path` -- which returns an
+    ORIGINAL. Giving the inference path a resolver that can return an original
+    defeats the structural guarantee that analysis never touches source files.
+    """
+
+    def test_a_proxy_id_resolves_to_its_proxy(self):
+        record = fixture_named("media-record", "image-beach-sunset")
+        self.db.put_media(record)
+        proxy_id = record["proxies"][0]["proxy_id"]
+        resolved = self.db.resolve_proxy(proxy_id)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(proxy_id, resolved["proxy_id"])
+        self.assertEqual("thumbnail_512", resolved["kind"])
+
+    def test_a_media_id_does_not_resolve_as_a_proxy(self):
+        """The guarantee, enforced: passing an original's id here gets nothing."""
+        record = fixture_named("media-record", "image-beach-sunset")
+        self.db.put_media(record)
+        self.assertIsNone(
+            self.db.resolve_proxy(record["media_id"]),
+            "an original must never be reachable through the proxy resolver",
+        )
+
+    def test_an_unknown_id_resolves_to_none(self):
+        self.assertIsNone(self.db.resolve_proxy("0" * 64))
+
+    def test_proxies_can_be_listed_and_filtered_by_kind(self):
+        self.load_media()
+        chapter = fixture_named("media-record", "video-gopro-chapter-01")
+        proxies = self.db.proxies_for_media(chapter["media_id"])
+        self.assertTrue(proxies)
+        video = self.db.proxies_for_media(chapter["media_id"], kind="video_proxy_480p")
+        self.assertEqual(1, len(video))
+        self.assertIsNotNone(
+            video[0].get("frame_index"),
+            "the video proxy must carry its frame-index sidecar, or proxy time "
+            "cannot be mapped back to source timecode",
+        )
+
+    def test_an_assembly_has_no_proxies_of_its_own(self):
+        self.load_media()
+        assembly = fixture_named("media-record", "span-assembly")
+        self.assertEqual([], self.db.proxies_for_media(assembly["media_id"]))
