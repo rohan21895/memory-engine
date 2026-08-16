@@ -66,7 +66,7 @@
         "diversity",
         "zero_shot_tags"
       ],
-      "config_blake3": "7ebab6839938ab5a9a043fc79d353b3b9c8ebbba0bff2492329cf4cd9ab0de5d"
+      "config_blake3": "c1679cc714503dd23dc4757f2c403a1fac9a60ef12f67a8fc23f0d664716998a"
     },
     {
       "model_id": "yunet-2023mar",
@@ -77,14 +77,14 @@
         "album_hero_selection",
         "person_labeling"
       ],
-      "config_blake3": "6b725cc26807735b382ebdc03c4d5b68118b03c45cecb2061b906000ba205b1c"
+      "config_blake3": "5cd4146e4dbcf508b35e810877a810a8404db9756f46e82151345b3d063e626d"
     },
     {
       "model_id": "scrfd-10g-bnkps",
       "config": "configs/scrfd-10g-bnkps.json",
       "task": "face_detection",
       "required_for": [],
-      "config_blake3": "8bc310604a03b87ae4f3fafb6c70974ef551b65f2d4866e432ce49a5a12c18ff"
+      "config_blake3": "4add912c1e5705204d40076c2be808e222966c6bd931635d570530f6d53896c2"
     },
     {
       "model_id": "arcface-buffalo-l",
@@ -94,7 +94,7 @@
         "face_clustering",
         "person_queries"
       ],
-      "config_blake3": "f21d64c17254ee5ba2b99e00e353deb048a01890ace46f182c392ba24da70120"
+      "config_blake3": "5814aa0d500092fbe16186f3344f0dc36b1c2196f3171620f4b4c317eabaa518"
     },
     {
       "model_id": "transnetv2",
@@ -104,7 +104,7 @@
         "moment_scoring",
         "reel_planning"
       ],
-      "config_blake3": "67961e9a62a376af9ae17bb41ac1b4faae190660e7da9eba61b2e04513c47d18"
+      "config_blake3": "2d0b04d1c76ede20b9698fc8472040fe6286dc5441e743c9cb7d539ddb9c9c30"
     },
     {
       "model_id": "laion-aesthetic-v2",
@@ -113,7 +113,7 @@
       "required_for": [
         "ranking"
       ],
-      "config_blake3": "709f701d5e9d63b7870235eccdd01b1476679803fd401fa846ddf78064bbf1b3"
+      "config_blake3": "5ddde69b895e849e073f405f16f98832fddd11d89f3510007ed910985ba16da7"
     }
   ]
 }

@@ -183,6 +183,10 @@ class TestLoadGateIsProductionCode(unittest.TestCase):
             "UNLOADABLE_REASON_NO_PROVIDER_AVAILABLE": self._case(
                 available_providers=()
             ),
+            # The fail-open Codex found: pinned to a hash the loader never
+            # computed. Refused in every mode, because it is a loader bug rather
+            # than a policy choice.
+            "UNLOADABLE_REASON_INTEGRITY_UNVERIFIED": self._case(actual_hash=None),
         }
 
         self.assertEqual(

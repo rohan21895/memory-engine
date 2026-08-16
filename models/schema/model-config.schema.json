@@ -4,7 +4,6 @@
   "title": "ModelConfig",
   "description": "One entry in the model registry: what to load, how to feed it, and how to read what comes out.",
   "$comment": "OWNERSHIP: Claude owns registry contents (these files), Codex owns the loader in workers/ml-runtime. The format is therefore a cross-boundary interface and is validated in CI on both sides.\n\n WHY PRE/POST-PROCESSING IS PART OF THE REGISTRY AND NOT THE RUNTIME CODE:\n a model swap that silently changes normalisation changes every score in the library, and nothing about it looks like a bug. It looks like the taste model drifting. Pinning the exact input size, colour order, mean/std and output layout next to the weights hash means a swap is a diff, and a wrong swap fails a golden test rather than quietly degrading a year of rankings.\n\n LICENCE STATUS IS REQUIRED ON EVERY ENTRY. A model may be loaded for development while its licence is unresolved -- that is a legitimate stage -- but the registry has to say so, so that 'we will deal with licensing later' stays a decision someone can act on rather than something that ships by forgetting.",
-
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,16 +19,19 @@
     "rollout"
   ],
   "properties": {
-    "config_version": { "type": "string", "const": "v0" },
-
+    "config_version": {
+      "type": "string",
+      "const": "v0"
+    },
     "model_id": {
       "description": "Stable slug. Matches ModelRef.model_id in the contract, so a score can be traced to the exact registry entry that produced it.",
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
     },
-
-    "version": { "type": "string", "minLength": 1 },
-
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
     "task": {
       "type": "string",
       "enum": [
@@ -53,11 +55,12 @@
         "safety_classifier"
       ]
     },
-
-    "description": { "type": "string" },
-
-    "weights": { "$ref": "#/$defs/Weights" },
-
+    "description": {
+      "type": "string"
+    },
+    "weights": {
+      "$ref": "#/$defs/Weights"
+    },
     "runtime_targets": {
       "description": "Execution providers this entry is known to work on, best first. The loader picks the first available. Listing a target is a claim that it has been run, not that it ought to work.",
       "type": "array",
@@ -78,44 +81,85 @@
         ]
       }
     },
-
-    "preprocessing": { "$ref": "#/$defs/Preprocessing" },
-    "postprocessing": {
-      "oneOf": [{ "$ref": "#/$defs/Postprocessing" }, { "type": "null" }]
+    "preprocessing": {
+      "$ref": "#/$defs/Preprocessing"
     },
-
+    "postprocessing": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Postprocessing"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "outputs": {
       "description": "Every output tensor, named and shaped. The loader binds by name; a model whose output names change is a different entry, not the same one upgraded.",
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/OutputSpec" }
+      "items": {
+        "$ref": "#/$defs/OutputSpec"
+      }
     },
-
     "batching": {
-      "oneOf": [{ "$ref": "#/$defs/Batching" }, { "type": "null" }]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Batching"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
-
-    "license": { "$ref": "#/$defs/LicenseStatus" },
-    "rollout": { "$ref": "#/$defs/Rollout" },
-
+    "license": {
+      "$ref": "#/$defs/LicenseStatus"
+    },
+    "rollout": {
+      "$ref": "#/$defs/Rollout"
+    },
     "eval": {
-      "oneOf": [{ "$ref": "#/$defs/EvalScores" }, { "type": "null" }]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/EvalScores"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
-
-    "notes": { "type": "string" }
+    "notes": {
+      "type": "string"
+    }
   },
-
   "$defs": {
     "Weights": {
       "title": "Weights",
       "type": "object",
       "additionalProperties": false,
-      "required": ["filename", "format", "source_url", "blake3"],
+      "required": [
+        "filename",
+        "format",
+        "source_url",
+        "blake3"
+      ],
       "properties": {
-        "filename": { "type": "string", "minLength": 1 },
+        "filename": {
+          "type": "string",
+          "minLength": 1
+        },
         "format": {
           "type": "string",
-          "enum": ["onnx", "coreml", "ctranslate2", "gguf", "safetensors", "pytorch", "dat", "other"]
+          "enum": [
+            "onnx",
+            "coreml",
+            "ctranslate2",
+            "gguf",
+            "safetensors",
+            "pytorch",
+            "dat",
+            "other"
+          ]
         },
         "source_url": {
           "description": "Where the weights come from. Required even while unpinned, so the audit and the download are the same fact.",
@@ -124,64 +168,127 @@
         },
         "blake3": {
           "description": "Hash of the exact bytes. Null means UNPINNED: the file has not been downloaded and hashed yet, so this entry is not reproducible and must not be promoted past `candidate`. 'The same version' of a HuggingFace repo has had its weights changed underneath people before.",
-          "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "byte_size": {
-          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "quantization": {
           "type": "string",
-          "enum": ["fp32", "fp16", "bf16", "int8", "int4"],
+          "enum": [
+            "fp32",
+            "fp16",
+            "bf16",
+            "int8",
+            "int4"
+          ],
           "default": "fp32"
         }
       }
     },
-
     "Preprocessing": {
       "title": "Preprocessing",
       "description": "Exactly how a proxy becomes a tensor. Every field here changes model output, and a mismatch is silent -- the model still returns plausible numbers.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind"],
+      "required": [
+        "kind"
+      ],
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["image", "image_sequence", "face_crop", "audio", "none"]
+          "enum": [
+            "image",
+            "image_sequence",
+            "face_crop",
+            "audio",
+            "none"
+          ]
         },
-        "input_name": { "type": "string" },
+        "input_name": {
+          "type": "string"
+        },
         "input_size": {
           "oneOf": [
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["width", "height"],
+              "required": [
+                "width",
+                "height"
+              ],
               "properties": {
-                "width": { "type": "integer", "exclusiveMinimum": 0 },
-                "height": { "type": "integer", "exclusiveMinimum": 0 }
+                "width": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "height": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                }
               }
             },
-            { "type": "null" }
+            {
+              "type": "null"
+            }
           ]
         },
         "resize": {
           "type": "string",
-          "enum": ["stretch", "letterbox", "center_crop", "shortest_side", "none"],
+          "enum": [
+            "stretch",
+            "letterbox",
+            "center_crop",
+            "shortest_side",
+            "none"
+          ],
           "default": "stretch"
         },
         "interpolation": {
           "type": "string",
-          "enum": ["bilinear", "bicubic", "lanczos", "nearest", "area"],
+          "enum": [
+            "bilinear",
+            "bicubic",
+            "lanczos",
+            "nearest",
+            "area"
+          ],
           "default": "bilinear"
         },
         "color_order": {
           "description": "RGB vs BGR is the single most common silent preprocessing bug. InsightFace models want BGR; almost everything else wants RGB.",
           "type": "string",
-          "enum": ["rgb", "bgr", "gray"],
+          "enum": [
+            "rgb",
+            "bgr",
+            "gray"
+          ],
           "default": "rgb"
         },
         "layout": {
           "type": "string",
-          "enum": ["nchw", "nhwc", "ncl", "nl"],
+          "enum": [
+            "nchw",
+            "nhwc",
+            "ncl",
+            "nl"
+          ],
           "default": "nchw"
         },
         "scale": {
@@ -191,33 +298,62 @@
         },
         "mean": {
           "type": "array",
-          "items": { "type": "number" },
+          "items": {
+            "type": "number"
+          },
           "default": []
         },
         "std": {
           "type": "array",
-          "items": { "type": "number" },
+          "items": {
+            "type": "number"
+          },
           "default": []
         },
         "face_alignment": {
           "description": "For face_crop inputs: the canonical landmark template the crop is warped onto. Alignment is not optional for recognition -- an unaligned crop produces an embedding that is confidently wrong.",
-          "oneOf": [{ "$ref": "#/$defs/FaceAlignment" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "#/$defs/FaceAlignment"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "audio": {
-          "oneOf": [{ "$ref": "#/$defs/AudioPreprocessing" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "#/$defs/AudioPreprocessing"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "sequence_length": {
           "description": "For image_sequence models such as shot detection.",
-          "oneOf": [{ "type": "integer", "exclusiveMinimum": 0 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
-
     "FaceAlignment": {
       "title": "FaceAlignment",
       "type": "object",
       "additionalProperties": false,
-      "required": ["template", "output_size", "landmark_scheme"],
+      "required": [
+        "template",
+        "output_size",
+        "landmark_scheme"
+      ],
       "properties": {
         "template": {
           "description": "Destination landmark coordinates in the aligned crop, in pixels. A similarity transform maps the detected landmarks onto these.",
@@ -227,48 +363,103 @@
             "type": "array",
             "minItems": 2,
             "maxItems": 2,
-            "items": { "type": "number" }
+            "items": {
+              "type": "number"
+            }
           }
         },
         "output_size": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["width", "height"],
+          "required": [
+            "width",
+            "height"
+          ],
           "properties": {
-            "width": { "type": "integer", "exclusiveMinimum": 0 },
-            "height": { "type": "integer", "exclusiveMinimum": 0 }
+            "width": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "height": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            }
           }
         },
         "landmark_scheme": {
           "type": "string",
-          "enum": ["insightface_5", "insightface_106", "mediapipe_468", "dlib_5", "dlib_68"]
+          "enum": [
+            "insightface_5",
+            "insightface_106",
+            "mediapipe_468",
+            "dlib_5",
+            "dlib_68"
+          ]
         }
       }
     },
-
     "AudioPreprocessing": {
       "title": "AudioPreprocessing",
       "type": "object",
       "additionalProperties": false,
-      "required": ["sample_rate", "channels"],
+      "required": [
+        "sample_rate",
+        "channels"
+      ],
       "properties": {
-        "sample_rate": { "type": "integer", "exclusiveMinimum": 0 },
-        "channels": { "type": "integer", "minimum": 1 },
+        "sample_rate": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 1
+        },
         "feature": {
           "type": "string",
-          "enum": ["waveform", "log_mel", "mfcc", "stft"],
+          "enum": [
+            "waveform",
+            "log_mel",
+            "mfcc",
+            "stft"
+          ],
           "default": "waveform"
         },
-        "n_mels": { "oneOf": [{ "type": "integer", "exclusiveMinimum": 0 }, { "type": "null" }] },
+        "n_mels": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "window_seconds": {
-          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "hop_seconds": {
-          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
-
     "Postprocessing": {
       "title": "Postprocessing",
       "type": "object",
@@ -289,39 +480,117 @@
               "argmax",
               "scale_to_unit",
               "clip",
-              "decode_ctc"
+              "decode_ctc",
+              "yunet_decode_bbox",
+              "yunet_decode_kps"
             ]
           },
           "default": []
         },
         "nms_threshold": {
-          "oneOf": [{ "type": "number", "minimum": 0, "maximum": 1 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "score_threshold": {
-          "oneOf": [{ "type": "number", "minimum": 0, "maximum": 1 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "strides": {
           "description": "Feature-map strides for anchor-based detectors.",
           "type": "array",
-          "items": { "type": "integer", "exclusiveMinimum": 0 },
+          "items": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
           "default": []
         },
         "normalisation": {
           "description": "How a raw model score becomes the [0,1] Unit the contract stores. Required wherever a Score is written, because fusion must never need to know a model's native range.",
-          "oneOf": [{ "$ref": "#/$defs/ScoreNormalisation" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ScoreNormalisation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "landmark_scheme": {
+          "description": "Which LandmarkScheme this detector emits, matching the proto enum and FaceRecord.Landmarks.scheme. Required for any detector producing landmarks: five points in ArcFace order and five points in YuNet order produce a plausible warp and a wrong embedding, and without this the host would need a per-model-id hardcode -- defeating a registry-driven loader.",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "insightface_5",
+                "insightface_106",
+                "mediapipe_468",
+                "yunet_5"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_detections": {
+          "description": "Cap on emitted detections, post-NMS. Backs DetectionSet.truncated: without a configured cap the host has nothing to report truncation against, and silently returning the top N reads downstream as 'there were exactly N faces'.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "top_k": {
+          "description": "PRE-NMS candidate cap. YuNet applies one and it changes the output, so leaving it unpinned means two hosts can legitimately disagree while both matching the config.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
-
     "ScoreNormalisation": {
       "title": "ScoreNormalisation",
       "type": "object",
       "additionalProperties": false,
-      "required": ["method"],
+      "required": [
+        "method"
+      ],
       "properties": {
         "method": {
           "type": "string",
-          "enum": ["identity", "min_max", "sigmoid", "linear_rescale", "percentile_calibrated"]
+          "enum": [
+            "identity",
+            "min_max",
+            "sigmoid",
+            "linear_rescale",
+            "percentile_calibrated"
+          ]
         },
         "input_range": {
           "oneOf": [
@@ -329,22 +598,33 @@
               "type": "array",
               "minItems": 2,
               "maxItems": 2,
-              "items": { "type": "number" }
+              "items": {
+                "type": "number"
+              }
             },
-            { "type": "null" }
+            {
+              "type": "null"
+            }
           ]
         },
-        "calibration_note": { "type": "string" }
+        "calibration_note": {
+          "type": "string"
+        }
       }
     },
-
     "OutputSpec": {
       "title": "OutputSpec",
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "meaning"],
+      "required": [
+        "name",
+        "meaning"
+      ],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
         "meaning": {
           "type": "string",
           "enum": [
@@ -363,39 +643,72 @@
         "shape": {
           "description": "Dimensions, with -1 for dynamic. Documented so a shape change is caught at load rather than producing garbage downstream.",
           "type": "array",
-          "items": { "type": "integer" },
+          "items": {
+            "type": "integer"
+          },
           "default": []
         },
         "dimensions": {
           "description": "For embeddings: the vector width. Must match the VectorSpace it is written into.",
-          "oneOf": [{ "type": "integer", "exclusiveMinimum": 0 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "vector_space": {
           "description": "Which contract VectorSpace this embedding belongs to. Two vectors are only comparable when this matches exactly, including the model version.",
-          "oneOf": [{ "type": "string" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
-
     "Batching": {
       "title": "Batching",
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "supported": { "type": "boolean", "default": true },
-        "max_batch": { "type": "integer", "minimum": 1, "default": 8 },
-        "dynamic_axes": { "type": "boolean", "default": true }
+        "supported": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_batch": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 8
+        },
+        "dynamic_axes": {
+          "type": "boolean",
+          "default": true
+        }
       }
     },
-
     "LicenseStatus": {
       "title": "LicenseStatus",
       "description": "Required on every entry. A model may be used in development with an unresolved licence -- that is a real stage of a real project -- but the registry must say so out loud, so deferring the decision stays a decision rather than an omission.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["code_license", "weights_license", "commercial_use", "verified"],
+      "required": [
+        "code_license",
+        "weights_license",
+        "commercial_use",
+        "verified"
+      ],
       "properties": {
-        "code_license": { "type": "string", "minLength": 1 },
+        "code_license": {
+          "type": "string",
+          "minLength": 1
+        },
         "weights_license": {
           "description": "Separate from the code licence on purpose. This is the field that catches InsightFace: MIT code, non-commercial weights.",
           "type": "string",
@@ -403,65 +716,128 @@
         },
         "commercial_use": {
           "type": "string",
-          "enum": ["permitted", "prohibited", "unresolved", "requires_license_purchase"]
+          "enum": [
+            "permitted",
+            "prohibited",
+            "unresolved",
+            "requires_license_purchase"
+          ]
         },
         "verified": {
           "description": "True only when a human read the current licence at the source and recorded the date. Never set by inference.",
           "type": "boolean"
         },
         "verified_at": {
-          "oneOf": [{ "type": "string", "format": "date" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "license_url": {
-          "oneOf": [{ "type": "string" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "training_data": {
           "description": "Dataset provenance. A permissively-licensed model can still be trained on a retracted dataset (MS-Celeb-1M, VGGFace2), which is a separate exposure from the model licence and is invisible unless recorded here.",
-          "oneOf": [{ "type": "string" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "blocks_commercial_release": {
           "description": "True when shipping commercially with this entry would be a licence violation. The build can use it; a commercial release must not. Checked in tests.",
           "type": "boolean",
           "default": false
         },
-        "note": { "type": "string" }
+        "note": {
+          "type": "string"
+        }
       }
     },
-
     "Rollout": {
       "title": "Rollout",
       "type": "object",
       "additionalProperties": false,
-      "required": ["state"],
+      "required": [
+        "state"
+      ],
       "properties": {
         "state": {
           "description": "`candidate` is unproven, `shadow` runs alongside the default and is diffed, `default` is live, `deprecated` is retained only to reproduce old records.",
           "type": "string",
-          "enum": ["candidate", "shadow", "default", "deprecated"]
+          "enum": [
+            "candidate",
+            "shadow",
+            "default",
+            "deprecated"
+          ]
         },
         "replaces": {
-          "oneOf": [{ "type": "string" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "promoted_at": {
-          "oneOf": [{ "type": "string", "format": "date" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
-
     "EvalScores": {
       "title": "EvalScores",
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "benchmark": { "type": "string" },
+        "benchmark": {
+          "type": "string"
+        },
         "metrics": {
           "type": "object",
-          "additionalProperties": { "type": "number" }
+          "additionalProperties": {
+            "type": "number"
+          }
         },
         "measured_at": {
-          "oneOf": [{ "type": "string", "format": "date" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
-        "note": { "type": "string" }
+        "note": {
+          "type": "string"
+        }
       }
     }
   }

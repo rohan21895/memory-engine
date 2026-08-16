@@ -41,6 +41,7 @@ class UnloadableReason(str):
     CONFIG_MISSING = "UNLOADABLE_REASON_CONFIG_MISSING"
     CONFIG_MISMATCH = "UNLOADABLE_REASON_CONFIG_MISMATCH"
     CONFIG_UNPINNED = "UNLOADABLE_REASON_CONFIG_UNPINNED"
+    INTEGRITY_UNVERIFIED = "UNLOADABLE_REASON_INTEGRITY_UNVERIFIED"
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,19 @@ def decide_load(candidate: Candidate, mode: str, policy: dict | None = None) -> 
     ):
         return UnloadableReason.HASH_MISMATCH
 
+    # A pin that was never checked is not a pin. Codex found this fail-open in
+    # review: the mismatch test above needs BOTH values, and the pinning test
+    # below only looks at the pinned one, so a candidate pinned to a hash whose
+    # file was never hashed sailed through release mode. The gate that exists to
+    # refuse unverified weights was accepting exactly that.
+    #
+    # Always fatal, like a mismatch. The only way to reach it is a loader that
+    # was given a pin and did not verify it, which is a bug rather than a
+    # policy choice -- an unpinned entry (pinned_hash None) is what deferred
+    # hashing looks like, and development mode already permits it below.
+    if candidate.pinned_hash is not None and candidate.actual_hash is None:
+        return UnloadableReason.INTEGRITY_UNVERIFIED
+
     # Same rule, same reason. An edited config is the likelier of the two in
     # practice -- weights are downloaded once and never touched, thresholds get
     # tuned by hand at 1am -- so waving this through would be the more common
@@ -135,6 +149,14 @@ def decide_load(candidate: Candidate, mode: str, policy: dict | None = None) -> 
         and candidate.pinned_config_digest != candidate.actual_config_digest
     ):
         return UnloadableReason.CONFIG_MISMATCH
+
+    # Same fail-open, same fix. A config pinned but never digested is a pin
+    # nobody checked.
+    if (
+        candidate.pinned_config_digest is not None
+        and candidate.actual_config_digest is None
+    ):
+        return UnloadableReason.INTEGRITY_UNVERIFIED
 
     if gate["require_pinned_hash"] and candidate.pinned_hash is None:
         return UnloadableReason.HASH_UNPINNED

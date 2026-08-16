@@ -55,6 +55,14 @@ class UnloadableReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     UNLOADABLE_REASON_CONFIG_MISSING: _ClassVar[UnloadableReason]
     UNLOADABLE_REASON_CONFIG_MISMATCH: _ClassVar[UnloadableReason]
     UNLOADABLE_REASON_CONFIG_UNPINNED: _ClassVar[UnloadableReason]
+    UNLOADABLE_REASON_INTEGRITY_UNVERIFIED: _ClassVar[UnloadableReason]
+
+class Alignment(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ALIGNMENT_UNSPECIFIED: _ClassVar[Alignment]
+    ALIGNMENT_NEEDS_ALIGNMENT: _ClassVar[Alignment]
+    ALIGNMENT_PREALIGNED: _ClassVar[Alignment]
+    ALIGNMENT_NONE: _ClassVar[Alignment]
 
 class LandmarkScheme(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -62,6 +70,7 @@ class LandmarkScheme(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     LANDMARK_SCHEME_INSIGHTFACE_5: _ClassVar[LandmarkScheme]
     LANDMARK_SCHEME_INSIGHTFACE_106: _ClassVar[LandmarkScheme]
     LANDMARK_SCHEME_MEDIAPIPE_468: _ClassVar[LandmarkScheme]
+    LANDMARK_SCHEME_YUNET_5: _ClassVar[LandmarkScheme]
 
 class DType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -130,10 +139,16 @@ UNLOADABLE_REASON_CONFIG_INVALID: UnloadableReason
 UNLOADABLE_REASON_CONFIG_MISSING: UnloadableReason
 UNLOADABLE_REASON_CONFIG_MISMATCH: UnloadableReason
 UNLOADABLE_REASON_CONFIG_UNPINNED: UnloadableReason
+UNLOADABLE_REASON_INTEGRITY_UNVERIFIED: UnloadableReason
+ALIGNMENT_UNSPECIFIED: Alignment
+ALIGNMENT_NEEDS_ALIGNMENT: Alignment
+ALIGNMENT_PREALIGNED: Alignment
+ALIGNMENT_NONE: Alignment
 LANDMARK_SCHEME_UNSPECIFIED: LandmarkScheme
 LANDMARK_SCHEME_INSIGHTFACE_5: LandmarkScheme
 LANDMARK_SCHEME_INSIGHTFACE_106: LandmarkScheme
 LANDMARK_SCHEME_MEDIAPIPE_468: LandmarkScheme
+LANDMARK_SCHEME_YUNET_5: LandmarkScheme
 DTYPE_UNSPECIFIED: DType
 DTYPE_FLOAT32: DType
 DTYPE_FLOAT16: DType
@@ -295,20 +310,22 @@ class InferRequest(_message.Message):
     def __init__(self, request_id: _Optional[str] = ..., model_id: _Optional[str] = ..., expected_pin: _Optional[_Union[ModelPin, _Mapping]] = ..., items: _Optional[_Iterable[_Union[InferItem, _Mapping]]] = ..., preferred_runtimes: _Optional[_Iterable[_Union[RuntimeTarget, str]]] = ..., deadline_ms: _Optional[int] = ..., priority: _Optional[int] = ...) -> None: ...
 
 class InferItem(_message.Message):
-    __slots__ = ("item_id", "proxy_id", "tensors", "window", "landmarks", "landmark_scheme")
+    __slots__ = ("item_id", "proxy_id", "tensors", "window", "alignment", "landmarks", "landmark_scheme")
     ITEM_ID_FIELD_NUMBER: _ClassVar[int]
     PROXY_ID_FIELD_NUMBER: _ClassVar[int]
     TENSORS_FIELD_NUMBER: _ClassVar[int]
     WINDOW_FIELD_NUMBER: _ClassVar[int]
+    ALIGNMENT_FIELD_NUMBER: _ClassVar[int]
     LANDMARKS_FIELD_NUMBER: _ClassVar[int]
     LANDMARK_SCHEME_FIELD_NUMBER: _ClassVar[int]
     item_id: str
     proxy_id: str
     tensors: TensorSet
     window: TimeRange
+    alignment: Alignment
     landmarks: _containers.RepeatedCompositeFieldContainer[Point2D]
     landmark_scheme: LandmarkScheme
-    def __init__(self, item_id: _Optional[str] = ..., proxy_id: _Optional[str] = ..., tensors: _Optional[_Union[TensorSet, _Mapping]] = ..., window: _Optional[_Union[TimeRange, _Mapping]] = ..., landmarks: _Optional[_Iterable[_Union[Point2D, _Mapping]]] = ..., landmark_scheme: _Optional[_Union[LandmarkScheme, str]] = ...) -> None: ...
+    def __init__(self, item_id: _Optional[str] = ..., proxy_id: _Optional[str] = ..., tensors: _Optional[_Union[TensorSet, _Mapping]] = ..., window: _Optional[_Union[TimeRange, _Mapping]] = ..., alignment: _Optional[_Union[Alignment, str]] = ..., landmarks: _Optional[_Iterable[_Union[Point2D, _Mapping]]] = ..., landmark_scheme: _Optional[_Union[LandmarkScheme, str]] = ...) -> None: ...
 
 class Tensor(_message.Message):
     __slots__ = ("shape", "dtype", "data", "name")
@@ -361,20 +378,22 @@ class InferResult(_message.Message):
     def __init__(self, item_id: _Optional[str] = ..., error: _Optional[_Union[InferError, _Mapping]] = ..., tensors: _Optional[_Union[TensorSet, _Mapping]] = ..., detections: _Optional[_Union[DetectionSet, _Mapping]] = ..., shots: _Optional[_Union[ShotBoundarySet, _Mapping]] = ...) -> None: ...
 
 class Detection(_message.Message):
-    __slots__ = ("box", "score", "landmarks", "landmark_scheme", "class_id", "class_label")
+    __slots__ = ("box", "score", "landmarks", "landmarks_out_of_range", "landmark_scheme", "class_id", "class_label")
     BOX_FIELD_NUMBER: _ClassVar[int]
     SCORE_FIELD_NUMBER: _ClassVar[int]
     LANDMARKS_FIELD_NUMBER: _ClassVar[int]
+    LANDMARKS_OUT_OF_RANGE_FIELD_NUMBER: _ClassVar[int]
     LANDMARK_SCHEME_FIELD_NUMBER: _ClassVar[int]
     CLASS_ID_FIELD_NUMBER: _ClassVar[int]
     CLASS_LABEL_FIELD_NUMBER: _ClassVar[int]
     box: NormalizedBox
     score: float
     landmarks: _containers.RepeatedCompositeFieldContainer[Point2D]
+    landmarks_out_of_range: bool
     landmark_scheme: LandmarkScheme
     class_id: int
     class_label: str
-    def __init__(self, box: _Optional[_Union[NormalizedBox, _Mapping]] = ..., score: _Optional[float] = ..., landmarks: _Optional[_Iterable[_Union[Point2D, _Mapping]]] = ..., landmark_scheme: _Optional[_Union[LandmarkScheme, str]] = ..., class_id: _Optional[int] = ..., class_label: _Optional[str] = ...) -> None: ...
+    def __init__(self, box: _Optional[_Union[NormalizedBox, _Mapping]] = ..., score: _Optional[float] = ..., landmarks: _Optional[_Iterable[_Union[Point2D, _Mapping]]] = ..., landmarks_out_of_range: bool = ..., landmark_scheme: _Optional[_Union[LandmarkScheme, str]] = ..., class_id: _Optional[int] = ..., class_label: _Optional[str] = ...) -> None: ...
 
 class DetectionSet(_message.Message):
     __slots__ = ("detections", "score_threshold", "nms_iou_threshold", "truncated")

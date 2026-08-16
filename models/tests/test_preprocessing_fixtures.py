@@ -14,6 +14,7 @@ resize convention is documented instead of pretended-about.
 from __future__ import annotations
 
 import json
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -24,6 +25,9 @@ sys.path.insert(0, str(MODELS_ROOT))
 from reference.postprocess import (  # noqa: E402
     Detection,
     anchor_centers,
+    num_anchors_for,
+    yunet_decode_bbox,
+    yunet_decode_landmarks,
     combine_scores,
     distance2bbox,
     filter_by_score,
@@ -206,8 +210,34 @@ class TestPostprocessFixture(unittest.TestCase):
             places=9,
         )
 
-    def test_confidence_is_the_product_of_classification_and_objectness(self):
-        self.assertAlmostEqual(0.72, combine_scores(0.9, 0.8), places=9)
+    def test_confidence_is_the_clamped_geometric_mean(self):
+        """WAS: `assertAlmostEqual(0.72, combine_scores(0.9, 0.8))` -- asserting
+        the product, which is not what YuNet does.
+
+        OpenCV's face_detect.cpp clamps each score to [0,1] and takes
+        sqrt(cls*obj). The wrong formula was not a rounding difference: at
+        YuNet's configured threshold of 0.6 the product rule discards roughly
+        84% of the detections YuNet accepts, and this test was what made that
+        look correct. Found by Codex; confirmed against the OpenCV source.
+        """
+        self.assertAlmostEqual(
+            math.sqrt(0.9 * 0.8), combine_scores(0.9, 0.8), places=9
+        )
+        self.assertNotAlmostEqual(0.72, combine_scores(0.9, 0.8), places=3)
+
+    def test_scores_are_clamped_before_the_square_root(self):
+        """Part of the formula, not defensive coding: raw sigmoid outputs can
+        land marginally outside [0,1], and sqrt of a negative product is not a
+        number."""
+        self.assertEqual(1.0, combine_scores(1.4, 1.2))
+        self.assertEqual(0.0, combine_scores(-0.1, 0.9))
+
+    def test_the_wrong_formula_would_have_dropped_most_faces(self):
+        """Kept as a number rather than a comment, so the cost of regressing is
+        legible to whoever next touches this."""
+        threshold = 0.6
+        self.assertLess(0.7 * 0.7, threshold)          # dropped by the product
+        self.assertGreater(combine_scores(0.7, 0.7), threshold)  # kept, correctly
 
     def test_thresholds_match_the_model_config(self):
         post = config(self.data["model_id"])["postprocessing"]
@@ -264,6 +294,125 @@ class TestFaceAlignmentFixture(unittest.TestCase):
         self.assertAlmostEqual(0.0, b, places=9)
         self.assertAlmostEqual(0.0, tx, places=6)
         self.assertAlmostEqual(0.0, ty, places=6)
+
+
+class TestYuNetDecode(unittest.TestCase):
+    """YuNet decoding, from RAW network outputs.
+
+    The older fixture started from already-decoded boxes, so it tested NMS and
+    nothing else -- and two real decode bugs sat underneath it, green, for as
+    long as it existed. Codex caught both: YuNet uses centre-offset plus
+    exponentiated size (not SCRFD's distance-to-four-sides) and its confidence
+    is the clamped geometric mean (not the product).
+    """
+
+    def setUp(self):
+        self.data = fixture("postprocess-yunet-decode.json")
+
+    def test_boxes_decode_by_centre_offset_and_exponentiated_size(self):
+        for case in self.data["cases"]:
+            with self.subTest(cell=case["cell"]):
+                box = yunet_decode_bbox(
+                    tuple(case["cell"]), tuple(case["bbox_raw"]), self.data["stride"]
+                )
+                self.assertEqual(case["decoded_box"], box.to_json())
+
+    def test_scrfd_decoder_would_have_produced_different_boxes(self):
+        """Guard on the guard. If the two decoders happened to agree on this
+        fixture, the test above would prove nothing about which one is used."""
+        case = self.data["cases"][0]
+        yunet = yunet_decode_bbox(
+            tuple(case["cell"]), tuple(case["bbox_raw"]), self.data["stride"]
+        )
+        scrfd = distance2bbox(
+            (float(case["cell"][0] * self.data["stride"]),
+             float(case["cell"][1] * self.data["stride"])),
+            tuple(case["bbox_raw"]),
+            self.data["stride"],
+        )
+        self.assertNotEqual(yunet.to_json(), scrfd.to_json())
+
+    def test_landmarks_decode_cell_relative_and_linear(self):
+        for case in self.data["cases"]:
+            with self.subTest(cell=case["cell"]):
+                points = yunet_decode_landmarks(
+                    tuple(case["cell"]), case["landmarks_raw"], self.data["stride"]
+                )
+                self.assertEqual(
+                    case["decoded_landmarks"],
+                    [[round(x, 6), round(y, 6)] for x, y in points],
+                )
+
+    def test_confidence_uses_the_geometric_mean(self):
+        for case in self.data["cases"]:
+            with self.subTest(cell=case["cell"]):
+                self.assertAlmostEqual(
+                    case["score"], combine_scores(case["cls"], case["obj"]), places=6
+                )
+
+    def test_the_full_chain_reproduces_the_fixture(self):
+        decoded = [
+            Detection(
+                *(yunet_decode_bbox(tuple(c["cell"]), tuple(c["bbox_raw"]),
+                                    self.data["stride"]).to_json()[k]
+                  for k in ("x1", "y1", "x2", "y2")),
+                combine_scores(c["cls"], c["obj"]),
+            )
+            for c in self.data["cases"]
+        ]
+        kept = nms(
+            filter_by_score(decoded, self.data["score_threshold"]),
+            self.data["nms_threshold"],
+        )
+        self.assertEqual(self.data["expected_after_nms"], [d.to_json() for d in kept])
+
+    def test_the_product_rule_would_have_dropped_most_of_these_faces(self):
+        """The cost, in this fixture's own numbers."""
+        summary = self.data["what_the_wrong_formulas_would_do"]
+        self.assertLess(summary["product_confidence_keeps"],
+                        summary["geometric_mean_keeps"])
+
+
+class TestScrfdAnchorMultiplicity(unittest.TestCase):
+    """SCRFD variants with 6 or 9 ONNX outputs predict TWO anchors per location.
+
+    The reference generated one, so the centre list was half the length of the
+    score and box arrays and every prediction past the first row paired with the
+    wrong centre. scrfd-10g-bnkps is a nine-output variant, so this was live.
+    Found by Codex; confirmed against InsightFace's scrfd.py.
+    """
+
+    def test_nine_output_variants_use_two_anchors(self):
+        self.assertEqual(2, num_anchors_for(9))
+        self.assertEqual(2, num_anchors_for(6))
+        self.assertEqual(1, num_anchors_for(10))
+        self.assertEqual(1, num_anchors_for(15))
+
+    def test_an_unrecognised_output_count_refuses_to_guess(self):
+        """A swapped checkpoint must fail loudly rather than inherit the old
+        anchor count."""
+        with self.assertRaises(ValueError):
+            num_anchors_for(7)
+
+    def test_centres_are_duplicated_in_place_not_concatenated(self):
+        """InsightFace's stack-then-reshape gives [c0, c0, c1, c1, ...].
+        Concatenating instead would misalign every prediction by half the
+        array."""
+        doubled = anchor_centers(8, 2, 1, num_anchors=2)
+        self.assertEqual([(0.0, 0.0), (0.0, 0.0), (8.0, 0.0), (8.0, 0.0)], doubled)
+
+    def test_the_centre_count_matches_the_prediction_count(self):
+        """The property the bug violated: one centre per predicted row."""
+        width, height, anchors = 4, 4, num_anchors_for(9)
+        centres = anchor_centers(8, width, height, num_anchors=anchors)
+        self.assertEqual(width * height * anchors, len(centres))
+
+    def test_the_scrfd_config_declares_enough_outputs_to_derive_this(self):
+        """The host derives the anchor count from the config rather than
+        hardcoding it per model id."""
+        outputs = config("scrfd-10g-bnkps")["outputs"]
+        self.assertIn(len(outputs), (6, 9, 10, 15))
+        self.assertEqual(2, num_anchors_for(len(outputs)))
 
 
 class TestDetectionsToNormalizedBoxes(unittest.TestCase):

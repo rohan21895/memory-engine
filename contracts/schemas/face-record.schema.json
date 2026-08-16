@@ -4,7 +4,6 @@
   "title": "FaceRecord",
   "description": "One detected face in one frame: where it is, what it looks like as an embedding, which cluster it fell into, and -- separately and much more cautiously -- which person we are willing to say it is.",
   "$comment": "PRECISION OVER RECALL (CLAUDE.md hard rule 5). A wrong person in a family album is a catastrophic failure, so identity is deliberately split into three independent things: `cluster` (unsupervised, cheap, may be wrong), `identity.person_id` (a claim), and `identity.eligible_for_automated_output` (permission to act on the claim). Only the third gates unattended output, and it is false unless a human confirmed the assignment or the model cleared the high-confidence threshold. Everything uncertain goes to the review queue rather than into an album.",
-
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,61 +15,103 @@
     "sensitive"
   ],
   "properties": {
-    "schema_version": { "$ref": "common.schema.json#/$defs/SchemaVersion" },
-
+    "schema_version": {
+      "$ref": "common.schema.json#/$defs/SchemaVersion"
+    },
     "face_id": {
       "description": "BLAKE3 over (media_id, frame_time, quantised bbox, detector model_id+version). Content-addressed, so re-running the same detector on the same frame produces the same id and re-detection is idempotent. Changing detector version deliberately produces new ids rather than silently mutating old ones.",
       "$ref": "common.schema.json#/$defs/Blake3Hash"
     },
-
     "media_id": {
       "description": "The MediaRecord this face was found in. For spanned video this is the assembly record, so a face track can cross a chapter boundary.",
       "$ref": "common.schema.json#/$defs/Blake3Hash"
     },
-
     "frame_time": {
       "description": "Position within the video, in SOURCE time (already mapped back through the proxy frame index). Null for stills.",
-      "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/RationalTime"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
-
     "track": {
       "description": "Face track membership for video. One person walking through a 4-second shot is ~120 FaceRecords sharing a track_id; the ranking and moment layers work on tracks, not frames.",
-      "oneOf": [{ "$ref": "#/$defs/FaceTrack" }, { "type": "null" }]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/FaceTrack"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
-
-    "detection": { "$ref": "#/$defs/Detection" },
-
+    "detection": {
+      "$ref": "#/$defs/Detection"
+    },
     "landmarks": {
-      "oneOf": [{ "$ref": "#/$defs/Landmarks" }, { "type": "null" }]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Landmarks"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
-
     "embedding": {
       "description": "Recognition embedding. Null when the face was detected but was too small, too blurred or too occluded to embed reliably -- an unembeddable face is still worth recording, because it counts toward 'how many people are in this photo'.",
-      "oneOf": [{ "$ref": "common.schema.json#/$defs/VectorRef" }, { "type": "null" }]
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/VectorRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
-
     "attributes": {
-      "oneOf": [{ "$ref": "#/$defs/FaceAttributes" }, { "type": "null" }]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/FaceAttributes"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
-
     "cluster": {
-      "oneOf": [{ "$ref": "#/$defs/ClusterMembership" }, { "type": "null" }]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ClusterMembership"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
-
-    "identity": { "$ref": "#/$defs/Identity" },
-
-    "sensitive": { "$ref": "#/$defs/SensitiveFlags" },
-
+    "identity": {
+      "$ref": "#/$defs/Identity"
+    },
+    "sensitive": {
+      "$ref": "#/$defs/SensitiveFlags"
+    },
     "model_runs": {
       "type": "array",
-      "items": { "$ref": "common.schema.json#/$defs/ModelRun" },
+      "items": {
+        "$ref": "common.schema.json#/$defs/ModelRun"
+      },
       "default": []
     },
-
-    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
-    "updated_at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+    "created_at": {
+      "$ref": "common.schema.json#/$defs/Timestamp"
+    },
+    "updated_at": {
+      "$ref": "common.schema.json#/$defs/Timestamp"
+    }
   },
-
   "allOf": [
     {
       "$comment": "A confirmed minor may be detected and counted freely, but may not be NAMED without an explicit minor_face_labeling consent. Expressed as: confirmed_minor implies labeling_consent is an object, which the SensitiveFlags constraint then forces to be correctly scoped and unrevoked. Applied whenever the status is confirmed_minor rather than only when a person_id is already attached, so the consent has to exist before the label can be written rather than being back-filled after.",
@@ -79,41 +120,67 @@
         "properties": {
           "sensitive": {
             "type": "object",
-            "properties": { "minor_status": { "const": "confirmed_minor" } },
-            "required": ["minor_status"]
+            "properties": {
+              "minor_status": {
+                "const": "confirmed_minor"
+              }
+            },
+            "required": [
+              "minor_status"
+            ]
           }
         },
-        "required": ["sensitive"]
+        "required": [
+          "sensitive"
+        ]
       },
       "then": {
         "properties": {
           "sensitive": {
             "type": "object",
-            "required": ["labeling_consent"],
-            "properties": { "labeling_consent": { "type": "object" } }
+            "required": [
+              "labeling_consent"
+            ],
+            "properties": {
+              "labeling_consent": {
+                "type": "object"
+              }
+            }
           }
         }
       }
     }
   ],
-
   "$defs": {
     "Detection": {
       "title": "Detection",
       "type": "object",
       "additionalProperties": false,
-      "required": ["bbox", "detection_score", "detector"],
+      "required": [
+        "bbox",
+        "detection_score",
+        "detector"
+      ],
       "properties": {
         "bbox": {
           "description": "Normalised against the ORIENTED frame, so the same box is valid on the 512px thumbnail the detector saw and on the 6000px original the renderer will crop.",
           "$ref": "common.schema.json#/$defs/NormalizedBox"
         },
-        "detection_score": { "$ref": "common.schema.json#/$defs/Confidence" },
-        "detector": { "$ref": "common.schema.json#/$defs/ModelRef" },
+        "detection_score": {
+          "$ref": "common.schema.json#/$defs/Confidence"
+        },
+        "detector": {
+          "$ref": "common.schema.json#/$defs/ModelRef"
+        },
         "detected_on": {
           "description": "Which rendition the detector ran against. Small faces missed on a thumbnail are re-detected at full resolution on demand; recording this makes 'have we already looked properly' answerable.",
           "type": "string",
-          "enum": ["thumbnail_512", "preview_2048", "video_proxy_480p", "original"],
+          "enum": [
+            "thumbnail_512",
+            "preview_2048",
+            "video_proxy_480p",
+            "original"
+          ],
           "default": "thumbnail_512"
         },
         "face_area_ratio": {
@@ -122,30 +189,45 @@
         }
       }
     },
-
     "Landmarks": {
       "title": "Landmarks",
       "type": "object",
       "additionalProperties": false,
-      "required": ["scheme", "points"],
+      "required": [
+        "scheme",
+        "points"
+      ],
       "properties": {
         "scheme": {
-          "description": "Point count and ordering convention. Consumers must switch on this rather than assuming an index layout.",
+          "description": "Point count and ordering convention. Consumers must switch on this rather than assuming an index layout. yunet_5 and insightface_5 are both five points and are NOT interchangeable: feeding one to an alignment template built for the other produces a plausible warp and a wrong embedding, which is the worst failure mode in this system because nothing downstream can detect it.",
           "type": "string",
-          "enum": ["insightface_5", "insightface_106", "mediapipe_468"]
+          "enum": [
+            "insightface_5",
+            "insightface_106",
+            "mediapipe_468",
+            "yunet_5"
+          ]
         },
         "points": {
           "type": "array",
-          "items": { "$ref": "common.schema.json#/$defs/Point2D" },
+          "items": {
+            "$ref": "common.schema.json#/$defs/Point2D"
+          },
           "minItems": 5,
           "maxItems": 468
         },
         "score": {
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
-
     "FaceAttributes": {
       "title": "FaceAttributes",
       "description": "Everything that decides whether this is a GOOD photo of this person, as opposed to whether it is this person. Feeds face-quality scoring, album hero selection, and the 'is anyone blinking' check.",
@@ -154,46 +236,168 @@
       "properties": {
         "yaw_deg": {
           "description": "Head pose. Beyond about +/-45 degrees yaw, recognition confidence degrades sharply and the automated-output threshold should tighten.",
-          "oneOf": [{ "type": "number", "minimum": -180, "maximum": 180 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
-        "pitch_deg": { "oneOf": [{ "type": "number", "minimum": -180, "maximum": 180 }, { "type": "null" }] },
-        "roll_deg": { "oneOf": [{ "type": "number", "minimum": -180, "maximum": 180 }, { "type": "null" }] },
+        "pitch_deg": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "roll_deg": {
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "eyes_open": {
           "description": "Probability both eyes are open. The blink check that saves an album spread.",
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
-        "smile": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }] },
-        "mouth_open": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }] },
-        "gaze_on_camera": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }] },
-        "sharpness": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }] },
+        "smile": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mouth_open": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gaze_on_camera": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sharpness": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Unit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "occlusion": {
           "description": "How much of the face is hidden by a hand, hair, mask or another person.",
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Unit"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
-        "wearing_sunglasses": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }] },
-        "wearing_mask": { "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }] },
+        "wearing_sunglasses": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wearing_mask": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "quality": {
           "description": "Fused face quality, the value album selection actually sorts on.",
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Score" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Score"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
-
     "ClusterMembership": {
       "title": "ClusterMembership",
       "description": "Unsupervised grouping over embedding distance (HDBSCAN over cosine). A cluster is a hypothesis, not an identity: it is allowed to be wrong, which is exactly why it is stored separately from `identity`.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["cluster_id", "method"],
+      "required": [
+        "cluster_id",
+        "method"
+      ],
       "properties": {
-        "cluster_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "cluster_id": {
+          "$ref": "common.schema.json#/$defs/Uuid"
+        },
         "method": {
           "type": "string",
-          "enum": ["hdbscan_cosine", "agglomerative_cosine", "user_grouped", "singleton"]
+          "enum": [
+            "hdbscan_cosine",
+            "agglomerative_cosine",
+            "user_grouped",
+            "singleton"
+          ]
         },
         "membership_strength": {
           "description": "HDBSCAN membership probability. Low values sit near the decision boundary and are precisely the ones the active-learning loop should ask a human about first -- ten well-chosen taps fix a thousand photos.",
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Unit" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Unit"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "is_noise": {
           "description": "HDBSCAN noise point: too far from any cluster. Never surfaces in automated output.",
@@ -201,25 +405,49 @@
           "default": false
         },
         "distance_to_centroid": {
-          "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "clustering_run_id": {
           "description": "Which clustering pass produced this. Re-clustering a growing library reshuffles cluster ids; pinning the run makes the reshuffle auditable instead of mysterious.",
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Slug"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
-
     "Identity": {
       "title": "Identity",
       "description": "Who we say this is, how sure we are, and whether that is sure enough to act on unattended.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["assignment", "eligible_for_automated_output"],
+      "required": [
+        "assignment",
+        "eligible_for_automated_output"
+      ],
       "properties": {
         "person_id": {
           "description": "Null until an assignment exists. A person is a user-facing entity created by labeling, never by clustering alone.",
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Uuid" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "assignment": {
           "description": "How the person_id was arrived at. `auto_below_threshold` is a real, common state: the model has a guess it is not allowed to use, which is the entire point of precision-first.",
@@ -236,17 +464,35 @@
         },
         "confidence": {
           "description": "Calibrated similarity-to-person confidence. Null when unassigned.",
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "threshold_profile": {
           "description": "Which operating point was applied. `automated_output` is the strict one tuned for >=99% precision (build plan section 7); `search_only` is permissive because a wrong hit in a search result is a shrug, not a catastrophe.",
           "type": "string",
-          "enum": ["automated_output", "review_queue", "search_only"],
+          "enum": [
+            "automated_output",
+            "review_queue",
+            "search_only"
+          ],
           "default": "automated_output"
         },
         "threshold_used": {
           "description": "The actual numeric threshold applied, stored so that retuning the operating point is a replayable decision rather than a silent behaviour change.",
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Confidence" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "eligible_for_automated_output": {
           "description": "THE GATE. Album, film and reel selection may only treat this face as a known person when this is true. Invariant, enforced in tests: true requires assignment to be user_confirmed, or auto_high_confidence with confidence >= threshold_used. Every other state is false.",
@@ -258,10 +504,17 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["person_id", "confidence"],
+            "required": [
+              "person_id",
+              "confidence"
+            ],
             "properties": {
-              "person_id": { "$ref": "common.schema.json#/$defs/Uuid" },
-              "confidence": { "$ref": "common.schema.json#/$defs/Confidence" }
+              "person_id": {
+                "$ref": "common.schema.json#/$defs/Uuid"
+              },
+              "confidence": {
+                "$ref": "common.schema.json#/$defs/Confidence"
+              }
             }
           },
           "maxItems": 8,
@@ -271,69 +524,138 @@
           "oneOf": [
             {
               "type": "string",
-              "enum": ["below_threshold", "near_boundary", "multiple_candidates", "new_cluster", "user_reported_error", "low_face_quality", "extreme_pose"]
+              "enum": [
+                "below_threshold",
+                "near_boundary",
+                "multiple_candidates",
+                "new_cluster",
+                "user_reported_error",
+                "low_face_quality",
+                "extreme_pose"
+              ]
             },
-            { "type": "null" }
+            {
+              "type": "null"
+            }
           ]
         },
         "decided_by": {
-          "oneOf": [{ "type": "string", "enum": ["model", "user", "rule"] }, { "type": "null" }]
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "model",
+                "user",
+                "rule"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "decided_at": {
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
-
       "allOf": [
         {
           "$comment": "Machine-checked half of the precision invariant: the two assignment states that can never be eligible. The positive direction (eligible implies confidence >= threshold) is asserted in the golden tests, since JSON Schema cannot compare two sibling values.",
           "if": {
             "properties": {
               "assignment": {
-                "enum": ["unassigned", "user_rejected", "auto_below_threshold", "review_queued", "ambiguous_multiple_candidates"]
+                "enum": [
+                  "unassigned",
+                  "user_rejected",
+                  "auto_below_threshold",
+                  "review_queued",
+                  "ambiguous_multiple_candidates"
+                ]
               }
             },
-            "required": ["assignment"]
+            "required": [
+              "assignment"
+            ]
           },
           "then": {
-            "properties": { "eligible_for_automated_output": { "const": false } }
+            "properties": {
+              "eligible_for_automated_output": {
+                "const": false
+              }
+            }
           }
         },
         {
           "$comment": "An eligible face must name a person and must state the confidence and threshold that justified it. No unexplained permissions.",
           "if": {
-            "properties": { "eligible_for_automated_output": { "const": true } },
-            "required": ["eligible_for_automated_output"]
+            "properties": {
+              "eligible_for_automated_output": {
+                "const": true
+              }
+            },
+            "required": [
+              "eligible_for_automated_output"
+            ]
           },
           "then": {
-            "required": ["person_id", "confidence", "threshold_used"],
+            "required": [
+              "person_id",
+              "confidence",
+              "threshold_used"
+            ],
             "properties": {
-              "person_id": { "$ref": "common.schema.json#/$defs/Uuid" },
-              "confidence": { "$ref": "common.schema.json#/$defs/Confidence" },
-              "threshold_used": { "$ref": "common.schema.json#/$defs/Confidence" }
+              "person_id": {
+                "$ref": "common.schema.json#/$defs/Uuid"
+              },
+              "confidence": {
+                "$ref": "common.schema.json#/$defs/Confidence"
+              },
+              "threshold_used": {
+                "$ref": "common.schema.json#/$defs/Confidence"
+              }
             }
           }
         }
       ]
     },
-
     "SensitiveFlags": {
       "title": "SensitiveFlags",
       "description": "Child-face labeling sits behind separate explicit consent (build plan section 8). Modelled here rather than on the person so that the gate is evaluated at the point of use.",
       "$comment": "This block is REQUIRED on every FaceRecord. Making it optional would let a face become eligible for unattended output without anyone having decided whether it belongs to a child, and 'nobody asked' is not the same as 'no'. `unknown` is the conservative default and is explicitly NOT treated as adult.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["minor_status"],
+      "required": [
+        "minor_status"
+      ],
       "properties": {
         "minor_status": {
           "description": "`unknown` is the default and is NOT treated as adult. Estimated age is a signal for asking the user, never a licence to proceed.",
           "type": "string",
-          "enum": ["unknown", "estimated_minor", "confirmed_minor", "confirmed_adult"],
+          "enum": [
+            "unknown",
+            "estimated_minor",
+            "confirmed_minor",
+            "confirmed_adult"
+          ],
           "default": "unknown"
         },
         "labeling_consent": {
           "description": "Required before a confirmed_minor face may be labeled with a person identity. Absent consent, the face is still detected and counted, but never named. Must be scoped to minor_face_labeling specifically -- a consent granted for cloud rendering does not authorise naming a child.",
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/ConsentRef" }, { "type": "null" }]
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/ConsentRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "excluded_from_sharing": {
           "type": "boolean",
@@ -344,16 +666,26 @@
         {
           "$comment": "A consent attached here may only ever be the child-labeling one, and it must be live. A revoked consent that still validates is worse than no consent at all, because it reads as permission.",
           "if": {
-            "properties": { "labeling_consent": { "type": "object" } },
-            "required": ["labeling_consent"]
+            "properties": {
+              "labeling_consent": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "labeling_consent"
+            ]
           },
           "then": {
             "properties": {
               "labeling_consent": {
                 "type": "object",
                 "properties": {
-                  "scope": { "const": "minor_face_labeling" },
-                  "revoked_at": { "type": "null" }
+                  "scope": {
+                    "const": "minor_face_labeling"
+                  },
+                  "revoked_at": {
+                    "type": "null"
+                  }
                 }
               }
             }
@@ -361,20 +693,44 @@
         }
       ]
     },
-
     "FaceTrack": {
       "title": "FaceTrack",
       "type": "object",
       "additionalProperties": false,
-      "required": ["track_id", "track_range"],
+      "required": [
+        "track_id",
+        "track_range"
+      ],
       "properties": {
-        "track_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "track_id": {
+          "$ref": "common.schema.json#/$defs/Uuid"
+        },
         "track_range": {
           "description": "Source-time span the track covers.",
           "$ref": "common.schema.json#/$defs/TimeRange"
         },
-        "position_in_track": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
-        "track_length": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "position_in_track": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "track_length": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "is_track_representative": {
           "description": "The single best frame of this track, chosen by face quality. Identity is decided once per track from the representative, not voted per frame -- 120 correlated votes are not 120 pieces of evidence.",
           "type": "boolean",

@@ -206,6 +206,32 @@ class TestConfigDigestGate(unittest.TestCase):
         )
         self.assertIsNone(decide_load(cand, "development"))
 
+    def test_a_pin_that_was_never_checked_is_refused(self):
+        """The fail-open Codex found.
+
+        The mismatch test needs BOTH the pinned and the actual value; the
+        pinning test only looks at the pinned one. So a candidate pinned to a
+        hash whose file was never hashed passed release mode -- the gate whose
+        entire job is refusing unverified weights was accepting exactly that.
+        """
+        for field in ("actual_hash", "actual_config_digest"):
+            with self.subTest(field=field):
+                cand = candidate(**{field: None})
+                for mode in ("release", "development"):
+                    self.assertEqual(
+                        "UNLOADABLE_REASON_INTEGRITY_UNVERIFIED",
+                        decide_load(cand, mode),
+                        f"{field}=None passed the integrity gate in {mode}",
+                    )
+
+    def test_deferred_hashing_still_looks_like_an_absent_pin(self):
+        """The distinction that keeps the fix from blocking real work: an entry
+        with no pin at all is what deferred hashing looks like, and development
+        mode still permits it."""
+        cand = candidate(pinned_hash=None, actual_hash=None,
+                         pinned_config_digest=None, actual_config_digest=None)
+        self.assertIsNone(decide_load(cand, "development"))
+
     def test_a_missing_config_is_distinct_from_an_invalid_one(self):
         """Same distinction as weights_present vs actual_hash: an absent file and
         a malformed one are different failures with different remedies."""
@@ -230,9 +256,21 @@ class TestConfigDigestGate(unittest.TestCase):
         )
 
 
-class TestConfigDigestCanonicalisation(unittest.TestCase):
-    """The digest is over a canonical form, so it means "behaviour changed"
-    rather than "someone reindented the file"."""
+class TestConfigDigest(unittest.TestCase):
+    """The digest is over the config file's BYTES.
+
+    The first design hashed a "canonical" JSON re-serialisation -- sorted keys,
+    compact separators. Codex rejected it and was right: Python writes the float
+    `1.0` as `1.0` and JavaScript writes it as `1`, and seven of eight configs
+    contain a `1.0`. The Rust host and the TypeScript shell would have computed
+    different digests from identical files, and it would have surfaced as
+    CONFIG_MISMATCH on every model -- reading as "someone edited the configs"
+    rather than "the digest is not portable".
+
+    Bytes are the one representation every language agrees on without
+    coordination. The cost is that formatting becomes part of identity, which is
+    why the format is enforced rather than assumed.
+    """
 
     def setUp(self):
         from models.policy import digest as module
@@ -243,40 +281,71 @@ class TestConfigDigestCanonicalisation(unittest.TestCase):
         except module.Blake3Missing:
             self.skipTest("blake3 is not installed")
 
-    def _config(self) -> dict:
-        return json.loads(
-            (MODELS_ROOT / "configs" / "scrfd-10g-bnkps.json").read_text(encoding="utf-8")
-        )
+    SCRFD = "configs/scrfd-10g-bnkps.json"
 
-    def test_reformatting_does_not_change_the_digest(self):
-        """Reindenting and reordering keys is not a behaviour change, and a
-        digest that flagged it would be restamped reflexively until nobody read
-        the diff -- which is how a real change gets waved through."""
-        original = self._config()
-        shuffled = dict(reversed(list(original.items())))
+    def test_the_digest_is_the_hash_of_the_bytes_on_disk(self):
+        """Stated as an equality rather than a docstring, so a future change
+        back to re-serialisation fails here."""
+        path = MODELS_ROOT / self.SCRFD
         self.assertEqual(
-            self.module.blake3_hex(self.module.canonical_bytes(original)),
-            self.module.blake3_hex(self.module.canonical_bytes(shuffled)),
+            self.module.blake3_hex(path.read_bytes()),
+            self.module.config_digest(path),
         )
 
-    def test_a_threshold_change_does_change_the_digest(self):
+    def test_python_float_formatting_would_have_broken_portability(self):
+        """The specific counter-example, kept executable.
+
+        `json.dumps(1.0)` is `1.0` in Python and `1` in JavaScript. This asserts
+        the hazard is real and present in our data, so nobody reintroduces
+        re-serialisation on the grounds that it "should be fine".
+        """
+        self.assertEqual("1.0", json.dumps(1.0))
+        with_floats = [
+            entry["model_id"]
+            for entry in REGISTRY["entries"]
+            if "1.0" in (MODELS_ROOT / entry["config"]).read_text(encoding="utf-8")
+        ]
+        self.assertTrue(
+            with_floats,
+            "no config contains a float whose Python and JavaScript spellings "
+            "differ; if that is genuinely true now, this guard can go",
+        )
+
+    def test_a_threshold_change_changes_the_digest(self):
         """The whole point. Same weights, moved decision boundary, different
         pin."""
-        original = self._config()
-        edited = json.loads(json.dumps(original))
-        target = edited.get("postprocessing", edited)
-        key = next(
-            (k for k in ("score_threshold", "nms_threshold", "nms_iou_threshold")
-             if k in target),
-            None,
-        )
-        if key is None:  # pragma: no cover - config shape changed
-            self.skipTest("no threshold key in the SCRFD config to perturb")
+        path = MODELS_ROOT / self.SCRFD
+        original = path.read_bytes()
+        edited = json.loads(original.decode("utf-8"))
+        target = edited["postprocessing"]
+        key = next(k for k in ("score_threshold", "nms_threshold") if k in target)
         target[key] = float(target[key]) + 0.1
         self.assertNotEqual(
-            self.module.blake3_hex(self.module.canonical_bytes(original)),
+            self.module.blake3_hex(original),
             self.module.blake3_hex(self.module.canonical_bytes(edited)),
         )
+
+    def test_a_non_canonical_file_is_refused_rather_than_hashed(self):
+        """Hashing an unformatted file would produce a digest that changes the
+        next time an editor touches it, and a digest that churns gets restamped
+        reflexively until nobody reads the diff."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text('{"b":1,   "a":2}', encoding="utf-8")
+            self.assertFalse(self.module.is_canonical(path))
+            with self.assertRaises(self.module.ConfigNotCanonical):
+                self.module.config_digest(path)
+
+    def test_every_committed_config_is_canonically_formatted(self):
+        unformatted = [
+            entry["model_id"]
+            for entry in REGISTRY["entries"]
+            if not self.module.is_canonical(MODELS_ROOT / entry["config"])
+        ]
+        self.assertEqual([], unformatted,
+                         "run python3 models/policy/digest.py --write")
 
     def test_every_registry_entry_pins_the_config_on_disk(self):
         stale = [

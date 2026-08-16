@@ -88,6 +88,19 @@ class MlRuntimeStub(object):
     [0,1] when a face is clipped by the frame edge; the bounds are loose on
     purpose. Pixel coordinates never cross this interface in either direction.
 
+    WHY THIS IS v1 AND NOT v0
+    The v0 revision reused field numbers and enum values with incompatible
+    meanings: v0's preferred_providers=1 meant CoreML and v1's value 1 means
+    ONNX-CPU, v0's PRECISION_INT8=3 is now BF16, ModelPin tags 4 and 5 changed
+    type, and InferResult tag 3 went from `repeated Tensor` to a nested
+    message. A v0 client talking to a v1 server would not fail -- it would
+    silently request the wrong runtime at the wrong precision and misparse the
+    results. No workers/ml-runtime implementation exists yet so nothing real
+    breaks, but the package version is what makes that guarantee enforceable
+    rather than a claim in a commit message. Codex caught this; an earlier
+    draft of this file also claimed tag 3 "preserves the wire layout", which
+    was simply false.
+
     SCHEMA PARITY
     ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
     and TimeRange mirror definitions in contracts/schemas/common.schema.json
@@ -108,32 +121,32 @@ class MlRuntimeStub(object):
             channel: A grpc.Channel.
         """
         self.ListModels = channel.unary_unary(
-                '/memory_engine.ml_runtime.v0.MlRuntime/ListModels',
+                '/memory_engine.ml_runtime.v1.MlRuntime/ListModels',
                 request_serializer=ml__runtime__pb2.ListModelsRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.ListModelsResponse.FromString,
                 _registered_method=True)
         self.Health = channel.unary_unary(
-                '/memory_engine.ml_runtime.v0.MlRuntime/Health',
+                '/memory_engine.ml_runtime.v1.MlRuntime/Health',
                 request_serializer=ml__runtime__pb2.HealthRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.HealthResponse.FromString,
                 _registered_method=True)
         self.Infer = channel.unary_unary(
-                '/memory_engine.ml_runtime.v0.MlRuntime/Infer',
+                '/memory_engine.ml_runtime.v1.MlRuntime/Infer',
                 request_serializer=ml__runtime__pb2.InferRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.InferResponse.FromString,
                 _registered_method=True)
         self.InferStream = channel.stream_stream(
-                '/memory_engine.ml_runtime.v0.MlRuntime/InferStream',
+                '/memory_engine.ml_runtime.v1.MlRuntime/InferStream',
                 request_serializer=ml__runtime__pb2.InferRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.InferResponse.FromString,
                 _registered_method=True)
         self.LoadModel = channel.unary_unary(
-                '/memory_engine.ml_runtime.v0.MlRuntime/LoadModel',
+                '/memory_engine.ml_runtime.v1.MlRuntime/LoadModel',
                 request_serializer=ml__runtime__pb2.LoadModelRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.LoadModelResponse.FromString,
                 _registered_method=True)
         self.UnloadModel = channel.unary_unary(
-                '/memory_engine.ml_runtime.v0.MlRuntime/UnloadModel',
+                '/memory_engine.ml_runtime.v1.MlRuntime/UnloadModel',
                 request_serializer=ml__runtime__pb2.UnloadModelRequest.SerializeToString,
                 response_deserializer=ml__runtime__pb2.UnloadModelResponse.FromString,
                 _registered_method=True)
@@ -195,6 +208,19 @@ class MlRuntimeServicer(object):
     that someone will eventually forget. Landmarks may fall slightly outside
     [0,1] when a face is clipped by the frame edge; the bounds are loose on
     purpose. Pixel coordinates never cross this interface in either direction.
+
+    WHY THIS IS v1 AND NOT v0
+    The v0 revision reused field numbers and enum values with incompatible
+    meanings: v0's preferred_providers=1 meant CoreML and v1's value 1 means
+    ONNX-CPU, v0's PRECISION_INT8=3 is now BF16, ModelPin tags 4 and 5 changed
+    type, and InferResult tag 3 went from `repeated Tensor` to a nested
+    message. A v0 client talking to a v1 server would not fail -- it would
+    silently request the wrong runtime at the wrong precision and misparse the
+    results. No workers/ml-runtime implementation exists yet so nothing real
+    breaks, but the package version is what makes that guarantee enforceable
+    rather than a claim in a commit message. Codex caught this; an earlier
+    draft of this file also claimed tag 3 "preserves the wire layout", which
+    was simply false.
 
     SCHEMA PARITY
     ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
@@ -288,9 +314,9 @@ def add_MlRuntimeServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'memory_engine.ml_runtime.v0.MlRuntime', rpc_method_handlers)
+            'memory_engine.ml_runtime.v1.MlRuntime', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('memory_engine.ml_runtime.v0.MlRuntime', rpc_method_handlers)
+    server.add_registered_method_handlers('memory_engine.ml_runtime.v1.MlRuntime', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -351,6 +377,19 @@ class MlRuntime(object):
     [0,1] when a face is clipped by the frame edge; the bounds are loose on
     purpose. Pixel coordinates never cross this interface in either direction.
 
+    WHY THIS IS v1 AND NOT v0
+    The v0 revision reused field numbers and enum values with incompatible
+    meanings: v0's preferred_providers=1 meant CoreML and v1's value 1 means
+    ONNX-CPU, v0's PRECISION_INT8=3 is now BF16, ModelPin tags 4 and 5 changed
+    type, and InferResult tag 3 went from `repeated Tensor` to a nested
+    message. A v0 client talking to a v1 server would not fail -- it would
+    silently request the wrong runtime at the wrong precision and misparse the
+    results. No workers/ml-runtime implementation exists yet so nothing real
+    breaks, but the package version is what makes that guarantee enforceable
+    rather than a claim in a commit message. Codex caught this; an earlier
+    draft of this file also claimed tag 3 "preserves the wire layout", which
+    was simply false.
+
     SCHEMA PARITY
     ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
     and TimeRange mirror definitions in contracts/schemas/common.schema.json
@@ -378,7 +417,7 @@ class MlRuntime(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/ListModels',
+            '/memory_engine.ml_runtime.v1.MlRuntime/ListModels',
             ml__runtime__pb2.ListModelsRequest.SerializeToString,
             ml__runtime__pb2.ListModelsResponse.FromString,
             options,
@@ -405,7 +444,7 @@ class MlRuntime(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/Health',
+            '/memory_engine.ml_runtime.v1.MlRuntime/Health',
             ml__runtime__pb2.HealthRequest.SerializeToString,
             ml__runtime__pb2.HealthResponse.FromString,
             options,
@@ -432,7 +471,7 @@ class MlRuntime(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/Infer',
+            '/memory_engine.ml_runtime.v1.MlRuntime/Infer',
             ml__runtime__pb2.InferRequest.SerializeToString,
             ml__runtime__pb2.InferResponse.FromString,
             options,
@@ -459,7 +498,7 @@ class MlRuntime(object):
         return grpc.experimental.stream_stream(
             request_iterator,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/InferStream',
+            '/memory_engine.ml_runtime.v1.MlRuntime/InferStream',
             ml__runtime__pb2.InferRequest.SerializeToString,
             ml__runtime__pb2.InferResponse.FromString,
             options,
@@ -486,7 +525,7 @@ class MlRuntime(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/LoadModel',
+            '/memory_engine.ml_runtime.v1.MlRuntime/LoadModel',
             ml__runtime__pb2.LoadModelRequest.SerializeToString,
             ml__runtime__pb2.LoadModelResponse.FromString,
             options,
@@ -513,7 +552,7 @@ class MlRuntime(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/memory_engine.ml_runtime.v0.MlRuntime/UnloadModel',
+            '/memory_engine.ml_runtime.v1.MlRuntime/UnloadModel',
             ml__runtime__pb2.UnloadModelRequest.SerializeToString,
             ml__runtime__pb2.UnloadModelResponse.FromString,
             options,

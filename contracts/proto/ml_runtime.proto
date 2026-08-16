@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package memory_engine.ml_runtime.v0;
+package memory_engine.ml_runtime.v1;
 
 // The local gRPC interface between the intelligence packages (Claude) and the
 // model-hosting process (Codex). Loopback only; this service never listens on a
@@ -58,6 +58,19 @@ package memory_engine.ml_runtime.v0;
 //    [0,1] when a face is clipped by the frame edge; the bounds are loose on
 //    purpose. Pixel coordinates never cross this interface in either direction.
 //
+// WHY THIS IS v1 AND NOT v0
+//    The v0 revision reused field numbers and enum values with incompatible
+//    meanings: v0's preferred_providers=1 meant CoreML and v1's value 1 means
+//    ONNX-CPU, v0's PRECISION_INT8=3 is now BF16, ModelPin tags 4 and 5 changed
+//    type, and InferResult tag 3 went from `repeated Tensor` to a nested
+//    message. A v0 client talking to a v1 server would not fail -- it would
+//    silently request the wrong runtime at the wrong precision and misparse the
+//    results. No workers/ml-runtime implementation exists yet so nothing real
+//    breaks, but the package version is what makes that guarantee enforceable
+//    rather than a claim in a commit message. Codex caught this; an earlier
+//    draft of this file also claimed tag 3 "preserves the wire layout", which
+//    was simply false.
+//
 // SCHEMA PARITY
 //    ModelPin, RuntimeTarget, Precision, NormalizedBox, Point2D, RationalTime
 //    and TimeRange mirror definitions in contracts/schemas/common.schema.json
@@ -110,10 +123,17 @@ message ModelPin {
   // unpinned, which the load policy permits only in development mode.
   string weights_blake3 = 3;
 
-  // Lowercase hex BLAKE3 of the canonicalised model config JSON from
-  // models/configs/. Canonicalisation is the same as everywhere else in this
-  // contract: UTF-8, sorted keys, no insignificant whitespace -- so a
-  // reformatted config does not read as a behaviour change.
+  // Lowercase hex BLAKE3 of the model config file's BYTES, as committed in
+  // models/configs/.
+  //
+  // Bytes, not a re-serialisation. The first design hashed a "canonical" JSON
+  // form -- sorted keys, compact separators -- and Codex rejected it: Python
+  // writes the float `1.0` as `1.0` while JavaScript writes `1`, and seven of
+  // eight configs contain one. The Rust host and the TypeScript shell would
+  // have computed different digests from identical files, surfacing as
+  // CONFIG_MISMATCH on every model. Byte equality is the one thing every
+  // language agrees on without coordination; the on-disk format is enforced by
+  // models/policy/digest.py so that "reformatted" stays a detectable state.
   string config_blake3 = 4;
 
   // Which stack executed the weights. Same vocabulary as RuntimeTarget in
@@ -271,6 +291,11 @@ enum UnloadableReason {
   // that through.
   UNLOADABLE_REASON_CONFIG_MISMATCH = 10;
   UNLOADABLE_REASON_CONFIG_UNPINNED = 11;
+  // The entry is pinned to a hash or config digest that the loader never
+  // actually computed. Always fatal: a pin nobody checked is not a pin, and
+  // this is a loader bug rather than a policy choice -- deferred hashing looks
+  // like an ABSENT pin, which development mode already permits.
+  UNLOADABLE_REASON_INTEGRITY_UNVERIFIED = 12;
 }
 
 // ------------------------------------------------------------------ health ---
@@ -313,8 +338,15 @@ message InferRequest {
   // actually used in the response.
   repeated RuntimeTarget preferred_runtimes = 5;
 
-  // Wall-clock budget. The host must refuse work it cannot start in time rather
-  // than accepting it and blowing the deadline.
+  // RELATIVE budget in milliseconds, measured from the moment the host accepts
+  // the request, and INCLUSIVE of queue time. Not an epoch timestamp: the two
+  // processes are on one machine but need not share a clock discipline, and a
+  // wall-clock deadline would behave differently on a retry of the same
+  // request_id after a suspend. Zero means no budget.
+  //
+  // Including queue time is the deliberate half: a request that waits 40s
+  // behind a scan and then runs in 2s has still failed a 10s deadline from the
+  // caller's point of view, and the caller is the one holding the UI.
   int64 deadline_ms = 6;
 
   // Best-effort priority, matching JobSpec.priority. Interactive work outranks
@@ -340,7 +372,7 @@ message InferItem {
 
     // Already-decoded inputs, for callers that have the tensors in hand -- an
     // aesthetic head consuming an embedding produced moments earlier, or a
-    // face crop already aligned by the caller. A set rather than a single
+    // face crop the caller has already warped. A set rather than a single
     // tensor because multi-input models exist (image + text for a SigLIP
     // similarity head, image + mask for a matting head), and a contract that
     // can only express one input forces those callers to invent an encoding.
@@ -351,11 +383,29 @@ message InferItem {
   // source timecode is the caller's job via the frame-index sidecar.
   optional TimeRange window = 4;
 
-  // Face-crop inputs need their landmarks so the host can apply the alignment
-  // template from the model config. Normalised against the oriented image, as
-  // everywhere else in this file. Without these an embedding is confidently
-  // wrong rather than absent, so the host must reject a face_embedding request
-  // whose items carry no landmarks.
+  // Whether the host must apply the model's alignment template, and therefore
+  // whether landmarks are required. An earlier draft of this file said both
+  // that a tensor could be "already aligned" AND that landmarks were mandatory
+  // so the host could align it -- Codex caught the contradiction. They are two
+  // different requests and now say so.
+  Alignment alignment = 7;
+
+  // Landmarks for the alignment template. Required when `alignment` is
+  // NEEDS_ALIGNMENT; must be empty when it is PREALIGNED. Without them an
+  // embedding is confidently wrong rather than absent, which is the worst
+  // failure mode in this system because nothing downstream detects it.
+  //
+  // COORDINATE BASIS, WHICH DEPENDS ON THE INPUT:
+  //   proxy_id -> normalised against the ORIENTED IMAGE, as everywhere else in
+  //               this file.
+  //   tensors  -> normalised against THE TENSOR'S OWN EXTENT.
+  //
+  // The split is not an inconsistency, it is what removes the need for a crop
+  // transform. Landmarks normalised against a 6000px original cannot be applied
+  // to a bare 112x112 crop tensor without knowing where that crop came from,
+  // and carrying a crop transform would add a second thing to get wrong. A
+  // caller sending a tensor already knows its extent, so it normalises against
+  // it.
   repeated Point2D landmarks = 5;
 
   // Ordering convention for `landmarks`. Mirrors FaceRecord's Landmarks.scheme.
@@ -365,11 +415,36 @@ message InferItem {
   LandmarkScheme landmark_scheme = 6;
 }
 
+// Whether the host applies the model's alignment template to this item.
+enum Alignment {
+  // Treated as NEEDS_ALIGNMENT for face models and as NONE for everything
+  // else. Present because proto3 has no absent scalar, not because the
+  // ambiguity is acceptable -- a face_embedding request that leaves this unset
+  // and carries no landmarks is rejected with LANDMARKS_REQUIRED.
+  ALIGNMENT_UNSPECIFIED = 0;
+
+  // The host warps the input onto the template in the model config, using
+  // `landmarks`. The normal path for a face crop taken from a proxy.
+  ALIGNMENT_NEEDS_ALIGNMENT = 1;
+
+  // The caller has ALREADY warped the tensor onto the model's template.
+  // `landmarks` must be empty; sending them is INPUT_INVALID rather than a
+  // hint, because a host that re-applied a template to an aligned crop would
+  // warp it twice and return a confident, wrong embedding.
+  ALIGNMENT_PREALIGNED = 2;
+
+  // The model does not align (embeddings, IQA, detectors).
+  ALIGNMENT_NONE = 3;
+}
+
 enum LandmarkScheme {
   LANDMARK_SCHEME_UNSPECIFIED = 0;
   LANDMARK_SCHEME_INSIGHTFACE_5 = 1;
   LANDMARK_SCHEME_INSIGHTFACE_106 = 2;
   LANDMARK_SCHEME_MEDIAPIPE_468 = 3;
+  // YuNet's own five-point ordering. NOT interchangeable with INSIGHTFACE_5
+  // despite both being five points -- see FaceRecord.Landmarks.scheme.
+  LANDMARK_SCHEME_YUNET_5 = 4;
 }
 
 message Tensor {
@@ -426,6 +501,21 @@ message InferResponse {
   optional InferError error = 7;
 }
 
+// VALIDATION RULES THE HOST MUST ENFORCE, because proto3 cannot express them
+// and Codex correctly refused to implement them from a comment:
+//
+//   1. Exactly one of `error` or `output` is set. Neither set is INPUT_INVALID
+//      on the host's own response -- an empty result is not "no faces found",
+//      it is a host bug. "Ran and found nothing" is an EMPTY DetectionSet, not
+//      an empty oneof.
+//   2. `item_id` is non-empty and unique within the response, and every
+//      item_id in the request appears exactly once. Duplicate or missing ids
+//      make batch correlation ambiguous, and a caller that mis-correlates
+//      writes one photo's faces onto another.
+//   3. `output` matches the model's declared ModelInfo.output_kind.
+//
+// A host that cannot satisfy these must fail the whole request with a
+// top-level InferResponse.error rather than emit a response that violates them.
 message InferResult {
   string item_id = 1;
 
@@ -439,8 +529,7 @@ message InferResult {
   // Which variant to expect is declared by ModelInfo.output_kind.
   oneof output {
     // Embeddings and heads whose interpretation genuinely belongs to the
-    // caller. Reserved field 3 rather than a new number so the wire layout
-    // matches the previous `repeated Tensor outputs = 3` position.
+    // caller.
     TensorSet tensors = 3;
 
     // Detectors, post-decode and post-NMS.
@@ -470,7 +559,26 @@ message Detection {
 
   // Present for detectors that emit them (SCRFD does, YuNet does). Normalised
   // in the same space as `box`, and may fall outside [0,1] on a clipped face.
+  //
+  // OUT-OF-RANGE HANDLING. Point2D in common.schema.json bounds landmarks to
+  // [-0.5, 1.5], which is loose enough for a face clipped by the frame and not
+  // loose enough for every prediction a detector can make. When any point of a
+  // set falls outside those bounds the host emits the detection with
+  // `landmarks` EMPTY and `landmarks_out_of_range` set, rather than:
+  //   * clamping -- moves the alignment template and yields a confident wrong
+  //     embedding, the failure this whole file is arranged to prevent;
+  //   * dropping the detection -- a face is still there, and losing it silently
+  //     is worse than losing its landmarks;
+  //   * widening the schema -- the bounds are what make a nonsense landmark
+  //     detectable at all.
+  // Face embedding then skips that face, which is the correct outcome: a face
+  // whose landmarks are nonsense cannot be aligned, and an unaligned embedding
+  // is not a weaker signal, it is a wrong one.
   repeated Point2D landmarks = 3;
+
+  // Set when landmarks were suppressed by the rule above. Distinguishes "this
+  // detector emits no landmarks" from "it emitted landmarks we refused".
+  bool landmarks_out_of_range = 7;
   LandmarkScheme landmark_scheme = 4;
 
   // For multi-class detectors. A single-class face detector leaves class_id 0
@@ -493,8 +601,12 @@ message DetectionSet {
   float score_threshold = 2;
   float nms_iou_threshold = 3;
 
-  // Set when the host stopped adding detections because it hit the model's
-  // configured cap. A caller that silently takes the top 100 faces in a crowd
+  // Set when the host stopped adding detections because it hit
+  // `postprocessing.max_detections` in the model config. That key did not exist
+  // when this field was written, which made the field unimplementable as
+  // documented -- Codex flagged it; the config schema now carries both
+  // `max_detections` (post-NMS cap) and `top_k` (YuNet's pre-NMS candidate cap,
+  // which also changes the output and so must be pinned too). A caller that silently takes the top 100 faces in a crowd
   // shot and reports "100 people" is wrong in a way no downstream check will
   // catch, so truncation is stated rather than implied.
   bool truncated = 4;

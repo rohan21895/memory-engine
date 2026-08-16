@@ -57,7 +57,10 @@
       16,
       32
     ],
-    "normalisation": null
+    "normalisation": null,
+    "landmark_scheme": "insightface_5",
+    "top_k": 5000,
+    "max_detections": 500
   },
   "outputs": [
     {
@@ -173,5 +176,5 @@
     "promoted_at": null
   },
   "eval": null,
-  "notes": "Letterbox rather than stretch: SCRFD's anchors assume square-ish geometry, and stretching a 16:9 frame to 640x640 distorts faces enough to cost recall on small ones. The detection scale factor must be inverted when mapping boxes back to normalised image coordinates. Coordinates written to FaceRecord are normalised against the ORIENTED image, so EXIF rotation is applied before detection, not after. PREPROCESSING CORRECTION: scale was 1/128 alongside mean=127.5/std=128, which applied the division twice and collapsed the whole 0-255 range into a 0.016-wide sliver -- detection and embeddings would have been silently wrong rather than failing. The reference is cv2.dnn.blobFromImage(img, 1/128, size, (127.5,)*3) = (pixel - mean) * scalefactor, which under this config's (pixel * scale - mean) / std form is scale=1.0, mean=127.5, std=128. Caught by Codex in review."
+  "notes": "Letterbox rather than stretch: SCRFD's anchors assume square-ish geometry, and stretching a 16:9 frame to 640x640 distorts faces enough to cost recall on small ones. The detection scale factor must be inverted when mapping boxes back to normalised image coordinates. Coordinates written to FaceRecord are normalised against the ORIENTED image, so EXIF rotation is applied before detection, not after. PREPROCESSING CORRECTION: scale was 1/128 alongside mean=127.5/std=128, which applied the division twice and collapsed the whole 0-255 range into a 0.016-wide sliver -- detection and embeddings would have been silently wrong rather than failing. The reference is cv2.dnn.blobFromImage(img, 1/128, size, (127.5,)*3) = (pixel - mean) * scalefactor, which under this config's (pixel * scale - mean) / std form is scale=1.0, mean=127.5, std=128. Caught by Codex in review. ANCHORS: this is a nine-output variant, which in InsightFace's loader means TWO anchors per feature-map location with each centre duplicated in place. The host must derive that from the output count (6 or 9 -> 2; 10 or 15 -> 1) rather than assuming one, or every prediction past the first row pairs with the wrong centre."
 }

@@ -1110,7 +1110,11 @@ pub struct ModelRef {
 
     pub version: String,
 
-    pub weights_blake3: Blake3Hash,
+    /// BLAKE3 of the weights file, or null when the entry is unpinned. Null is permitted
+    /// ONLY because development mode permits loading unpinned weights; a null here is
+    /// exactly what makes a record non-reproducible, and release mode refuses to produce
+    /// one.
+    pub weights_blake3: Option<Blake3Hash>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeTarget>,
@@ -1120,6 +1124,14 @@ pub struct ModelRef {
     /// of provenance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precision: Option<ModelRefPrecision>,
+
+    /// BLAKE3 of the model config file that governed this run. Weights alone do not pin
+    /// behaviour: input size, normalisation constants, score threshold, NMS IoU and the
+    /// alignment template all live in the config, and changing any of them changes every
+    /// downstream decision while the weights hash stays byte-identical. Null only for
+    /// classical measures with no model config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_blake3: Option<Blake3Hash>,
 }
 
 /// One execution of one model against one record. Every score in this contract points
@@ -3279,12 +3291,18 @@ pub enum LandmarksScheme {
 
     #[serde(rename = "mediapipe_468")]
     Mediapipe468,
+
+    #[serde(rename = "yunet_5")]
+    Yunet5,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Landmarks {
     /// Point count and ordering convention. Consumers must switch on this rather than
-    /// assuming an index layout.
+    /// assuming an index layout. yunet_5 and insightface_5 are both five points and are NOT
+    /// interchangeable: feeding one to an alignment template built for the other produces a
+    /// plausible warp and a wrong embedding, which is the worst failure mode in this system
+    /// because nothing downstream can detect it.
     pub scheme: LandmarksScheme,
 
     pub points: Vec<Point2D>,
