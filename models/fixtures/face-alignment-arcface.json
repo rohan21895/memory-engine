@@ -1,0 +1,78 @@
+{
+  "fixture_version": "v0",
+  "model_id": "arcface-buffalo-l",
+  "detected_landmarks": [
+    [
+      212.0,
+      290.0
+    ],
+    [
+      288.0,
+      286.0
+    ],
+    [
+      250.0,
+      332.0
+    ],
+    [
+      220.0,
+      372.0
+    ],
+    [
+      284.0,
+      369.0
+    ]
+  ],
+  "template": [
+    [
+      38.2946,
+      51.6963
+    ],
+    [
+      73.5318,
+      51.5014
+    ],
+    [
+      56.0252,
+      71.7366
+    ],
+    [
+      41.5493,
+      92.3655
+    ],
+    [
+      70.7299,
+      92.2041
+    ]
+  ],
+  "expected_transform": {
+    "a": 0.478515149,
+    "b": 0.013984414,
+    "tx": -59.373379732,
+    "ty": -89.420807224,
+    "form": "x' = a*x - b*y + tx ; y' = b*x + a*y + ty"
+  },
+  "expected_mapped_landmarks": [
+    [
+      38.016352,
+      52.313282
+    ],
+    [
+      74.439441,
+      51.462037
+    ],
+    [
+      55.612582,
+      72.942326
+    ],
+    [
+      40.697751,
+      91.663399
+    ],
+    [
+      71.364674,
+      91.122856
+    ]
+  ],
+  "note": "Alignment is the one preprocessing stage whose omission is catastrophic rather than degrading: an unaligned crop returns a confidently wrong embedding, which clusters wrongly and puts the wrong person in a family album. Mapped landmarks should land near the template; residual is the alignment error."
+}

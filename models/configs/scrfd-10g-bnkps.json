@@ -1,0 +1,64 @@
+{
+  "config_version": "v0",
+  "model_id": "scrfd-10g-bnkps",
+  "version": "1.0.0",
+  "task": "face_detection",
+  "description": "SCRFD 10GF with keypoints. Fast and accurate at small faces, which is the case that matters -- a group photo where every face is 2% of the frame is the normal case in a family library, not the hard one.",
+  "weights": {
+    "filename": "scrfd_10g_bnkps.onnx",
+    "format": "onnx",
+    "source_url": "https://github.com/deepinsight/insightface/tree/master/detection/scrfd",
+    "blake3": null,
+    "byte_size": null,
+    "quantization": "fp16"
+  },
+  "runtime_targets": ["onnxruntime_coreml", "onnxruntime_cuda", "onnxruntime_directml", "onnxruntime_cpu"],
+  "preprocessing": {
+    "kind": "image",
+    "input_name": "input.1",
+    "input_size": { "width": 640, "height": 640 },
+    "resize": "letterbox",
+    "interpolation": "bilinear",
+    "color_order": "bgr",
+    "layout": "nchw",
+    "scale": 0.0078125,
+    "mean": [127.5, 127.5, 127.5],
+    "std": [128.0, 128.0, 128.0],
+    "face_alignment": null,
+    "audio": null,
+    "sequence_length": null
+  },
+  "postprocessing": {
+    "steps": ["distance2bbox", "distance2kps", "nms"],
+    "nms_threshold": 0.4,
+    "score_threshold": 0.5,
+    "strides": [8, 16, 32],
+    "normalisation": null
+  },
+  "outputs": [
+    { "name": "score_8", "meaning": "scores", "shape": [-1, 1], "dimensions": null, "vector_space": null },
+    { "name": "score_16", "meaning": "scores", "shape": [-1, 1], "dimensions": null, "vector_space": null },
+    { "name": "score_32", "meaning": "scores", "shape": [-1, 1], "dimensions": null, "vector_space": null },
+    { "name": "bbox_8", "meaning": "bboxes", "shape": [-1, 4], "dimensions": null, "vector_space": null },
+    { "name": "bbox_16", "meaning": "bboxes", "shape": [-1, 4], "dimensions": null, "vector_space": null },
+    { "name": "bbox_32", "meaning": "bboxes", "shape": [-1, 4], "dimensions": null, "vector_space": null },
+    { "name": "kps_8", "meaning": "keypoints", "shape": [-1, 10], "dimensions": null, "vector_space": null },
+    { "name": "kps_16", "meaning": "keypoints", "shape": [-1, 10], "dimensions": null, "vector_space": null },
+    { "name": "kps_32", "meaning": "keypoints", "shape": [-1, 10], "dimensions": null, "vector_space": null }
+  ],
+  "batching": { "supported": true, "max_batch": 8, "dynamic_axes": true },
+  "license": {
+    "code_license": "MIT",
+    "weights_license": "Non-commercial research use only",
+    "commercial_use": "requires_license_purchase",
+    "verified": false,
+    "verified_at": null,
+    "license_url": "https://www.insightface.ai/solutions/face-recognition-licensing",
+    "training_data": "WIDER FACE. Check its terms separately from the model's.",
+    "blocks_commercial_release": true,
+    "note": "DEVELOPMENT USE ONLY. InsightFace publishes MIT code with pretrained weights restricted to non-commercial research; commercial use needs a separate licence. Licensing deliberately deferred -- see issue #3. This entry must not reach a commercial release while blocks_commercial_release is true."
+  },
+  "rollout": { "state": "candidate", "replaces": null, "promoted_at": null },
+  "eval": null,
+  "notes": "Letterbox rather than stretch: SCRFD's anchors assume square-ish geometry, and stretching a 16:9 frame to 640x640 distorts faces enough to cost recall on small ones. The detection scale factor must be inverted when mapping boxes back to normalised image coordinates. Coordinates written to FaceRecord are normalised against the ORIENTED image, so EXIF rotation is applied before detection, not after."
+}
