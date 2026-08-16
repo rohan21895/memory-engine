@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import sys
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,7 @@ class ModelInspection:
     config: Mapping[str, Any]
     config_blake3: str | None
     weights_blake3: str | None
+    weights_path: Path | None
     available_runtimes: tuple[str, ...]
     unloadable_reason: str | None
 
@@ -76,7 +78,9 @@ def _load_gate_module(repo_root: Path) -> ModuleType:
     policy_path = (repo_root / "models" / "policy" / "load_gate.py").resolve()
     if not policy_path.is_file():
         raise CatalogError("shared model load gate is missing")
-    module_name = f"_memory_engine_load_gate_{blake3(str(policy_path).encode()).hexdigest()[:16]}"
+    module_name = (
+        f"_memory_engine_load_gate_{blake3(str(policy_path).encode()).hexdigest()[:16]}"
+    )
     if module_name in sys.modules:
         return sys.modules[module_name]
     spec = importlib.util.spec_from_file_location(module_name, policy_path)
@@ -94,7 +98,7 @@ def _load_gate_module(repo_root: Path) -> ModuleType:
 
 
 def detect_available_providers() -> frozenset[str]:
-    """Return runtimes installed in this process without importing model weights."""
+    """Return execution runtimes this host can actually create sessions for."""
     providers: set[str] = set()
     if importlib.util.find_spec("onnxruntime") is not None:
         import onnxruntime  # type: ignore[import-not-found]
@@ -108,8 +112,6 @@ def detect_available_providers() -> frozenset[str]:
             providers.add("onnxruntime_directml")
         if "CUDAExecutionProvider" in onnx_providers:
             providers.add("onnxruntime_cuda")
-    if importlib.util.find_spec("cv2") is not None:
-        providers.add("opencv")
     return frozenset(providers)
 
 
@@ -134,17 +136,21 @@ class ModelCatalog:
         self._registry = self._read_registry()
         self._policy = self._registry["load_policy"]
         self.mode = self._load_gate.resolve_mode(self._policy, self._environ)
-        self._schema = self._read_json(self.models_root / "schema" / "model-config.schema.json")
+        self._schema = self._read_json(
+            self.models_root / "schema" / "model-config.schema.json"
+        )
         Draft202012Validator.check_schema(self._schema)
         self._validator = Draft202012Validator(self._schema)
         self._entries = {
             str(entry["model_id"]): entry for entry in self._registry["entries"]
         }
+        self._inspection_cache: dict[str, ModelInspection] = {}
+        self._available_providers: frozenset[str] | None = None
+        self._cache_lock = threading.RLock()
 
     def inspect_all(self, task: str = "") -> list[ModelInspection]:
-        available = self._provider_probe()
         return [
-            self._inspect(entry, available)
+            self._cached_inspection(entry)
             for entry in self._registry["entries"]
             if not task or entry["task"] == task
         ]
@@ -153,7 +159,19 @@ class ModelCatalog:
         entry = self._entries.get(model_id)
         if entry is None:
             return None
-        return self._inspect(entry, self._provider_probe())
+        return self._cached_inspection(entry)
+
+    def _cached_inspection(self, entry: Mapping[str, Any]) -> ModelInspection:
+        model_id = str(entry["model_id"])
+        with self._cache_lock:
+            cached = self._inspection_cache.get(model_id)
+            if cached is not None:
+                return cached
+            if self._available_providers is None:
+                self._available_providers = self._provider_probe()
+            inspected = self._inspect(entry, self._available_providers)
+            self._inspection_cache[model_id] = inspected
+            return inspected
 
     def _read_registry(self) -> Mapping[str, Any]:
         registry = self._read_json(self.registry_path)
@@ -163,7 +181,9 @@ class ModelCatalog:
             raise CatalogError("model registry is missing entries or load_policy")
         ids = [entry.get("model_id") for entry in entries if isinstance(entry, dict)]
         if len(ids) != len(entries) or len(ids) != len(set(ids)):
-            raise CatalogError("model registry entries must have unique model_id values")
+            raise CatalogError(
+                "model registry entries must have unique model_id values"
+            )
         return registry
 
     @staticmethod
@@ -171,9 +191,13 @@ class ModelCatalog:
         try:
             parsed = json.loads(path.read_bytes().decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise CatalogError(f"required model metadata is unreadable: {path.name}") from error
+            raise CatalogError(
+                f"required model metadata is unreadable: {path.name}"
+            ) from error
         if not isinstance(parsed, dict):
-            raise CatalogError(f"required model metadata must be an object: {path.name}")
+            raise CatalogError(
+                f"required model metadata must be an object: {path.name}"
+            )
         return parsed
 
     def _inspect(
@@ -195,15 +219,21 @@ class ModelCatalog:
             if isinstance(candidate_config, dict):
                 config = candidate_config
                 config_valid = not any(self._validator.iter_errors(candidate_config))
-                config_valid = config_valid and candidate_config.get("model_id") == entry.get(
+                config_valid = config_valid and candidate_config.get(
                     "model_id"
-                )
+                ) == entry.get("model_id")
 
-        weights = config.get("weights") if isinstance(config.get("weights"), dict) else {}
-        weights_path = self._safe_child(self.weights_dir, str(weights.get("filename", "")))
+        weights = (
+            config.get("weights") if isinstance(config.get("weights"), dict) else {}
+        )
+        weights_path = self._safe_child(
+            self.weights_dir, str(weights.get("filename", ""))
+        )
         weights_present = weights_path is not None and weights_path.is_file()
         actual_weights_digest = (
-            self._hash_file(weights_path) if weights_present and weights_path is not None else None
+            self._hash_file(weights_path)
+            if weights_present and weights_path is not None
+            else None
         )
         declared_runtimes = config.get("runtime_targets", [])
         available_runtimes = tuple(
@@ -211,7 +241,9 @@ class ModelCatalog:
             for runtime in declared_runtimes
             if isinstance(runtime, str) and runtime in available
         )
-        licence = config.get("license") if isinstance(config.get("license"), dict) else {}
+        licence = (
+            config.get("license") if isinstance(config.get("license"), dict) else {}
+        )
 
         candidate = self._load_gate.Candidate(
             registered=True,
@@ -232,6 +264,7 @@ class ModelCatalog:
             config=config,
             config_blake3=actual_config_digest,
             weights_blake3=actual_weights_digest,
+            weights_path=weights_path if weights_present else None,
             available_runtimes=available_runtimes,
             unloadable_reason=refusal,
         )
