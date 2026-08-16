@@ -1195,6 +1195,88 @@ class TestChapterSpanning(unittest.TestCase):
                     self.assertLessEqual(keyframe["time"]["value"], end, clip["clip_id"])
 
 
+class TestSpanIdentityIsComputable(unittest.TestCase):
+    """`span_id` must be RECOMPUTABLE from its members, not asserted.
+
+    Codex found (issue #26) that the golden assembly's span_id matched none of
+    the plausible byte encodings -- concatenated hex, concatenated raw digests,
+    or any delimited variant. It matched none of them because it had been
+    written by hand rather than computed, so the fixture that was supposed to
+    pin a content-addressed identity was pinning a number somebody made up.
+
+    A cross-language producer cannot be checked against a made-up hash, and
+    this identity is persisted and referenced by MomentRecord and EDL. So the
+    encoding is now specified in the schema and recomputed here.
+    """
+
+    ENCODING = "concatenated lowercase hex, no delimiter, index order"
+
+    def _assemblies(self):
+        found = []
+        for path in sorted((CONTRACTS / "fixtures" / "media-record").rglob("*.json")):
+            record = json.loads(path.read_text(encoding="utf-8"))
+            span = record.get("span") or {}
+            if span.get("member_media_ids"):
+                found.append((path, record, span))
+        return found
+
+    def test_there_is_an_assembly_fixture_to_check(self):
+        self.assertTrue(self._assemblies(), "this guard has nothing to guard")
+
+    def test_every_span_id_recomputes_from_its_members(self):
+        try:
+            from blake3 import blake3
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        for path, _record, span in self._assemblies():
+            with self.subTest(fixture=path.name):
+                payload = "".join(span["member_media_ids"]).encode("ascii")
+                self.assertEqual(
+                    blake3(payload).hexdigest(),
+                    span["span_id"],
+                    f"span_id does not recompute under the canonical encoding "
+                    f"({self.ENCODING}); see issue #26",
+                )
+
+    def test_an_assemblys_span_id_is_also_its_media_id(self):
+        """The assembly has no bytes to hash, so its members' identity is its
+        identity. Stated in the schema; unchecked until now."""
+        for path, record, span in self._assemblies():
+            if span.get("role") != "assembly":
+                continue
+            with self.subTest(fixture=path.name):
+                self.assertEqual(span["span_id"], record["media_id"])
+
+    def test_the_encoding_is_prefix_free_so_no_delimiter_is_needed(self):
+        """Why concatenation without a separator is safe rather than lucky.
+
+        Every Blake3Hash is exactly 64 hex characters, so the concatenation is
+        fixed-width and no two different member lists can produce the same byte
+        string. A variable-length id would need a delimiter, and omitting it is
+        where this class of bug usually starts.
+        """
+        schema = json.loads(
+            (CONTRACTS / "schemas" / "common.schema.json").read_text(encoding="utf-8")
+        )
+        blake3_hash = schema["$defs"]["Blake3Hash"]
+        self.assertEqual("^[0-9a-f]{64}$", blake3_hash["pattern"])
+
+    def test_order_changes_the_identity(self):
+        """Chapters are a sequence, not a set. Sorting by hash would scramble a
+        timeline, and a different order really is a different recording."""
+        try:
+            from blake3 import blake3
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        a, b = "a" * 64, "b" * 64
+        self.assertNotEqual(
+            blake3((a + b).encode("ascii")).hexdigest(),
+            blake3((b + a).encode("ascii")).hexdigest(),
+        )
+
+
 class TestScanIdentity(unittest.TestCase):
     """Two scans of different roots must be two jobs.
 

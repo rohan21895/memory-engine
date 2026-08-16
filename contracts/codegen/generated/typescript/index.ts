@@ -4432,6 +4432,27 @@ export interface Span {
    * provisional id derived from the camera's own group identifier (GoPro's file number,
    * e.g. 1234 in GH011234.MP4). On the assembly record this is also the media_id -- the
    * assembly has no bytes to hash, so its members' identity is its identity.
+   *
+   * CANONICAL ENCODING, because 'BLAKE3 over the ids' does not determine the bytes and
+   * three plausible readings gave three different identities: span_id = BLAKE3(
+   * concat(member_media_ids in index order) ) where each id contributes its 64 lowercase
+   * ASCII hex characters, with NO delimiter, NO length prefix and NO domain separator.
+   *
+   * The absence of a delimiter is safe rather than lucky: every Blake3Hash is exactly 64
+   * hex characters, so the concatenation is fixed-width and therefore prefix-free -- no
+   * two different member lists can produce the same byte string. A variable-length
+   * encoding would need a delimiter to avoid that, which is where this class of bug
+   * usually starts.
+   *
+   * ORDER IS INDEX ORDER, NOT SORTED ORDER. Chapters are a sequence: GH011234, GH021234,
+   * GH031234 concatenate into one recording in that order, and sorting by hash would
+   * scramble a timeline. The assembly's identity therefore changes if the chapters are
+   * reordered, which is correct -- a different order is a different recording.
+   *
+   * Codex raised this (issue #26) after finding that the golden fixture's span_id matched
+   * none of the plausible readings. It matched none of them because it had been written by
+   * hand rather than computed, so the fixture was not testing the identity at all.
+   * contracts/tests recomputes it now.
    */
   span_id: Blake3Hash;
 
