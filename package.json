@@ -4,7 +4,7 @@
   "private": true,
   "description": "Local-first media memory engine monorepo",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   },
   "workspaces": [
     "apps/*",
