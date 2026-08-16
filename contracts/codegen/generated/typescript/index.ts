@@ -5664,6 +5664,288 @@ export interface PrefEvent {
   pixel_data_present: false;
 }
 
+export interface ClassScores {
+  explicit: Unit;
+
+  suggestive: Unit;
+
+  medical_or_artistic: Unit;
+}
+
+export type ClassifierPinLoadMode = "release" | "development";
+
+export const ClassifierPinLoadModeValues = [
+  "release",
+  "development",
+] as const satisfies readonly ClassifierPinLoadMode[];
+
+/**
+ * Which model produced these verdicts. A verdict from a model you cannot identify is not
+ * evidence, and a verdict produced under a different config is a verdict about a different
+ * decision boundary -- score_threshold 0.3 and 0.5 are different classifiers to every
+ * consumer.
+ */
+export interface ClassifierPin {
+  model: ModelRef;
+
+  ran_at: Timestamp;
+
+  /**
+   * Which gate the host was running under. A verdict produced by a DEVELOPMENT-mode host
+   * -- unpinned weights, unverified licence -- must never clear a real publication, and a
+   * verifier serving a release sink must refuse it. Recorded rather than assumed, because
+   * 'we were only testing' is how unverified weights reach production.
+   */
+  load_mode?: ClassifierPinLoadMode;
+}
+
+/**
+ * The aggregate, derived from `items` and recomputed by every verifier rather than
+ * trusted. It is stored so a rejected publication can be explained without re-running
+ * anything -- not so a reader can skip checking the items.
+ */
+export interface ClearanceDecision {
+  /**
+   * True only when EVERY item is `cleared`, or is `blocked` with a valid override for this
+   * sink. One indeterminate item denies the whole publication -- a book is printed as a
+   * unit and a share is published as a unit, so partial clearance is not a state either
+   * can be in.
+   */
+  cleared_for_publication: boolean;
+
+  item_count: number;
+
+  cleared_count: number;
+
+  blocked_count: number;
+
+  indeterminate_count: number;
+
+  denied_reason?: string | null;
+}
+
+export type ItemVerdictVerdict = "cleared" | "blocked" | "indeterminate";
+
+export const ItemVerdictVerdictValues = [
+  "cleared",
+  "blocked",
+  "indeterminate",
+] as const satisfies readonly ItemVerdictVerdict[];
+
+export type ItemVerdictIndeterminateReason =
+  | "no_result"
+  | "model_unavailable"
+  | "model_unloadable"
+  | "load_gate_denied"
+  | "config_digest_mismatch"
+  | "inference_error"
+  | "inference_timeout"
+  | "evidence_stale"
+  | "verifier_exception";
+
+export const ItemVerdictIndeterminateReasonValues = [
+  "no_result",
+  "model_unavailable",
+  "model_unloadable",
+  "load_gate_denied",
+  "config_digest_mismatch",
+  "inference_error",
+  "inference_timeout",
+  "evidence_stale",
+  "verifier_exception",
+] as const satisfies readonly ItemVerdictIndeterminateReason[];
+
+/** One media id's clearance, bound to the exact bytes that were classified. */
+export interface ItemVerdict {
+  media_id: Blake3Hash;
+
+  /**
+   * The PROXY the classifier actually saw. Not the media id: a proxy can be regenerated --
+   * a better decoder, a corrected orientation, a different size -- and a verdict about the
+   * old proxy is not evidence about the new one. A verifier must confirm this matches the
+   * proxy the publication is built from, or treat the verdict as stale, which is
+   * indeterminate, which blocks.
+   */
+  evidence_id: Blake3Hash;
+
+  /**
+   * `cleared` is the ONLY value that permits automatic publication.
+   *
+   * `blocked` means the classifier scored above a threshold. It may be overridden per item
+   * by a human, because the classifier does not get a veto over a parent's judgement about
+   * their own family.
+   *
+   * `indeterminate` means nobody knows: no result row, model unavailable or unloadable,
+   * load-gate denial, config digest mismatch, inference error or timeout, or evidence that
+   * no longer matches. It may NOT be overridden by anything, because 'nobody checked' is
+   * not a decision somebody made.
+   */
+  verdict: ItemVerdictVerdict;
+
+  /**
+   * Per-class probabilities, when the classifier ran. Null on `indeterminate` -- an
+   * indeterminate verdict with scores attached is a contradiction, and the conditional
+   * below rejects it.
+   */
+  scores?: ClassScores | null;
+
+  /**
+   * Why nobody knows. Required on `indeterminate`, because 'blocked for an unknown reason'
+   * is unactionable and the remedies differ completely: a missing model needs installing,
+   * a stale evidence id needs re-running, a digest mismatch needs investigating.
+   */
+  indeterminate_reason?: ItemVerdictIndeterminateReason | null;
+
+  /**
+   * A human decision to publish despite a `blocked` verdict. Permitted ONLY on `blocked`;
+   * the conditional below refuses it on `indeterminate`, which is the single most
+   * important rule in this file.
+   */
+  override?: Override | null;
+}
+
+/**
+ * A recorded human decision. Attributable on purpose: an override that nobody owns is a
+ * bypass.
+ */
+export interface Override {
+  decided_at: Timestamp;
+
+  /**
+   * Local user identifier. Never a service account, never a config value -- a machine
+   * cannot consent on a person's behalf about their own photographs.
+   */
+  decided_by: string;
+
+  /**
+   * `item_and_sink` is the only value, deliberately. There is no 'always allow this photo'
+   * and no 'always allow this class': a decision to print a photo in a private family book
+   * is not a decision to publish it, and the whole design fails if an override can outlive
+   * the publication it was made for.
+   */
+  scope: "item_and_sink";
+
+  note?: string | null;
+}
+
+/**
+ * The decision boundaries actually applied, per class. Recorded rather than referenced
+ * because the config can change underneath a stored verdict, and a verdict whose threshold
+ * you cannot reconstruct cannot be re-audited.
+ *
+ * The classes are separate on purpose. Collapsing them into one 'nsfw' bit produces the
+ * two classic failures: a breastfeeding photo or a post-surgery record treated as
+ * pornography, and a bikini holiday photo treated as safe for a public share. A family
+ * library contains all three, and the right handling differs for each.
+ */
+export interface Thresholds {
+  explicit: Unit;
+
+  suggestive: Unit;
+
+  medical_or_artistic: Unit;
+}
+
+export type SafetyClearanceSink = "print" | "share" | "frontier_egress" | "local_export";
+
+export const SafetyClearanceSinkValues = [
+  "print",
+  "share",
+  "frontier_egress",
+  "local_export",
+] as const satisfies readonly SafetyClearanceSink[];
+
+/**
+ * The manifest that must exist, verify, and be COMPLETE before anything leaves the device
+ * or reaches a printer. Designed by Codex on issue #21; this is the contract form of it.
+ *
+ * WHY A MANIFEST AND NOT A FIELD ON EACH RECORD
+ *
+ * A per-record `is_safe` flag is checked at some point and acted on at another, and the
+ * gap between them is where the failure lives: the selection changes, a photo is swapped
+ * in, and the check that passed was about a different set. So clearance is bound to an
+ * EXACT publication -- this sink, these media ids, in this order, under this classifier
+ * and this config digest -- and hashed. The renderer or service verifies the hash against
+ * the inputs it is ACTUALLY about to publish, inside the same operation that creates the
+ * export. There is no window in which the checked set and the published set can differ.
+ *
+ * THE RULE THAT MATTERS MOST
+ *
+ * Absence is `indeterminate`, and indeterminate BLOCKS. A missing verdict, an unloadable
+ * classifier, a config digest mismatch, an inference timeout, a stale verdict for a proxy
+ * that has since changed, a row that simply is not there -- all of them are indeterminate.
+ * Only `cleared` proceeds.
+ *
+ * This is the opposite of how safety checks usually fail. The common shape is a check that
+ * silently no-ops when its model is missing, so everything downstream reads the absence as
+ * a pass. This project has already shipped one gate with exactly that defect (a model load
+ * gate that permitted weights whose hash had never been computed), and the fix cost more
+ * than building it correctly would have.
+ *
+ * WHAT MAY AND MAY NOT BE OVERRIDDEN
+ *
+ * A POSITIVE classifier result may be overridden per item by a human: a parent may decide
+ * a breastfeeding photo belongs in the family album, and the classifier does not get a
+ * veto over that. The override is recorded in the manifest with who and when, so the
+ * decision is attributable.
+ *
+ * A MISSING result may NOT be overridden -- not by a flag, not by a default, not by a
+ * global bypass, not by an empty override list. 'Nobody checked' and 'somebody checked and
+ * disagreed' are different states, and only the second is a decision.
+ */
+export interface SafetyClearance {
+  schema_version: SchemaVersion;
+
+  /**
+   * BLAKE3 over the canonical manifest body, computed exactly as models/policy/digest.py
+   * computes a config digest: over the SERIALISED BYTES of this document with
+   * `manifest_id` and `decision` removed. Bytes rather than a re-serialisation, because
+   * Python writes the float 1.0 as `1.0` and JavaScript writes `1`, and a manifest that
+   * verifies in the pipeline and fails in the Rust renderer is a gate that blocks correct
+   * output -- which is how gates get disabled.
+   */
+  manifest_id: Blake3Hash;
+
+  /**
+   * Format version of the manifest itself. A verifier that does not recognise this value
+   * MUST DENY rather than attempt a best-effort parse. Deny-by-default on an unknown
+   * version is what stops an old renderer from ignoring a field a newer planner added --
+   * and the field it ignores will be the one that was added because something went wrong.
+   */
+  manifest_version: 1;
+
+  created_at: Timestamp;
+
+  /**
+   * Where this publication is going. Clearance is NOT transferable between sinks: a photo
+   * cleared for a private printed book has not thereby been cleared for a public share
+   * link, and the thresholds differ. A verifier must check that the sink it is serving
+   * matches this value exactly.
+   */
+  sink: SafetyClearanceSink;
+
+  /**
+   * Free text naming the specific destination (vendor, recipient scope, model provider)
+   * for the audit trail. NEVER parsed, never used to make a decision -- a decision that
+   * depends on a free-text field is a decision an attacker can influence.
+   */
+  sink_detail?: string | null;
+
+  classifier: ClassifierPin;
+
+  thresholds: Thresholds;
+
+  /**
+   * One entry per media id in the publication, in PUBLICATION ORDER. Order is part of the
+   * identity: a manifest whose items match by set but not by order describes a different
+   * publication, and a verifier comparing sets rather than sequences would accept a
+   * reordered book.
+   */
+  items: ItemVerdict[];
+
+  decision: ClearanceDecision;
+}
+
 /** Root contract types, keyed by schema title. */
 export interface ContractRoots {
   AlbumSpec: AlbumSpec;
@@ -5673,6 +5955,7 @@ export interface ContractRoots {
   MediaRecord: MediaRecord;
   MomentRecord: MomentRecord;
   PrefEvent: PrefEvent;
+  SafetyClearance: SafetyClearance;
 }
 
 export const CONTRACT_VERSION = "v0";

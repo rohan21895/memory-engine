@@ -1,0 +1,53 @@
+{
+  "schema_version": "v0",
+  "manifest_version": 1,
+  "created_at": "2026-08-16T18:01:00Z",
+  "sink": "frontier_egress",
+  "sink_detail": "tier3 contact sheet",
+  "classifier": {
+    "model": {
+      "model_id": "nsfw-siglip-head",
+      "version": "1.0.0",
+      "weights_blake3": null,
+      "config_blake3": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "runtime": "onnxruntime_coreml",
+      "precision": "fp32"
+    },
+    "ran_at": "2026-08-16T18:00:00Z",
+    "load_mode": "development"
+  },
+  "thresholds": {
+    "explicit": 0.3,
+    "suggestive": 0.3,
+    "medical_or_artistic": 0.3
+  },
+  "items": [
+    {
+      "media_id": "1111111111111111111111111111111111111111111111111111111111111111",
+      "evidence_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "verdict": "cleared",
+      "scores": {
+        "explicit": 0.01,
+        "suggestive": 0.02,
+        "medical_or_artistic": 0.01
+      }
+    },
+    {
+      "media_id": "3333333333333333333333333333333333333333333333333333333333333333",
+      "evidence_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "verdict": "indeterminate",
+      "scores": null,
+      "indeterminate_reason": "model_unloadable",
+      "override": null
+    }
+  ],
+  "decision": {
+    "cleared_for_publication": false,
+    "item_count": 2,
+    "cleared_count": 1,
+    "blocked_count": 0,
+    "indeterminate_count": 1,
+    "denied_reason": "the safety classifier could not be loaded, so one item has no verdict; absence is indeterminate and indeterminate blocks"
+  },
+  "manifest_id": "98c7e0398c73fffcebd0b20c4f1a1d18fda15031aaa8140721fab03664bd512f"
+}

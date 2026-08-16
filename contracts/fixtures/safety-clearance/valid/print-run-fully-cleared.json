@@ -1,0 +1,55 @@
+{
+  "schema_version": "v0",
+  "manifest_version": 1,
+  "created_at": "2026-08-16T18:00:05Z",
+  "sink": "print",
+  "sink_detail": "layflat-300-square, order not yet placed",
+  "classifier": {
+    "model": {
+      "model_id": "nsfw-siglip-head",
+      "version": "1.0.0",
+      "weights_blake3": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "config_blake3": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "runtime": "onnxruntime_coreml",
+      "precision": "fp32"
+    },
+    "ran_at": "2026-08-16T18:00:00Z",
+    "load_mode": "release"
+  },
+  "thresholds": {
+    "explicit": 0.3,
+    "suggestive": 0.3,
+    "medical_or_artistic": 0.3
+  },
+  "items": [
+    {
+      "media_id": "1111111111111111111111111111111111111111111111111111111111111111",
+      "evidence_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "verdict": "cleared",
+      "scores": {
+        "explicit": 0.01,
+        "suggestive": 0.02,
+        "medical_or_artistic": 0.01
+      }
+    },
+    {
+      "media_id": "2222222222222222222222222222222222222222222222222222222222222222",
+      "evidence_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "verdict": "cleared",
+      "scores": {
+        "explicit": 0.02,
+        "suggestive": 0.05,
+        "medical_or_artistic": 0.01
+      }
+    }
+  ],
+  "decision": {
+    "cleared_for_publication": true,
+    "item_count": 2,
+    "cleared_count": 2,
+    "blocked_count": 0,
+    "indeterminate_count": 0,
+    "denied_reason": null
+  },
+  "manifest_id": "4b910c806ade17cf01b82e40796544460b2c15277a8560dd1d1d80a50048a28b"
+}
