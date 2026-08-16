@@ -1,0 +1,21 @@
+{
+  "vendor_id": "default-standard",
+  "product_id": "perfectbound-210-square",
+  "profile_version": "2026.1-default",
+  "trim_size_mm": { "width_mm": 210.0, "height_mm": 210.0 },
+  "bleed_mm": 3.0,
+  "safe_margin_mm": 10.0,
+  "gutter_mm": 14.0,
+  "spine_mm": 10.0,
+  "dpi_floor": 300.0,
+  "dpi_preferred": 350.0,
+  "color_profile": {
+    "icc_name": "FOGRA39 Coated",
+    "icc_hash": null,
+    "intent": "relative_colorimetric"
+  },
+  "page_count": { "minimum": 24, "maximum": 120, "increment": 4 },
+  "binding": "perfect_bound",
+  "paper_stock": "150gsm silk",
+  "pdf_standard": "pdf_x_4"
+}
