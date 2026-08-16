@@ -204,6 +204,116 @@ def letterbox(
     )
 
 
+def integer_letterbox(
+    source_width: int, source_height: int, target_width: int, target_height: int
+) -> "IntegerLetterbox":
+    """Letterbox onto a real raster, where every dimension is a whole pixel.
+
+    `letterbox` above is exact arithmetic and cannot be implemented: you cannot
+    resize an image to 359.718969555 pixels. Codex flagged that the only
+    fixture used 1920x1080 -> 640x640, where everything lands exactly, so the
+    rounding conventions were never specified -- and then supplied the real
+    numbers: ingest emits a fixed 480 height with the width rounded to a
+    multiple of two, so a 1920x1080 source becomes an 854x480 proxy. Fitting
+    854x480 into 640x640 has scale 320/427 and an ideal height of
+    359.718969555, which forces both choices below.
+
+    THE TWO CONVENTIONS, PINNED
+
+    1. ROUND TO NEAREST, not floor. Flooring systematically shrinks the image by
+       up to a pixel and biases every mapped coordinate in one direction, which
+       accumulates into a consistent offset rather than cancelling out. Nearest
+       is unbiased.
+
+    2. THE EXTRA PIXEL OF AN ODD PAD GOES AFTER (bottom / right).
+       `pad_before = (target - scaled) // 2`. Arbitrary, but it has to be
+       decided somewhere, and a host that split it the other way would place
+       every box one pixel out on odd-padded proxies -- invisible in review,
+       visible as a crop that clips a chin.
+
+    AND THE CONSEQUENCE THAT IS EASY TO MISS
+
+    `effective_scale` is `scaled / source`, NOT the ideal scale. Once the
+    resized dimension is rounded, the image on the raster really is at the
+    rounded scale, and un-letterboxing with the ideal one reintroduces the
+    rounding error as a coordinate offset. That is the whole reason this type
+    exists rather than a comment on the float one.
+    """
+    scale = min(target_width / source_width, target_height / source_height)
+    scaled_width = round(source_width * scale)
+    scaled_height = round(source_height * scale)
+    pad_x = (target_width - scaled_width) // 2
+    pad_y = (target_height - scaled_height) // 2
+    return IntegerLetterbox(
+        ideal_scale=scale,
+        scaled_width=scaled_width,
+        scaled_height=scaled_height,
+        pad_left=pad_x,
+        pad_top=pad_y,
+        pad_right=target_width - scaled_width - pad_x,
+        pad_bottom=target_height - scaled_height - pad_y,
+        source_width=source_width,
+        source_height=source_height,
+    )
+
+
+@dataclass(frozen=True)
+class IntegerLetterbox:
+    ideal_scale: float
+    scaled_width: int
+    scaled_height: int
+    pad_left: int
+    pad_top: int
+    pad_right: int
+    pad_bottom: int
+    source_width: int
+    source_height: int
+
+    @property
+    def effective_scale_x(self) -> float:
+        return self.scaled_width / self.source_width
+
+    @property
+    def effective_scale_y(self) -> float:
+        """Not necessarily equal to `effective_scale_x`.
+
+        Rounding width and height independently means the realised aspect ratio
+        can differ from the source's by a fraction of a pixel. Using one axis's
+        scale for both is the kind of shortcut that puts boxes slightly wrong on
+        exactly the proxies where it is hardest to notice.
+        """
+        return self.scaled_height / self.source_height
+
+    @property
+    def is_padding_symmetric(self) -> bool:
+        return self.pad_top == self.pad_bottom and self.pad_left == self.pad_right
+
+    def to_source(self, x: float, y: float) -> tuple[float, float]:
+        """A letterboxed pixel back to source pixels, using the EFFECTIVE scale."""
+        return (
+            (x - self.pad_left) / self.effective_scale_x,
+            (y - self.pad_top) / self.effective_scale_y,
+        )
+
+    def to_normalized(self, x: float, y: float) -> tuple[float, float]:
+        sx, sy = self.to_source(x, y)
+        return (sx / self.source_width, sy / self.source_height)
+
+    def to_json(self) -> dict:
+        return {
+            "ideal_scale": round(self.ideal_scale, 9),
+            "scaled_width": self.scaled_width,
+            "scaled_height": self.scaled_height,
+            "pad_left": self.pad_left,
+            "pad_top": self.pad_top,
+            "pad_right": self.pad_right,
+            "pad_bottom": self.pad_bottom,
+            "effective_scale_x": round(self.effective_scale_x, 9),
+            "effective_scale_y": round(self.effective_scale_y, 9),
+            "padding_symmetric": self.is_padding_symmetric,
+        }
+
+
 def similarity_transform(
     source: list[tuple[float, float]], destination: list[tuple[float, float]]
 ) -> tuple[float, float, float, float]:

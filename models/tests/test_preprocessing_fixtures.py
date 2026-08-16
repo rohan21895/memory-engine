@@ -41,6 +41,7 @@ from reference.postprocess import (  # noqa: E402
 )
 from reference.preprocess import (  # noqa: E402
     apply_transform,
+    integer_letterbox,
     letterbox,
     preprocess_image,
     similarity_transform,
@@ -162,6 +163,99 @@ class TestLetterboxFixture(unittest.TestCase):
     def test_padding_is_centred(self):
         box = letterbox(1920, 1080, 640, 640)
         self.assertAlmostEqual(640.0, box.scaled_height + 2 * box.pad_y, places=6)
+
+
+class TestIntegerLetterbox(unittest.TestCase):
+    """Letterbox onto a real raster, using the dimensions ingest actually emits.
+
+    The float fixture uses 1920x1080 -> 640x640, where everything lands exactly
+    and so specifies neither the rounding convention nor the odd-padding split.
+    Codex flagged that and supplied the real proxy geometry: fixed 480 height,
+    width rounded to a multiple of two.
+    """
+
+    def setUp(self):
+        self.data = fixture("letterbox-integer-raster.json")
+
+    def _boxes(self):
+        for case in self.data["cases"]:
+            proxy, target = case["proxy"], case["target"]
+            yield case, integer_letterbox(
+                proxy["width"], proxy["height"], target["width"], target["height"]
+            )
+
+    def test_every_case_reproduces_the_fixture(self):
+        for case, box in self._boxes():
+            with self.subTest(proxy=case["proxy"], backend=case["backend"]):
+                self.assertEqual(case["expected"], box.to_json())
+
+    def test_padding_accounts_for_every_pixel(self):
+        """The property that makes the split convention checkable rather than
+        merely stated."""
+        for case, box in self._boxes():
+            with self.subTest(proxy=case["proxy"]):
+                self.assertEqual(
+                    case["target"]["height"],
+                    box.pad_top + box.scaled_height + box.pad_bottom,
+                )
+                self.assertEqual(
+                    case["target"]["width"],
+                    box.pad_left + box.scaled_width + box.pad_right,
+                )
+
+    def test_an_odd_pad_puts_the_extra_pixel_at_the_bottom(self):
+        """A host that split it the other way would place every box one pixel
+        out on odd-padded proxies -- invisible in review, visible as a crop that
+        clips a chin."""
+        asymmetric = [
+            (c, b) for c, b in self._boxes() if not b.is_padding_symmetric
+        ]
+        self.assertTrue(
+            asymmetric,
+            "no case exercises an odd pad, so the split convention is untested",
+        )
+        for case, box in asymmetric:
+            with self.subTest(proxy=case["proxy"]):
+                self.assertEqual(box.pad_bottom, box.pad_top + 1)
+
+    def test_the_same_source_pads_differently_on_different_backends(self):
+        """4096x2160 becomes 912x480 on VideoToolbox and 910x480 on NVDEC/QSV,
+        which pad asymmetrically and symmetrically respectively. Same video,
+        different machine, different geometry -- so a box computed on one host
+        and applied with the other's assumptions is wrong."""
+        by_source = {}
+        for case, box in self._boxes():
+            key = (case["source"]["width"], case["source"]["height"])
+            by_source.setdefault(key, []).append((case["backend"], box))
+        divergent = [v for v in by_source.values() if len({b.pad_top for _, b in v}) > 0
+                     and len({(b.scaled_width, b.scaled_height) for _, b in v}) > 1]
+        self.assertTrue(divergent, "the backend divergence case has been lost")
+
+    def test_the_inverse_map_uses_the_effective_scale(self):
+        for case, box in self._boxes():
+            for probe in case["probes"]:
+                x, y = probe["letterboxed"]
+                with self.subTest(proxy=case["proxy"], point=(x, y)):
+                    nx, ny = box.to_normalized(x, y)
+                    self.assertAlmostEqual(probe["normalised"][0], nx, places=9)
+                    self.assertAlmostEqual(probe["normalised"][1], ny, places=9)
+
+    def test_using_the_ideal_scale_would_shift_coordinates(self):
+        """Why `effective_scale` exists. Once the resized dimension is rounded,
+        the image really is at the rounded scale; un-letterboxing with the ideal
+        one reintroduces the rounding as a coordinate offset."""
+        worst = max(c["ideal_scale_error_px_at_centre"] for c in self.data["cases"])
+        self.assertGreater(
+            worst, 0.0,
+            "no case has a rounding error, so this distinction is untested",
+        )
+
+    def test_rounding_is_nearest_not_floor(self):
+        """Flooring shrinks by up to a pixel and biases every mapped coordinate
+        one way rather than cancelling out."""
+        box = integer_letterbox(854, 480, 640, 640)
+        self.assertEqual(360, box.scaled_height)   # 359.719 rounds up
+        self.assertNotEqual(359, box.scaled_height)
 
 
 class TestPostprocessFixture(unittest.TestCase):
