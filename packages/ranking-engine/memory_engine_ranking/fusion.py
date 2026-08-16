@@ -2,7 +2,7 @@
 
 A transparent, tunable model, deliberately chosen over a learned one: there are
 no PrefEvents yet to train on, and a linear fusion can be explained to a user
-("this was picked because it was the sharpest frame with everyone's eyes open")
+("this was picked because it was the sharpest frame with the clearest face")
 and corrected by hand when it is wrong. The plan graduates this to a learned
 head once events accumulate; the interface here is the one that has to survive
 that swap, which is why weights are data rather than constants in code.
@@ -67,13 +67,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Mapping
 
 # Bump when a signal is added, removed or redefined. Matches
 # PrefEvent.FeatureContext.feature_set_id: a stored feature map is meaningless
 # without knowing which feature list it was written against.
 FEATURE_SET_ID = "photo-quality-v1"
+
+# Every weighted signal, in one place. Used for validation, for the present-map
+# and for the weight map, so the three cannot drift out of step.
+_SIGNAL_NAMES = (
+    "sharpness", "exposure", "noise", "contrast",
+    "technical_iqa", "aesthetic", "composition", "face_quality",
+)
+
+
+class SignalError(ValueError):
+    """An input that would corrupt the score rather than merely lower it."""
+
+
+class WeightError(ValueError):
+    """A weighting profile that cannot produce an honest coverage figure."""
+
+
+class IncomparableScores(ValueError):
+    """Scores that were not measured the same way cannot be ordered."""
 
 # Below this, a frame is junk rather than a weak candidate. Deliberately low:
 # this is an elimination floor, not a quality bar, and a genuine low-light
@@ -87,13 +108,36 @@ DEFAULT_SHARPNESS_FLOOR = 0.08
 DEFAULT_MIN_COVERAGE = 0.5
 
 
+class FaceState(str, Enum):
+    """Why `face_quality` is absent, which the value alone cannot say.
+
+    `has_faces: bool` conflated two different absences, as Codex pointed out:
+    a landscape with no faces, and a portrait whose face detection has not run
+    yet. Defaulting to "no faces" made an UNKNOWN record look fully measured --
+    it removed the face weight from the denominator, so a photo awaiting face
+    detection reported 100% coverage and was ranked as comparable against
+    photos that really were complete.
+    """
+
+    NOT_RUN = "not_run"      # detection has not happened; coverage is incomplete
+    NO_FACES = "no_faces"    # detection ran and found none; face weight N/A
+    HAS_FACES = "has_faces"  # detection ran and found faces
+
+
 @dataclass(frozen=True)
 class Signals:
-    """One photo's measurements, exactly as MediaRecord.quality carries them.
+    """One photo's measurements, as plain floats.
 
-    Every optional field is `None` when not measured. `has_faces` is separate
-    from `face_quality` because null means two different things and only the
-    caller can tell them apart.
+    NOT the contract shape. `MediaRecord.quality` carries `Score` objects
+    (`{"value": 0.87, "run_id": ...}`), and passing one of those straight in
+    raised a TypeError deep inside the comparison -- Codex found that the whole
+    package did not actually connect to the contract it claims to consume. Use
+    `signals_from_media_record` rather than constructing this by hand from a
+    record; this stays float-shaped because the arithmetic wants floats and
+    because a preference model will eventually feed it values that never were
+    Scores.
+
+    Every optional field is `None` when not measured.
     """
 
     sharpness: float
@@ -105,9 +149,45 @@ class Signals:
     composition: float | None = None
     face_quality: float | None = None
 
-    has_faces: bool = False
+    face_state: FaceState = FaceState.NOT_RUN
     is_black_frame: bool = False
     is_lens_obstructed: bool = False
+
+    @property
+    def has_faces(self) -> bool:
+        return self.face_state is FaceState.HAS_FACES
+
+    def validate(self) -> None:
+        """Reject values that would corrupt the score rather than fail.
+
+        NaN is the reason this exists. `NaN < floor` is False, so a NaN
+        sharpness sailed through the elimination gate untouched and produced
+        `value=nan`, which then made `rank()` order by a value for which `<` is
+        meaningless -- a silently unstable album ordering. Infinities behave
+        the same way. Codex found it; a comparison-based gate cannot defend
+        itself against a value that compares False to everything.
+        """
+        for name in _SIGNAL_NAMES:
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise SignalError(
+                    f"{name}={value!r} is not a number. MediaRecord.quality holds "
+                    "Score objects; use signals_from_media_record()."
+                )
+            if not math.isfinite(value):
+                raise SignalError(
+                    f"{name}={value!r} is not finite. NaN compares False to every "
+                    "threshold, so it would pass the elimination gate untouched and "
+                    "produce an unorderable score."
+                )
+            if not 0.0 <= value <= 1.0:
+                raise SignalError(
+                    f"{name}={value} is outside [0,1]. The contract declares every "
+                    "quality signal as a Unit; a value outside it means an upstream "
+                    "normalisation is missing, and clamping here would hide that."
+                )
 
 
 @dataclass(frozen=True)
@@ -124,9 +204,21 @@ class Weights:
       * `aesthetic` is deliberately light. Build plan §4.2 calls it a PRIOR, and
         an aesthetic head trained on stock photography has opinions about family
         snapshots that no family shares.
-      * `face_quality` is heavy when faces are present. In a family library the
-        photo where everyone's eyes are open beats the sharper one where they
-        are not, and that is not a close call.
+      * `face_quality` is heavy when faces are present, because in a family
+        library a clear face beats a marginally sharper frame without one.
+
+        BUT NOTE WHAT IT ACTUALLY MEASURES. The contract defines it as the BEST
+        face in the frame, not the worst and not the average. Codex pointed out
+        that this file previously justified the weight with "everyone's eyes are
+        open", which best-in-frame cannot express: in a group photo one
+        excellent face masks four blinking ones while collecting the full 0.18.
+
+        That is a real limitation of the signal, not of the weighting, and it is
+        recorded here rather than papered over. The fix is a worst-face or
+        face-count-weighted aggregate in FaceRecord, which is a contract change
+        and belongs with the album engine's group-photo work -- see the note in
+        docs/. Until then the weight is justified by "a clear subject", which is
+        what the signal supports.
     """
 
     weights_id: str = "default-v1"
@@ -152,14 +244,51 @@ class Weights:
             "face_quality": self.face_quality,
         }
 
-    def digest(self) -> str:
-        """Stable digest of the weight values, canonicalised the same way model
-        configs are. Two profiles that differ only by name are the same fusion;
-        two that share a name and differ by a value are not, and a stored score
-        must be able to tell.
+    def validate(self) -> None:
+        """Refuse a profile that cannot produce an honest coverage figure.
+
+        A NEGATIVE weight was silently excluded from scoring -- the live-weight
+        filter takes `> 0` -- while still counting toward the applicable-weight
+        DENOMINATOR. Codex's example: 0.22, 0.18, -0.39 gives an applicable
+        total of 0.01, so coverage computed as 0.40/0.01 = 40, clamped to 1.0.
+        The score then claimed to be fully measured while ignoring one of its
+        three signals. Coverage was not approximate there, it was false.
+
+        Zero is allowed and means "this profile does not use that signal".
         """
-        payload = json.dumps(
-            self.as_map(), sort_keys=True, separators=(",", ":"), allow_nan=False
+        weights = self.as_map()
+        negative = sorted(n for n, w in weights.items() if w < 0.0)
+        if negative:
+            raise WeightError(
+                f"negative weights {negative}: a negative weight is excluded from "
+                "scoring but would still count toward the coverage denominator, "
+                "making coverage report a fraction that was never measured"
+            )
+        for name, weight in weights.items():
+            if not math.isfinite(weight):
+                raise WeightError(f"{name}={weight!r} is not finite")
+        if sum(weights.values()) <= 0.0:
+            raise WeightError("all weights are zero: nothing would be measured")
+
+    def digest(self) -> str:
+        """Stable digest of the weight values.
+
+        OVER CANONICAL BYTES, not a Python re-serialisation. This originally
+        used json.dumps(sort_keys=True) -- the EXACT construction Codex had
+        already proved non-portable for model configs, reintroduced here three
+        files later because I wrote it before that lesson landed and never went
+        back. Python writes the float 1.0 as `1.0` and JavaScript writes `1`, so
+        a profile containing a whole number digests differently in the desktop
+        shell than in the pipeline, and two identical profiles read as different
+        fusions.
+
+        Weights are formatted to a fixed 6-decimal representation, which every
+        language produces identically, and the digest is taken over those bytes.
+        Six decimals is well past the precision at which a weight change alters
+        any ranking.
+        """
+        payload = ";".join(
+            f"{name}={value:.6f}" for name, value in sorted(self.as_map().items())
         ).encode("utf-8")
         return hashlib.blake2b(payload, digest_size=16).hexdigest()
 
@@ -182,9 +311,40 @@ class FusedScore:
     contributions: tuple[tuple[str, float], ...] = field(default=())
 
     @property
+    def measured(self) -> frozenset[str]:
+        """Which signals actually fed this score."""
+        return frozenset(name for name, _, _ in self.contributions)
+
+    @property
     def comparable(self) -> bool:
-        """Whether this score may be ranked against a fully-measured one."""
+        """Whether this score is complete enough to rank at all.
+
+        A weak gate on its own -- see `comparable_with`, which is the one that
+        matters.
+        """
         return not self.rejected and self.coverage >= DEFAULT_MIN_COVERAGE
+
+    def comparable_with(self, other: "FusedScore") -> bool:
+        """Whether these two scores may be ranked AGAINST EACH OTHER.
+
+        Coverage alone was the wrong test, as Codex showed: two photos can both
+        clear 52% while one has face quality and the other does not, and the
+        heaviest signal in the profile is then present on one side of the
+        comparison and absent from the other. The values are not measuring the
+        same thing, so ordering them is meaningless however high the coverage.
+
+        The right test is that they were measured the SAME WAY: same signal set,
+        same weights, same feature set. Anything else is comparing a portrait
+        scored on seven signals with a landscape scored on six and calling the
+        difference quality.
+        """
+        return (
+            not self.rejected
+            and not other.rejected
+            and self.measured == other.measured
+            and self.weights_digest == other.weights_digest
+            and self.feature_set_id == other.feature_set_id
+        )
 
     def as_feature_map(self) -> dict[str, float]:
         """The signal values that fed this score, shaped for
@@ -196,6 +356,68 @@ class FusedScore:
         fewer real ones.
         """
         return {name: value for name, value, _ in self.contributions}
+
+
+def signals_from_media_record(
+    record: Mapping, *, face_state: FaceState | None = None
+) -> Signals:
+    """A contract MediaRecord -> Signals. THE supported way in.
+
+    Codex found the package did not actually connect to the contract it claims
+    to consume: `MediaRecord.quality` holds `Score` objects such as
+    `{"value": 0.87, "run_id": "..."}`, while `Signals` wanted bare floats, so
+    passing a real fixture straight in raised a TypeError from inside a
+    comparison. There was no adapter anywhere -- the generated types were being
+    referenced in prose and bypassed in practice.
+
+    `face_state` is passed in rather than inferred, because a MediaRecord alone
+    cannot distinguish "no faces in this photo" from "face detection has not
+    run". That is a property of the PIPELINE's progress, not of the record, and
+    guessing it is what made mid-scan photos look fully measured. When omitted,
+    the honest default is NOT_RUN: it under-claims coverage rather than
+    over-claiming it, and under-claiming only costs a photo its place in an
+    automated selection until the scan finishes.
+    """
+    quality = record.get("quality") or {}
+
+    def unit(name: str) -> float | None:
+        raw = quality.get(name)
+        if raw is None:
+            return None
+        if isinstance(raw, Mapping):        # a contract Score
+            return raw.get("value")
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return float(raw)               # already flattened by a caller
+        raise SignalError(
+            f"quality.{name} is {raw!r}; expected a Score object or a number"
+        )
+
+    required = {}
+    for name in ("sharpness", "exposure"):
+        value = unit(name)
+        if value is None:
+            raise SignalError(
+                f"quality.{name} is absent. The classical measures are computed "
+                "during ingest, so this is a record that was never successfully "
+                "ingested (quarantined, truncated) or is not a still photo at "
+                "all -- video is scored by the story engine's moment scoring, "
+                "not by photo quality fusion. Either way it must not be silently "
+                "scored as a bad photo."
+            )
+        required[name] = value
+
+    return Signals(
+        **required,
+        noise=unit("noise"),
+        contrast=unit("contrast"),
+        technical_iqa=unit("technical_iqa"),
+        aesthetic=unit("aesthetic"),
+        composition=unit("composition"),
+        face_quality=unit("face_quality"),
+        face_state=face_state or FaceState.NOT_RUN,
+        is_black_frame=bool(quality.get("is_black_frame", False)),
+        is_lens_obstructed=bool(quality.get("is_lens_obstructed", False)),
+    )
 
 
 # Elimination reasons, in the order they are checked. Order is fixed so two
@@ -241,12 +463,18 @@ def _present(signals: Signals) -> dict[str, float]:
 def _applicable_weight(signals: Signals, weights: Weights) -> float:
     """Total weight of signals that *could* have been measured for this photo.
 
-    Excludes face quality on a photo with no faces: a landscape is not an
-    under-measured portrait, and counting a face weight it can never earn would
-    cap every landscape's coverage below the comparability threshold.
+    Excludes face quality only when detection has RUN and found nothing: a
+    landscape is not an under-measured portrait, and counting a face weight it
+    can never earn would cap every landscape below the comparability threshold.
+
+    NOT_RUN keeps the weight in the denominator, because a photo awaiting face
+    detection genuinely is incompletely measured. The previous `has_faces: bool`
+    defaulted the unknown case to "no faces", so a record mid-scan reported full
+    coverage and ranked as comparable against finished ones -- which is exactly
+    the situation during the only period when it matters.
     """
     total = sum(weights.as_map().values())
-    if not signals.has_faces:
+    if signals.face_state is FaceState.NO_FACES:
         total -= weights.face_quality
     return total
 
@@ -265,6 +493,8 @@ def fuse(
     because 0.0 is also a legitimate score for a frame that is merely terrible.
     """
     weights = weights or Weights()
+    signals.validate()
+    weights.validate()
 
     reason = eliminate(signals, sharpness_floor=sharpness_floor)
     if reason is not None:
@@ -281,7 +511,7 @@ def fuse(
 
     weight_map = weights.as_map()
     present = _present(signals)
-    if not signals.has_faces:
+    if signals.face_state is FaceState.NO_FACES:
         present.pop("face_quality", None)
 
     live = {
@@ -361,19 +591,43 @@ def explain(score: FusedScore, *, limit: int = 3) -> str:
 
 
 def rank(
-    scored: Mapping[str, FusedScore], *, require_comparable: bool = False
+    scored: Mapping[str, FusedScore], *, allow_mixed: bool = False
 ) -> list[str]:
-    """Media ids best-first.
+    """Media ids best-first, refusing to order scores that are not comparable.
 
-    Ties break on media id, matching `select_primary` -- every ordering in this
-    package has to be stable for the same reason, so they all break the same way.
-    Rejected items sort last rather than being dropped, because the caller
-    deciding what to do with a pool of only-bad frames is not this function's
-    call to make.
+    THE DEFAULT IS STRICT, AND THAT IS THE FIX. This used to sort everything
+    given to it and left comparability as an opt-in flag, so the natural call --
+    `rank(everything)` -- happily ranked a photo scored on two signals above one
+    scored on eight. Codex measured it: 0.99 at 40% coverage beat 0.80 at 100%.
+    An album built mid-scan would then reshuffle completely once analysis
+    finished, and nothing would have reported a problem.
+
+    A default that produces a plausible wrong answer is worse than one that
+    refuses, because only the refusal gets noticed. `allow_mixed=True` is there
+    for a progress preview, where an approximate order is genuinely better than
+    none -- but it has to be asked for.
+
+    Ties break on media id, matching `select_primary`: every ordering in this
+    package breaks the same way so the two never disagree. Rejected items sort
+    last rather than being dropped -- what to do with a pool of only-bad frames
+    is the caller's call.
     """
-    items = scored.items()
-    if require_comparable:
-        items = [(media_id, score) for media_id, score in items if score.comparable]
+    items = list(scored.items())
+    if not allow_mixed:
+        live = [(i, s) for i, s in items if not s.rejected]
+        if live:
+            reference = min(live, key=lambda row: row[0])[1]
+            incomparable = sorted(
+                media_id for media_id, score in live
+                if not reference.comparable_with(score)
+            )
+            if incomparable:
+                raise IncomparableScores(
+                    f"cannot rank {incomparable} against {min(live)[0]!r}: they were "
+                    "not measured the same way (different signal sets, weights or "
+                    "feature sets). Finish the analysis, group by measurement, or "
+                    "pass allow_mixed=True if an approximate order is acceptable."
+                )
     return [
         media_id
         for media_id, _ in sorted(
