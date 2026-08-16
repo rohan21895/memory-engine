@@ -256,6 +256,38 @@ class TestConfigDigestGate(unittest.TestCase):
         )
 
 
+class TestConfigFormat(unittest.TestCase):
+    """Formatting is part of the config's identity now, so it is checked
+    WITHOUT blake3.
+
+    Deliberately outside TestConfigDigest, whose setUp skips when blake3 is
+    absent. CI installs pydantic and jsonschema only, so putting this behind
+    that skip would mean the one part of the digest contract that needs no
+    dependency at all went unchecked on main -- which is the same shape of
+    mistake as the digest check exiting 0 when it could not run.
+    """
+
+    def _module(self):
+        from models.policy import digest as module
+
+        return module
+
+    def test_every_committed_config_is_canonically_formatted(self):
+        module = self._module()
+        unformatted = [
+            entry["model_id"]
+            for entry in REGISTRY["entries"]
+            if not module.is_canonical(MODELS_ROOT / entry["config"])
+        ]
+        self.assertEqual([], unformatted,
+                         "run python3 models/policy/digest.py --write")
+
+    def test_the_registry_itself_is_canonically_formatted(self):
+        """It is rewritten by --write and carries the digests, so a reformat
+        there is just as much a diff nobody reads."""
+        self.assertTrue(self._module().is_canonical(MODELS_ROOT / "registry.json"))
+
+
 class TestConfigDigest(unittest.TestCase):
     """The digest is over the config file's BYTES.
 
@@ -337,15 +369,6 @@ class TestConfigDigest(unittest.TestCase):
             self.assertFalse(self.module.is_canonical(path))
             with self.assertRaises(self.module.ConfigNotCanonical):
                 self.module.config_digest(path)
-
-    def test_every_committed_config_is_canonically_formatted(self):
-        unformatted = [
-            entry["model_id"]
-            for entry in REGISTRY["entries"]
-            if not self.module.is_canonical(MODELS_ROOT / entry["config"])
-        ]
-        self.assertEqual([], unformatted,
-                         "run python3 models/policy/digest.py --write")
 
     def test_every_registry_entry_pins_the_config_on_disk(self):
         stale = [
