@@ -1,4 +1,18 @@
-"""Canonical BLAKE3 digest of a model config, and the registry stamping tool.
+"""BLAKE3 digest of a model config file, and the registry stamping tool.
+
+THE ALGORITHM, STATED FIRST BECAUSE OTHER LANGUAGES MUST REPRODUCE IT
+
+    config_blake3 = BLAKE3(the config file's raw bytes, exactly as committed)
+
+No parsing, no re-serialisation, no key sorting, no normalisation of any kind.
+Read the file, hash the bytes. That is the entire specification, and it is
+deliberately something Rust and TypeScript can implement in two lines without
+matching any of Python's opinions about JSON.
+
+The files themselves are held in a canonical format (2-space indent, UTF-8, no
+BOM, LF line endings, single trailing newline) which `--write` produces and
+`--check` enforces. That format is a REPOSITORY convention, not part of the
+digest algorithm -- a host verifying a digest never needs to know it.
 
 WHY THIS EXISTS
 
@@ -15,15 +29,6 @@ into a 0.016-wide sliver. It touched no weights byte, it never raised, and it
 would have produced quietly wrong embeddings for as long as nobody looked. A
 provenance record that could not have distinguished before from after is not a
 provenance record.
-
-CANONICALISATION
-
-The digest is taken over a canonical serialisation, not the file bytes, so
-reformatting a config -- reindenting it, reordering keys, adding a trailing
-newline -- does not read as a behaviour change. Comments do not exist in JSON,
-so nothing meaningful is lost. Rules, matching the rest of this contract:
-
-    UTF-8, sorted keys, no insignificant whitespace, non-ASCII left as-is.
 
 WHY NOT "SORTED KEYS AND COMPACT SEPARATORS"
 

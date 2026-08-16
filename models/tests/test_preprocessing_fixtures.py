@@ -34,6 +34,9 @@ from reference.postprocess import (  # noqa: E402
     iou,
     letterboxed_to_normalized,
     nms,
+    integer_rect_iou,
+    integer_rect_nms,
+    to_integer_rect,
     to_normalized_box,
 )
 from reference.preprocess import (  # noqa: E402
@@ -350,6 +353,42 @@ class TestYuNetDecode(unittest.TestCase):
                     case["score"], combine_scores(case["cls"], case["obj"]), places=6
                 )
 
+    def test_nms_uses_opencv_integer_rectangles(self):
+        """OpenCV builds a cv::Rect2i before NMSBoxes, so IoU is computed on
+        integers -- not the float formula with rounded inputs."""
+        d = Detection(1.7, 2.9, 21.4, 22.2, 0.9)
+        self.assertEqual((1, 2, 20, 20), to_integer_rect(d))
+
+    def test_the_two_nms_conventions_actually_disagree(self):
+        """The case that makes the choice observable.
+
+        The four decode cases survive either implementation, so on their own
+        they prove nothing about which is used -- Codex's point. Rounding moves
+        the IoU across the threshold for boxes sitting near it, which is exactly
+        where NMS decides: one face becomes two, or two adjacent faces in a
+        group photo become one.
+        """
+        case = self.data["nms_convention_divergence"]
+        a, b = (Detection(x["x1"], x["y1"], x["x2"], x["y2"], x["score"])
+                for x in case["boxes"])
+        self.assertAlmostEqual(case["float_iou"], iou(a, b), places=6)
+        self.assertAlmostEqual(case["integer_rect_iou"], integer_rect_iou(a, b), places=6)
+        self.assertEqual(case["float_nms_keeps"], len(nms([a, b], case["nms_threshold"])))
+        self.assertEqual(
+            case["integer_rect_nms_keeps"],
+            len(integer_rect_nms([a, b], case["nms_threshold"])),
+        )
+        self.assertNotEqual(case["float_nms_keeps"], case["integer_rect_nms_keeps"])
+
+    def test_top_k_is_applied_before_suppression(self):
+        """OpenCV caps the score-sorted candidates before NMS. Dropping the cap
+        changes which detections survive whenever the list is long, which on a
+        crowd shot is always."""
+        boxes = [Detection(i * 100.0, 0.0, i * 100.0 + 20.0, 20.0, 0.9 - i * 0.01)
+                 for i in range(10)]
+        self.assertEqual(10, len(integer_rect_nms(boxes, 0.3)))
+        self.assertEqual(3, len(integer_rect_nms(boxes, 0.3, top_k=3)))
+
     def test_the_full_chain_reproduces_the_fixture(self):
         decoded = [
             Detection(
@@ -360,9 +399,10 @@ class TestYuNetDecode(unittest.TestCase):
             )
             for c in self.data["cases"]
         ]
-        kept = nms(
+        kept = integer_rect_nms(
             filter_by_score(decoded, self.data["score_threshold"]),
             self.data["nms_threshold"],
+            self.data["top_k"],
         )
         self.assertEqual(self.data["expected_after_nms"], [d.to_json() for d in kept])
 

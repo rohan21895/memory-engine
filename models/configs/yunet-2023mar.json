@@ -41,7 +41,8 @@
     "steps": [
       "yunet_decode_bbox",
       "yunet_decode_kps",
-      "nms"
+      "geometric_mean_score",
+      "integer_rect_nms"
     ],
     "nms_threshold": 0.3,
     "score_threshold": 0.6,
@@ -204,5 +205,5 @@
     "measured_at": null,
     "note": "No benchmark has been run. YuNet is expected to trail SCRFD on small faces, which is the case that matters in group photos. The cost lands as recall, not precision: a missed face is absent from an album, while the precision-first threshold and review queue keep a wrong face out. Quantifying the gap is the first eval-harness job."
   },
-  "notes": "YuNet emits separate classification and objectness scores per stride; the final confidence is their product, which is why both appear in outputs. Score threshold 0.6 and NMS 0.3 are the OpenCV Zoo defaults and are starting points, not tuned values -- they must be re-tuned against our own benchmark libraries before promotion. Coordinates are decoded against the letterboxed 640x640 input and must be un-letterboxed before being normalised against the ORIENTED image for FaceRecord. DECODER: YuNet does NOT use SCRFD's distance-to-four-sides decoder, which this config previously declared. Boxes are centre-offset plus exponentiated size, landmarks are cell-relative and linear, and confidence is sqrt(clamp(cls)*clamp(obj)) rather than the product -- at score_threshold 0.6 the product rule discards roughly 84% of what YuNet accepts. Found by Codex in review and confirmed against opencv/modules/objdetect/src/face_detect.cpp."
+  "notes": "SCORE RULE: confidence is sqrt(clamp(cls,0,1) * clamp(obj,0,1)) -- the clamped GEOMETRIC MEAN of the separate classification and objectness heads, which is why both appear in outputs. It is declared as the `geometric_mean_score` step so a registry-driven host can apply it without hardcoding anything per model id. An earlier version of this file said the product, and at score_threshold 0.6 the product discards roughly 84% of the detections YuNet accepts -- which reads as a weak detector rather than a bug. Confirmed against opencv/modules/objdetect/src/face_detect.cpp.\n\nDECODER: not SCRFD's distance-to-four-sides. Boxes are centre-offset plus exponentiated size; landmarks are cell-relative and linear.\n\nNMS: OpenCV rounds each box to an integer cv::Rect2i BEFORE cv::dnn::NMSBoxes, so IoU is computed on integer rectangles and its width/height convention differs from a float box by one pixel. Declared as `integer_rect_nms` rather than plain `nms` because the two disagree on boxes sitting near the IoU threshold -- and a disagreement there means one face becomes two, or two adjacent faces in a group photo become one.\n\nTHRESHOLDS: 0.6 and 0.3 are the OpenCV Zoo defaults, starting points rather than tuned values; re-tune against our own benchmark libraries before promotion.\n\nCOORDINATES: decoded against the letterboxed 640x640 input, and must be un-letterboxed before being normalised against the ORIENTED image for FaceRecord."
 }

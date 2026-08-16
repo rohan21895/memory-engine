@@ -303,6 +303,99 @@ class TestSchemaParity(unittest.TestCase):
                 self.assertEqual(set(definition["properties"]), _field_names(message))
 
 
+class TestPinRoundTrip(unittest.TestCase):
+    """Field-name parity is necessary and not sufficient.
+
+    The parity test above compares field NAMES and passed while the VALUE
+    domains disagreed: proto3 has no null, so an unpinned hash is `""` and an
+    unset enum is `*_UNSPECIFIED`, none of which ModelRef accepts. Codex found
+    that a development-mode inference -- which is every inference today, since
+    no weight is pinned -- could not be persisted at all.
+    """
+
+    def setUp(self):
+        import sys
+
+        sys.path.insert(0, str(CONTRACTS.parent))
+        from contracts.proto.model_pin import (  # type: ignore
+            PinConversionError, from_model_ref, to_model_ref,
+        )
+
+        self.to_ref = to_model_ref
+        self.from_ref = from_model_ref
+        self.error = PinConversionError
+
+    def _validate(self, ref: dict):
+        from jsonschema import Draft202012Validator
+
+        common = json.loads(
+            (CONTRACTS / "schemas" / "common.schema.json").read_text(encoding="utf-8")
+        )
+        schema = dict(common["$defs"]["ModelRef"])
+        schema["$defs"] = common["$defs"]
+        errors = [e.message for e in Draft202012Validator(schema).iter_errors(ref)]
+        self.assertEqual([], errors, f"not a valid ModelRef: {ref}")
+
+    UNPINNED = {
+        "model_id": "scrfd-10g-bnkps",
+        "version": "1.0.0",
+        "weights_blake3": "",
+        "config_blake3": "",
+        "runtime": "RUNTIME_TARGET_UNSPECIFIED",
+        "precision": "PRECISION_UNSPECIFIED",
+    }
+    PINNED = {
+        "model_id": "siglip2-so400m-384",
+        "version": "2.0.0",
+        "weights_blake3": "a" * 64,
+        "config_blake3": "c" * 64,
+        "runtime": "RUNTIME_TARGET_ONNXRUNTIME_COREML",
+        "precision": "PRECISION_FP16",
+    }
+
+    def test_a_development_pin_converts_to_a_valid_model_ref(self):
+        """The case that was impossible: nothing is pinned yet, so this is
+        every run today."""
+        ref = self.to_ref(self.UNPINNED)
+        self.assertIsNone(ref["weights_blake3"])
+        self.assertIsNone(ref["runtime"])
+        self._validate(ref)
+
+    def test_a_fully_pinned_pin_converts_and_keeps_every_value(self):
+        ref = self.to_ref(self.PINNED)
+        self.assertEqual("a" * 64, ref["weights_blake3"])
+        self.assertEqual("onnxruntime_coreml", ref["runtime"])
+        self.assertEqual("fp16", ref["precision"])
+        self._validate(ref)
+
+    def test_the_conversion_round_trips_both_ways(self):
+        for pin in (self.UNPINNED, self.PINNED):
+            with self.subTest(pin=pin["model_id"]):
+                self.assertEqual(pin, self.from_ref(self.to_ref(pin)))
+
+    def test_enum_values_map_onto_the_schema_vocabulary(self):
+        """Every proto runtime and precision must land on a value the schema
+        accepts -- checked exhaustively rather than on the two above."""
+        for value in _enum_values("RuntimeTarget"):
+            with self.subTest(runtime=value):
+                ref = self.to_ref({**self.PINNED, "runtime": value})
+                self._validate(ref)
+        for value in _enum_values("Precision"):
+            with self.subTest(precision=value):
+                self._validate(self.to_ref({**self.PINNED, "precision": value}))
+
+    def test_a_malformed_hash_fails_at_the_conversion(self):
+        """Rather than reaching a record, where it would look like provenance."""
+        with self.assertRaises(self.error):
+            self.to_ref({**self.PINNED, "weights_blake3": "not-a-hash"})
+
+    def test_a_pin_without_identity_is_refused(self):
+        for missing in ("model_id", "version"):
+            with self.subTest(field=missing):
+                with self.assertRaises(self.error):
+                    self.to_ref({**self.PINNED, missing: ""})
+
+
 class TestPostprocessedOutput(unittest.TestCase):
     """Decoding a detector head belongs to the host, exactly once.
 

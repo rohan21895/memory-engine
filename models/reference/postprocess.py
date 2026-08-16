@@ -142,6 +142,57 @@ def filter_by_score(detections: list[Detection], threshold: float) -> list[Detec
     return [d for d in detections if d.score >= threshold]
 
 
+def to_integer_rect(detection: Detection) -> tuple[int, int, int, int]:
+    """A float box as OpenCV's `cv::Rect2i`: (x, y, w, h), truncated toward zero.
+
+    OpenCV builds Rect2i from the decoded floats before handing them to
+    NMSBoxes, so the coordinates it computes IoU on are integers -- and its
+    rectangle convention is (x, y, width, height) where width already spans the
+    pixels [x, x+w), so IoU is NOT the float formula with rounded inputs.
+    """
+    x = int(detection.x1)
+    y = int(detection.y1)
+    return (x, y, int(detection.x2) - x, int(detection.y2) - y)
+
+
+def integer_rect_iou(a: Detection, b: Detection) -> float:
+    """IoU on integer rectangles, matching cv::dnn::NMSBoxes."""
+    ax, ay, aw, ah = to_integer_rect(a)
+    bx, by, bw, bh = to_integer_rect(b)
+    ix = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+    iy = max(0, min(ay + ah, by + bh) - max(ay, by))
+    intersection = ix * iy
+    union = aw * ah + bw * bh - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def integer_rect_nms(
+    detections: list[Detection], threshold: float, top_k: int | None = None
+) -> list[Detection]:
+    """OpenCV's NMS for YuNet: integer rectangles, and a pre-NMS `top_k` cap.
+
+    Codex flagged that the plain float `nms` above is NOT what YuNet goes
+    through, and that the fixture's cases happened to survive either way, so the
+    difference was invisible. It is not invisible in general: rounding moves an
+    IoU across the threshold for boxes sitting near it, and that is exactly
+    where NMS decisions are made. One face becomes two, or two adjacent faces in
+    a group photo become one -- both of which surface much later as
+    face-clustering noise.
+
+    `top_k` is applied to the score-sorted candidates BEFORE suppression,
+    matching OpenCV. Dropping it changes which detections survive whenever the
+    candidate list is long, which on a crowd shot is always.
+    """
+    ordered = sorted(detections, key=lambda d: (-d.score, d.x1, d.y1, d.x2, d.y2))
+    if top_k is not None:
+        ordered = ordered[:top_k]
+    kept: list[Detection] = []
+    for candidate in ordered:
+        if all(integer_rect_iou(candidate, k) <= threshold for k in kept):
+            kept.append(candidate)
+    return kept
+
+
 def combine_scores(classification: float, objectness: float) -> float:
     """YuNet confidence: sqrt(clamp(cls) * clamp(obj)).
 

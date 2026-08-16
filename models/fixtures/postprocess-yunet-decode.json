@@ -10,7 +10,8 @@
   "formulas": {
     "bbox": "cx=(c+raw0)*stride; cy=(r+raw1)*stride; w=exp(raw2)*stride; h=exp(raw3)*stride; box=(cx-w/2, cy-h/2, cx+w/2, cy+h/2)",
     "landmarks": "x=(raw[2n]+c)*stride; y=(raw[2n+1]+r)*stride",
-    "score": "sqrt(clamp(cls,0,1) * clamp(obj,0,1))"
+    "score": "sqrt(clamp(cls,0,1) * clamp(obj,0,1))",
+    "nms": "OpenCV rounds each box to cv::Rect2i (x=int(x1), y=int(y1), w=int(x2)-int(x1), h=int(y2)-int(y1)) BEFORE cv::dnn::NMSBoxes, and applies top_k to the score-sorted candidates before suppression."
   },
   "cases": [
     {
@@ -286,5 +287,32 @@
     "geometric_mean_keeps": 3,
     "note": "At this threshold the product rule keeps 1 of the 3 faces the geometric mean keeps. Measured over a beta(2,2) score distribution it discards roughly 84% of what YuNet accepts. That would have read as 'YuNet is a much weaker detector than SCRFD' -- the worst possible wrong conclusion, since YuNet is the licence-clean release path and SCRFD is the non-commercial one."
   },
-  "note": "Boxes here are in NETWORK pixel space and go negative because a face at the frame edge legitimately does. detections-to-normalized-boxes.json covers what happens next."
+  "note": "Boxes here are in NETWORK pixel space and go negative because a face at the frame edge legitimately does. detections-to-normalized-boxes.json covers what happens next.",
+  "nms": "integer_rect_nms",
+  "top_k": 5000,
+  "nms_convention_divergence": {
+    "why": "The decode cases above happen to survive either NMS implementation, so on their own they prove nothing about which one is used -- Codex's point. This pair is chosen so the two implementations DISAGREE: rounding moves the IoU across the threshold, which is precisely where NMS decides. Getting it wrong turns one face into two, or merges two adjacent faces in a group photo into one, and both surface much later as face-clustering noise rather than as an error.",
+    "nms_threshold": 0.3,
+    "boxes": [
+      {
+        "x1": 0.0,
+        "y1": 0.0,
+        "x2": 20.0,
+        "y2": 20.0,
+        "score": 0.9
+      },
+      {
+        "x1": 10.8,
+        "y1": 0.0,
+        "x2": 30.8,
+        "y2": 20.0,
+        "score": 0.8
+      }
+    ],
+    "float_iou": 0.298701,
+    "integer_rect_iou": 0.333333,
+    "float_nms_keeps": 2,
+    "integer_rect_nms_keeps": 1,
+    "correct": "integer_rect_nms_keeps"
+  }
 }

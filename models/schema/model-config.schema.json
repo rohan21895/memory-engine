@@ -482,7 +482,10 @@
               "clip",
               "decode_ctc",
               "yunet_decode_bbox",
-              "yunet_decode_kps"
+              "yunet_decode_kps",
+              "geometric_mean_score",
+              "product_score",
+              "integer_rect_nms"
             ]
           },
           "default": []

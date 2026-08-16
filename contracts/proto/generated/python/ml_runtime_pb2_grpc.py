@@ -78,15 +78,31 @@ class MlRuntimeStub(object):
     actually applied. Raw TensorSet output remains available for embeddings
     and for heads whose postprocessing genuinely belongs to the caller.
 
-    6. ONE COORDINATE SPACE, DECLARED IN THE TYPE.
-    Every box and every landmark in this file is normalised to [0,1] against
-    the ORIENTED image (EXIF rotation already applied), origin top-left, x
-    right, y down -- identical to NormalizedBox and Point2D in
-    contracts/schemas/common.schema.json. This is what lets a face detected on
-    a 512px proxy be cropped from a 6000px original without a rescale step
-    that someone will eventually forget. Landmarks may fall slightly outside
-    [0,1] when a face is clipped by the frame edge; the bounds are loose on
-    purpose. Pixel coordinates never cross this interface in either direction.
+    6. NORMALISED COORDINATES ONLY, AGAINST A BASIS THE FIELD NAMES.
+    Pixel coordinates never cross this interface in either direction. Every
+    box and landmark is normalised to [0,1], origin top-left, x right, y down,
+    matching NormalizedBox and Point2D in
+    contracts/schemas/common.schema.json.
+
+    There are exactly TWO bases, and which one applies is determined by what
+    the coordinate is attached to -- never by convention:
+
+    * ORIENTED IMAGE (EXIF rotation applied) for everything that refers to
+    an image: all DetectionSet output, and InferItem.landmarks when the
+    item's input is a `proxy_id`. This is what lets a face detected on a
+    512px proxy be cropped from a 6000px original without a rescale step
+    someone will eventually forget.
+    * THE TENSOR'S OWN EXTENT for InferItem.landmarks when the item's input
+    is `tensors`. A bare 112x112 crop has no oriented image to refer to,
+    and the alternative -- carrying a crop transform back to an original
+    nobody has open -- adds a second thing to get wrong.
+
+    An earlier revision claimed a single universal basis in this header while
+    the tensor path used the second one; Codex caught the contradiction. Two
+    bases stated precisely beat one basis stated falsely.
+
+    Landmarks may fall slightly outside [0,1] when a face is clipped by the
+    frame edge; the bounds are loose on purpose.
 
     WHY THIS IS v1 AND NOT v0
     The v0 revision reused field numbers and enum values with incompatible
@@ -199,15 +215,31 @@ class MlRuntimeServicer(object):
     actually applied. Raw TensorSet output remains available for embeddings
     and for heads whose postprocessing genuinely belongs to the caller.
 
-    6. ONE COORDINATE SPACE, DECLARED IN THE TYPE.
-    Every box and every landmark in this file is normalised to [0,1] against
-    the ORIENTED image (EXIF rotation already applied), origin top-left, x
-    right, y down -- identical to NormalizedBox and Point2D in
-    contracts/schemas/common.schema.json. This is what lets a face detected on
-    a 512px proxy be cropped from a 6000px original without a rescale step
-    that someone will eventually forget. Landmarks may fall slightly outside
-    [0,1] when a face is clipped by the frame edge; the bounds are loose on
-    purpose. Pixel coordinates never cross this interface in either direction.
+    6. NORMALISED COORDINATES ONLY, AGAINST A BASIS THE FIELD NAMES.
+    Pixel coordinates never cross this interface in either direction. Every
+    box and landmark is normalised to [0,1], origin top-left, x right, y down,
+    matching NormalizedBox and Point2D in
+    contracts/schemas/common.schema.json.
+
+    There are exactly TWO bases, and which one applies is determined by what
+    the coordinate is attached to -- never by convention:
+
+    * ORIENTED IMAGE (EXIF rotation applied) for everything that refers to
+    an image: all DetectionSet output, and InferItem.landmarks when the
+    item's input is a `proxy_id`. This is what lets a face detected on a
+    512px proxy be cropped from a 6000px original without a rescale step
+    someone will eventually forget.
+    * THE TENSOR'S OWN EXTENT for InferItem.landmarks when the item's input
+    is `tensors`. A bare 112x112 crop has no oriented image to refer to,
+    and the alternative -- carrying a crop transform back to an original
+    nobody has open -- adds a second thing to get wrong.
+
+    An earlier revision claimed a single universal basis in this header while
+    the tensor path used the second one; Codex caught the contradiction. Two
+    bases stated precisely beat one basis stated falsely.
+
+    Landmarks may fall slightly outside [0,1] when a face is clipped by the
+    frame edge; the bounds are loose on purpose.
 
     WHY THIS IS v1 AND NOT v0
     The v0 revision reused field numbers and enum values with incompatible
@@ -367,15 +399,31 @@ class MlRuntime(object):
     actually applied. Raw TensorSet output remains available for embeddings
     and for heads whose postprocessing genuinely belongs to the caller.
 
-    6. ONE COORDINATE SPACE, DECLARED IN THE TYPE.
-    Every box and every landmark in this file is normalised to [0,1] against
-    the ORIENTED image (EXIF rotation already applied), origin top-left, x
-    right, y down -- identical to NormalizedBox and Point2D in
-    contracts/schemas/common.schema.json. This is what lets a face detected on
-    a 512px proxy be cropped from a 6000px original without a rescale step
-    that someone will eventually forget. Landmarks may fall slightly outside
-    [0,1] when a face is clipped by the frame edge; the bounds are loose on
-    purpose. Pixel coordinates never cross this interface in either direction.
+    6. NORMALISED COORDINATES ONLY, AGAINST A BASIS THE FIELD NAMES.
+    Pixel coordinates never cross this interface in either direction. Every
+    box and landmark is normalised to [0,1], origin top-left, x right, y down,
+    matching NormalizedBox and Point2D in
+    contracts/schemas/common.schema.json.
+
+    There are exactly TWO bases, and which one applies is determined by what
+    the coordinate is attached to -- never by convention:
+
+    * ORIENTED IMAGE (EXIF rotation applied) for everything that refers to
+    an image: all DetectionSet output, and InferItem.landmarks when the
+    item's input is a `proxy_id`. This is what lets a face detected on a
+    512px proxy be cropped from a 6000px original without a rescale step
+    someone will eventually forget.
+    * THE TENSOR'S OWN EXTENT for InferItem.landmarks when the item's input
+    is `tensors`. A bare 112x112 crop has no oriented image to refer to,
+    and the alternative -- carrying a crop transform back to an original
+    nobody has open -- adds a second thing to get wrong.
+
+    An earlier revision claimed a single universal basis in this header while
+    the tensor path used the second one; Codex caught the contradiction. Two
+    bases stated precisely beat one basis stated falsely.
+
+    Landmarks may fall slightly outside [0,1] when a face is clipped by the
+    frame edge; the bounds are loose on purpose.
 
     WHY THIS IS v1 AND NOT v0
     The v0 revision reused field numbers and enum values with incompatible

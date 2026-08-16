@@ -48,15 +48,31 @@ package memory_engine.ml_runtime.v1;
 //    actually applied. Raw TensorSet output remains available for embeddings
 //    and for heads whose postprocessing genuinely belongs to the caller.
 //
-// 6. ONE COORDINATE SPACE, DECLARED IN THE TYPE.
-//    Every box and every landmark in this file is normalised to [0,1] against
-//    the ORIENTED image (EXIF rotation already applied), origin top-left, x
-//    right, y down -- identical to NormalizedBox and Point2D in
-//    contracts/schemas/common.schema.json. This is what lets a face detected on
-//    a 512px proxy be cropped from a 6000px original without a rescale step
-//    that someone will eventually forget. Landmarks may fall slightly outside
-//    [0,1] when a face is clipped by the frame edge; the bounds are loose on
-//    purpose. Pixel coordinates never cross this interface in either direction.
+// 6. NORMALISED COORDINATES ONLY, AGAINST A BASIS THE FIELD NAMES.
+//    Pixel coordinates never cross this interface in either direction. Every
+//    box and landmark is normalised to [0,1], origin top-left, x right, y down,
+//    matching NormalizedBox and Point2D in
+//    contracts/schemas/common.schema.json.
+//
+//    There are exactly TWO bases, and which one applies is determined by what
+//    the coordinate is attached to -- never by convention:
+//
+//      * ORIENTED IMAGE (EXIF rotation applied) for everything that refers to
+//        an image: all DetectionSet output, and InferItem.landmarks when the
+//        item's input is a `proxy_id`. This is what lets a face detected on a
+//        512px proxy be cropped from a 6000px original without a rescale step
+//        someone will eventually forget.
+//      * THE TENSOR'S OWN EXTENT for InferItem.landmarks when the item's input
+//        is `tensors`. A bare 112x112 crop has no oriented image to refer to,
+//        and the alternative -- carrying a crop transform back to an original
+//        nobody has open -- adds a second thing to get wrong.
+//
+//    An earlier revision claimed a single universal basis in this header while
+//    the tensor path used the second one; Codex caught the contradiction. Two
+//    bases stated precisely beat one basis stated falsely.
+//
+//    Landmarks may fall slightly outside [0,1] when a face is clipped by the
+//    frame edge; the bounds are loose on purpose.
 //
 // WHY THIS IS v1 AND NOT v0
 //    The v0 revision reused field numbers and enum values with incompatible
@@ -388,6 +404,22 @@ message InferItem {
   // that a tensor could be "already aligned" AND that landmarks were mandatory
   // so the host could align it -- Codex caught the contradiction. They are two
   // different requests and now say so.
+  //
+  // COMBINATIONS THE HOST MUST REJECT WITH INPUT_INVALID. Proto3 cannot express
+  // cross-field constraints, and every one of these silently bypasses face
+  // alignment, which yields a confident wrong embedding rather than an error:
+  //
+  //   proxy_id + PREALIGNED          -- a stored proxy is a photo, never a
+  //                                     pre-warped crop. Nothing has aligned it.
+  //   PREALIGNED + landmarks present -- the host would warp an already-warped
+  //                                     crop a second time.
+  //   NEEDS_ALIGNMENT + no landmarks -- LANDMARKS_REQUIRED.
+  //   a face-alignment model + NONE  -- asks the host to skip the alignment the
+  //                                     model's embedding space is defined by.
+  //
+  // The last is the one worth stating explicitly: ALIGNMENT_NONE is a property
+  // of models that do not align (embeddings, IQA, detectors), not an opt-out a
+  // caller may apply to one that does.
   Alignment alignment = 7;
 
   // Landmarks for the alignment template. Required when `alignment` is
@@ -501,33 +533,41 @@ message InferResponse {
   optional InferError error = 7;
 }
 
-// VALIDATION RULES THE HOST MUST ENFORCE, because proto3 cannot express them
-// and Codex correctly refused to implement them from a comment:
+// One item's outcome. Success and failure are the SAME oneof, so a result
+// carrying both an error and a detection set is not merely discouraged, it is
+// unrepresentable.
 //
-//   1. Exactly one of `error` or `output` is set. Neither set is INPUT_INVALID
-//      on the host's own response -- an empty result is not "no faces found",
-//      it is a host bug. "Ran and found nothing" is an EMPTY DetectionSet, not
-//      an empty oneof.
+// An earlier revision left `error` outside the oneof and relied on a comment to
+// say the two were exclusive. Codex refused to implement from that, correctly:
+// generated protobuf code accepted both, and two clients reading the same bytes
+// could legitimately disagree about whether the item succeeded. Proto3 can
+// express this, so it should.
+//
+// WHAT STILL NEEDS RUNTIME VALIDATION -- only the cases the type system cannot
+// reach:
+//
+//   1. `outcome` is set at all. An empty oneof is a host bug, not "no faces
+//      found": "ran and found nothing" is an EMPTY DetectionSet.
 //   2. `item_id` is non-empty and unique within the response, and every
 //      item_id in the request appears exactly once. Duplicate or missing ids
 //      make batch correlation ambiguous, and a caller that mis-correlates
 //      writes one photo's faces onto another.
-//   3. `output` matches the model's declared ModelInfo.output_kind.
+//   3. The outcome variant matches the model's declared ModelInfo.output_kind.
 //
 // A host that cannot satisfy these must fail the whole request with a
 // top-level InferResponse.error rather than emit a response that violates them.
 message InferResult {
   string item_id = 1;
 
-  // Per-item failure. Items are independent: one corrupt proxy in a batch of 64
-  // must not fail the other 63, which is the difference between a scan that
-  // reports one bad file and one that fails wholesale. When set, `output` is
-  // empty.
-  optional InferError error = 2;
+  // Exactly one outcome. Items are independent: one corrupt proxy in a batch of
+  // 64 must not fail the other 63, which is the difference between a scan that
+  // reports one bad file and one that fails wholesale.
+  //
+  // Which success variant to expect is declared by ModelInfo.output_kind.
+  oneof outcome {
+    // Per-item failure.
+    InferError error = 2;
 
-  // Postprocessed where postprocessing is the host's job, raw where it is not.
-  // Which variant to expect is declared by ModelInfo.output_kind.
-  oneof output {
     // Embeddings and heads whose interpretation genuinely belongs to the
     // caller.
     TensorSet tensors = 3;
