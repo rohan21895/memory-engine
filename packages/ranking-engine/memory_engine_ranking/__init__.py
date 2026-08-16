@@ -5,6 +5,8 @@ decisions media-db can store directly.
 """
 
 from .dedupe import (
+    DEFAULT_HAMMING_DECISIVE_THRESHOLD,
+    DEFAULT_HAMMING_THRESHOLD,
     Candidate,
     DuplicateGroup,
     assignments,
@@ -18,6 +20,8 @@ from .dedupe import (
 
 __all__ = [
     "Candidate",
+    "DEFAULT_HAMMING_DECISIVE_THRESHOLD",
+    "DEFAULT_HAMMING_THRESHOLD",
     "DuplicateGroup",
     "assignments",
     "band_keys",

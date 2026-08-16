@@ -24,6 +24,8 @@ REPO_ROOT = PACKAGE_ROOT.parent.parent
 sys.path.insert(0, str(PACKAGE_ROOT))
 
 from memory_engine_ranking import (  # noqa: E402
+    DEFAULT_HAMMING_DECISIVE_THRESHOLD,
+    DEFAULT_HAMMING_THRESHOLD,
     Candidate,
     assignments,
     band_keys,
@@ -183,6 +185,67 @@ class TestGrouping(unittest.TestCase):
                 Candidate(mid("a"), phash_hex="f0e1c3878f1e3c78"),
                 Candidate(mid("a"), phash_hex="f0e1c3878f1e3c79"),
             ])
+
+
+class TestDecisiveThreshold(unittest.TestCase):
+    """Regression: found by running the real pipeline, not by reasoning.
+
+    Two genuinely different scenes sat 6 bits apart and merged into one group,
+    silently dropping one from every automated output. The candidate threshold
+    (10) is right for *finding* pairs worth comparing; it is far too loose for
+    *deciding* when no embedding exists to arbitrate.
+    """
+
+    @staticmethod
+    def _hex_at_distance(base: str, bits: int) -> str:
+        value = int(base, 16)
+        for i in range(bits):
+            value ^= 1 << i
+        return f"{value:016x}"
+
+    BASE = "f0e1c3878f1e3c78"
+
+    def test_six_bits_apart_does_not_merge_without_an_embedding(self):
+        items = [
+            Candidate(mid("a"), phash_hex=self.BASE),
+            Candidate(mid("b"), phash_hex=self._hex_at_distance(self.BASE, 6)),
+        ]
+        self.assertEqual(
+            [], find_duplicates(items),
+            "6 bits apart is a candidate, not a decision -- merging silently "
+            "drops one photo from every album",
+        )
+
+    def test_a_real_burst_still_merges(self):
+        """Near-identical frames of one moment are 0-3 bits apart. The fix must
+        not cost us the case dedupe exists for."""
+        items = [
+            Candidate(mid("a"), phash_hex=self.BASE, quality=0.6),
+            Candidate(mid("b"), phash_hex=self._hex_at_distance(self.BASE, 2), quality=0.9),
+            Candidate(mid("c"), phash_hex=self.BASE, quality=0.5),
+        ]
+        groups = find_duplicates(items)
+        self.assertEqual(1, len(groups))
+        self.assertEqual(3, groups[0].size)
+        self.assertEqual(mid("b"), groups[0].primary_media_id)
+
+    def test_an_embedding_re_enables_the_generous_threshold(self):
+        """With an arbiter present, a distant pHash pair may still merge --
+        that is what the candidate threshold is for."""
+        items = [
+            Candidate(mid("a"), phash_hex=self.BASE, embedding=[1.0, 0.0, 0.02]),
+            Candidate(
+                mid("b"),
+                phash_hex=self._hex_at_distance(self.BASE, 8),
+                embedding=[1.0, 0.0, 0.01],
+            ),
+        ]
+        groups = find_duplicates(items)
+        self.assertEqual(1, len(groups), "the embedding, not the hash, decides here")
+        self.assertEqual("phash_bucket_embedding_refined", groups[0].method)
+
+    def test_the_decisive_threshold_is_stricter_than_the_candidate_one(self):
+        self.assertLess(DEFAULT_HAMMING_DECISIVE_THRESHOLD, DEFAULT_HAMMING_THRESHOLD)
 
 
 class TestDeterminism(unittest.TestCase):
