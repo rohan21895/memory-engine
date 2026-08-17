@@ -16,10 +16,12 @@ dependencies = [
   "onnxruntime-directml>=1.20,<2; platform_system == 'Windows'",
   "opencv-python-headless>=4.10,<5",
   "protobuf>=5.28.1,<6",
+  "referencing>=0.35",
 ]
 
 [project.scripts]
 memory-engine-ml-runtime = "memory_engine_ml_runtime.__main__:main"
+memory-engine-photo-smoke = "memory_engine_ml_runtime.smoke:main"
 
 [tool.setuptools.packages.find]
 include = ["memory_engine_ml_runtime*"]

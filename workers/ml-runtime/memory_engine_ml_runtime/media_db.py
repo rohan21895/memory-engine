@@ -8,17 +8,24 @@ from pathlib import Path
 from typing import Any
 
 
+def database_type(repo_root: Path):
+    """Load media-db's public API from this monorepo without copying it."""
+
+    package_root = (repo_root / "packages" / "media-db").resolve()
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    from memory_engine_media_db import Database
+
+    return Database
+
+
 class MediaDbProxyResolver:
     """Resolve one proxy with a short-lived, thread-safe media-db handle."""
 
     def __init__(self, repo_root: Path, database_path: Path) -> None:
         self.database_path = database_path.resolve()
-        package_root = (repo_root / "packages" / "media-db").resolve()
-        if str(package_root) not in sys.path:
-            sys.path.insert(0, str(package_root))
-        from memory_engine_media_db import Database
 
-        self._database_type = Database
+        self._database_type = database_type(repo_root)
 
     def __call__(self, proxy_id: str) -> Mapping[str, Any] | None:
         # Database's query API owns the lookup.  This worker never reaches into

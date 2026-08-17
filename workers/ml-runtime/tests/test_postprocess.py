@@ -19,6 +19,7 @@ from memory_engine_ml_runtime.postprocess import (
     integer_rect_nms,
     normalize_candidate,
     num_anchors_for,
+    postprocess_detector,
     yunet_decode_bbox,
     yunet_decode_kps,
 )
@@ -144,6 +145,23 @@ class TestIntegerLetterboxGolden(unittest.TestCase):
 
 
 class TestScrfdAnchorMultiplicity(unittest.TestCase):
+    def test_numeric_checkpoint_names_bind_through_declared_strides(self) -> None:
+        config = json.loads(
+            (REPO_ROOT / "models" / "configs" / "scrfd-10g-bnkps.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        outputs = {
+            output["name"]: np.zeros(output["shape"], dtype=np.float32)
+            for output in config["outputs"]
+        }
+        raster = integer_letterbox(1600, 842, 640, 640)
+
+        result = postprocess_detector(outputs, config, raster)
+
+        self.assertEqual((), result.detections)
+        self.assertEqual("insightface_5", result.landmark_scheme)
+
     def test_nine_outputs_duplicate_each_anchor_in_place(self) -> None:
         self.assertEqual(2, num_anchors_for(9))
         self.assertEqual(
