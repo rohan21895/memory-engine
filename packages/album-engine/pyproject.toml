@@ -2,6 +2,11 @@
 name = "memory-engine-album-engine"
 version = "0.0.0"
 requires-python = ">=3.12"
+# selection.py consumes the ranking engine's fused scores rather than
+# reimplementing them -- in particular FusedScore.comparable_with, which is what
+# stops a photo measured on two signals being ranked against one measured on
+# eight. A local path dependency because this is a monorepo, not a published
+# package.
 dependencies = []
 
 [tool.pytest.ini_options]
