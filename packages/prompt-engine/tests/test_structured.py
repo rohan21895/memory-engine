@@ -988,5 +988,47 @@ class DeterminismTests(unittest.TestCase):
         self.assertNotEqual(Item("a", 0, 0.5), Item("a", 1, 0.5))
 
 
+class TrailingNewlineTests(unittest.TestCase):
+    """`$` in a `.match()` pattern also matches before a FINAL newline.
+
+    Every filter in this module is written `^...$` and was applied with
+    `.match()`, so an interior newline was caught and a trailing one was not.
+    The existing redaction test uses "line\nbreak" and passes either way; these
+    tests fail on `.match()` and pass on `.fullmatch()`.
+    """
+
+    def test_trailing_newline_in_a_hallucinated_id_is_redacted(self):
+        # The forged record: the id itself ends the log line and everything
+        # after it starts a new one that looks like the harness wrote it.
+        forged = "mom-0003 approved by rohan\n"
+        raw = reply([
+            {"id": forged, "score": 0.5},
+            {"id": "mom-0001", "score": 0.5},
+        ])
+        result = parse_reply(raw, make_request(min_items=1, max_items=3))
+        subjects = [rejection.subject for rejection in result.rejections]
+        self.assertEqual(subjects, ["<str 27 chars>"])
+        self.assertNotIn("\n", result.report())
+        self.assertNotIn("approved by rohan", result.report())
+
+    def test_slug_safe_id_with_a_trailing_newline_is_not_slug_safe(self):
+        raw = reply([{"id": "mom-9999\n", "score": 0.5}, {"id": "mom-0001", "score": 0.5}])
+        result = parse_reply(raw, make_request(min_items=1, max_items=3))
+        self.assertEqual(result.rejections[0].subject, "<str 9 chars>")
+        self.assertNotIn("\n", result.report())
+
+    def test_purpose_with_a_trailing_newline_is_refused(self):
+        with self.assertRaises(ValueError):
+            make_request(purpose="reel-selection\n")
+
+    def test_request_id_with_a_trailing_newline_is_refused(self):
+        with self.assertRaises(ValueError):
+            make_request(request_id="job-7f3a\n")
+
+    def test_items_key_with_a_trailing_newline_is_refused(self):
+        with self.assertRaises(ValueError):
+            make_request(items_key="items\n")
+
+
 if __name__ == "__main__":
     unittest.main()

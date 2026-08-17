@@ -212,6 +212,14 @@ _PURPOSE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # for the retry", which is the injection path this module refuses to open.
 _SLUG = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
+# Both patterns are applied with `fullmatch`, NEVER with `match`. Python's `$`
+# also matches immediately before a final newline, so `_SLUG.match()` accepts
+# "mom-9999\n" -- and a model-supplied id whose newline is LAST would then be
+# echoed verbatim into Rejection.subject and forge a second line in report(),
+# which is precisely the log injection the redaction filter exists to stop. An
+# interior newline was always caught; the trailing one was not, which is why
+# the existing test ("line\nbreak") passed while the hole was open.
+
 _OPENERS = "{["
 _CLOSERS = "}]"
 
@@ -353,7 +361,7 @@ def _redact(value: object) -> str:
     if isinstance(value, bool):
         return f"<bool {'true' if value else 'false'}>"
     if isinstance(value, str):
-        if _SLUG.match(value):
+        if _SLUG.fullmatch(value):
             return value
         return f"<str {len(value)} chars>"
     if isinstance(value, (int, float)):
@@ -430,7 +438,7 @@ class Request:
     max_reply_chars: int = DEFAULT_MAX_REPLY_CHARS
 
     def __post_init__(self) -> None:
-        if not isinstance(self.purpose, str) or not _PURPOSE.match(self.purpose):
+        if not isinstance(self.purpose, str) or not _PURPOSE.fullmatch(self.purpose):
             raise ValueError(
                 "purpose must be a short lowercase slug; it is baked into the "
                 "derived request id and into retry hints"
@@ -490,9 +498,9 @@ class Request:
             raise ValueError("score_range must be ordered low, high")
 
         if self.request_id is not None:
-            if not isinstance(self.request_id, str) or not _SLUG.match(self.request_id):
+            if not isinstance(self.request_id, str) or not _SLUG.fullmatch(self.request_id):
                 raise ValueError("request_id must be a slug-safe str")
-        if not isinstance(self.items_key, str) or not _PURPOSE.match(self.items_key):
+        if not isinstance(self.items_key, str) or not _PURPOSE.fullmatch(self.items_key):
             raise ValueError("items_key must be a short lowercase slug")
         if not isinstance(self.max_reply_chars, int) or self.max_reply_chars < 1:
             raise ValueError("max_reply_chars must be a positive int")

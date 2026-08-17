@@ -113,18 +113,52 @@ DETERMINISM OF THE HARNESS ITSELF
    figures so the printed delta always equals the difference of the printed
    values -- a report whose own arithmetic does not close is a report nobody
    can check.
+
+THE GATE IS A COMMAND, AND IT HAS THREE ANSWERS, NOT TWO
+   A library that returns a verdict is not a gate; CI reads exit codes. So this
+   module is also a command (`python3 -m memory_engine_eval.harness GATE.json`)
+   and the answers it can give are numbered:
+
+     0  EXIT_PASS     the comparison ran and nothing failed.
+     1  EXIT_FAIL     the comparison ran and something failed. A quality
+                      signal: argue with it, waive a case, or fix the model.
+     2  EXIT_REFUSED  there is no comparison. `ComparisonRefused` (decision 2)
+                      came back: mismatched digests, mixed model sets, unpinned
+                      weights, different inputs. NOT a quality signal, and
+                      never green.
+     3  EXIT_USAGE    the gate could not even be set up: a malformed suite,
+                      policy, result set or gate file (`SuiteError`), or an
+                      unreadable path. Nothing was measured and nothing about
+                      the model was learned.
+
+   Two of those matter more than the rest. `models/policy/digest.py` already
+   had to learn this once and says it in a comment: "'I could not check' and 'I
+   checked and it was fine' must not share an exit code." The same applies at
+   the other end -- "I could not check" and "I checked and it got worse" must
+   not share one either, because a refusal that arrives as a FAIL gets treated
+   like a FAIL: waived, argued with, or overridden by whoever is in a hurry. So
+   `Verdict` carries SKIP, `evaluate` still raises rather than returning it
+   (a refusal must not be a value a policy can forgive), and the translation
+   from exception to exit code happens exactly once, in `run_gate`.
+
+   Non-zero is non-zero: 2 and 3 fail CI just as 1 does. The distinction is not
+   about severity, it is about what a human should go and do.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
 import re
+import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
+from pathlib import Path
+from typing import NoReturn
 
 __all__ = [
     "BENCHMARK_CATEGORIES",
@@ -137,7 +171,13 @@ __all__ = [
     "CategoryReport",
     "ComparisonRefused",
     "Direction",
+    "EXIT_FAIL",
+    "EXIT_PASS",
+    "EXIT_REFUSED",
+    "EXIT_USAGE",
     "Failure",
+    "GateInput",
+    "GateOutcome",
     "GatePolicy",
     "GateReport",
     "HarnessError",
@@ -154,8 +194,23 @@ __all__ = [
     "Verdict",
     "Waiver",
     "evaluate",
+    "format_outcome",
     "format_report",
+    "load_gate_file",
+    "load_gate_input",
+    "main",
+    "run_gate",
+    "run_gate_file",
 ]
+
+# The gate's answers, as numbers, because CI reads numbers. See "THE GATE IS A
+# COMMAND" in the module docstring for the argument. These are part of the
+# module's contract with CI: changing one silently changes what a red build
+# means.
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_REFUSED = 2
+EXIT_USAGE = 3
 
 
 # The benchmark libraries named in build plan §6. Declared here so a typo in a
@@ -181,8 +236,27 @@ MAX_WAIVER_DROP = 0.10
 # field.
 MAX_WAIVER_HORIZON_DAYS = 90
 
+# Mirrors of contracts/schemas/common.schema.json Blake3Hash and Slug. The
+# patterns are written with the contract's own anchors so the two read as the
+# same rule, but they are only ever applied with `fullmatch`, never `match`:
+# Python's `$` also matches immediately BEFORE a final newline, so `.match()`
+# accepts "a"*64 + "\n" as a BLAKE3 digest and "travel_0\n" as a case_id. A
+# digest read with `open(path).read()` instead of `.read().strip()` would then
+# be a 65-character "digest" that compares unequal to the same digest without
+# the newline -- BaselineDigestMismatch, a refusal, chased as a stale-baseline
+# ghost. A case_id with a trailing newline forges a second line in
+# format_report(). `_is_hex64`/`_is_slug` exist so no call site has to remember
+# this.
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _is_hex64(value: object) -> bool:
+    return isinstance(value, str) and _HEX64.fullmatch(value) is not None
+
+
+def _is_slug(value: object) -> bool:
+    return isinstance(value, str) and _SLUG.fullmatch(value) is not None
 
 
 # --------------------------------------------------------------------------
@@ -258,13 +332,13 @@ class ModelPin:
     config_blake3: str | None
 
     def __post_init__(self) -> None:
-        if not _SLUG.match(self.model_id):
+        if not _is_slug(self.model_id):
             raise SuiteError(f"model_id is not a Slug: {self.model_id!r}")
         if not self.version:
             raise SuiteError(f"{self.model_id}: version must be non-empty")
         for name in ("weights_blake3", "config_blake3"):
             digest = getattr(self, name)
-            if digest is not None and not _HEX64.match(digest):
+            if digest is not None and not _is_hex64(digest):
                 raise SuiteError(f"{self.model_id}: {name} is not a BLAKE3 hex digest")
 
     @property
@@ -366,7 +440,7 @@ class Metric:
     direction: Direction
 
     def __post_init__(self) -> None:
-        if not _SLUG.match(self.name):
+        if not _is_slug(self.name):
             raise SuiteError(f"metric name is not a Slug: {self.name!r}")
 
     def goodness(self, value: float) -> float:
@@ -409,11 +483,11 @@ class BenchmarkCase:
     description: str = ""
 
     def __post_init__(self) -> None:
-        if not _SLUG.match(self.case_id):
+        if not _is_slug(self.case_id):
             raise SuiteError(f"case_id is not a Slug: {self.case_id!r}")
-        if not _SLUG.match(self.category):
+        if not _is_slug(self.category):
             raise SuiteError(f"category is not a Slug: {self.category!r}")
-        if not _HEX64.match(self.inputs_digest):
+        if not _is_hex64(self.inputs_digest):
             raise SuiteError(f"{self.case_id}: inputs_digest is not a BLAKE3 hex digest")
         _require_unit(f"{self.case_id}.expected", self.expected)
 
@@ -487,7 +561,7 @@ class CaseResult:
             raise SuiteError(f"{case_id}: a result must carry at least one sample")
         for index, value in enumerate(values):
             _require_unit(f"{case_id}.samples[{index}]", value)
-        if not _HEX64.match(inputs_digest):
+        if not _is_hex64(inputs_digest):
             raise SuiteError(f"{case_id}: inputs_digest is not a BLAKE3 hex digest")
         object.__setattr__(self, "case_id", case_id)
         object.__setattr__(self, "models", models)
@@ -539,7 +613,7 @@ class Waiver:
     expires_on: date
 
     def __post_init__(self) -> None:
-        if not _SLUG.match(self.case_id):
+        if not _is_slug(self.case_id):
             raise SuiteError(f"waiver case_id is not a Slug: {self.case_id!r}")
         if self.max_drop <= 0:
             raise SuiteError(
@@ -601,10 +675,22 @@ class GatePolicy:
     Defaults are chosen to be strict where a mistake is catastrophic and merely
     tight where it is noise:
 
-    * `case_regression_tolerance` only classifies (IMPROVED/UNCHANGED/
-      REGRESSED). It does not pass or fail anything.
+    * `case_regression_tolerance` decides what counts as a regression at all
+      (IMPROVED/UNCHANGED/REGRESSED). It fails nothing on its own, but do not
+      read that as "it is decorative": the classification it produces is what
+      `max_regressed_fraction_per_category` counts, so loosening it hides cases
+      from that gate. This used to be documented as "it does not pass or fail
+      anything", which was false in a way that cost the per-case cap: the cap
+      below was only checked on a case already classified REGRESSED, so a
+      policy with `case_regression_tolerance` above `max_case_drop` made the
+      cap unreachable and a 0.09 drop against a documented 0.05 cap returned
+      PASS with an empty failure list. Two things stop that now -- the cap is
+      no longer gated on the classification, and `__post_init__` refuses a
+      policy whose tolerance exceeds its cap, because those two numbers
+      describe the same axis and only one ordering of them is coherent.
     * `max_case_drop` is the hard per-case cap. A single case falling off a
-      cliff fails the run no matter how good the aggregate looks.
+      cliff fails the run no matter how good the aggregate looks, and no matter
+      how the tolerance above chose to label it.
     * `max_category_mean_drop` is deliberately small but NOT zero. A category
       mean is computed over a handful of cases, and a zero-tolerance rule would
       fail every swap on ordinary movement. A gate that always fails gets
@@ -661,6 +747,21 @@ class GatePolicy:
                 raise SuiteError(f"policy.{name} must be a number")
             if not math.isfinite(value) or value < 0:
                 raise SuiteError(f"policy.{name} must be a finite non-negative number")
+        # The tolerance and the cap measure the same thing -- how far one case
+        # fell -- so a policy that sets the tolerance above the cap is not a
+        # loose policy, it is an incoherent one: it declares a cliff edge and
+        # then declares that nothing which falls off it counts as a fall.
+        # Rejected rather than clamped, because silently clamping a number
+        # somebody wrote down is how a policy stops describing the gate.
+        if self.case_regression_tolerance > self.max_case_drop:
+            raise SuiteError(
+                "policy.case_regression_tolerance "
+                f"({self.case_regression_tolerance}) exceeds policy.max_case_drop "
+                f"({self.max_case_drop}); a drop larger than the hard per-case cap "
+                "would be classified as UNCHANGED, so it would also be invisible to "
+                "max_regressed_fraction_per_category. Loosen the cap deliberately or "
+                "keep the tolerance under it"
+            )
         if not 0 < self.max_regressed_fraction_per_category <= 1:
             raise SuiteError("policy.max_regressed_fraction_per_category must be in (0,1]")
         if self.min_repeats < 1:
@@ -691,8 +792,32 @@ class GatePolicy:
 
 
 class Verdict(Enum):
+    """What a gate run can say, and what number CI hears.
+
+    SKIP is here because "I could not measure this" needs a name and a number.
+    It is NEVER produced by `evaluate`, which still raises `ComparisonRefused`
+    (decision 2): a refusal that arrived as a returned verdict could be stored
+    in a report, waived by a policy, or compared against a threshold, and it is
+    none of those things. SKIP is produced exactly once, by `run_gate`, at the
+    boundary where an exception has to become an exit code.
+    """
+
     PASS = "pass"
     FAIL = "fail"
+    SKIP = "skip"
+
+    @property
+    def exit_code(self) -> int:
+        """The shell status for this verdict.
+
+        Three verdicts, three codes. Collapsing SKIP onto EXIT_FAIL is the bug
+        this property exists to make impossible to write by accident.
+        """
+        if self is Verdict.PASS:
+            return EXIT_PASS
+        if self is Verdict.FAIL:
+            return EXIT_FAIL
+        return EXIT_REFUSED
 
 
 @dataclass(frozen=True)
@@ -808,6 +933,17 @@ class GateReport:
     expired_waivers: tuple[str, ...]
     policy: GatePolicy
     evaluated_as_of: date
+
+    def __post_init__(self) -> None:
+        # A report is the record of a comparison that happened. SKIP means no
+        # comparison happened, so a report carrying it would be a measurement
+        # of nothing -- with means, deltas and a digest attached, all of them
+        # describing a run that was refused.
+        if self.verdict is Verdict.SKIP:
+            raise SuiteError(
+                "a GateReport cannot carry Verdict.SKIP; a refusal has no report. "
+                "Use run_gate(), which turns ComparisonRefused into a SKIP outcome"
+            )
 
     @property
     def passed(self) -> bool:
@@ -1117,8 +1253,26 @@ def _compare_case(
     )
 
     # --- the per-case relative cap, and the only thing a waiver touches -----
+    # Checked on the DROP, not on the label. This used to read
+    # `status is CaseStatus.REGRESSED and ...`, which put the hard cap behind
+    # `case_regression_tolerance`: raise the tolerance above the cap -- a
+    # reasonable-looking edit to quiet a noisy metric, and one GatePolicy used
+    # to accept -- and a case could fall further than the cap while being
+    # labelled UNCHANGED, so the cap never fired. GatePolicy now refuses that
+    # ordering, and this condition no longer depends on it either; a cliff-edge
+    # protection that can be disabled from another knob is not a protection.
+    #
+    # The statuses excluded here are excluded for a reason, not for tidiness:
+    # NONDETERMINISTIC has a delta that is not a measurement (decision 6, and
+    # failing it twice would blame quality for an unrepeatable number), and the
+    # structural statuses have no delta at all.
+    delta_is_a_measurement = status in (
+        CaseStatus.IMPROVED,
+        CaseStatus.UNCHANGED,
+        CaseStatus.REGRESSED,
+    )
     drop = -delta if delta is not None else None
-    if status is CaseStatus.REGRESSED and drop is not None and drop > policy.max_case_drop:
+    if delta_is_a_measurement and drop is not None and drop > policy.max_case_drop:
         if waiver is None:
             failures.append(
                 Failure(
@@ -1491,3 +1645,545 @@ def format_report(report: GateReport) -> str:
     for failure in report.failures:
         lines.append(f"  FAIL {failure.code} [{failure.scope}]: {failure.detail}")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Gate input: the file a CI job hands this module
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GateInput:
+    """One complete gate invocation, loaded from one file.
+
+    Everything `evaluate` needs, including `as_of`. The date lives in the file
+    rather than on the command line on purpose: a `--as-of` flag is a waiver
+    extension mechanism that leaves no trace in the repository, and the whole
+    point of the waiver rules is that moving an expiry is a reviewed edit.
+    """
+
+    suite: BenchmarkSuite
+    baseline: tuple[CaseResult, ...]
+    candidate: tuple[CaseResult, ...]
+    policy: GatePolicy
+    waivers: tuple[Waiver, ...]
+    as_of: date
+
+
+@dataclass(frozen=True)
+class GateOutcome:
+    """The result of running the gate, including "there is no result".
+
+    `verdict` is PASS, FAIL or SKIP; `report` is present for the first two and
+    absent for the third, and that invariant is enforced rather than trusted,
+    because "SKIP with a report attached" is exactly the shape that lets a
+    refusal get read as a measurement.
+    """
+
+    source: str
+    verdict: Verdict
+    report: GateReport | None
+    refusal: str | None
+    refusal_type: str | None
+
+    def __post_init__(self) -> None:
+        if self.verdict is Verdict.SKIP:
+            if self.report is not None or not self.refusal or not self.refusal_type:
+                raise SuiteError(
+                    "a SKIP outcome carries a refusal and no report; anything else "
+                    "would let a refused comparison be read as a measured one"
+                )
+        elif self.report is None or self.refusal is not None:
+            raise SuiteError(
+                f"a {self.verdict.value.upper()} outcome must carry the report it "
+                "came from and no refusal"
+            )
+
+    @property
+    def exit_code(self) -> int:
+        return self.verdict.exit_code
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "verdict": self.verdict.value,
+            "exit_code": self.exit_code,
+            "refusal": self.refusal,
+            "refusal_type": self.refusal_type,
+            "report": self.report.to_dict() if self.report is not None else None,
+            "report_digest": self.report.digest() if self.report is not None else None,
+        }
+
+
+def run_gate(gate: GateInput, *, source: str = "<memory>") -> GateOutcome:
+    """Evaluate a gate input and name the refusal case instead of raising it.
+
+    This is the ONLY place `ComparisonRefused` becomes a value. `SuiteError` is
+    deliberately not caught: a malformed suite is not "the models could not be
+    compared", it is "this gate was never set up", which is EXIT_USAGE and a
+    different person's problem.
+    """
+    try:
+        report = evaluate(
+            gate.suite,
+            gate.baseline,
+            gate.candidate,
+            gate.policy,
+            gate.waivers,
+            as_of=gate.as_of,
+        )
+    except ComparisonRefused as refused:
+        return GateOutcome(
+            source=source,
+            verdict=Verdict.SKIP,
+            report=None,
+            refusal=str(refused),
+            refusal_type=type(refused).__name__,
+        )
+    return GateOutcome(
+        source=source,
+        verdict=report.verdict,
+        report=report,
+        refusal=None,
+        refusal_type=None,
+    )
+
+
+def run_gate_file(path: Path | str) -> GateOutcome:
+    """Load a gate file and run it. Raises SuiteError on a malformed file."""
+    path = Path(path)
+    return run_gate(load_gate_file(path), source=str(path))
+
+
+# --------------------------------------------------------------------------
+# Loading a gate file
+# --------------------------------------------------------------------------
+
+
+def load_gate_file(path: Path | str) -> GateInput:
+    """Parse a gate file from disk.
+
+    OSError is left to the caller: "the file is not there" and "the file is not
+    a gate" are different mistakes and the command reports them differently.
+    """
+    path = Path(path)
+    raw = path.read_text(encoding="utf-8")
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError as bad:
+        raise SuiteError(f"{path}: not valid JSON: {bad}") from bad
+    return load_gate_input(document, where=str(path))
+
+
+def load_gate_input(document: object, *, where: str = "gate") -> GateInput:
+    """Build a GateInput from a parsed JSON document.
+
+    Unknown fields are refused everywhere, at every level. A gate file with
+    `"max_case_drop_"` in it is a gate file whose cap silently took the default
+    -- the policy in the repository would say one thing and the policy that ran
+    would be another, which is the failure mode this whole module exists to
+    stop one level up.
+    """
+    fields = _fields(
+        where,
+        document,
+        required=("as_of", "suite", "baseline", "candidate"),
+        optional=("policy", "waivers", "description"),
+    )
+    suite_fields = _fields(f"{where}.suite", fields["suite"], required=("cases",))
+    cases = [
+        _load_case(f"{where}.suite.cases[{index}]", entry)
+        for index, entry in enumerate(_load_list(f"{where}.suite.cases", suite_fields["cases"]))
+    ]
+    baseline = tuple(
+        _load_result(f"{where}.baseline[{index}]", entry)
+        for index, entry in enumerate(_load_list(f"{where}.baseline", fields["baseline"]))
+    )
+    candidate = tuple(
+        _load_result(f"{where}.candidate[{index}]", entry)
+        for index, entry in enumerate(_load_list(f"{where}.candidate", fields["candidate"]))
+    )
+    waivers = tuple(
+        _load_waiver(f"{where}.waivers[{index}]", entry)
+        for index, entry in enumerate(_load_list(f"{where}.waivers", fields.get("waivers", [])))
+    )
+    policy = _load_policy(f"{where}.policy", fields.get("policy"))
+    return GateInput(
+        suite=BenchmarkSuite(cases),
+        baseline=baseline,
+        candidate=candidate,
+        policy=policy,
+        waivers=waivers,
+        as_of=_load_date(f"{where}.as_of", fields["as_of"]),
+    )
+
+
+def _fields(
+    where: str,
+    value: object,
+    *,
+    required: Sequence[str],
+    optional: Sequence[str] = (),
+) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise SuiteError(f"{where} must be a JSON object, got {type(value).__name__}")
+    keys = set(value)
+    missing = sorted(set(required) - keys)
+    if missing:
+        raise SuiteError(f"{where} is missing required field(s): {', '.join(missing)}")
+    unknown = sorted(keys - set(required) - set(optional))
+    if unknown:
+        raise SuiteError(
+            f"{where} has unknown field(s): {', '.join(unknown)}. A misspelled knob "
+            "would take its default silently, so the gate that ran would not be the "
+            "gate that was reviewed"
+        )
+    return dict(value)
+
+
+def _load_list(where: str, value: object) -> list[object]:
+    if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Sequence):
+        raise SuiteError(f"{where} must be a JSON array, got {type(value).__name__}")
+    return list(value)
+
+
+def _load_str(where: str, value: object) -> str:
+    if not isinstance(value, str):
+        raise SuiteError(f"{where} must be a string, got {type(value).__name__}")
+    return value
+
+
+def _load_number(where: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SuiteError(f"{where} must be a number, got {value!r}")
+    return float(value)
+
+
+def _load_int(where: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SuiteError(f"{where} must be an integer, got {value!r}")
+    return value
+
+
+def _load_bool(where: str, value: object) -> bool:
+    if not isinstance(value, bool):
+        raise SuiteError(f"{where} must be true or false, got {value!r}")
+    return value
+
+
+def _load_date(where: str, value: object) -> date:
+    text = _load_str(where, value)
+    try:
+        return date.fromisoformat(text)
+    except ValueError as bad:
+        raise SuiteError(f"{where} must be an ISO date (YYYY-MM-DD), got {text!r}") from bad
+
+
+def _load_digest_or_null(where: str, value: object) -> str | None:
+    if value is None:
+        return None
+    return _load_str(where, value)
+
+
+def _load_pin(where: str, value: object) -> ModelPin:
+    fields = _fields(
+        where,
+        value,
+        required=("model_id", "version", "weights_blake3", "config_blake3"),
+    )
+    return ModelPin(
+        model_id=_load_str(f"{where}.model_id", fields["model_id"]),
+        version=_load_str(f"{where}.version", fields["version"]),
+        weights_blake3=_load_digest_or_null(
+            f"{where}.weights_blake3", fields["weights_blake3"]
+        ),
+        config_blake3=_load_digest_or_null(
+            f"{where}.config_blake3", fields["config_blake3"]
+        ),
+    )
+
+
+def _load_model_set(where: str, value: object) -> ModelSet:
+    entries = _load_list(where, value)
+    return ModelSet(
+        _load_pin(f"{where}[{index}]", entry) for index, entry in enumerate(entries)
+    )
+
+
+def _load_metric(where: str, value: object) -> Metric:
+    fields = _fields(where, value, required=("name", "direction"))
+    raw = _load_str(f"{where}.direction", fields["direction"])
+    try:
+        direction = Direction(raw)
+    except ValueError as bad:
+        allowed = ", ".join(member.value for member in Direction)
+        raise SuiteError(
+            f"{where}.direction must be one of: {allowed}; got {raw!r}. A metric "
+            "with the wrong direction reads a regression as an improvement"
+        ) from bad
+    return Metric(name=_load_str(f"{where}.name", fields["name"]), direction=direction)
+
+
+def _load_case(where: str, value: object) -> BenchmarkCase:
+    fields = _fields(
+        where,
+        value,
+        required=(
+            "case_id",
+            "category",
+            "inputs_digest",
+            "baseline_models",
+            "metric",
+            "expected",
+        ),
+        optional=("description",),
+    )
+    return BenchmarkCase(
+        case_id=_load_str(f"{where}.case_id", fields["case_id"]),
+        category=_load_str(f"{where}.category", fields["category"]),
+        inputs_digest=_load_str(f"{where}.inputs_digest", fields["inputs_digest"]),
+        baseline_models=_load_model_set(f"{where}.baseline_models", fields["baseline_models"]),
+        metric=_load_metric(f"{where}.metric", fields["metric"]),
+        expected=_load_number(f"{where}.expected", fields["expected"]),
+        description=_load_str(f"{where}.description", fields.get("description", "")),
+    )
+
+
+def _load_result(where: str, value: object) -> CaseResult:
+    fields = _fields(
+        where, value, required=("case_id", "models", "inputs_digest", "samples")
+    )
+    samples = _load_list(f"{where}.samples", fields["samples"])
+    return CaseResult(
+        case_id=_load_str(f"{where}.case_id", fields["case_id"]),
+        models=_load_model_set(f"{where}.models", fields["models"]),
+        inputs_digest=_load_str(f"{where}.inputs_digest", fields["inputs_digest"]),
+        samples=[
+            _load_number(f"{where}.samples[{index}]", sample)
+            for index, sample in enumerate(samples)
+        ],
+    )
+
+
+def _load_waiver(where: str, value: object) -> Waiver:
+    fields = _fields(
+        where,
+        value,
+        required=(
+            "case_id",
+            "baseline_models",
+            "candidate_models",
+            "max_drop",
+            "reason",
+            "approved_by",
+            "approved_on",
+            "expires_on",
+        ),
+    )
+    return Waiver(
+        case_id=_load_str(f"{where}.case_id", fields["case_id"]),
+        baseline_models=_load_model_set(
+            f"{where}.baseline_models", fields["baseline_models"]
+        ),
+        candidate_models=_load_model_set(
+            f"{where}.candidate_models", fields["candidate_models"]
+        ),
+        max_drop=_load_number(f"{where}.max_drop", fields["max_drop"]),
+        reason=_load_str(f"{where}.reason", fields["reason"]),
+        approved_by=_load_str(f"{where}.approved_by", fields["approved_by"]),
+        approved_on=_load_date(f"{where}.approved_on", fields["approved_on"]),
+        expires_on=_load_date(f"{where}.expires_on", fields["expires_on"]),
+    )
+
+
+def _load_policy(where: str, value: object) -> GatePolicy:
+    """An absent policy means the defaults, which are the strict ones."""
+    if value is None:
+        return GatePolicy()
+    fields = _fields(
+        where,
+        value,
+        required=(),
+        optional=(
+            "categories",
+            "category_floors",
+            "case_regression_tolerance",
+            "max_case_drop",
+            "max_category_mean_drop",
+            "max_regressed_fraction_per_category",
+            "max_overall_mean_drop",
+            "nondeterminism_tolerance",
+            "min_repeats",
+            "min_cases_per_category",
+            "allow_new_cases",
+            "enforce_expected",
+        ),
+    )
+    kwargs: dict[str, object] = {}
+    if "categories" in fields:
+        kwargs["categories"] = tuple(
+            _load_str(f"{where}.categories[{index}]", entry)
+            for index, entry in enumerate(
+                _load_list(f"{where}.categories", fields["categories"])
+            )
+        )
+    if "category_floors" in fields:
+        floors = fields["category_floors"]
+        if not isinstance(floors, Mapping):
+            raise SuiteError(f"{where}.category_floors must be a JSON object")
+        kwargs["category_floors"] = {
+            _load_str(f"{where}.category_floors key", name): _load_number(
+                f"{where}.category_floors[{name}]", floor
+            )
+            for name, floor in floors.items()
+        }
+    for name in (
+        "case_regression_tolerance",
+        "max_case_drop",
+        "max_category_mean_drop",
+        "max_regressed_fraction_per_category",
+        "max_overall_mean_drop",
+        "nondeterminism_tolerance",
+    ):
+        if name in fields:
+            kwargs[name] = _load_number(f"{where}.{name}", fields[name])
+    for name in ("min_repeats", "min_cases_per_category"):
+        if name in fields:
+            kwargs[name] = _load_int(f"{where}.{name}", fields[name])
+    for name in ("allow_new_cases", "enforce_expected"):
+        if name in fields:
+            kwargs[name] = _load_bool(f"{where}.{name}", fields[name])
+    return GatePolicy(**kwargs)  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------
+# Command line
+# --------------------------------------------------------------------------
+
+
+def format_outcome(outcome: GateOutcome) -> str:
+    """The CI log block for one gate file, refusals included."""
+    header = f"gate: {outcome.source}"
+    if outcome.verdict is Verdict.SKIP:
+        return "\n".join(
+            [
+                header,
+                "verdict: SKIP",
+                f"refused: {outcome.refusal_type}: {outcome.refusal}",
+                (
+                    "  no comparison exists. This is NOT a quality signal and cannot "
+                    "be waived: fix the pins, the inputs or the baseline and run the "
+                    "gate again."
+                ),
+            ]
+        )
+    report = outcome.report
+    if report is None:  # unreachable: GateOutcome.__post_init__ guarantees it
+        raise SuiteError(f"{outcome.verdict.value} outcome without a report")
+    return "\n".join([header, format_report(report), f"digest: {report.digest()}"])
+
+
+# Which code wins when several gate files are run at once. A real FAIL outranks
+# a refusal because it is the more actionable answer, and a malformed input
+# outranks everything because nothing else in the run can be trusted. Written
+# down rather than reached with max(), which would silently make "could not
+# check" louder than "the model got worse".
+_EXIT_PRECEDENCE: tuple[int, ...] = (EXIT_USAGE, EXIT_FAIL, EXIT_REFUSED, EXIT_PASS)
+
+_EXIT_NAMES: dict[int, str] = {
+    EXIT_PASS: "pass",
+    EXIT_FAIL: "fail",
+    EXIT_REFUSED: "refused (no comparison exists)",
+    EXIT_USAGE: "usage (the gate could not be set up)",
+}
+
+
+def _worst(codes: Sequence[int]) -> int:
+    for code in _EXIT_PRECEDENCE:
+        if code in codes:
+            return code
+    return EXIT_PASS
+
+
+class _GateArgumentParser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error; here 2 means "comparison refused".
+
+    Two different things sharing an exit code is the bug this whole command
+    exists to fix, so the parser is not allowed to reuse that number either.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        raise SystemExit(EXIT_USAGE)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run one or more gate files and return the exit code CI should see."""
+    parser = _GateArgumentParser(
+        prog="python3 -m memory_engine_eval.harness",
+        description=(
+            "Run the model-swap regression gate (CLAUDE.md hard rule 7) over one or "
+            "more gate files."
+        ),
+        epilog=(
+            "exit codes: 0 pass; 1 fail (measured regression); 2 refused (no "
+            "comparison exists -- mismatched digests, mixed model sets, unpinned "
+            "weights); 3 usage (malformed or unreadable gate file). 2 and 3 are "
+            "failures too: 'I could not check' must never be green."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "gate_files",
+        nargs="+",
+        metavar="GATE_FILE",
+        help="JSON gate file: suite, baseline, candidate, policy, waivers, as_of",
+    )
+    parser.add_argument(
+        "--json",
+        dest="json_path",
+        metavar="PATH",
+        help="write the machine-readable outcomes here (one JSON array)",
+    )
+    args = parser.parse_args(argv)
+
+    codes: list[int] = []
+    outcomes: list[GateOutcome] = []
+    for raw_path in args.gate_files:
+        path = Path(raw_path)
+        try:
+            outcome = run_gate_file(path)
+        except SuiteError as malformed:
+            print(f"gate: {path}\nverdict: UNUSABLE\n  {malformed}", file=sys.stderr)
+            codes.append(EXIT_USAGE)
+            continue
+        except OSError as unreadable:
+            print(f"gate: {path}\nverdict: UNUSABLE\n  {unreadable}", file=sys.stderr)
+            codes.append(EXIT_USAGE)
+            continue
+        outcomes.append(outcome)
+        codes.append(outcome.exit_code)
+        stream = sys.stdout if outcome.verdict is Verdict.PASS else sys.stderr
+        print(format_outcome(outcome), file=stream)
+
+    if args.json_path is not None:
+        payload = json.dumps(
+            [outcome.to_dict() for outcome in outcomes], sort_keys=True, indent=2
+        )
+        try:
+            Path(args.json_path).write_text(payload + "\n", encoding="utf-8")
+        except OSError as unwritable:
+            print(f"could not write {args.json_path}: {unwritable}", file=sys.stderr)
+            codes.append(EXIT_USAGE)
+
+    code = _worst(codes)
+    print(
+        f"gate result: exit {code} -- {_EXIT_NAMES[code]}",
+        file=sys.stdout if code == EXIT_PASS else sys.stderr,
+    )
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
