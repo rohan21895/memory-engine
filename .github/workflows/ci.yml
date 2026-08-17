@@ -50,8 +50,13 @@ jobs:
       # tests. contracts/ validates fixtures against the schemas and round-trips
       # them through the generated pydantic models, so those two libraries have
       # to be present here as well as in the Contracts job.
+      #
+      # blake3 is here because content-addressed ids are load-bearing: the
+      # story-engine raises rather than falling back to blake2b when it is
+      # absent, deliberately, since an id that claims to be a content address
+      # and is not would break job idempotency without ever raising.
       - run: python3 -m pip install --upgrade pip
-      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20"
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4"
       - run: npm ci --ignore-scripts
       - run: npm test
 
@@ -98,7 +103,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -m pip install --upgrade pip
-      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20"
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4"
       # Golden tests: schemas are well formed, every fixture behaves as the
       # manifest declares, cross-field invariants hold, and the committed
       # bindings both parse and round-trip the fixtures.
