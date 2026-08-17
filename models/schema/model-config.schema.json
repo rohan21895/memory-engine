@@ -731,6 +731,18 @@
               "type": "null"
             }
           ]
+        },
+        "stride": {
+          "description": "Feature-map stride this output belongs to, for multi-level detectors. Required to interpret an export whose tensor names carry no meaning: SCRFD's published graph names its outputs 448/451/454..., and without the stride the host cannot tell which anchor grid a row indexes. The row count must equal (input/stride)^2 * anchors, which is what makes the declaration checkable rather than asserted.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -750,7 +762,8 @@
         },
         "dynamic_axes": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "Whether the BATCH axis is dynamic. Not spatial dynamism: a model can take any height and width while its batch dimension is fixed at 1, which is true of both MUSIQ and PP-OCRv4. Variable input SIZE is expressed by `preprocessing.input_size: null` with `resize_limit` and `size_multiple`. Conflating the two makes a host either batch a model that cannot be batched, or refuse to resize one that must be."
         }
       }
     },

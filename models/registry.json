@@ -84,7 +84,7 @@
       "config": "configs/scrfd-10g-bnkps.json",
       "task": "face_detection",
       "required_for": [],
-      "config_blake3": "4add912c1e5705204d40076c2be808e222966c6bd931635d570530f6d53896c2"
+      "config_blake3": "0b877e7eb9bcca08c2398bd3f7b8a22b6315b029d8c5a55b23f87c36b5f98dd2"
     },
     {
       "model_id": "arcface-buffalo-l",
@@ -124,7 +124,7 @@
         "primary_selection",
         "album_selection"
       ],
-      "config_blake3": "f410a25d27b7db49408f4070b9cd9939054b199eeaffbd7ccd0565d84d33f377"
+      "config_blake3": "4ca58a82b96b08e79254d5a9176c225e9ded6fe92681ebfc7528369e5acd1b44"
     },
     {
       "model_id": "nsfw-siglip-head",
@@ -145,7 +145,7 @@
         "screenshot_exclusion",
         "document_exclusion"
       ],
-      "config_blake3": "7060dfd290c9ac881d6714874a93f5f28ad953160772747377901d576bdf778d"
+      "config_blake3": "29c201b2c9627bf67ef07860980f6f2e5b1db377bf8b5ffa0da6ab93a8d0bfc6"
     }
   ]
 }

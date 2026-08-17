@@ -7,10 +7,10 @@
   "weights": {
     "filename": "scrfd_10g_bnkps.onnx",
     "format": "onnx",
-    "source_url": "https://github.com/deepinsight/insightface/tree/master/detection/scrfd",
+    "source_url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip (det_10g.onnx)",
     "blake3": null,
     "byte_size": null,
-    "quantization": "fp16"
+    "quantization": "fp32"
   },
   "runtime_targets": [
     "onnxruntime_coreml",
@@ -64,100 +64,109 @@
   },
   "outputs": [
     {
-      "name": "score_8",
-      "meaning": "scores",
+      "name": "448",
+      "meaning": "score",
       "shape": [
-        -1,
+        12800,
         1
       ],
       "dimensions": null,
-      "vector_space": null
+      "vector_space": null,
+      "stride": 8
     },
     {
-      "name": "score_16",
-      "meaning": "scores",
+      "name": "451",
+      "meaning": "bboxes",
       "shape": [
-        -1,
+        12800,
+        4
+      ],
+      "dimensions": null,
+      "vector_space": null,
+      "stride": 8
+    },
+    {
+      "name": "454",
+      "meaning": "keypoints",
+      "shape": [
+        12800,
+        10
+      ],
+      "dimensions": null,
+      "vector_space": null,
+      "stride": 8
+    },
+    {
+      "name": "471",
+      "meaning": "score",
+      "shape": [
+        3200,
         1
       ],
       "dimensions": null,
-      "vector_space": null
+      "vector_space": null,
+      "stride": 16
     },
     {
-      "name": "score_32",
-      "meaning": "scores",
+      "name": "474",
+      "meaning": "bboxes",
       "shape": [
-        -1,
+        3200,
+        4
+      ],
+      "dimensions": null,
+      "vector_space": null,
+      "stride": 16
+    },
+    {
+      "name": "477",
+      "meaning": "keypoints",
+      "shape": [
+        3200,
+        10
+      ],
+      "dimensions": null,
+      "vector_space": null,
+      "stride": 16
+    },
+    {
+      "name": "494",
+      "meaning": "score",
+      "shape": [
+        800,
         1
       ],
       "dimensions": null,
-      "vector_space": null
+      "vector_space": null,
+      "stride": 32
     },
     {
-      "name": "bbox_8",
+      "name": "497",
       "meaning": "bboxes",
       "shape": [
-        -1,
+        800,
         4
       ],
       "dimensions": null,
-      "vector_space": null
+      "vector_space": null,
+      "stride": 32
     },
     {
-      "name": "bbox_16",
-      "meaning": "bboxes",
-      "shape": [
-        -1,
-        4
-      ],
-      "dimensions": null,
-      "vector_space": null
-    },
-    {
-      "name": "bbox_32",
-      "meaning": "bboxes",
-      "shape": [
-        -1,
-        4
-      ],
-      "dimensions": null,
-      "vector_space": null
-    },
-    {
-      "name": "kps_8",
+      "name": "500",
       "meaning": "keypoints",
       "shape": [
-        -1,
+        800,
         10
       ],
       "dimensions": null,
-      "vector_space": null
-    },
-    {
-      "name": "kps_16",
-      "meaning": "keypoints",
-      "shape": [
-        -1,
-        10
-      ],
-      "dimensions": null,
-      "vector_space": null
-    },
-    {
-      "name": "kps_32",
-      "meaning": "keypoints",
-      "shape": [
-        -1,
-        10
-      ],
-      "dimensions": null,
-      "vector_space": null
+      "vector_space": null,
+      "stride": 32
     }
   ],
   "batching": {
-    "supported": true,
-    "max_batch": 8,
-    "dynamic_axes": true
+    "supported": false,
+    "max_batch": 1,
+    "dynamic_axes": false
   },
   "license": {
     "code_license": "MIT",
@@ -176,5 +185,5 @@
     "promoted_at": null
   },
   "eval": null,
-  "notes": "Letterbox rather than stretch: SCRFD's anchors assume square-ish geometry, and stretching a 16:9 frame to 640x640 distorts faces enough to cost recall on small ones. The detection scale factor must be inverted when mapping boxes back to normalised image coordinates. Coordinates written to FaceRecord are normalised against the ORIENTED image, so EXIF rotation is applied before detection, not after. PREPROCESSING CORRECTION: scale was 1/128 alongside mean=127.5/std=128, which applied the division twice and collapsed the whole 0-255 range into a 0.016-wide sliver -- detection and embeddings would have been silently wrong rather than failing. The reference is cv2.dnn.blobFromImage(img, 1/128, size, (127.5,)*3) = (pixel - mean) * scalefactor, which under this config's (pixel * scale - mean) / std form is scale=1.0, mean=127.5, std=128. Caught by Codex in review. ANCHORS: this is a nine-output variant, which in InsightFace's loader means TWO anchors per feature-map location with each centre duplicated in place. The host must derive that from the output count (6 or 9 -> 2; 10 or 15 -> 1) rather than assuming one, or every prediction past the first row pairs with the wrong centre."
+  "notes": "OUTPUT NAMES ARE THE EXPORT'S NUMERIC TENSOR IDS, NOT SEMANTIC LABELS. The published det_10g.onnx names nothing, so its outputs are 448/451/454 (stride 8), 471/474/477 (16) and 494/497/500 (32). This config previously declared readable names -- score_8, bbox_8, kps_8 -- which exist nowhere in the graph, so the host refused inference with CONFIG_MISMATCH. It failed SAFE, which is the system working, but SCRFD could not run at all. Found by Codex against real weights (issue #36).\n\nBINDING STAYS BY EXACT NAME. Positional binding would be tempting given the names carry no meaning, but a different nine-output export can reorder compatible shapes and the mistake would be silent -- keypoints decoded as boxes still produce plausible numbers. That is this repo's recurring failure mode, so the names are pinned to ONE checkpoint and a swap must be a deliberate re-pin rather than a lucky match.\n\nTHE SHAPES CONFIRM THE ANCHOR COUNT INDEPENDENTLY. At 640x640: stride 8 gives an 80x80 grid = 6400 locations against 12800 rows; stride 16 gives 1600 against 3200; stride 32 gives 400 against 800. Two anchors per location at every stride -- the same conclusion reached earlier from InsightFace's scrfd.py, now confirmed from the other direction by the real graph.\n\nBATCHING IS FIXED AT 1. The checkpoint's batch dimension is static, so the previous supported/max_batch 8/dynamic_axes true was aspiration rather than description. A host trusting it would have failed at session bind, or worse, silently processed only the first image of each batch.\n\nSTILL UNVERIFIED: blake3 and byte_size, because the checkpoint has not been downloaded and hashed here. They stay null, which keeps this development-only by the load gate rather than by anyone remembering."
 }
