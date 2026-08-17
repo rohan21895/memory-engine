@@ -33,7 +33,10 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PROTO = "ml_runtime.proto"
+# Every .proto in this directory. Listed rather than globbed so adding one is a
+# deliberate act that shows up in a diff -- a proto that appears in generated
+# output without appearing here would be a contract nobody agreed to.
+PROTOS = ("ml_runtime.proto", "media_query.proto")
 OUT_DIR = HERE / "generated" / "python"
 
 # Pinned so the version string baked into the stubs is reproducible.
@@ -96,7 +99,7 @@ def _generate() -> dict[Path, str]:
                 f"--python_out={tmp}",
                 f"--pyi_out={tmp}",
                 f"--grpc_python_out={tmp}",
-                PROTO,
+                *PROTOS,
             ],
             cwd=HERE,  # bare filename, so no absolute path enters the descriptor
             capture_output=True,
@@ -114,8 +117,8 @@ def _generate() -> dict[Path, str]:
             # it to a package-relative import so the generated package is
             # importable without putting its directory on sys.path.
             text = re.sub(
-                r"^import ml_runtime_pb2 as ml__runtime__pb2$",
-                "from . import ml_runtime_pb2 as ml__runtime__pb2",
+                r"^import (\w+)_pb2 as (\w+)__pb2$",
+                r"from . import \1_pb2 as \2__pb2",
                 text,
                 flags=re.MULTILINE,
             )
@@ -130,9 +133,19 @@ def _generate() -> dict[Path, str]:
 
 
 def _proto_digest() -> str:
+    """One digest over ALL protos, in a fixed order.
+
+    A per-file digest would let a second proto be edited without the freshness
+    check noticing, which is the same class of hole as a test suite that skips
+    and exits 0.
+    """
     import hashlib
 
-    return hashlib.sha256((HERE / PROTO).read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    for name in PROTOS:
+        digest.update(name.encode("utf-8"))
+        digest.update((HERE / name).read_bytes())
+    return digest.hexdigest()
 
 
 STAMP = OUT_DIR / "PROTO_DIGEST"
