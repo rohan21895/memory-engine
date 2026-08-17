@@ -1,0 +1,18 @@
+export { RenderVideoError } from "./errors.js";
+export { assertRenderable, assertStructurallySound, collectGaps, formatGaps, GAP_ISSUES } from "./gate.js";
+export { buildProgram, verifyBeatLocks } from "./program.js";
+export { buildGraph } from "./filtergraph.js";
+export { cropAt, keyframesAt, planCrop, frameSeriesExpression } from "./reframe.js";
+export { parseEncodeProfile, BITEXACT_ARGS } from "./encode.js";
+export { resolveSources, assertEveryRefIsUsed } from "./sources.js";
+export { decodedFrameDigest, publishRenderOnce, renderVideo } from "./renderer.js";
+export { parseParams, runRenderVideoJob, RENDER_VIDEO_CHECKPOINT_VERSION } from "./job.js";
+export { spanAssemblyId, digestFile, digestJson, canonicalJson } from "./digest.js";
+export { frames, frameRange, framesToSamples, framesToSeconds } from "./time.js";
+export type { ContractGap, GateReport, UnactedDeclaration } from "./gate.js";
+export type { BuiltGraph, Interpretation } from "./filtergraph.js";
+export type { EncodeProfile } from "./encode.js";
+export type { Program, VideoSegment, AudioContribution } from "./program.js";
+export type { SourceResolver, ResolvedSource } from "./sources.js";
+export type { RenderVideoOptions, RenderVideoResult, RenderVerification } from "./renderer.js";
+export type { RenderVideoJobParams, RenderVideoJobOutcome } from "./job.js";
