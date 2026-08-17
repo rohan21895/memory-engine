@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memory-engine-pipeline"
+version = "0.1.0"
+description = "End-to-end job runner: a folder in, finished memories out."
+requires-python = ">=3.12"
+dependencies = [
+  "blake3",
+  "jsonschema",
+  "referencing",
+  "numpy",
+  "pillow",
+  "grpcio",
+  "protobuf",
+]
+
+[project.scripts]
+memory-engine-pipeline = "memory_engine_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["memory_engine_pipeline*"]
