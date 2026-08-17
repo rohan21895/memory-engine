@@ -39,6 +39,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      # workers/render-video drives ffmpeg and ffprobe directly, and its tests
+      # render real files and read them back. They fail rather than skip when the
+      # tools are missing, deliberately: a renderer whose tests quietly do not run
+      # is worse than one with no tests.
+      - name: Install ffmpeg
+        run: sudo apt-get install --yes ffmpeg
       - uses: actions/setup-node@v7
         with:
           node-version: 20
@@ -111,6 +117,24 @@ jobs:
       # manifest declares, cross-field invariants hold, and the committed
       # bindings both parse and round-trip the fixtures.
       - run: python3 -m unittest discover -s contracts/tests -v
+
+  demo-scripts:
+    name: Demo Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install --upgrade pip
+      - run: python3 -m pip install "pillow>=10" "numpy>=1.26" "blake3>=0.4"
+      # Guards the synthetic library generator: unique planned filenames, the
+      # GoPro chapter naming convention checked against an independent oracle,
+      # manifest/disk reconciliation, and the demo runner's rule that a stage
+      # which did not run can never read as a pass. No ffmpeg here on purpose --
+      # the generator's --no-video path is exercised instead, and it is required
+      # to declare itself incomplete rather than exit 0.
+      - run: python3 -m unittest discover -s scripts/demo/tests -v
 
   egress-test:
     name: Egress Test
