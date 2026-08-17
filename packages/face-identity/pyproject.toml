@@ -1,0 +1,13 @@
+[project]
+name = "memory-engine-face-identity"
+version = "0.0.0"
+requires-python = ">=3.12"
+# No runtime dependencies on purpose. The recognition model lives behind the
+# `FaceEmbedder` protocol in embeddings.py and is supplied by workers/ml-runtime
+# over gRPC; nothing in this package loads weights, and nothing in it imports
+# numpy, so it runs anywhere the contract tests run. The synthetic benchmark in
+# eval.py generates its own vectors for the same reason.
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
