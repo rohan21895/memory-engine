@@ -5,27 +5,26 @@ pub(crate) struct DetectedFormat {
     pub file_format: MediaRecordFileFormat,
     pub kind: MediaRecordKind,
     pub mime_type: &'static str,
-    pub decodable_still: bool,
 }
 
 pub(crate) fn detect(bytes: &[u8]) -> Option<DetectedFormat> {
     if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        return Some(image(MediaRecordFileFormat::Jpeg, "image/jpeg", true));
+        return Some(image(MediaRecordFileFormat::Jpeg, "image/jpeg"));
     }
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Some(image(MediaRecordFileFormat::Png, "image/png", true));
+        return Some(image(MediaRecordFileFormat::Png, "image/png"));
     }
     if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        return Some(image(MediaRecordFileFormat::Gif, "image/gif", true));
+        return Some(image(MediaRecordFileFormat::Gif, "image/gif"));
     }
     if bytes.starts_with(b"BM") {
-        return Some(image(MediaRecordFileFormat::Bmp, "image/bmp", true));
+        return Some(image(MediaRecordFileFormat::Bmp, "image/bmp"));
     }
     if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
-        return Some(image(MediaRecordFileFormat::Webp, "image/webp", true));
+        return Some(image(MediaRecordFileFormat::Webp, "image/webp"));
     }
     if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
-        return Some(image(MediaRecordFileFormat::Tiff, "image/tiff", true));
+        return Some(image(MediaRecordFileFormat::Tiff, "image/tiff"));
     }
     if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
         return detect_iso_bmff(&bytes[8..12]);
@@ -51,10 +50,10 @@ pub(crate) fn detect(bytes: &[u8]) -> Option<DetectedFormat> {
 fn detect_iso_bmff(brand: &[u8]) -> Option<DetectedFormat> {
     match brand {
         b"heic" | b"heix" | b"hevc" | b"hevx" => {
-            Some(image(MediaRecordFileFormat::Heic, "image/heic", false))
+            Some(image(MediaRecordFileFormat::Heic, "image/heic"))
         }
-        b"mif1" | b"msf1" => Some(image(MediaRecordFileFormat::Heif, "image/heif", false)),
-        b"avif" | b"avis" => Some(image(MediaRecordFileFormat::Avif, "image/avif", false)),
+        b"mif1" | b"msf1" => Some(image(MediaRecordFileFormat::Heif, "image/heif")),
+        b"avif" | b"avis" => Some(image(MediaRecordFileFormat::Avif, "image/avif")),
         b"qt  " => Some(video(MediaRecordFileFormat::Mov, "video/quicktime")),
         b"M4V " | b"M4VH" | b"M4VP" => Some(video(MediaRecordFileFormat::M4v, "video/x-m4v")),
         b"M4A " => Some(audio(MediaRecordFileFormat::M4a, "audio/mp4")),
@@ -62,16 +61,11 @@ fn detect_iso_bmff(brand: &[u8]) -> Option<DetectedFormat> {
     }
 }
 
-fn image(
-    file_format: MediaRecordFileFormat,
-    mime_type: &'static str,
-    decodable_still: bool,
-) -> DetectedFormat {
+fn image(file_format: MediaRecordFileFormat, mime_type: &'static str) -> DetectedFormat {
     DetectedFormat {
         file_format,
         kind: MediaRecordKind::Image,
         mime_type,
-        decodable_still,
     }
 }
 
@@ -80,7 +74,6 @@ fn video(file_format: MediaRecordFileFormat, mime_type: &'static str) -> Detecte
         file_format,
         kind: MediaRecordKind::Video,
         mime_type,
-        decodable_still: false,
     }
 }
 
@@ -89,7 +82,6 @@ fn audio(file_format: MediaRecordFileFormat, mime_type: &'static str) -> Detecte
         file_format,
         kind: MediaRecordKind::Audio,
         mime_type,
-        decodable_still: false,
     }
 }
 
@@ -103,6 +95,5 @@ mod tests {
         bytes.extend_from_slice(b"ftypheic");
         let detected = detect(&bytes).expect("HEIC signature");
         assert_eq!(detected.file_format, MediaRecordFileFormat::Heic);
-        assert!(!detected.decodable_still);
     }
 }

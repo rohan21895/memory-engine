@@ -2101,11 +2101,22 @@ dependencies = [
  "image",
  "kamadak-exif",
  "memory-engine-contracts",
+ "memory-engine-ingest-imageio",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "unicode-normalization",
  "walkdir",
+]
+
+[[package]]
+name = "memory-engine-ingest-imageio"
+version = "0.1.0"
+dependencies = [
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-image-io",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2371,6 +2382,16 @@ dependencies = [
  "libc",
  "objc2",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-image-io"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32b0446e98cf4a784cc7a0177715ff317eeaa8463841c616cfc78aa4f953c4ea"
+dependencies = [
+ "objc2-core-foundation",
+ "objc2-core-graphics",
 ]
 
 [[package]]

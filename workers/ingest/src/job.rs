@@ -15,7 +15,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::{
     gopro,
-    media::{atomic_write, ingest_file, IngestError},
+    media::{atomic_write, ingest_file, needs_capability_retry, IngestError},
     scan_paths, ScanIssue, ScanOptions,
 };
 
@@ -74,6 +74,8 @@ pub struct ScanReport {
     pub resumed_skips: usize,
     pub assemblies_created: usize,
     pub span_members_updated: usize,
+    pub capability_retries: usize,
+    pub capability_retries_remaining: usize,
     pub quarantined: usize,
     pub issues: Vec<ScanIssue>,
     pub complete: bool,
@@ -97,6 +99,31 @@ pub fn execute_scan(
 ///
 /// The optional limit is used by schedulers to cooperatively yield. A killed process has
 /// the same recovery path: the next invocation resumes strictly after the stored cursor.
+///
+/// Every invocation runs up to three passes, and the order between them is a contract:
+///
+/// 1. **Capability retry** re-ingests records that failed only because a decoder was
+///    unavailable last time (`retry_capability_blocked_outputs`).
+/// 2. **Scan** ingests newly discovered files.
+/// 3. **Span reconciliation** derives GoPro chapter spans from the persisted records
+///    (`reconcile_gopro_outputs`).
+///
+/// Reconciliation runs last, and only once no capability retry is still outstanding,
+/// because it *derives* span state from whatever the records currently say. A retry
+/// rewrites a record from scratch, so running it after reconciliation would leave the
+/// just-published assembly describing a record state that no longer exists. Deferring
+/// reconciliation while `capability_retries_remaining > 0` also stops us publishing an
+/// assembly built from a half-repaired library: the job stays `pending`, the next batch
+/// finishes the retries, and reconciliation then rebuilds the span from the repaired
+/// records. Reconciliation is unconditional and idempotent once reached, so a span whose
+/// member was touched by a retry is always rebuilt in the same invocation.
+///
+/// The two passes cannot collide today — `gopro::build` only groups `mp4` videos and
+/// `needs_capability_retry` only fires for HEIF-family stills — so this ordering is a
+/// guarantee for when that stops being true (an HEVC or RAW capability retry), not a fix
+/// for a live bug. The durable half of the invariant is independent of ordering:
+/// `persist_record` re-merges the on-disk `span` when the incoming record has none, so a
+/// retry's from-scratch re-ingest can never erase span membership.
 pub fn execute_scan_batch(
     job: &mut JobSpec,
     output_dir: &Path,
@@ -104,12 +131,18 @@ pub fn execute_scan_batch(
     max_files: Option<usize>,
 ) -> Result<ScanReport, JobExecutionError> {
     validate_job(job)?;
+    let mut report =
+        retry_capability_blocked_outputs(job, output_dir, checkpoint_store, max_files)?;
     if job.state.status == JobStateStatus::Completed {
-        let mut report = ScanReport {
-            complete: true,
-            ..ScanReport::default()
-        };
-        reconcile_gopro_outputs(job, output_dir, checkpoint_store, &mut report)?;
+        report.complete = report.capability_retries_remaining == 0;
+        if report.complete {
+            reconcile_gopro_outputs(job, output_dir, checkpoint_store, &mut report)?;
+        } else {
+            // Retries were deferred by the batch budget. Reopen the job so a scheduler
+            // comes back, and leave the spans untouched until the library is repaired.
+            job.state.status = JobStateStatus::Pending;
+            checkpoint_store.save(job)?;
+        }
         return Ok(report);
     }
 
@@ -133,12 +166,10 @@ pub fn execute_scan_batch(
             .take_while(|entry| entry.cursor <= *cursor)
             .count()
     });
-    let mut report = ScanReport {
-        resumed_skips,
-        issues,
-        ..ScanReport::default()
-    };
+    report.resumed_skips = resumed_skips;
+    report.issues.extend(issues);
     let total = entries.len();
+    let mut newly_processed = 0;
     let mut bytes_processed = job
         .state
         .progress
@@ -175,17 +206,16 @@ pub fn execute_scan_batch(
             }),
         }
         report.processed += 1;
-        update_progress(
-            job,
-            resumed_skips + report.processed,
-            total,
-            bytes_processed,
-        );
+        newly_processed += 1;
+        update_progress(job, resumed_skips + newly_processed, total, bytes_processed);
         update_cursor(job, &entry.cursor);
         checkpoint_store.save(job)?;
     }
 
-    report.complete = resumed_skips + report.processed >= total;
+    // `newly_processed`, not `report.processed`: the latter also counts capability
+    // retries, which are not entries in this scan's cursor space.
+    report.complete =
+        resumed_skips + newly_processed >= total && report.capability_retries_remaining == 0;
     if report.complete {
         reconcile_gopro_outputs(job, output_dir, checkpoint_store, &mut report)?;
     }
@@ -204,6 +234,94 @@ pub fn execute_scan_batch(
     }
     job.state.heartbeat_at = Some(finished);
     checkpoint_store.save(job)?;
+    Ok(report)
+}
+
+fn retry_capability_blocked_outputs(
+    job: &mut JobSpec,
+    output_dir: &Path,
+    checkpoint_store: &CheckpointStore,
+    max_files: Option<usize>,
+) -> Result<ScanReport, JobExecutionError> {
+    let record_paths = job
+        .outputs
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|output| output.kind == JobOutputKind::MediaRecord)
+        .filter_map(|output| output.path.as_deref())
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let mut report = ScanReport::default();
+
+    for record_path in record_paths {
+        let Ok(bytes) = fs::read(&record_path) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_slice::<memory_engine_contracts::MediaRecord>(&bytes)
+        else {
+            continue;
+        };
+        // A retry re-reads a file. Virtual assemblies have no file behind them and no
+        // present sources; they are derived, and reconciliation is the only pass that
+        // writes them. Skipping them here keeps that ownership boundary explicit.
+        if record.asset_kind != memory_engine_contracts::MediaRecordAssetKind::PhysicalFile {
+            continue;
+        }
+        if !needs_capability_retry(&record) {
+            continue;
+        }
+        if max_files.is_some_and(|limit| report.processed >= limit) {
+            report.capability_retries_remaining += 1;
+            continue;
+        }
+
+        let mut retried = None;
+        let mut last_error = None;
+        for source in record.sources.iter().filter(|source| source.present) {
+            match ingest_file(Path::new(&source.path), output_dir) {
+                Ok(ingested) if ingested.record.media_id == record.media_id => {
+                    retried = Some(ingested);
+                    break;
+                }
+                Ok(_) => {
+                    last_error = Some("capability retry skipped because source bytes changed");
+                }
+                Err(_) => {
+                    last_error = Some("capability retry could not read any known source");
+                }
+            }
+        }
+
+        let Some(ingested) = retried else {
+            report.issues.push(ScanIssue {
+                code: memory_engine_contracts::JobErrorCode::FileUnreadable,
+                message: last_error
+                    .unwrap_or("capability retry has no present source")
+                    .to_owned(),
+            });
+            continue;
+        };
+        if ingested.record.processing.state
+            == memory_engine_contracts::ProcessingStateState::Quarantined
+        {
+            report.quarantined += 1;
+        }
+        // `persist_record` merges the on-disk `span` back in, so re-ingesting a record
+        // that reconciliation had already made a span member does not drop membership.
+        let (persisted_path, artifact_bytes) = persist_record(&ingested.record, output_dir)?;
+        upsert_output(
+            job,
+            &ingested.record.media_id,
+            &persisted_path,
+            artifact_bytes,
+        );
+        update_partial_outputs(job, &ingested.record.media_id);
+        report.processed += 1;
+        report.capability_retries += 1;
+        checkpoint_store.save(job)?;
+    }
+
     Ok(report)
 }
 
@@ -446,6 +564,10 @@ fn append_output(job: &mut JobSpec, media_id: &str, path: &Path, byte_size: i64)
     });
 }
 
+/// Point the `media_record` output for `media_id` at `path`, returning whether anything
+/// actually changed. Both the capability-retry and the span-reconciliation pass go
+/// through here, so it has to be a no-op when the record is already recorded identically
+/// — that is what keeps a repeat reconciliation from churning `produced_at`.
 fn upsert_output(job: &mut JobSpec, media_id: &str, path: &Path, byte_size: i64) -> bool {
     let outputs = job.outputs.get_or_insert_with(Vec::new);
     if let Some(output) = outputs
@@ -747,5 +869,309 @@ mod tests {
             validate_job(&job),
             Err(JobExecutionError::EgressDeclared)
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn completed_scan_retries_legacy_heic_quarantine_when_capability_appears() {
+        use memory_engine_contracts::{
+            ErrorInfo, JobStateStatus, ProcessingStateState, StageState, StageStateStatus,
+        };
+
+        let directory = tempdir().expect("tempdir");
+        let source = directory.path().join("source");
+        let output = directory.path().join("output");
+        fs::create_dir(&source).expect("source directory");
+        let source_path = source.join("IMG_0001.JPG");
+        let jpeg_path = directory.path().join("source.jpg");
+        ImageBuffer::from_pixel(8, 6, Rgb([30_u8, 60, 120]))
+            .save(&jpeg_path)
+            .expect("JPEG fixture");
+        let sips = std::process::Command::new("sips")
+            .arg("-s")
+            .arg("format")
+            .arg("heic")
+            .arg(&jpeg_path)
+            .arg("--out")
+            .arg(&source_path)
+            .output()
+            .expect("run sips");
+        assert!(
+            sips.status.success(),
+            "{}",
+            String::from_utf8_lossy(&sips.stderr)
+        );
+
+        let mut record = ingest_file(&source_path, &output)
+            .expect("initial decode")
+            .record;
+        record.processing.state = ProcessingStateState::Quarantined;
+        let legacy_error = ErrorInfo {
+            code: "unsupported_codec".to_owned(),
+            message: "media processing failed; source details redacted".to_owned(),
+            retryable: false,
+            occurred_at: Some(Utc::now().to_rfc3339()),
+        };
+        record.processing.stages.thumbnail = Some(StageState {
+            status: StageStateStatus::Failed,
+            attempts: Some(1),
+            completed_at: Some(Utc::now().to_rfc3339()),
+            job_id: None,
+            skip_reason: None,
+            last_error: Some(legacy_error),
+        });
+        record.proxies = Some(Vec::new());
+        record.image = None;
+        record.perceptual = None;
+        let (record_path, record_bytes) = persist_record(&record, &output).expect("legacy record");
+        let locator = source_locator_digest(std::slice::from_ref(&source)).expect("locator digest");
+        let mut job: JobSpec = serde_json::from_value(json!({
+            "schema_version": "v0",
+            "job_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "job_type": "scan_source",
+            "inputs": {
+                "media_ids": [],
+                "source_paths": [source],
+                "source_locator_digest": locator
+            },
+            "params": {"follow_symlinks": false, "include_hidden": false, "max_depth": 32},
+            "params_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "scope": "library:test",
+            "egress": {"requires_egress": false},
+            "state": {"status": "completed", "attempts": 1},
+            "checkpoint": {"resumable": true, "cursor": null, "checkpoint_version": 1},
+            "outputs": [{
+                "kind": "media_record",
+                "id": record.media_id,
+                "path": record_path,
+                "byte_size": record_bytes
+            }]
+        }))
+        .expect("completed job");
+        assert_eq!(job.state.status, JobStateStatus::Completed);
+        let store = CheckpointStore::new(directory.path().join("checkpoint.json"));
+
+        let mut limited_job = job.clone();
+        let limited_store = CheckpointStore::new(directory.path().join("limited-checkpoint.json"));
+        let limited = execute_scan_batch(&mut limited_job, &output, &limited_store, Some(0))
+            .expect("limited capability retry");
+        assert!(!limited.complete);
+        assert_eq!(limited.capability_retries_remaining, 1);
+        assert_eq!(limited_job.state.status, JobStateStatus::Pending);
+
+        let report = execute_scan(&mut job, &output, &store).expect("capability retry");
+        assert!(report.complete);
+        assert_eq!(report.capability_retries, 1);
+        assert_eq!(report.processed, 1);
+        let repaired: memory_engine_contracts::MediaRecord =
+            serde_json::from_slice(&fs::read(record_path).expect("repaired record"))
+                .expect("MediaRecord");
+        assert_eq!(repaired.processing.state, ProcessingStateState::Proxied);
+        assert_eq!(repaired.proxies.as_ref().map(Vec::len), Some(1));
+    }
+
+    /// The ordering contract on `execute_scan_batch`: span reconciliation is gated behind
+    /// the capability-retry pass. While a retry is still outstanding no assembly is
+    /// published; once the retries drain, the repair and the span build happen in the
+    /// same invocation, so the span is always derived from post-retry records.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn span_reconciliation_waits_for_outstanding_capability_retries() {
+        use memory_engine_contracts::{
+            ErrorInfo, MediaRecordAssetKind, ProcessingStateState, StageState, StageStateStatus,
+        };
+
+        let directory = tempdir().expect("tempdir");
+        let source = directory.path().join("source");
+        let output = directory.path().join("output");
+        fs::create_dir(&source).expect("source directory");
+
+        // Two GoPro chapters that no reconciliation pass has seen yet.
+        for (name, marker) in [("GH010042.MP4", 1_u8), ("GH020042.MP4", 2_u8)] {
+            let mut bytes = vec![0, 0, 0, 24];
+            bytes.extend_from_slice(b"ftypmp42");
+            bytes.extend_from_slice(&[marker; 64]);
+            fs::write(source.join(name), bytes).expect("GoPro chapter fixture");
+        }
+
+        // A HEIC still parked in the legacy `unsupported_codec` quarantine, i.e. one
+        // capability retry is owed.
+        let heic_path = source.join("IMG_0001.HEIC");
+        let jpeg_path = directory.path().join("source.jpg");
+        ImageBuffer::from_pixel(8, 6, Rgb([30_u8, 60, 120]))
+            .save(&jpeg_path)
+            .expect("JPEG fixture");
+        let sips = std::process::Command::new("sips")
+            .arg("-s")
+            .arg("format")
+            .arg("heic")
+            .arg(&jpeg_path)
+            .arg("--out")
+            .arg(&heic_path)
+            .output()
+            .expect("run sips");
+        assert!(
+            sips.status.success(),
+            "{}",
+            String::from_utf8_lossy(&sips.stderr)
+        );
+
+        let mut outputs = Vec::new();
+        for path in [
+            source.join("GH010042.MP4"),
+            source.join("GH020042.MP4"),
+            heic_path.clone(),
+        ] {
+            let mut record = ingest_file(&path, &output).expect("ingest").record;
+            if path == heic_path {
+                record.processing.state = ProcessingStateState::Quarantined;
+                record.processing.stages.thumbnail = Some(StageState {
+                    status: StageStateStatus::Failed,
+                    attempts: Some(1),
+                    completed_at: Some(Utc::now().to_rfc3339()),
+                    job_id: None,
+                    skip_reason: None,
+                    last_error: Some(ErrorInfo {
+                        code: "unsupported_codec".to_owned(),
+                        message: "media processing failed; source details redacted".to_owned(),
+                        retryable: false,
+                        occurred_at: Some(Utc::now().to_rfc3339()),
+                    }),
+                });
+                record.proxies = Some(Vec::new());
+                record.image = None;
+                record.perceptual = None;
+            }
+            let (record_path, record_bytes) = persist_record(&record, &output).expect("persist");
+            outputs.push(json!({
+                "kind": "media_record",
+                "id": record.media_id,
+                "path": record_path,
+                "byte_size": record_bytes
+            }));
+        }
+        let heic_media_id = ingest_file(&heic_path, &output)
+            .expect("heic id")
+            .record
+            .media_id;
+
+        let locator = source_locator_digest(std::slice::from_ref(&source)).expect("locator digest");
+        let job_value = json!({
+            "schema_version": "v0",
+            "job_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "job_type": "scan_source",
+            "inputs": {
+                "media_ids": [],
+                "source_paths": [source],
+                "source_locator_digest": locator
+            },
+            "params": {"follow_symlinks": false, "include_hidden": false, "max_depth": 32},
+            "params_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "scope": "library:test",
+            "egress": {"requires_egress": false},
+            "state": {"status": "completed", "attempts": 1},
+            "checkpoint": {"resumable": true, "cursor": null, "checkpoint_version": 1},
+            "outputs": outputs
+        });
+
+        let count_assemblies = || {
+            walkdir::WalkDir::new(output.join("records"))
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_file())
+                .filter_map(|entry| fs::read(entry.path()).ok())
+                .filter_map(|bytes| {
+                    serde_json::from_slice::<memory_engine_contracts::MediaRecord>(&bytes).ok()
+                })
+                .filter(|record| record.asset_kind == MediaRecordAssetKind::VirtualAssembly)
+                .count()
+        };
+        assert_eq!(
+            count_assemblies(),
+            0,
+            "no assembly exists before reconciling"
+        );
+
+        // Budget of zero: the retry is deferred, so reconciliation must not run and the
+        // completed job must reopen rather than publish a span over a half-repaired
+        // library.
+        let mut deferred: JobSpec = serde_json::from_value(job_value.clone()).expect("job");
+        let deferred_store = CheckpointStore::new(directory.path().join("deferred.json"));
+        let report = execute_scan_batch(&mut deferred, &output, &deferred_store, Some(0))
+            .expect("deferred retry");
+        assert!(!report.complete);
+        assert_eq!(report.capability_retries, 0);
+        assert_eq!(report.capability_retries_remaining, 1);
+        assert_eq!(report.assemblies_created, 0);
+        assert_eq!(report.span_members_updated, 0);
+        assert_eq!(deferred.state.status, JobStateStatus::Pending);
+        assert_eq!(
+            count_assemblies(),
+            0,
+            "reconciliation must not publish an assembly while a retry is owed"
+        );
+
+        // Unbounded: the retry drains and the span is reconciled in the same invocation.
+        let mut job: JobSpec = serde_json::from_value(job_value).expect("job");
+        let store = CheckpointStore::new(directory.path().join("checkpoint.json"));
+        let report = execute_scan(&mut job, &output, &store).expect("retry then reconcile");
+        assert!(report.complete);
+        assert_eq!(report.capability_retries, 1);
+        assert_eq!(report.capability_retries_remaining, 0);
+        assert_eq!(report.assemblies_created, 1);
+        assert_eq!(report.span_members_updated, 2);
+        assert_eq!(count_assemblies(), 1);
+
+        // The retried record is repaired, and the span was built alongside it.
+        let repaired: memory_engine_contracts::MediaRecord =
+            serde_json::from_slice(&fs::read(record_path(&output, &heic_media_id)).expect("read"))
+                .expect("MediaRecord");
+        assert_eq!(repaired.processing.state, ProcessingStateState::Proxied);
+        assert!(repaired.span.is_none(), "a still is never a chapter member");
+    }
+
+    /// The durable half of the retry/reconcile invariant, independent of ordering: a
+    /// capability retry re-ingests from scratch and so produces `span: None`. Persisting
+    /// that over a record reconciliation had already made a span member must not erase
+    /// the membership, or the assembly would silently lose a chapter.
+    #[test]
+    fn reingesting_a_span_member_preserves_its_span_membership() {
+        use memory_engine_contracts::{Span, SpanContinuity, SpanRole, SpanSpanKind};
+
+        let directory = tempdir().expect("tempdir");
+        let output = directory.path().join("output");
+        let source_path = directory.path().join("GH010042.MP4");
+        let mut bytes = vec![0, 0, 0, 24];
+        bytes.extend_from_slice(b"ftypmp42");
+        bytes.extend_from_slice(&[7_u8; 64]);
+        fs::write(&source_path, bytes).expect("GoPro chapter fixture");
+
+        let fresh = ingest_file(&source_path, &output).expect("ingest").record;
+        assert!(fresh.span.is_none(), "a raw ingest carries no span");
+
+        // Reconciliation stamps membership onto the record.
+        let span_id = "a".repeat(64);
+        let mut member = fresh.clone();
+        member.span = Some(Span {
+            span_id: span_id.clone(),
+            role: SpanRole::Member,
+            span_kind: SpanSpanKind::GoproChapter,
+            index: Some(0),
+            member_count: Some(2),
+            member_media_ids: None,
+            offset_in_span: None,
+            continuity: Some(SpanContinuity::IncompleteSet),
+        });
+        persist_record(&member, &output).expect("persist member");
+
+        // A capability retry re-persists the from-scratch record over it.
+        let (path, _) = persist_record(&fresh, &output).expect("persist retry result");
+        let reloaded: memory_engine_contracts::MediaRecord =
+            serde_json::from_slice(&fs::read(&path).expect("read")).expect("MediaRecord");
+
+        let span = reloaded.span.expect("span membership survives a re-ingest");
+        assert_eq!(span.span_id, span_id);
+        assert_eq!(span.role, SpanRole::Member);
+        assert_eq!(span.index, Some(0));
     }
 }

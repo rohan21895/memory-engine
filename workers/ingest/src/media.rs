@@ -15,7 +15,7 @@ use memory_engine_contracts::{
 };
 use thiserror::Error;
 
-use crate::{format, gopro, metadata, phash};
+use crate::{format, gopro, metadata, phash, still_decoder};
 
 const READ_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_BUFFERED_STILL_BYTES: u64 = 512 * 1024 * 1024;
@@ -117,20 +117,31 @@ pub fn ingest_file(path: &Path, output_dir: &Path) -> Result<IngestedFile, Inges
         return Ok(IngestedFile { record });
     }
 
-    if !detected.decodable_still || source.full_bytes.is_none() {
-        quarantine(
+    if source.full_bytes.is_none() {
+        processing_failure(
             &mut record,
             &now,
-            "unsupported_codec",
+            "still_exceeds_memory_limit",
             ExclusionStateReasonsItem::UnsupportedCodec,
+            false,
         );
         return Ok(IngestedFile { record });
     }
 
     let bytes = source.full_bytes.as_deref().expect("checked above");
-    let decoded = match image::load_from_memory(bytes) {
-        Ok(image) => image,
-        Err(_) => {
+    let decoded = match still_decoder::decode(bytes, detected.file_format) {
+        Ok(decoded) => decoded,
+        Err(still_decoder::StillDecodeError::MissingCapability) => {
+            processing_failure(
+                &mut record,
+                &now,
+                still_decoder::missing_capability_code(detected.file_format),
+                ExclusionStateReasonsItem::UnsupportedCodec,
+                true,
+            );
+            return Ok(IngestedFile { record });
+        }
+        Err(still_decoder::StillDecodeError::DecodeFailed) => {
             quarantine(
                 &mut record,
                 &now,
@@ -142,11 +153,10 @@ pub fn ingest_file(path: &Path, output_dir: &Path) -> Result<IngestedFile, Inges
     };
 
     let stored_size = PixelSize {
-        width: i64::from(decoded.width()),
-        height: i64::from(decoded.height()),
+        width: i64::from(decoded.image.width()),
+        height: i64::from(decoded.image.height()),
     };
-    let has_alpha = decoded.color().has_alpha();
-    let oriented = apply_orientation(decoded, metadata.orientation);
+    let oriented = apply_orientation(decoded.image, metadata.orientation);
     let oriented_size = PixelSize {
         width: i64::from(oriented.width()),
         height: i64::from(oriented.height()),
@@ -158,7 +168,7 @@ pub fn ingest_file(path: &Path, output_dir: &Path) -> Result<IngestedFile, Inges
         bit_depth: None,
         color_space: Some(ImagePropertiesColorSpace::Unknown),
         icc_profile_name: None,
-        has_alpha: Some(has_alpha),
+        has_alpha: Some(decoded.has_alpha),
         is_raw: Some(false),
         is_hdr: Some(false),
         paired_motion_media_id: None,
@@ -207,7 +217,8 @@ fn read_source_once(path: &Path) -> Result<SourceRead, IngestError> {
         }
         if first_chunk
             && expected_size <= MAX_BUFFERED_STILL_BYTES
-            && format::detect(&prefix).is_some_and(|detected| detected.decodable_still)
+            && format::detect(&prefix)
+                .is_some_and(|detected| detected.kind == MediaRecordKind::Image)
         {
             full_bytes = Some(chunk.to_vec());
         } else if let Some(bytes) = &mut full_bytes {
@@ -344,7 +355,7 @@ fn done_stage(now: &str) -> StageState {
     }
 }
 
-fn failed_stage(now: &str, code: &str) -> StageState {
+fn failed_stage(now: &str, code: &str, retryable: bool) -> StageState {
     StageState {
         status: StageStateStatus::Failed,
         attempts: Some(1),
@@ -354,7 +365,7 @@ fn failed_stage(now: &str, code: &str) -> StageState {
         last_error: Some(ErrorInfo {
             code: code.to_owned(),
             message: "media processing failed; source details redacted".to_owned(),
-            retryable: false,
+            retryable,
             occurred_at: Some(now.to_owned()),
         }),
     }
@@ -362,14 +373,59 @@ fn failed_stage(now: &str, code: &str) -> StageState {
 
 fn quarantine(record: &mut MediaRecord, now: &str, code: &str, reason: ExclusionStateReasonsItem) {
     record.processing.state = ProcessingStateState::Quarantined;
-    record.processing.stages.metadata = Some(failed_stage(now, code));
-    record.processing.stages.thumbnail = Some(failed_stage(now, code));
-    record.processing.stages.perceptual_hash = Some(failed_stage(now, code));
+    record.processing.stages.metadata = Some(failed_stage(now, code, false));
+    record.processing.stages.thumbnail = Some(failed_stage(now, code, false));
+    record.processing.stages.perceptual_hash = Some(failed_stage(now, code, false));
     record.exclusion = Some(ExclusionState {
         excluded_from_automation: true,
         reasons: Some(vec![reason]),
         user_override: None,
     });
+}
+
+fn processing_failure(
+    record: &mut MediaRecord,
+    now: &str,
+    code: &str,
+    reason: ExclusionStateReasonsItem,
+    retryable: bool,
+) {
+    record.processing.state = ProcessingStateState::Failed;
+    record.processing.stages.metadata = Some(done_stage(now));
+    record.processing.stages.thumbnail = Some(failed_stage(now, code, retryable));
+    record.processing.stages.perceptual_hash = Some(failed_stage(now, code, retryable));
+    record.exclusion = Some(ExclusionState {
+        excluded_from_automation: true,
+        reasons: Some(vec![reason]),
+        user_override: None,
+    });
+}
+
+pub(crate) fn needs_capability_retry(record: &MediaRecord) -> bool {
+    let Some(file_format) = record.file_format else {
+        return false;
+    };
+    if !still_decoder::is_heif_family(file_format) || !still_decoder::supports(file_format) {
+        return false;
+    }
+
+    let capability_blocked = [
+        record.processing.stages.thumbnail.as_ref(),
+        record.processing.stages.perceptual_hash.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|stage| stage.last_error.as_ref())
+    .any(|error| error.retryable && error.code.starts_with("missing_capability_"));
+    let legacy_unsupported = record.processing.state == ProcessingStateState::Quarantined
+        && record
+            .processing
+            .stages
+            .thumbnail
+            .as_ref()
+            .and_then(|stage| stage.last_error.as_ref())
+            .is_some_and(|error| error.code == "unsupported_codec");
+    capability_blocked || legacy_unsupported
 }
 
 #[cfg(test)]
@@ -444,7 +500,8 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_heic_is_detected_by_bytes_and_quarantined() {
+    #[cfg(not(target_os = "macos"))]
+    fn unsupported_heic_is_retryable_and_not_quarantined() {
         let directory = tempdir().expect("tempdir");
         let source_path = directory.path().join("mislabeled.jpg");
         let mut bytes = vec![0, 0, 0, 24];
@@ -458,8 +515,92 @@ mod tests {
         );
         assert_eq!(
             ingested.record.processing.state,
+            ProcessingStateState::Failed
+        );
+        let error = ingested
+            .record
+            .processing
+            .stages
+            .thumbnail
+            .and_then(|stage| stage.last_error)
+            .expect("capability error");
+        assert_eq!(error.code, "missing_capability_heic_decoder");
+        assert!(error.retryable);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn heic_is_decoded_by_image_io_even_with_a_jpeg_extension() {
+        let directory = tempdir().expect("tempdir");
+        let source_path = directory.path().join("mislabeled.jpg");
+        let jpeg_path = directory.path().join("source.jpg");
+        ImageBuffer::from_pixel(8, 6, Rgb([40_u8, 80, 120]))
+            .save(&jpeg_path)
+            .expect("JPEG fixture");
+        let output = std::process::Command::new("sips")
+            .arg("-s")
+            .arg("format")
+            .arg("heic")
+            .arg(&jpeg_path)
+            .arg("--out")
+            .arg(&source_path)
+            .output()
+            .expect("run sips");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let ingested = ingest_file(&source_path, directory.path()).expect("ingest");
+        assert_eq!(
+            ingested.record.file_format,
+            Some(MediaRecordFileFormat::Heic)
+        );
+        assert_eq!(
+            ingested.record.processing.state,
+            ProcessingStateState::Proxied
+        );
+        assert_eq!(
+            ingested
+                .record
+                .image
+                .as_ref()
+                .map(|image| &image.oriented_size),
+            Some(&PixelSize {
+                width: 8,
+                height: 6
+            })
+        );
+        assert!(Path::new(&ingested.record.proxies.as_ref().unwrap()[0].path).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn corrupt_heic_is_permanently_quarantined_after_decoder_runs() {
+        let directory = tempdir().expect("tempdir");
+        let source_path = directory.path().join("broken.heic");
+        let mut bytes = vec![0, 0, 0, 24];
+        bytes.extend_from_slice(b"ftypheic");
+        bytes.extend_from_slice(&[0; 32]);
+        fs::write(&source_path, bytes).expect("corrupt HEIC fixture");
+
+        let ingested = ingest_file(&source_path, directory.path()).expect("ingest");
+        assert_eq!(
+            ingested.record.processing.state,
             ProcessingStateState::Quarantined
         );
+        let error = ingested
+            .record
+            .processing
+            .stages
+            .thumbnail
+            .as_ref()
+            .and_then(|stage| stage.last_error.as_ref())
+            .expect("decode error");
+        assert_eq!(error.code, "file_corrupt");
+        assert!(!error.retryable);
+        assert!(!needs_capability_retry(&ingested.record));
     }
 
     #[test]

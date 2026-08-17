@@ -9,6 +9,7 @@ mod job;
 mod media;
 mod metadata;
 mod phash;
+mod still_decoder;
 mod video;
 mod walker;
 
