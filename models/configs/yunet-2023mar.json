@@ -7,7 +7,8 @@
   "weights": {
     "filename": "face_detection_yunet_2023mar.onnx",
     "format": "onnx",
-    "source_url": "https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet",
+    "source_url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+    "archive_member": null,
     "blake3": null,
     "byte_size": null,
     "quantization": "fp32"
@@ -61,7 +62,8 @@
       "name": "cls_8",
       "meaning": "scores",
       "shape": [
-        -1,
+        1,
+        6400,
         1
       ],
       "dimensions": null,
@@ -71,7 +73,8 @@
       "name": "cls_16",
       "meaning": "scores",
       "shape": [
-        -1,
+        1,
+        1600,
         1
       ],
       "dimensions": null,
@@ -81,7 +84,8 @@
       "name": "cls_32",
       "meaning": "scores",
       "shape": [
-        -1,
+        1,
+        400,
         1
       ],
       "dimensions": null,
@@ -91,7 +95,8 @@
       "name": "obj_8",
       "meaning": "scores",
       "shape": [
-        -1,
+        1,
+        6400,
         1
       ],
       "dimensions": null,
@@ -101,7 +106,8 @@
       "name": "obj_16",
       "meaning": "scores",
       "shape": [
-        -1,
+        1,
+        1600,
         1
       ],
       "dimensions": null,
@@ -111,7 +117,8 @@
       "name": "obj_32",
       "meaning": "scores",
       "shape": [
-        -1,
+        1,
+        400,
         1
       ],
       "dimensions": null,
@@ -121,7 +128,8 @@
       "name": "bbox_8",
       "meaning": "bboxes",
       "shape": [
-        -1,
+        1,
+        6400,
         4
       ],
       "dimensions": null,
@@ -131,7 +139,8 @@
       "name": "bbox_16",
       "meaning": "bboxes",
       "shape": [
-        -1,
+        1,
+        1600,
         4
       ],
       "dimensions": null,
@@ -141,7 +150,8 @@
       "name": "bbox_32",
       "meaning": "bboxes",
       "shape": [
-        -1,
+        1,
+        400,
         4
       ],
       "dimensions": null,
@@ -151,7 +161,8 @@
       "name": "kps_8",
       "meaning": "keypoints",
       "shape": [
-        -1,
+        1,
+        6400,
         10
       ],
       "dimensions": null,
@@ -161,7 +172,8 @@
       "name": "kps_16",
       "meaning": "keypoints",
       "shape": [
-        -1,
+        1,
+        1600,
         10
       ],
       "dimensions": null,
@@ -171,7 +183,8 @@
       "name": "kps_32",
       "meaning": "keypoints",
       "shape": [
-        -1,
+        1,
+        400,
         10
       ],
       "dimensions": null,
@@ -179,9 +192,9 @@
     }
   ],
   "batching": {
-    "supported": true,
-    "max_batch": 8,
-    "dynamic_axes": true
+    "supported": false,
+    "max_batch": 1,
+    "dynamic_axes": false
   },
   "license": {
     "code_license": "MIT",
@@ -205,5 +218,5 @@
     "measured_at": null,
     "note": "No benchmark has been run. YuNet is expected to trail SCRFD on small faces, which is the case that matters in group photos. The cost lands as recall, not precision: a missed face is absent from an album, while the precision-first threshold and review queue keep a wrong face out. Quantifying the gap is the first eval-harness job."
   },
-  "notes": "SCORE RULE: confidence is sqrt(clamp(cls,0,1) * clamp(obj,0,1)) -- the clamped GEOMETRIC MEAN of the separate classification and objectness heads, which is why both appear in outputs. It is declared as the `geometric_mean_score` step so a registry-driven host can apply it without hardcoding anything per model id. An earlier version of this file said the product, and at score_threshold 0.6 the product discards roughly 84% of the detections YuNet accepts -- which reads as a weak detector rather than a bug. Confirmed against opencv/modules/objdetect/src/face_detect.cpp.\n\nDECODER: not SCRFD's distance-to-four-sides. Boxes are centre-offset plus exponentiated size; landmarks are cell-relative and linear.\n\nNMS: OpenCV rounds each box to an integer cv::Rect2i BEFORE cv::dnn::NMSBoxes, so IoU is computed on integer rectangles and its width/height convention differs from a float box by one pixel. Declared as `integer_rect_nms` rather than plain `nms` because the two disagree on boxes sitting near the IoU threshold -- and a disagreement there means one face becomes two, or two adjacent faces in a group photo become one.\n\nTHRESHOLDS: 0.6 and 0.3 are the OpenCV Zoo defaults, starting points rather than tuned values; re-tune against our own benchmark libraries before promotion.\n\nCOORDINATES: decoded against the letterboxed 640x640 input, and must be un-letterboxed before being normalised against the ORIENTED image for FaceRecord."
+  "notes": "SCORE RULE: confidence is sqrt(clamp(cls,0,1) * clamp(obj,0,1)) -- the clamped GEOMETRIC MEAN of the separate classification and objectness heads, which is why both appear in outputs. It is declared as the `geometric_mean_score` step so a registry-driven host can apply it without hardcoding anything per model id. An earlier version of this file said the product, and at score_threshold 0.6 the product discards roughly 84% of the detections YuNet accepts -- which reads as a weak detector rather than a bug. Confirmed against opencv/modules/objdetect/src/face_detect.cpp.\n\nDECODER: not SCRFD's distance-to-four-sides. Boxes are centre-offset plus exponentiated size; landmarks are cell-relative and linear.\n\nNMS: OpenCV rounds each box to an integer cv::Rect2i BEFORE cv::dnn::NMSBoxes, so IoU is computed on integer rectangles and its width/height convention differs from a float box by one pixel. Declared as `integer_rect_nms` rather than plain `nms` because the two disagree on boxes sitting near the IoU threshold -- and a disagreement there means one face becomes two, or two adjacent faces in a group photo become one.\n\nTHRESHOLDS: 0.6 and 0.3 are the OpenCV Zoo defaults, starting points rather than tuned values; re-tune against our own benchmark libraries before promotion.\n\nCOORDINATES: decoded against the letterboxed 640x640 input, and must be un-letterboxed before being normalised against the ORIENTED image for FaceRecord.\n\nSHAPES AND BATCHING CORRECTED AGAINST THE REAL GRAPH. The declared output shapes were rank-2 [-1, C]; the checkpoint emits rank-3 [1, N, C] with N fixed per stride (6400/1600/400 at 640x640, matching 80x80/40x40/20x20 grids with one anchor per location -- unlike SCRFD's two). Batching claimed supported/max 8/dynamic; the graph's input is a static [1, 3, 640, 640], so batch is 1 and the input size is not negotiable either. execution.py clamps max_batch to the session's static batch dimension, so the wrong claim was survivable rather than harmless -- it was a description of the model that disagreed with the model."
 }

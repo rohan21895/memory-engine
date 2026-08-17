@@ -7,7 +7,8 @@
   "weights": {
     "filename": "scrfd_10g_bnkps.onnx",
     "format": "onnx",
-    "source_url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip (det_10g.onnx)",
+    "source_url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
+    "archive_member": "det_10g.onnx",
     "blake3": null,
     "byte_size": null,
     "quantization": "fp32"

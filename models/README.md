@@ -57,7 +57,7 @@ Both are InsightFace. Development use is fine; a commercial release with them is
 ## Adding a model
 
 1. Read the licence for the **weights**, not just the repo. Record the URL and dataset provenance — a permissive model trained on a retracted dataset (MS-Celeb-1M, VGGFace2) is still exposed.
-2. Download once, hash, set `weights.blake3`. Until then it stays `candidate`.
+2. Download once, hash, set `weights.blake3`. Until then it stays `candidate`. Use `python3 scripts/models/fetch_weights.py`: it downloads from `weights.source_url`, refuses to install anything that disagrees with an existing pin, and prints the digest of anything unpinned for you to paste. It will not write the pin itself — a fetcher pinning its own download certifies nothing.
 3. Write the pre/post-processing spec exactly. A swap that silently changes normalisation changes every score in the library, and nothing about it looks like a bug.
 4. Benchmark on the eval libraries; shadow-run against the current default; promote only on no regression in face precision or reel acceptance.
 
@@ -65,7 +65,7 @@ Steps 1–3 apply from day one. Step 4 arrives with `packages/eval-harness`.
 
 ## Known gaps
 
-- **All five entries are `candidate`** with `blake3: null`. No weights have been downloaded or hashed, so nothing here is reproducible yet. Pinning them is the next step and needs the actual files.
+- **Every entry is still unpinned** (`blake3: null`). YuNet, SCRFD and ArcFace now *fetch* reproducibly — `scripts/models/fetch_weights.py` gets them from real artifact URLs and their digests are recorded in `docs/model-registry.md` — but until someone pastes those digests in, a fresh clone gets whatever those URLs serve that day. SigLIP 2 and TransNetV2 have no downloadable artifact at their declared sources at all; see *Getting the weights* in `docs/model-registry.md`.
 - **`laion-aesthetic-v2` will not work as configured.** The published head was trained on CLIP ViT-L/14 features; running it on SigLIP 2 features needs the linear head retrained. The entry is currently the *shape* of the config, not a working model.
 - **Tensor names are from published exports** and may differ in a specific conversion. Codex should treat a name mismatch at load as a config bug and tell me, not work around it locally.
 - Tier 1 is not complete: MUSIQ, SAM 2, CLAP, PaddleOCR, faster-whisper and the safety classifier are audited in `docs/model-registry.md` but have no config yet.

@@ -25,9 +25,18 @@ class TestLoopbackService(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.repo_root = Path(self.temporary.name)
-        shutil.copytree(REPO_ROOT / "models", self.repo_root / "models")
+        # The real weights directory is deliberately NOT copied. These fixtures
+        # build their own tiny stand-in weights, and once
+        # scripts/models/fetch_weights.py has been run the real one holds ~190MB
+        # of ONNX -- copying it per test made setUp fail outright (the mkdir below
+        # hit an existing directory) and would have copied gigabytes if it had not.
+        shutil.copytree(
+            REPO_ROOT / "models",
+            self.repo_root / "models",
+            ignore=shutil.ignore_patterns("weights", "__pycache__"),
+        )
         weights_dir = self.repo_root / "models" / "weights"
-        weights_dir.mkdir()
+        weights_dir.mkdir(parents=True, exist_ok=True)
         for config_path in (self.repo_root / "models" / "configs").glob("*.json"):
             config = json.loads(config_path.read_text(encoding="utf-8"))
             (weights_dir / config["weights"]["filename"]).write_bytes(

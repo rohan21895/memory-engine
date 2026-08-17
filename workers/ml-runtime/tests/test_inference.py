@@ -116,13 +116,60 @@ class _FakeOrt:
     InferenceSession = _FakeSession
 
 
+def _declare_batching(models_root: Path, model_id: str, *, max_batch: int) -> None:
+    """Make a COPIED config claim batching, and restamp the copied registry.
+
+    Editing the config without restamping would leave the load gate refusing it
+    as CONFIG_MISMATCH -- correctly, since that is exactly what the digest is
+    for. Only the temporary copy is touched; the committed config is not.
+    """
+    config_path = models_root / "configs" / f"{model_id}.json"
+    config = json.loads(config_path.read_bytes().decode("utf-8"))
+    config["batching"] = {
+        "supported": True,
+        "max_batch": max_batch,
+        "dynamic_axes": True,
+    }
+    config_path.write_bytes(
+        (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    )
+    registry_path = models_root / "registry.json"
+    registry = json.loads(registry_path.read_bytes().decode("utf-8"))
+    stamped = False
+    for entry in registry["entries"]:
+        if entry["model_id"] == model_id:
+            entry["config_blake3"] = blake3(config_path.read_bytes()).hexdigest()
+            stamped = True
+    if not stamped:
+        raise AssertionError(f"{model_id} is not in the registry being copied")
+    registry_path.write_bytes(
+        (json.dumps(registry, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    )
+
+
 class TestRealInferPath(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        shutil.copytree(REPO_ROOT / "models", self.root / "models")
+        # The real weights directory is deliberately NOT copied. These fixtures
+        # build their own tiny stand-in weights, and once
+        # scripts/models/fetch_weights.py has been run the real one holds ~190MB
+        # of ONNX -- copying it per test made setUp fail outright (the mkdir below
+        # hit an existing directory) and would have copied gigabytes if it had not.
+        shutil.copytree(
+            REPO_ROOT / "models",
+            self.root / "models",
+            ignore=shutil.ignore_patterns("weights", "__pycache__"),
+        )
         weights_dir = self.root / "models" / "weights"
-        weights_dir.mkdir()
+        weights_dir.mkdir(parents=True, exist_ok=True)
+        # These tests are about the HOST's batching, so the fixture declares a
+        # batching model instead of borrowing YuNet's. The real checkpoint takes
+        # a static [1, 3, 640, 640] and refuses a batch of 2 outright -- its
+        # config said otherwise until the weights were fetched and the graph was
+        # read, and asserting "two items, one session.run" against the corrected
+        # config would be asserting something the model cannot do.
+        _declare_batching(self.root / "models", "yunet-2023mar", max_batch=8)
         config = json.loads(
             (self.root / "models" / "configs" / "yunet-2023mar.json").read_text(
                 encoding="utf-8"

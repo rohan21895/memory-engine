@@ -8,6 +8,7 @@
     "filename": "transnetv2.onnx",
     "format": "onnx",
     "source_url": "https://github.com/soCzech/TransNetV2",
+    "archive_member": null,
     "blake3": null,
     "byte_size": null,
     "quantization": "fp16"
@@ -97,5 +98,5 @@
     "promoted_at": null
   },
   "eval": null,
-  "notes": "Windows overlap by 25 frames on each side; only the centre 50 predictions of each 100-frame window are kept, because the model is unreliable at window edges. Raw pixel values in [0,255] with no normalisation -- this model does its own scaling internally, and applying a mean/std here silently degrades it."
+  "notes": "Windows overlap by 25 frames on each side; only the centre 50 predictions of each 100-frame window are kept, because the model is unreliable at window edges. Raw pixel values in [0,255] with no normalisation -- this model does its own scaling internally, and applying a mean/std here silently degrades it.\n\nNO ONNX AT THE DECLARED SOURCE (checked 2026-08-17 via the GitHub API). soCzech/TransNetV2 ships a TensorFlow SavedModel under inference/transnetv2-weights/ (git-LFS), a PyTorch conversion SCRIPT under inference-pytorch/ with no checkpoint beside it, and no GitHub releases at all. There is nothing named transnetv2.onnx to fetch, so scripts/models/fetch_weights.py reports this entry UNAVAILABLE and source_url stays a provenance link. Getting this file means running an export (tf2onnx over the SavedModel, or the PyTorch conversion then torch.onnx) and pinning OUR export -- at which point the artifact is ours and its digest is the only provenance it will ever have."
 }

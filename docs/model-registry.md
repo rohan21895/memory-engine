@@ -166,6 +166,129 @@ See `packages/eval-harness/gates/README.md` for the gate-file format.
 
 ---
 
+## Getting the weights (step 2, as a command)
+
+`models/weights/` is populated by a script, not by hand:
+
+```bash
+python3 scripts/models/fetch_weights.py            # everything not a placeholder
+python3 scripts/models/fetch_weights.py --only yunet-2023mar
+```
+
+It reads `models/registry.json`, downloads each entry's `weights.source_url`,
+refuses to install anything that disagrees with `weights.blake3`, and prints the
+digest of anything not yet pinned. Refusal is the same decision the load gate
+makes: it calls `models/policy/load_gate.decide_load` rather than holding a
+second opinion about integrity.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Every model in scope is installed **and** verified against its pin. |
+| 3 | Partial — something was fetched but is unpinned, or something was unavailable. Work remains. |
+| 4 | Failure — a pin mismatched, a download was not the artifact it claimed to be, or nothing at all was obtained. |
+| 5 | Could not run — `blake3` missing, registry unreadable. |
+
+A fetched-but-unpinned model exits 3, never 0. An unpinned model is not
+reproducible, which is the problem the script exists to solve, so it must not
+share an exit code with a verified fetch.
+
+**The script never writes a pin.** It prints the digest for a human to paste. A
+pin the fetcher generated from its own download certifies only that it hashed
+the bytes it just wrote — it would be true of a truncated file or of a
+maintainer having replaced the artifact, which is the exact thing a pin exists
+to detect.
+
+### What a real run produced — 2026-08-17
+
+| Model | Result | Bytes | BLAKE3 (measured, **not** pinned) |
+|---|---|---|---|
+| `yunet-2023mar` | fetched | 232,589 | `3d5938c4cd5a02dc416f1cd1f7fc1f662a22adc370477112c871954587e63431` |
+| `scrfd-10g-bnkps` | fetched (`det_10g.onnx` from `buffalo_l.zip`) | 16,923,827 | `fa3e5d8c62722a7b7122dc185245236589dcf0b3b5c9c5561cc742ce356fba56` |
+| `arcface-buffalo-l` | fetched (`w600k_r50.onnx` from `buffalo_l.zip`) | 174,383,860 | `c9cc033a308d5cbe0006b8f2d695f13fe716c985cc4b676ad5c0a20a497a07cc` |
+| `siglip2-so400m-384` | **unavailable** | — | — |
+| `transnetv2` | **unavailable** | — | — |
+| 4 placeholders | skipped | — | — |
+
+All three fetched files were then loaded in `onnxruntime` and their real graphs
+compared against their configs — see the defects below.
+
+**Corroboration.** YuNet is the only one with independent confirmation: it is a
+git-LFS object, so the pointer committed in `opencv/opencv_zoo` states the
+SHA-256 (`8f2383e4dd3cfbb4…`) and size of the real file, and the download
+matches both. The fetcher checks this automatically and treats a disagreement as
+fatal. `buffalo_l.zip` publishes no checksum of any kind, so the SCRFD and
+ArcFace digests are corroborated by nothing but the download itself — which is
+one more reason a human, not the script, decides whether they become pins.
+
+**What pasting these in would achieve, measured rather than assumed.** With the
+YuNet digest temporarily pinned, the load gate's release-mode refusal moved from
+`HASH_UNPINNED` to `LICENSE_UNVERIFIED`. So pinning removes reproducibility as a
+release blocker and leaves the licence audit (issue #3, the `Verified` column
+above) as the remaining one. The pin was then reverted; the configs on this
+branch are still `blake3: null`.
+
+### What is not reachable, and why
+
+- **`siglip2-so400m-384`** — `google/siglip2-so400m-patch14-384` publishes
+  safetensors only. There is no ONNX vision export at the declared source, so
+  the entry reports unavailable rather than the fetcher saving a web page as a
+  model. The repository is **not gated** (`gated: false` from the HF API on
+  2026-08-17), so a token is not the obstacle. The two real options — export the
+  vision tower ourselves, or adopt `onnx-community/siglip2-so400m-patch14-384-ONNX`
+  — both change the config: that conversion exposes `last_hidden_state` /
+  `pooler_output` where our config binds `image_embeds`, and its fp32 tower is
+  1.7 GB against our declared fp16. That is an eval-harness decision, not a URL
+  edit. **This blocks the whole search/dedupe/diversity path**, which is the
+  highest-leverage model in the stack.
+- **`transnetv2`** — ships a TensorFlow SavedModel and a PyTorch conversion
+  *script* with no checkpoint, and has no GitHub releases. Nothing named
+  `transnetv2.onnx` exists to fetch; we must export and pin our own.
+- **The four placeholders** are skipped by default: no checkpoint has been
+  chosen, and the load gate refuses `rollout.state: placeholder` in every mode.
+
+### Gated repositories: implemented, never executed
+
+The fetcher sends `Authorization: Bearer $HF_TOKEN` to `huggingface.co` and
+distinguishes "no token set" from "token set and refused" in its report, and it
+strips the header when a redirect crosses to another host so a CDN never
+receives the token. **No token exists in this environment and no entry in this
+registry is gated today, so that path has never been run.** The tests cover the
+error-message mapping and the redirect stripping; they do not establish that
+fetching a gated repository works. Treat it as unverified code.
+
+### Defects the fetch exposed
+
+Having the weights on disk for the first time made three checks possible that
+had never been run:
+
+1. **`arcface-buffalo-l` could never have loaded.** Its config declared the
+   output name `embedding`; the real `w600k_r50.onnx` names its single output
+   `683`. `ml-runtime` binds outputs by exact name and refuses with
+   `CONFIG_MISMATCH: configured model output is absent from the weights`. This is
+   the same defect Codex found in SCRFD (issue #36) — fixed there, never checked
+   here. Corrected against the real graph.
+2. **`yunet-2023mar` described a model that does not exist.** Declared output
+   shapes were rank-2 `[-1, C]`; the checkpoint emits rank-3 `[1, N, C]`.
+   Batching claimed `supported: true, max_batch: 8, dynamic_axes: true`; the
+   input is a static `[1, 3, 640, 640]` and a batch of 2 is refused outright.
+   Corrected, and confirmed by running the graph.
+3. **Two `source_url`s could not have produced a file.** `arcface-buffalo-l`
+   pointed at the InsightFace `model_zoo` tree page, and `yunet-2023mar` at the
+   OpenCV Zoo directory page — whose raw URL serves a **131-byte git-LFS
+   pointer**, not a model. A fetcher without a content check would have
+   installed that pointer as `face_detection_yunet_2023mar.onnx` and printed a
+   perfectly plausible digest for it. Both now point at real artifacts, and
+   `weights.archive_member` replaces the member name that used to be smuggled
+   into the SCRFD URL as a parenthetical.
+
+ArcFace keeps `shape: [-1, 512]` despite the graph's output metadata saying
+`{1, 512}`: the input's batch axis is dynamic and a real batch of 4 returns
+`(4, 512)`. The export's static output shape is stale metadata, and copying it
+into the config would have declared a batching limit the model does not have.
+Measured, not read off the graph.
+
+---
+
 ## Decision: the face stack, taken 2026-08-16
 
 **Selected: SCRFD (detection) + ArcFace `buffalo_l` (recognition), InsightFace.**
@@ -208,3 +331,5 @@ precision-first design was for.
 2. **Confirm madmom and Essentia are excluded from every dependency path**, including transitively. `BeatGrid.analyzer` records which analyser produced a grid so a non-commercial one cannot slip in unnoticed.
 3. **Decide the music licensing model** — catalogue deal, CC library, or generated score. Build plan §6 calls this a Phase 0 decision because it shapes the beat-sync design, and `MusicCue.license.cleared_for` already refuses to let a cut be shared under a licence that does not cover the destination.
 4. **Fill the `Verified` column.** It is `no` everywhere. Nothing in this table has been checked by a human, and this document is only worth what that column says.
+5. **Paste the three measured digests into their configs** (see *Getting the weights*), or decide not to and say why. Until then `scripts/models/fetch_weights.py` exits 3 and the release gate refuses all three with `HASH_UNPINNED`: a fresh clone gets whatever those URLs serve on the day, which is better than nothing on disk but is not reproducibility.
+6. **Get a SigLIP 2 artifact.** Export the vision tower ourselves or adopt the community ONNX conversion — either way the config's `outputs` and `quantization` need revisiting and an eval run. Nothing in search, dedupe refinement, diversity or zero-shot tagging can run until this exists.

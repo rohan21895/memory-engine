@@ -8,6 +8,7 @@
     "filename": "nsfw-siglip2-so400m-head.onnx",
     "format": "onnx",
     "source_url": null,
+    "archive_member": null,
     "blake3": null,
     "byte_size": null,
     "quantization": "fp32"

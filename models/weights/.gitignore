@@ -1,0 +1,13 @@
+# Model weights are FETCHED, never committed.
+#
+#   python3 scripts/models/fetch_weights.py
+#
+# This directory is what workers/ml-runtime loads from (ModelCatalog.weights_dir),
+# so it has to exist on a fresh clone -- hence this file, which is the only thing
+# in here git tracks. The stack is 190MB+ today and would be gigabytes with SigLIP 2;
+# provenance lives in the BLAKE3 pin in models/configs/*.json, not in git history.
+#
+# `.staging-*` is where the fetcher writes partial downloads before verifying them.
+# A leftover one means a run was killed mid-download; deleting it is always safe.
+*
+!.gitignore

@@ -66,7 +66,7 @@
         "diversity",
         "zero_shot_tags"
       ],
-      "config_blake3": "c1679cc714503dd23dc4757f2c403a1fac9a60ef12f67a8fc23f0d664716998a"
+      "config_blake3": "d7832b09c161d3a032682da2e5452a2fd5b97fdd15896788ed9b597a6acaeb0f"
     },
     {
       "model_id": "yunet-2023mar",
@@ -77,14 +77,14 @@
         "album_hero_selection",
         "person_labeling"
       ],
-      "config_blake3": "cc2cbf43771a65174d8776a594aebefe265a1e9ad267927e7d6be5be0b5799af"
+      "config_blake3": "605b20366fd94f35873264c0d26be815528d61440b94f707981b286f3bf3ceec"
     },
     {
       "model_id": "scrfd-10g-bnkps",
       "config": "configs/scrfd-10g-bnkps.json",
       "task": "face_detection",
       "required_for": [],
-      "config_blake3": "0b877e7eb9bcca08c2398bd3f7b8a22b6315b029d8c5a55b23f87c36b5f98dd2"
+      "config_blake3": "86dd2bed896726d0db32db6487e8b837e99c1b8b881de54be8fce83afde0a598"
     },
     {
       "model_id": "arcface-buffalo-l",
@@ -94,7 +94,7 @@
         "face_clustering",
         "person_queries"
       ],
-      "config_blake3": "5814aa0d500092fbe16186f3344f0dc36b1c2196f3171620f4b4c317eabaa518"
+      "config_blake3": "f44a9ad952311f92b7d41459e79efa7b976e0ee62261338bd87518c334056a79"
     },
     {
       "model_id": "transnetv2",
@@ -104,7 +104,7 @@
         "moment_scoring",
         "reel_planning"
       ],
-      "config_blake3": "2d0b04d1c76ede20b9698fc8472040fe6286dc5441e743c9cb7d539ddb9c9c30"
+      "config_blake3": "b8294ac7f57e01a2cae016dba32230c209e380d1aed37331828571c45d15542b"
     },
     {
       "model_id": "laion-aesthetic-v2",
@@ -113,7 +113,7 @@
       "required_for": [
         "ranking"
       ],
-      "config_blake3": "9458aa250361a476a0eb4b8eda8865b34ef75fec07b6f7e2687c31a5aaf8b8e5"
+      "config_blake3": "b1804a336e78e538211c59b47832d89b0e1dc4c3b4606673dc739cb12ed5ea8a"
     },
     {
       "model_id": "musiq-spaq",
@@ -124,7 +124,7 @@
         "primary_selection",
         "album_selection"
       ],
-      "config_blake3": "4ca58a82b96b08e79254d5a9176c225e9ded6fe92681ebfc7528369e5acd1b44"
+      "config_blake3": "6542ef7ff828585bacf5da0aee6a2f00dfeeac11fea6b2feefd5344bcebff6e8"
     },
     {
       "model_id": "nsfw-siglip-head",
@@ -135,7 +135,7 @@
         "share_gating",
         "egress_gating"
       ],
-      "config_blake3": "566288d93610c2337bfb8d7e2c109bfc213b4413954c57e30251e869a5cfee40"
+      "config_blake3": "b36efbe44497f18e06b2754ec6ad31bdbc73b0185cede30a1c70269c14c2d757"
     },
     {
       "model_id": "paddleocr-mobile-det",
@@ -145,7 +145,7 @@
         "screenshot_exclusion",
         "document_exclusion"
       ],
-      "config_blake3": "29c201b2c9627bf67ef07860980f6f2e5b1db377bf8b5ffa0da6ab93a8d0bfc6"
+      "config_blake3": "d9d50db1834bf0d7b6e1bb59073f401c8038102bd4d5afa8510ab71052dee190"
     }
   ]
 }
