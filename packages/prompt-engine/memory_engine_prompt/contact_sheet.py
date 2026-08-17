@@ -1024,13 +1024,18 @@ def build_contact_sheet(
         )
 
     columns = min(policy.columns, len(items))
-    if columns > _COLUMNS_HARD_CEILING:
+    if columns > min(MAX_COLUMNS, _COLUMNS_HARD_CEILING):
         raise ContactSheetError(f"columns {columns} above the hard ceiling")
     rows = -(-len(items) // columns)
-    if rows > _ROWS_HARD_CEILING:
+    # Rows are derived rather than asked for, so unlike `columns` there is no
+    # policy field to validate. `min` of the public and private ceilings anyway:
+    # it keeps MAX_ROWS a constant that is actually enforced instead of one that
+    # documents a limit nothing checks.
+    row_ceiling = min(MAX_ROWS, _ROWS_HARD_CEILING)
+    if rows > row_ceiling:
         raise ContactSheetError(
             f"{len(items)} candidates over {columns} columns needs {rows} rows, above the "
-            f"hard ceiling of {_ROWS_HARD_CEILING}"
+            f"ceiling of {row_ceiling}"
         )
 
     tiles = [_decode_tile(candidate, cell_px) for candidate in items]
