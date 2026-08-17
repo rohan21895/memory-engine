@@ -55,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="path to the vendor's ICC profile; without it the print "
                              "renderer embeds a built-in CMYK profile under the "
                              "vendor's name, which is for development only")
+    parser.add_argument("--reel-seconds", type=float, default=_DEFAULTS.reel_seconds,
+                        help="how long the reel is asked to be; it ends on a cut "
+                             "point, so the realised length is usually shorter and "
+                             "the plan says by how much")
     parser.add_argument("--no-render-print", action="store_true")
     parser.add_argument("--no-render-video", action="store_true")
     parser.add_argument("--quiet", action="store_true",
@@ -75,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         album_target_count=args.album_photos,
         album_photos_per_page=args.photos_per_page,
         icc_profile_path=args.icc_profile,
+        reel_seconds=args.reel_seconds,
         render_print=not args.no_render_print,
         render_video=not args.no_render_video,
     )

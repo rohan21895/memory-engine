@@ -239,6 +239,22 @@ Open, and honest about it:
   measurement, untested code from an agent that did not finish is not evidence.
 - **No album has been rendered.** The Phase 2 exit gate — a real library
   producing a 32-page PDF that passes the validator — has not been met.
+- **The video path runs, and is missing four producers.** `services/pipeline`'s
+  `story` stage now drives 480p proxy → FeatureStream → `plan_moments` →
+  `plan_reel` → `render-video` and produces a playable file from a synthetic
+  library. What it does NOT have: a transcript backend (so **no cut is certified
+  word-safe** — the EDL carries no `no_mid_word_cut` finding at all), face and
+  smile detection, audio-event classification, and any bundled music (so **no cut
+  is beat-locked**; the <50ms downbeat gate in the build plan's success criteria
+  cannot be measured yet). All four are counted in the stage result and printed.
+- **`MediaRecord.video` is never populated.** `VideoProperties` exists in the
+  contract with `oriented_size`, `rotation_deg` and `is_variable_frame_rate`, and
+  `workers/ingest` writes null. The source's pixel geometry is therefore
+  unmeasured, which is why the reel disables reframing and targets the 480p
+  proxy raster rather than a 1080p master. This is the single change that would
+  make the reel a deliverable product rather than a proof the chain runs.
+- **No film planner exists.** `story-engine` plans reels only; the film planner
+  is a phase 5 item. The runner says so rather than relabelling a reel.
 - **No safety classifier is selected** (issue #21), so the release pipeline has
   no sensitive-content gate. That is a release blocker in its own right.
 - **SCRFD's letterbox padding value is unresolved** (issue #33). Two upstream

@@ -108,6 +108,12 @@ class Settings:
     album_target_count: int = 24
     album_photos_per_page: int = 1
 
+    # What the reel planner is ASKED for. Landing on a cut point matters more
+    # than hitting the number, so the realised length is usually shorter and the
+    # plan says by how much.
+    reel_seconds: float = 15.0
+    reel_loudness_lufs: float = -14.0
+
     render_print: bool = True
     render_video: bool = True
 

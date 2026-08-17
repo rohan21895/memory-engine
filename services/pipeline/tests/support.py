@@ -25,6 +25,7 @@ against the absence of this fake, not its presence.
 from __future__ import annotations
 
 import math
+import os
 import struct
 import sys
 import unittest
@@ -146,6 +147,59 @@ def make_library(
             )
         )
     return paths
+
+
+# --------------------------------------------------------------- clips -----
+
+
+def require_ffmpeg() -> str:
+    """The FFmpeg the story stage will use, or a skip.
+
+    A skip here is not the suite skipping its way to green: every number in a
+    feature stream comes out of a decode, so without FFmpeg there is no such
+    thing as a partially-correct run of this stage to assert against.
+    """
+    import shutil  # noqa: PLC0415
+
+    found = shutil.which(os.environ.get("MEMORY_ENGINE_FFMPEG", "ffmpeg"))
+    if found is None:
+        raise unittest.SkipTest("ffmpeg is not on PATH; the story stage cannot decode")
+    return found
+
+
+def write_clip(
+    path: Path,
+    *,
+    seconds: float = 2.0,
+    rate: int = 30,
+    size: tuple[int, int] = (640, 360),
+    tone_hz: int = 440,
+) -> Path:
+    """One small, deterministic clip with a picture that MOVES and a tone.
+
+    `testsrc2` rather than a still colour: the visual producers measure motion,
+    shake, sharpness and novelty, and a static frame drives every one of them to
+    the same value, so a stage that silently scored nothing would still look
+    plausible. The tone gives the audio producer something to measure.
+    """
+    import subprocess  # noqa: PLC0415
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        require_ffmpeg(),
+        "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", f"testsrc2=size={size[0]}x{size[1]}:rate={rate}",
+        "-f", "lavfi", "-i", f"sine=frequency={tone_hz}:sample_rate=48000",
+        "-t", str(seconds),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
+        "-c:a", "aac", "-b:a", "64k",
+        "-fps_mode", "passthrough",
+        str(path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0 or not path.is_file():
+        raise unittest.SkipTest(f"ffmpeg could not write a test clip: {result.stderr}")
+    return path
 
 
 # -------------------------------------------------------------- model host --

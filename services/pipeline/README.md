@@ -12,7 +12,12 @@ folder
   -> packages/ranking-engine    score fusion, near-duplicate grouping, primaries
   -> packages/album-engine      event clustering, selection, layout, print gate
   -> workers/render-print       PDF/X-4
-  -> workers/render-video       (probed; nothing here renders video yet)
+
+folder (video)
+  -> workers/ingest             generate_video_proxy: 480p + frame index
+  -> workers/video-analysis     visual, audio and shot producers -> FeatureStream
+  -> packages/story-engine      plan_moments -> MomentRecords -> plan_reel -> EDL
+  -> workers/render-video       EDL -> an .mp4
 ```
 
 It generalises `scripts/demo/run_demo.py`, which already did folder → ingest →
@@ -34,10 +39,16 @@ discovering halfway through:
 | ingest worker | `cd workers/ingest && cargo build --release` | ingest → `unavailable` |
 | model host | run `workers/ml-runtime`; point `--ml-runtime` or `$MEMORY_ENGINE_ML_RUNTIME` at it | analysis → `blocked` |
 | print renderer | `cd workers/render-print && npm install && npm run build` | render-print → `unavailable` |
-| video renderer | not wired | render-video → `unavailable` |
+| video renderer | `cd workers/render-video && npm install && npm run build` | render-video → `unavailable` |
+| ffmpeg / ffprobe | on `PATH` | story, render-video → `unavailable` |
 
-Useful flags: `--stages ingest,analysis`, `--rescan`, `--icc-profile PATH`,
-`--album-photos N`, `--quiet`.
+Useful flags: `--stages ingest,analysis`, `--stages story,render-video`,
+`--rescan`, `--icc-profile PATH`, `--album-photos N`, `--reel-seconds N`,
+`--quiet`.
+
+The run summary ends with a `produced` block listing every artifact by the stage
+that wrote it, or the words "produced nothing" — a summary that lists seven
+stages and no files reads as success to anyone skimming it.
 
 Exit codes are the contract with a caller:
 
@@ -150,20 +161,36 @@ quality → image embedding → face detection → fusion → dedupe → event c
   is therefore working with an empty face set: the validator's face checks pass
   vacuously, which is honest (no face is *known* to be in the trim zone) and is
   not the same as "checked and safe".
-* **Video.** Moment scoring needs a feature stream — per-frame motion, shake,
-  faces, audio events, transcript — and none of its producers is wired: no
-  `generate_video_proxy` call, no TransNetV2, no CLAP, no transcription. The
-  story stage reports `unavailable` and names each missing producer. Nothing is
-  synthesised: a real EDL full of moments that were never measured would render,
-  would look like a reel, and would be the worst output this system could make.
+* **Video, partly.** The chain 480p proxy → FeatureStream → `plan_moments` →
+  `plan_reel` → `render-video` runs end to end and produces a playable `.mp4`.
+  What is measured is measured; what is not is None all the way down, and
+  `plan_moments` renormalises the absences rather than reading them as zero.
+  Four producers are still missing and the stage names all four on every run:
+
+  | missing | consequence |
+  |---|---|
+  | transcription (faster-whisper) | word timings unknown, so **no cut is certified word-safe** and the EDL carries no `no_mid_word_cut` finding at all |
+  | face / smile detection (SCRFD) | `face_presence`, `max_face_area_ratio`, `smile_intensity` absent; the reel cannot prefer a face |
+  | audio events (CLAP) | `speech` and `noise` ratios absent; the wind-noise and duck-under-speech rules can never fire |
+  | beat detection | `music/library.json` bundles no audio, so there is no `BeatGrid` and **no cut in the reel is beat-locked** |
+
+  The last two are the ones a reader will otherwise assume, so both are counted
+  in the stage result (`beat_locked: 0`, `word_safe_cuts_certified: 0`) and
+  printed in the summary line.
+
+* **The film.** `packages/story-engine` has no film planner — the build plan
+  puts it in phase 5 with story-arc prompting and speech-aware trimming. The
+  story stage says so and plans only a reel. Relabelling a reel `kind: "film"`
+  would cost one line and would be a lie about the product.
 * **Tier 3.** No frontier-model call anywhere. Every JobSpec declares
   `requires_egress: false`.
 * **Enhancement ops.** No restoration, upscale or spread-level colour harmony.
 
 ## Cross-boundary changes made here, which Codex must review
 
-Both are in Codex's territory, taken under issue #48, and both are **blocking
-defects the print path could not work around**:
+Three, all taken under issue #48, all **blocking defects the path in question
+could not work around**. The third is in Claude's own package but it changes
+what `workers/render-video` sees, so it belongs on this list:
 
 1. **`workers/ingest/src/metadata.rs`** now reads `OffsetTimeOriginal` /
    `OffsetTimeDigitized` and resolves `captured_at.utc`. It previously left
@@ -185,8 +212,41 @@ defects the print path could not work around**:
    (`error_count == 0` plus passing evidence for each hard gate). It is still a
    hard gate with no override.
 
+3. **`packages/story-engine/memory_engine_story/reel.py`** emitted its
+   `reframe_aspect_matches_target` and `reframe_keyframes_ordered` findings only
+   when the plan carried a reframe track. `render-video` requires a PASSING
+   finding for both before it renders anything, so **every plan whose source
+   aspect already equals its target was unrenderable** — the ordinary 16:9
+   master, and any reel with reframing off — and the renderer's complaint was
+   about a missing check rather than about the absent crop that explained it.
+   Both findings are now always emitted, with a detail that states the vacuity.
+   `EdlValidation.checks` is the only place a consumer can distinguish "looked
+   and found nothing wrong" from "never looked", so the fix is on the planner
+   side rather than by relaxing the renderer.
+
 ## Known gaps, recorded rather than hidden
 
+* **`MediaRecord.video` is never populated, so the source geometry is
+  unmeasured.** `VideoProperties` (`oriented_size`, `rotation_deg`,
+  `is_variable_frame_rate`) exists in the contract for exactly this and
+  `workers/ingest` writes null. Two consequences, both taken rather than
+  guessed around: the reel disables reframing (a landscape→vertical crop needs
+  the source aspect ratio), and the render target is the **480p proxy raster**,
+  which is the only picture geometry anything here has measured. A 1080p master
+  needs the field filled in — an ingest change, not something to assume.
+* **One timeline rate and one geometry per reel.** `render-video` refuses a
+  source whose rate is not the timeline's rather than resampling it, so videos
+  are grouped by (exact rate, proxy raster) and the largest group is planned.
+  Everything else is reported as excluded with its rate and raster, never
+  silently dropped.
+* **The reel's ambient is planned at unity gain with no DSP.**
+  `AmbientSettings`' defaults (−14 dB, a 120 Hz high-pass, `light` noise
+  suppression) describe location sound sitting under a music bed; there is no
+  bed, so the ambient is the whole mix. The high-pass and the suppression label
+  are refused by `render-video` on contracts#53 in any case — the corner
+  frequency is pinned and the filter response is not. When a music track exists,
+  planning with the defaults is expected to be **refused**, and the stage
+  reports the refusal with its issue numbers rather than dropping the field.
 * **GoPro spans across a delta scan.** The Rust worker reconciles chapter
   assemblies across the outputs of ONE job, so a chaptered video whose later
   chapters arrive in a second scan is not re-assembled until `--rescan`. Fixing

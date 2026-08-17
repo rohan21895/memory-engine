@@ -8,7 +8,9 @@
       -> packages/ranking-engine      dedupe, primary selection, fusion
       -> packages/album-engine        clustering, selection, layout, validation
       -> workers/render-print         PDF/X-4
-      -> workers/render-video         (probed; not built here)
+      -> story                        480p proxies, feature streams, moments,
+                                      and a reel EDL
+      -> workers/render-video         EDL -> an .mp4
 
 FOUR PROPERTIES, AND WHERE EACH ONE IS ENFORCED
 
@@ -31,7 +33,7 @@ FOUR PROPERTIES, AND WHERE EACH ONE IS ENFORCED
    and human lines to the terminal, in real units, with `units_total` left null
    until it is genuinely known.
 
-STAGE ORDER IS A LIST, NOT A GRAPH. Six stages in a fixed order, each declaring
+STAGE ORDER IS A LIST, NOT A GRAPH. Seven stages in a fixed order, each declaring
 its dependencies through `ctx.require`. A general scheduler would be more
 impressive and would need a topological sort, a cycle check and a test suite of
 its own to earn the same guarantee this list gives by construction.
@@ -269,6 +271,19 @@ def format_report(report: RunReport) -> str:
         )
         for path in result.outputs:
             lines.append(f"      -> {path}")
+    lines.append("")
+    produced = [
+        (result.stage, path) for result in report.results for path in result.outputs
+    ]
+    if produced:
+        lines.append("  produced")
+        for stage, path in produced:
+            lines.append(f"    {stage:<14}{path}")
+    else:
+        # An empty artifact list is the normal outcome of a blocked run and it
+        # has to be said out loud. A summary that lists six stages and no files
+        # reads as success to anyone skimming it.
+        lines.append("  produced  nothing: no stage that ran writes a finished artifact")
     lines.append("")
     if report.ok:
         lines.append("  every stage that was asked for either did its work or had none to do.")

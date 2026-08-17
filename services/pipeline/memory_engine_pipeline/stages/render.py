@@ -49,6 +49,33 @@ VIDEO_STAGE = "render-video"
 _PRINT_ROOT = Path("workers/render-print")
 _PRINT_ENTRY = _PRINT_ROOT / "dist" / "workers" / "render-print" / "src" / "cli.js"
 _VIDEO_ROOT = Path("workers/render-video")
+_VIDEO_ENTRY = _VIDEO_ROOT / "dist" / "workers" / "render-video" / "src" / "cli.js"
+
+VIDEO_SUFFIX = ".mp4"
+
+# The delivery decision, stated in one place with nothing implicit.
+#
+# `RenderTarget` carries no encode profile at all (contracts#56) and the worker
+# refuses a job that leaves any of this out, deliberately, so that the codec a
+# file ends up in is a decision somebody made rather than a table hidden in a
+# renderer. libx264 in MP4 is what the worker's determinism suite covers
+# alongside FFV1/Matroska -- byte-identical output across work directories on
+# one FFmpeg build -- and it is the profile a person can actually play.
+#
+# `threads: 1` is not a performance choice. x264 slices a frame across threads
+# and the slice boundaries move with the thread count, so a multi-threaded
+# encode is only reproducible on a machine with the same core count.
+ENCODE_PROFILE: dict[str, Any] = {
+    "container": "mp4",
+    "scale_flags": "bicubic",
+    "threads": 1,
+    "video": {
+        "codec": "libx264",
+        "pix_fmt": "yuv420p",
+        "args": ["-preset", "medium", "-crf", "18"],
+    },
+    "audio": {"codec": "aac", "sample_fmt": "fltp", "args": ["-b:a", "192k"]},
+}
 
 
 def _node() -> str | None:
@@ -205,12 +232,26 @@ def _asset_paths(ctx: StageContext, album: dict[str, Any]) -> dict[str, str]:
 
 
 def run_video(ctx: StageContext) -> StageResult:
-    """`render-video` availability probe.
+    """EDL -> `workers/render-video` -> a file.
 
-    Written now so the wiring exists and the absence is reported rather than
-    discovered later. When the worker lands, this stage gets an EDL from a
-    story stage that also does not exist yet -- both are named in the run
-    summary as not-built, which is the honest position.
+    THE REFUSALS ARE THE INTERESTING PART OF THIS STAGE.
+
+    `render-video` sorts every declaration in a plan into renderable, refused
+    (contract gap), refused (not implemented here) and not-acted-upon, and it
+    refuses with the COMPLETE list and the issue number behind each entry. Those
+    refusals reach the run summary verbatim. There is no flag that turns one
+    into a warning and nothing here supplies a default to get past one: a gap
+    means the contract does not say what the picture or the mix should be, and a
+    renderer that guessed would produce a file that looks finished.
+
+    THE ENCODE PROFILE ARRIVES FROM HERE, FULLY EXPLICIT.
+
+    `RenderTarget` carries no codec, container, pixel format, rate control or
+    scaler (contracts#56), and the worker refuses a job that omits any of them
+    rather than keeping a destination-to-codec table where the delivery decision
+    would be invisible. So the profile is stated here, in one block, the same
+    way the ICC profile is stated for print. `-fflags +bitexact` and friends are
+    the worker's, not ours.
     """
     if not ctx.settings.render_video:
         return StageResult(
@@ -230,11 +271,171 @@ def run_video(ctx: StageContext) -> StageResult:
     upstream = ctx.require("story")
     if upstream is not None:
         return blocked_by(VIDEO_STAGE, upstream)
+
+    story_result = ctx.results.get("story")
+    if story_result is None or not story_result.outputs:
+        return StageResult(
+            stage=VIDEO_STAGE,
+            status=StageStatus.SKIPPED,
+            detail="the story stage produced no EDL to render",
+        )
+    edl_path = Path(story_result.outputs[0])
+    sources_path = edl_path.with_suffix(".sources.json")
+    if not edl_path.is_file() or not sources_path.is_file():
+        return StageResult(
+            stage=VIDEO_STAGE,
+            status=StageStatus.FAILED,
+            detail=(
+                f"the story stage named {edl_path} but the plan or its source map "
+                "is not on disk"
+            ),
+        )
+
+    node = _node()
+    entry = ctx.repo_root / _VIDEO_ENTRY
+    if node is None:
+        return StageResult(
+            stage=VIDEO_STAGE,
+            status=StageStatus.UNAVAILABLE,
+            detail="node is not on PATH, so the video renderer cannot run",
+        )
+    if not entry.is_file():
+        return StageResult(
+            stage=VIDEO_STAGE,
+            status=StageStatus.UNAVAILABLE,
+            detail=(
+                "the video renderer is not built. "
+                f"cd {ctx.repo_root / _VIDEO_ROOT} && npm install && npm run build"
+            ),
+        )
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        return StageResult(
+            stage=VIDEO_STAGE,
+            status=StageStatus.UNAVAILABLE,
+            detail="ffmpeg and ffprobe are not both on PATH; nothing can be encoded",
+        )
+
+    edl = json.loads(edl_path.read_text(encoding="utf-8"))
+    sources = json.loads(sources_path.read_text(encoding="utf-8"))
+    missing = [
+        media_id for media_id, entry_ in sources.items()
+        if not all(Path(path).is_file() for path in entry_.get("paths") or [])
+    ]
+    if missing:
+        return StageResult(
+            stage=VIDEO_STAGE,
+            status=StageStatus.FAILED,
+            detail=(
+                f"{len(missing)} source file(s) the plan names are not on disk; the "
+                "renderer will not substitute black and neither will this stage"
+            ),
+        )
+
+    edl_id = edl["edl_id"]
+    output = ctx.workdir / "outputs" / "video" / f"{edl_id}{VIDEO_SUFFIX}"
+    work_directory = ctx.workdir / "outputs" / "video" / "work"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    work_directory.mkdir(parents=True, exist_ok=True)
+
+    params: dict[str, Any] = {
+        "output_path": str(output),
+        "work_directory": str(work_directory),
+        "sources": sources,
+        "encode": ENCODE_PROFILE,
+        "ffmpeg_path": shutil.which("ffmpeg"),
+        "ffprobe_path": shutil.which("ffprobe"),
+    }
+    job = build_job(
+        job_type="render_video",
+        scope=ctx.settings.scope,
+        params=params,
+        media_ids=sorted(sources),
+        priority=200,
+        requirements={"requires_source_file": True, "min_disk_mb": 2048},
+    )
+    job["inputs"]["edl_id"] = edl_id
+    stored = ctx.jobs.get(job["job_id"])
+    if stored is not None:
+        stored["inputs"]["edl_id"] = edl_id
+        job = stored
+    else:
+        ctx.jobs.put(job)
+    if job["state"]["status"] == "completed" and output.is_file():
+        return StageResult(
+            stage=VIDEO_STAGE,
+            status=StageStatus.SKIPPED,
+            detail="this EDL has already been rendered",
+            job_id=job["job_id"],
+            outputs=(str(output),),
+        )
+
+    job = ctx.jobs.begin(job)
+    ctx.reporter.event(
+        VIDEO_STAGE,
+        "stage_start",
+        f"rendering {edl['kind']} {edl_id[:12]} from {len(sources)} source(s)",
+    )
+
+    job_file = ctx.path("render-video", f"{job['job_id']}.json")
+    write_json_atomically(job_file, job)
+    process = subprocess.run(  # noqa: S603
+        [node, str(entry), "run", str(job_file), str(edl_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    written = json.loads(job_file.read_text(encoding="utf-8"))
+    ctx.jobs.put(written)
+
+    # Every declaration the worker executed under a stated convention, and every
+    # one it recorded without executing, comes back on stderr. Dropping them
+    # would make a render that ignored a marker look identical to one that
+    # honoured it.
+    for line in (process.stderr or "").splitlines():
+        if line.startswith(("not acted upon:", "interpreted:")):
+            ctx.reporter.event(VIDEO_STAGE, "note", line)
+
+    if process.returncode != 0 or written["state"]["status"] != "completed":
+        error = written.get("error") or {}
+        detail = error.get("message") or (process.stderr or "").strip() or "render failed"
+        ctx.reporter.event(VIDEO_STAGE, "stage_failed", detail)
+        return StageResult(
+            stage=VIDEO_STAGE,
+            status=StageStatus.FAILED,
+            detail=detail,
+            job_id=job["job_id"],
+            counts={"edl_id": edl_id, "refusal_code": error.get("code")},
+        )
+
+    report = _last_json_object(process.stdout)
+    verification = report.get("verification") or {}
+    byte_size = output.stat().st_size if output.is_file() else 0
+    counts = {
+        "edl_id": edl_id,
+        "frames": verification.get("frameCount"),
+        "resolution": f"{verification.get('width')}x{verification.get('height')}",
+        "frame_rate": verification.get("frameRate"),
+        "byte_size": byte_size,
+        "command_graph_digest": report.get("command_graph_digest"),
+        "at": utc_now(),
+    }
+    ctx.reporter.event(VIDEO_STAGE, "stage_done", f"wrote {output.name}")
     return StageResult(
         stage=VIDEO_STAGE,
-        status=StageStatus.UNAVAILABLE,
-        detail=(
-            "workers/render-video is present but this runner has no wiring for it yet; "
-            "the EDL-producing story stage is not implemented"
-        ),
+        status=StageStatus.COMPLETED,
+        detail=f"{edl['kind']} written to {output}",
+        job_id=job["job_id"],
+        outputs=(str(output),),
+        counts=counts,
     )
+
+
+def _last_json_object(stdout: str) -> dict[str, Any]:
+    text = (stdout or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
