@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memory-engine-video-analysis"
+version = "0.1.0"
+description = "Video feature producers: proxy features, shot boundaries, audio loudness, FeatureStream assembly."
+requires-python = ">=3.12"
+# FFmpeg and FFprobe are required and are not Python packages: every pixel and
+# every sample this worker measures comes through them. `decode.ToolMissing`
+# says so by name rather than failing somewhere further in.
+dependencies = [
+  "numpy",
+  "blake3",
+  "jsonschema",
+  "referencing",
+]
+
+[project.scripts]
+memory-engine-video-analysis = "memory_engine_video_analysis.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["memory_engine_video_analysis*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
