@@ -8,14 +8,20 @@ use std::{
 };
 
 use chrono::Utc;
-use memory_engine_contracts::{JobSpec, MediaRecord, ProxyRefKind};
+use memory_engine_contracts::JobSpec;
 use memory_engine_ingest::{
     execute_scan_batch, source_locator_digest, CheckpointStore, ScanReport,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{ipc::Channel, AppHandle, Manager, State};
-use walkdir::WalkDir;
+
+mod media_query;
+
+use media_query::{
+    cache_proxy, proxy_cache_directory, LibraryPage, LibraryStats, MediaQueryGateway, PeoplePage,
+    ProxyAsset,
+};
 
 const SCAN_BATCH_SIZE: usize = 24;
 
@@ -37,31 +43,27 @@ struct ScanSummary {
     complete: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LibraryItem {
-    media_id: String,
-    kind: String,
-    thumbnail_path: Option<String>,
-    filename: String,
-    captured_at: Option<String>,
-    favorite: bool,
-    width: Option<i64>,
-    height: Option<i64>,
-    processing_state: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LibraryPage {
-    items: Vec<LibraryItem>,
-    total: usize,
-    offset: usize,
-    has_more: bool,
-}
-
 #[derive(Clone, Default)]
 struct ScanControl(Arc<AtomicBool>);
+
+#[derive(Clone, Default)]
+struct MediaQueryState(Option<MediaQueryGateway>);
+
+impl MediaQueryState {
+    fn from_environment() -> Self {
+        let gateway = std::env::var("MEMORY_ENGINE_MEDIA_QUERY_ENDPOINT")
+            .ok()
+            .and_then(|endpoint| MediaQueryGateway::new(&endpoint).ok());
+        Self(gateway)
+    }
+
+    fn gateway(&self) -> Result<MediaQueryGateway, String> {
+        self.0.clone().ok_or_else(|| {
+            "Photeo's local library index has not started yet. Your originals and saved scan progress are safe."
+                .to_owned()
+        })
+    }
+}
 
 #[tauri::command]
 async fn start_scan(
@@ -88,34 +90,41 @@ fn cancel_scan(control: State<'_, ScanControl>) {
 }
 
 #[tauri::command]
-fn library_page(
-    app: AppHandle,
+async fn library_page(
     query: String,
-    offset: usize,
+    cursor: Option<String>,
     limit: usize,
+    media_query: State<'_, MediaQueryState>,
 ) -> Result<LibraryPage, String> {
-    let paths = library_paths(&app)?;
-    let mut items = read_library(&paths.output, &query)?;
-    items.sort_by(|left, right| {
-        right
-            .captured_at
-            .cmp(&left.captured_at)
-            .then_with(|| left.filename.cmp(&right.filename))
-    });
-    let total = items.len();
-    let limit = limit.clamp(1, 240);
-    let page = items
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
-    let has_more = offset.saturating_add(page.len()) < total;
-    Ok(LibraryPage {
-        items: page,
-        total,
-        offset,
-        has_more,
+    media_query
+        .gateway()?
+        .list_media(&query, cursor, limit)
+        .await
+}
+
+#[tauri::command]
+async fn proxy_asset(
+    app: AppHandle,
+    proxy_id: String,
+    media_query: State<'_, MediaQueryState>,
+) -> Result<ProxyAsset, String> {
+    let (bytes, media_type, digest) = media_query.gateway()?.proxy_bytes(&proxy_id).await?;
+    let directory = proxy_cache_directory(&library_paths(&app)?.output);
+    tauri::async_runtime::spawn_blocking(move || {
+        cache_proxy(&directory, &bytes, &media_type, &digest)
     })
+    .await
+    .map_err(|_| "Photeo could not finish caching that private preview.".to_owned())?
+}
+
+#[tauri::command]
+async fn people_page(media_query: State<'_, MediaQueryState>) -> Result<PeoplePage, String> {
+    media_query.gateway()?.people_page(48).await
+}
+
+#[tauri::command]
+async fn library_stats(media_query: State<'_, MediaQueryState>) -> Result<LibraryStats, String> {
+    media_query.gateway()?.stats().await
 }
 
 struct LibraryPaths {
@@ -318,106 +327,6 @@ fn progress_total(job: &JobSpec) -> Option<usize> {
         .map(|total| total.max(0.0) as usize)
 }
 
-fn read_library(output_dir: &Path, query: &str) -> Result<Vec<LibraryItem>, String> {
-    let records = output_dir.join("records");
-    if !records.exists() {
-        return Ok(Vec::new());
-    }
-    let query = query.trim().to_lowercase();
-    let mut items = Vec::new();
-    for entry in WalkDir::new(records).into_iter().filter_map(Result::ok) {
-        if !entry.file_type().is_file()
-            || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
-        {
-            continue;
-        }
-        let Ok(bytes) = fs::read(entry.path()) else {
-            continue;
-        };
-        let Ok(record) = serde_json::from_slice::<MediaRecord>(&bytes) else {
-            continue;
-        };
-        let item = library_item(&record);
-        if query.is_empty() || search_text(&record, &item).contains(&query) {
-            items.push(item);
-        }
-    }
-    Ok(items)
-}
-
-fn library_item(record: &MediaRecord) -> LibraryItem {
-    let source = record.sources.iter().find(|source| source.present);
-    let filename = source
-        .and_then(|source| source.original_filename.clone())
-        .or_else(|| {
-            source.and_then(|source| {
-                Path::new(&source.path)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
-        })
-        .unwrap_or_else(|| "Untitled memory".to_owned());
-    let thumbnail_path = record.proxies.as_ref().and_then(|proxies| {
-        proxies
-            .iter()
-            .find(|proxy| proxy.kind == ProxyRefKind::Thumbnail512)
-            .map(|proxy| proxy.path.clone())
-    });
-    let size = record
-        .image
-        .as_ref()
-        .map(|image| &image.oriented_size)
-        .or_else(|| record.video.as_ref().map(|video| &video.oriented_size));
-    LibraryItem {
-        media_id: record.media_id.clone(),
-        kind: enum_string(&record.kind),
-        thumbnail_path,
-        filename,
-        captured_at: record
-            .capture
-            .captured_at
-            .utc
-            .clone()
-            .or_else(|| record.capture.captured_at.local.clone()),
-        favorite: record
-            .user
-            .as_ref()
-            .and_then(|user| user.favorite)
-            .unwrap_or(false),
-        width: size.map(|size| size.width),
-        height: size.map(|size| size.height),
-        processing_state: enum_string(&record.processing.state),
-    }
-}
-
-fn search_text(record: &MediaRecord, item: &LibraryItem) -> String {
-    let mut parts = vec![item.filename.clone()];
-    if let Some(user) = &record.user {
-        parts.extend(user.tags.clone().unwrap_or_default());
-        if let Some(caption) = &user.caption {
-            parts.push(caption.clone());
-        }
-    }
-    if let Some(content) = &record.content {
-        parts.extend(
-            content
-                .tags
-                .as_ref()
-                .into_iter()
-                .flatten()
-                .map(|tag| tag.label.clone()),
-        );
-    }
-    parts.join(" ").to_lowercase()
-}
-
-fn enum_string<T: Serialize>(value: &T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".to_owned())
-}
-
 fn redacted_io_error(_: std::io::Error) -> String {
     "Photeo could not open its private library folder.".to_owned()
 }
@@ -427,10 +336,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(ScanControl::default())
+        .manage(MediaQueryState::from_environment())
         .invoke_handler(tauri::generate_handler![
             start_scan,
             cancel_scan,
-            library_page
+            library_page,
+            proxy_asset,
+            people_page,
+            library_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running Photeo");
@@ -440,29 +353,6 @@ pub fn run() {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    #[test]
-    fn generated_fixture_becomes_a_library_item() {
-        let record: MediaRecord = serde_json::from_str(include_str!(
-            "../../../../contracts/fixtures/media-record/valid/image-whatsapp-filename-date.json"
-        ))
-        .expect("golden MediaRecord");
-        let item = library_item(&record);
-        assert_eq!(item.kind, "image");
-        assert!(item.filename.contains("WA"));
-        assert!(item.captured_at.is_some());
-    }
-
-    #[test]
-    fn search_uses_contract_fields_without_touching_original_bytes() {
-        let record: MediaRecord = serde_json::from_str(include_str!(
-            "../../../../contracts/fixtures/media-record/valid/image-beach-sunset.json"
-        ))
-        .expect("golden MediaRecord");
-        let item = library_item(&record);
-        let haystack = search_text(&record, &item);
-        assert!(haystack.contains("sunset"));
-    }
 
     #[test]
     fn desktop_job_runs_the_real_resumable_ingest_pipeline() {
@@ -485,6 +375,12 @@ mod tests {
         assert!(report.complete);
         assert_eq!(report.processed, 1);
         assert_eq!(report.quarantined, 1);
-        assert_eq!(read_library(&output, "").expect("library").len(), 1);
+        assert!(job.outputs.as_ref().into_iter().flatten().any(|item| {
+            item.kind == memory_engine_contracts::JobOutputKind::MediaRecord
+                && item
+                    .path
+                    .as_ref()
+                    .is_some_and(|path| Path::new(path).exists())
+        }));
     }
 }
