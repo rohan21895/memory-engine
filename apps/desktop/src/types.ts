@@ -15,18 +15,64 @@ export type ScanSummary = {
 export type LibraryItem = {
   mediaId: string;
   kind: "image" | "video" | "live_photo" | "motion_photo" | "audio" | "sidecar" | "unknown";
-  thumbnailPath: string | null;
-  filename: string;
-  capturedAt: string | null;
+  thumbnailProxyId: string | null;
+  width: number;
+  height: number;
+  capturedUnix: number | null;
+  capturePrecision: string;
+  quality: number | null;
+  qualityIsComparable: boolean;
   favorite: boolean;
-  width: number | null;
-  height: number | null;
-  processingState: string;
+  rejected: boolean;
+  sensitive: boolean;
+  safetyUnknown: boolean;
+  personIds: string[];
+  spanId: string | null;
+  durationMs: number | null;
 };
 
 export type LibraryPage = {
   items: LibraryItem[];
   total: number;
-  offset: number;
+  nextCursor: string | null;
   hasMore: boolean;
+};
+
+export type ProxyAsset = {
+  path: string;
+  mediaType: string;
+  blake3: string;
+};
+
+export type Person = {
+  personId: string;
+  displayName: string;
+  confirmedFaceCount: number;
+  coverProxyId: string | null;
+  isMinor: boolean;
+};
+
+export type FaceBox = { x: number; y: number; w: number; h: number };
+
+export type ReviewItem = {
+  faceId: string;
+  mediaId: string;
+  proxyId: string | null;
+  faceBox: FaceBox | null;
+  candidatePersonId: string | null;
+  similarity: number;
+};
+
+export type PeoplePage = {
+  people: Person[];
+  reviewItems: ReviewItem[];
+};
+
+export type LibraryStats = {
+  mediaCount: number;
+  proxyCount: number;
+  personCount: number;
+  reviewQueueDepth: number;
+  mediaAwaitingAnalysis: number;
+  mediaAwaitingProxies: number;
 };

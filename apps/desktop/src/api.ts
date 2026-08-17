@@ -1,6 +1,13 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { LibraryPage, ScanSummary, ScanUpdate } from "./types";
+import type {
+  LibraryPage,
+  LibraryStats,
+  PeoplePage,
+  ProxyAsset,
+  ScanSummary,
+  ScanUpdate,
+} from "./types";
 
 function inDesktopApp(): boolean {
   return "__TAURI_INTERNALS__" in window;
@@ -31,13 +38,28 @@ export async function cancelScan(): Promise<void> {
 
 export async function loadLibrary(
   query = "",
-  offset = 0,
+  cursor: string | null = null,
   limit = 120,
 ): Promise<LibraryPage> {
   if (!inDesktopApp()) {
-    return { items: [], total: 0, offset: 0, hasMore: false };
+    return { items: [], total: 0, nextCursor: null, hasMore: false };
   }
-  return invoke<LibraryPage>("library_page", { query, offset, limit });
+  return invoke<LibraryPage>("library_page", { query, cursor, limit });
+}
+
+export async function loadProxyAsset(proxyId: string): Promise<ProxyAsset> {
+  if (!inDesktopApp()) throw new Error("Private previews are available in the desktop app.");
+  return invoke<ProxyAsset>("proxy_asset", { proxyId });
+}
+
+export async function loadPeoplePage(): Promise<PeoplePage> {
+  if (!inDesktopApp()) return { people: [], reviewItems: [] };
+  return invoke<PeoplePage>("people_page");
+}
+
+export async function loadLibraryStats(): Promise<LibraryStats | null> {
+  if (!inDesktopApp()) return null;
+  return invoke<LibraryStats>("library_stats");
 }
 
 export function localAssetUrl(path: string | null): string | null {

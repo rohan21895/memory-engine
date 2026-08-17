@@ -8,14 +8,45 @@ export function formatCount(value: number): string {
   return new Intl.NumberFormat(undefined).format(value);
 }
 
-export function monthLabel(value: string | null): string {
-  if (!value) return "Date unknown";
-  const date = new Date(value);
+function captureDate(value: number | null): Date | null {
+  if (value === null) return null;
+  const date = new Date(value * 1_000);
+  return Number.isNaN(date.valueOf()) ? null : date;
+}
+
+export function monthLabel(value: number | null, precision = "unknown"): string {
+  const date = captureDate(value);
+  if (!date || precision === "unknown") return "Date unknown";
+  if (precision === "year") return new Intl.DateTimeFormat(undefined, { year: "numeric" }).format(date);
   if (Number.isNaN(date.valueOf())) return "Date unknown";
   return new Intl.DateTimeFormat(undefined, {
     month: "long",
     year: "numeric",
   }).format(date);
+}
+
+export function captureLabel(value: number | null, precision = "unknown"): string {
+  const date = captureDate(value);
+  if (!date || precision === "unknown") return "Date unknown";
+  if (precision === "year") return new Intl.DateTimeFormat(undefined, { year: "numeric" }).format(date);
+  if (precision === "month") {
+    return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(date);
+  }
+  const options: Intl.DateTimeFormatOptions = { day: "numeric", month: "short", year: "numeric" };
+  if (["hour", "minute", "second"].includes(precision)) {
+    options.hour = "numeric";
+    if (precision !== "hour") options.minute = "2-digit";
+    if (precision === "second") options.second = "2-digit";
+  }
+  return new Intl.DateTimeFormat(undefined, options).format(date);
+}
+
+export function durationLabel(value: number | null): string | null {
+  if (value === null || value < 0) return null;
+  const totalSeconds = Math.round(value / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 export function scanPercent(done: number, total: number | null): number | null {
