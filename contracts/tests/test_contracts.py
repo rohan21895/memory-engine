@@ -84,7 +84,10 @@ class TestSchemasWellFormed(unittest.TestCase):
             with self.subTest(schema=name):
                 Draft202012Validator.check_schema(document)
 
-    def test_all_seven_contract_schemas_exist(self):
+    def test_every_contract_schema_exists(self):
+        """Eight now. SafetyClearance joined the original seven because a
+        publication gate that lives only in code is a gate one caller can
+        bypass -- see contracts/schemas/safety-clearance.schema.json."""
         expected = {
             "media-record",
             "face-record",
@@ -93,6 +96,7 @@ class TestSchemasWellFormed(unittest.TestCase):
             "album-spec",
             "job-spec",
             "pref-event",
+            "safety-clearance",
         }
         self.assertEqual(expected, set(MANIFEST["schemas"]))
         for filename in MANIFEST["schemas"].values():
@@ -907,6 +911,74 @@ def check_pref_event(event: dict) -> list[str]:
     return problems
 
 
+def check_safety_clearance(doc: dict) -> list[str]:
+    """Cross-field invariants for the publication gate.
+
+    The schema can express "cleared implies zero indeterminate" but not
+    arithmetic, and the arithmetic is where a forged summary would hide: a
+    verifier that trusted `decision` over `items` would publish the very photo
+    the manifest says was never checked.
+    """
+    problems: list[str] = []
+    items = doc["items"]
+    decision = doc["decision"]
+
+    counts = {"cleared": 0, "blocked": 0, "indeterminate": 0}
+    for item in items:
+        counts[item["verdict"]] += 1
+
+    if decision["item_count"] != len(items):
+        problems.append(
+            f"decision.item_count {decision['item_count']} but {len(items)} items"
+        )
+    for verdict, key in (("cleared", "cleared_count"),
+                         ("blocked", "blocked_count"),
+                         ("indeterminate", "indeterminate_count")):
+        if decision[key] != counts[verdict]:
+            problems.append(
+                f"decision.{key} says {decision[key]} but {counts[verdict]} items are {verdict}"
+            )
+
+    # Duplicate media ids make the manifest ambiguous: two entries for one photo
+    # can disagree, and which one a verifier honours becomes an accident of
+    # iteration order.
+    ids = [item["media_id"] for item in items]
+    if len(set(ids)) != len(ids):
+        problems.append("duplicate media_id in items; the manifest is ambiguous")
+
+    # The rule everything else protects, checked arithmetically as well as
+    # conditionally: an unchecked item denies the whole publication.
+    unresolved = [
+        item["media_id"] for item in items
+        if item["verdict"] == "indeterminate"
+        or (item["verdict"] == "blocked" and not item.get("override"))
+    ]
+    if decision["cleared_for_publication"] and unresolved:
+        problems.append(
+            f"cleared_for_publication is true while {len(unresolved)} items are "
+            "unresolved (indeterminate, or blocked with no override)"
+        )
+    if not decision["cleared_for_publication"] and not unresolved:
+        problems.append(
+            "cleared_for_publication is false but every item is resolved; a "
+            "denial nobody can explain is a denial nobody will trust"
+        )
+
+    # A verdict produced by a permissive host must not clear a real publication.
+    load_mode = doc["classifier"].get("load_mode")
+    if (
+        load_mode == "development"
+        and decision["cleared_for_publication"]
+        and doc["sink"] in {"print", "share", "frontier_egress"}
+    ):
+        problems.append(
+            f"a development-mode classifier cleared a {doc['sink']} publication; "
+            "unpinned weights must not clear anything irreversible"
+        )
+
+    return problems
+
+
 CHECKS = {
     "media-record": check_media_record,
     "face-record": check_face_record,
@@ -915,6 +987,7 @@ CHECKS = {
     "album-spec": check_album_spec,
     "job-spec": check_job_spec,
     "pref-event": check_pref_event,
+    "safety-clearance": check_safety_clearance,
 }
 
 
@@ -1373,7 +1446,7 @@ class TestGeneratedBindings(unittest.TestCase):
 
         self.assertEqual(
             {"MediaRecord", "FaceRecord", "MomentRecord", "EDL", "AlbumSpec", "JobSpec",
-             "PrefEvent"},
+             "PrefEvent", "SafetyClearance"},
             set(ROOT_MODELS),
         )
 

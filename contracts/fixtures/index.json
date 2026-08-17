@@ -13,7 +13,8 @@
     "edl": "edl.schema.json",
     "album-spec": "album-spec.schema.json",
     "job-spec": "job-spec.schema.json",
-    "pref-event": "pref-event.schema.json"
+    "pref-event": "pref-event.schema.json",
+    "safety-clearance": "safety-clearance.schema.json"
   },
   "fixtures": [
     {
@@ -496,6 +497,47 @@
         "deliberation time recorded as evidence strength",
         "local-only: person ids present, so shareable_for_global_model is false"
       ]
+    },
+    {
+      "path": "safety-clearance/schema-invalid/cleared-while-indeterminate.json",
+      "schema": "safety-clearance",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "decision",
+        "indeterminate_count"
+      ],
+      "rejected_by": "schema_conditional",
+      "purpose": "A manifest claiming the publication is cleared while its own item counts say one item is indeterminate. The aggregate must never be able to contradict the items it summarises: a verifier that trusted the summary would publish the unchecked photo."
+    },
+    {
+      "path": "safety-clearance/schema-invalid/override-on-indeterminate-item.json",
+      "schema": "safety-clearance",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "items",
+        1,
+        "override"
+      ],
+      "rejected_by": "schema_conditional",
+      "purpose": "THE SINGLE MOST IMPORTANT RULE IN THE CONTRACT. Somebody tries to override an item nobody classified. 'Nobody checked' and 'somebody checked and disagreed' are different states and only the second is a decision -- so a missing verdict cannot be waved through by a flag, a default, or a well-meaning human. Enforced in the schema rather than only in code, because one caller passing an override would otherwise silently reopen the hole."
+    },
+    {
+      "path": "safety-clearance/valid/frontier-egress-blocked-by-indeterminate.json",
+      "schema": "safety-clearance",
+      "expectation": "valid",
+      "purpose": "THE CASE THE DESIGN EXISTS FOR. The classifier could not be loaded, so one item has no verdict, and the publication is denied. A VALID manifest that DENIES -- the distinction matters, because the failure this prevents is a check that silently no-ops when its model is missing and lets everything downstream read the absence as a pass. Note the sink is frontier_egress, the one path where imagery leaves the device and the only irreversible one."
+    },
+    {
+      "path": "safety-clearance/valid/print-run-fully-cleared.json",
+      "schema": "safety-clearance",
+      "expectation": "valid",
+      "purpose": "The ordinary case: every item cleared, so the book may be printed. Here mainly so the two rejections below are not the only shapes anyone reads."
+    },
+    {
+      "path": "safety-clearance/valid/print-run-with-human-override.json",
+      "schema": "safety-clearance",
+      "expectation": "valid",
+      "purpose": "A parent overriding a positive result on a breastfeeding photo scored medical_or_artistic. The classifier does not get a veto over a family's judgement about their own photographs; the override is attributable and scoped to this item and this sink only."
     }
   ]
 }
