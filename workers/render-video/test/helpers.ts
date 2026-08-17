@@ -163,6 +163,8 @@ const ALL_PASSING: EdlValidationChecksItemCheckId[] = [
   "reframe_keyframes_ordered",
   "duration_within_max",
   "music_license_covers_destination",
+  "music_cues_placed_once",
+  "time_effect_extent_derived",
   "beat_alignment_within_tolerance",
   "determinism_digest_present",
 ];

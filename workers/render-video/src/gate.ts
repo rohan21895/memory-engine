@@ -200,6 +200,23 @@ export function assertStructurallySound(edl: EDL): void {
         "requires the validator's verdict.",
     );
   }
+  if (hasMusic && !validation.checks.some((c) => c.check_id === "music_cues_placed_once" && c.passed)) {
+    fail(
+      "the EDL carries music but validation has no passing music_cues_placed_once finding. " +
+        "The bed is placed on a track and licensed by a cue (contracts#59); the validator has " +
+        "to have checked that the two agree before the mixer sums anything.",
+    );
+  }
+  const retimed = edl.tracks.some((track) =>
+    track.items.some((item) => isClip(item) && item.time_effect != null),
+  );
+  if (retimed && !validation.checks.some((c) => c.check_id === "time_effect_extent_derived" && c.passed)) {
+    fail(
+      "the EDL carries a time effect but validation has no passing time_effect_extent_derived " +
+        "finding. A retimed clip's timeline extent is derived from source_range (contracts#50), " +
+        "and an unchecked plan is where the two readings of that field diverge.",
+    );
+  }
 }
 
 function gapsFromClip(clip: Clip, audioPlan: AudioPlan | null | undefined, out: ContractGap[]): void {

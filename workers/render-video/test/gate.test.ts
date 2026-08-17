@@ -133,6 +133,23 @@ describe("the gate refuses a plan that contradicts itself", () => {
     expect(() => assertStructurallySound(edl)).toThrow(/timeline_contiguous/);
   });
 
+  it("refuses a retimed plan whose validator never checked the derived extent", () => {
+    const edl = simpleEdl();
+    const clip = edl.tracks[0]!.items[0] as Clip;
+    clip.source_range = range(SOURCE_ORIGIN, 30);
+    clip.time_effect = {
+      kind: "linear_speed",
+      time_scalar: 0.5,
+      freeze_at: null,
+      hold_duration: null,
+      audio_handling: "mute",
+    };
+    edl.validation!.checks = edl.validation!.checks.filter(
+      (check) => check.check_id !== "time_effect_extent_derived",
+    );
+    expect(() => assertStructurallySound(edl)).toThrow(/time_effect_extent_derived/);
+  });
+
   it("refuses a second video layer rather than compositing on a guess", () => {
     const edl = simpleEdl();
     edl.tracks.push({ ...edl.tracks[0]!, track_id: "v2" });
