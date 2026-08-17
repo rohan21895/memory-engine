@@ -44,7 +44,20 @@ FIVE DECISIONS, AND WHAT THE ALTERNATIVES LOOK LIKE
      * when a fallback boundary (a segment edge, with no snap in range) does
        land inside a word, it is pushed OUT to the next whole frame past the
        word — `math.ceil` for an in-point, `math.floor` for an out-point, so
-       rounding can never move a boundary back into the word it just escaped.
+       rounding can never move a boundary back into the word it just escaped;
+     * the guarantee is exact on the COMPUTED boundary. The RECORDED one is
+       quantised: `start_time` and `duration` are each rounded to six decimals
+       independently, so an out-point reconstructed as start + duration can sit
+       up to 1e-6 frames (33 ns at 30fps) inside a word it lands exactly on the
+       edge of. That is the storage precision RationalTime declares, not a cut;
+       `test_no_default_policy_stream_ever_emits_a_mid_word_boundary` pins the
+       bound there, and before the duration clamps were fixed the same
+       measurement read 18 FRAMES;
+     * and WORD SAFETY OUTRANKS THE DURATION BOUNDS. `min_moment_seconds` and
+       `max_moment_seconds` are satisfied only by word-safe positions. When no
+       word-safe position satisfies both, the moment is DROPPED as `too_short`
+       with an eliminated record rather than emitted with an illegal boundary.
+       The reasoning is in `_finalise`, where the clamps live.
 
 3. HAND-WEIGHTED LINEAR FUSION, SAME SHAPE AS packages/ranking-engine/fusion.py.
    Missing signals renormalise rather than defaulting (defaulting to 0 punishes
@@ -86,10 +99,16 @@ FIVE DECISIONS, AND WHAT THE ALTERNATIVES LOOK LIKE
 DETERMINISM
 Same stream + same policy + same weights = identical records, byte for byte.
 Every iteration is over a sorted sequence, every tie is broken explicitly (score
-then start time then id), every float that reaches a record is quantised to six
-decimals, and no output ever depends on dict or set iteration order. "Same plan
-= identical render" (CLAUDE.md hard rule 3) is only true if the plan itself is
-reproducible.
+then start time then id), every MEASURED float that reaches a record is
+quantised to six decimals, and no output ever depends on dict or set iteration
+order. "Same plan = identical render" (CLAUDE.md hard rule 3) is only true if
+the plan itself is reproducible.
+
+The one float deliberately NOT quantised is `RationalTime.rate`, which is
+carried through exactly. 30000/1001 is 29.97002997002997, and rounding it to
+29.97 would make every derived source timecode drift — the rate is an exact
+input, not a measurement, and quantising it would be the corruption rather than
+the protection.
 
 IDS
 `moment_id` is BLAKE3 over (media_id, source_range, scorer model_id+version), as
@@ -158,6 +177,20 @@ ELIMINATION_ORDER = (
 # Used for the local emotional-peak approximation and for the L-cut test.
 PEAK_EVENT_LABELS = frozenset(
     {"laughter", "cheering", "applause", "singing", "shouting", "fireworks"}
+)
+
+# MomentRecord.features.audio.events[].label is a CLOSED enum in
+# contracts/schemas/moment-record.schema.json. It is mirrored here because the
+# label is written straight into the record: a CLAP head fine-tuned on a
+# different taxonomy emits "dog_bark", the record is built without complaint,
+# and the failure surfaces at storage or at the Codex boundary, far from the
+# cause. `other` exists in the enum precisely so an unmapped label has somewhere
+# legal to go — the mapping belongs upstream, and refusing here is what forces
+# it to be written.
+AUDIO_EVENT_LABELS = frozenset(
+    {"laughter", "cheering", "applause", "crying", "singing", "shouting",
+     "splash", "music", "speech", "wind", "silence", "engine", "animal",
+     "fireworks", "other"}
 )
 
 
@@ -347,6 +380,24 @@ class FeatureStream:
         for event in self.audio_events:
             _require_number(event.time, f"audio event {event.label!r}.time")
             _require_number(event.confidence, f"audio event {event.label!r}.confidence")
+            if event.label not in AUDIO_EVENT_LABELS:
+                raise StreamError(
+                    f"audio event label {event.label!r} is not one of the "
+                    "contract's AudioFeatures.events[].label values. The label is "
+                    "written verbatim into MomentRecord.features.audio.events, so "
+                    "accepting it here produces a record that fails its own schema "
+                    "and does so at storage time, far from the model that emitted "
+                    f"it. Map it upstream, or to 'other'. Allowed: "
+                    f"{sorted(AUDIO_EVENT_LABELS)}"
+                )
+            if not 0.0 <= event.confidence <= 1.0:
+                raise StreamError(
+                    f"audio event {event.label!r}.confidence={event.confidence} is "
+                    "outside [0,1]. Refused rather than clamped, for the same "
+                    "reason Frame.validate refuses an out-of-range Unit: a "
+                    "fabricated 1.0 is indistinguishable from a real one, and this "
+                    "value feeds emotional_peak and the L-cut decision."
+                )
         if (self.proxy_rate is None) != (self.proxy_start_value is None):
             raise StreamError(
                 "proxy_rate and proxy_start_value must be given together; half a "
@@ -385,6 +436,12 @@ class Policy:
     # windowing
     window_seconds: float = 2.0
     hop_seconds: float = 0.25
+    # NOTE: the suppression radius is max(min_separation_seconds,
+    # window_seconds), so this knob is INERT at or below window_seconds — at the
+    # defaults (1.5s vs 2.0s) it does nothing at all. That is deliberate (see
+    # decision 4: a radius narrower than a window would accept two "moments"
+    # sharing most of their frames), but it is stated here because a stored
+    # profile that lowers it will silently have no effect.
     min_separation_seconds: float = 1.5
     min_moment_seconds: float = 0.6
     max_moment_seconds: float = 6.0
@@ -686,6 +743,17 @@ class MomentPlan:
 
     @property
     def eliminated_fraction(self) -> float:
+        """Fraction of samples covered by an eliminated record, at ANY stage.
+
+        Classical elimination, `too_short`, `below_score_floor` and planner
+        drops all count; samples inside a kept moment never do. It used to count
+        the classical mask alone, which made the number behind "your 40 usable
+        minutes" read 0% eliminated on a card where nothing survived at all.
+
+        Samples that no candidate window ever covered are in NEITHER figure —
+        they are unexamined, not judged — so this is a lower bound on unusable
+        footage rather than the complement of what shipped.
+        """
         if self.sample_count == 0:
             return 0.0
         return _quantise(self.eliminated_samples / self.sample_count)
@@ -725,6 +793,18 @@ def _samples(seconds: float, rate: float) -> int:
     with the frame rate.
     """
     return max(1, int(seconds * rate + 0.5))
+
+
+def _round_half_up(value: float) -> float:
+    """Nearest whole number, halves away from zero.
+
+    The same objection `_samples` raises, in the two other places this module
+    rounds: Python's round() is half-to-even, so 22.5 lands on 22 and 23.5 lands
+    on 24. A proxy-frame mapping or a gap midpoint whose result depends on which
+    side of an even number it happens to fall is not a mapping, and it is not
+    reproducible by the TypeScript and Rust bindings either.
+    """
+    return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
 
 
 def _quantise(value: float) -> float:
@@ -1050,10 +1130,13 @@ def _hook(lead: Mapping[str, float], whole: Mapping[str, float]) -> float | None
     if lead_motion is not None and whole_motion is not None and whole_motion > 0.0:
         ratio = _clamp01(lead_motion / whole_motion)
         value *= 0.7 + 0.3 * ratio
-    # Deliberately NOT quantised here: `_score` is the single place where a
-    # number is clamped and rounded on its way into a record. Quantising in both
-    # places means neither is load-bearing, and a sub-score added later that
-    # forgets to do it would reach the record unrounded with nothing to catch it.
+    # Deliberately NOT quantised here: `_score` is the last place a number is
+    # clamped and rounded on its way into a record, and it is the one every
+    # sub-score passes through. (`_renormalised` also quantises, so `value`
+    # arrives already rounded and the build penalty below un-rounds it — which
+    # is exactly why the FINAL rounding has to live in one place downstream of
+    # all of them. A sub-score added later that forgets to round would otherwise
+    # reach the record unrounded with nothing to catch it.)
     return value
 
 
@@ -1126,13 +1209,14 @@ def snap_points(
 
     words = stream.sorted_words
     starts = [w.start for w in words]
+    reach = _reach(words)
     keep: list[SnapPoint] = []
     for point in found:
         # `base + n` is the exclusive end of the stream and is a legal out-point
         # (TimeRange is half-open), so the upper bound is n, not n - 1.
         if point.time < base - _EPS or point.time > base + n + _EPS:
             continue
-        if _covering_word(point.time, words, starts) is not None:
+        if _covering_word(point.time, words, starts, reach) is not None:
             # A snap point inside a word authorises a mid-word cut, because the
             # contract says the planner may only cut on snap points. Dropping it
             # is the whole no-mid-word guarantee; the phrase-boundary and gap
@@ -1276,7 +1360,7 @@ def _speech_snaps(stream: FeatureStream, policy: Policy, grid: Grid) -> list[Sna
         out.append(SnapPoint(words[index - 1].end, "speech_end", strength, "out"))
         out.append(SnapPoint(words[index].start, "speech_start", strength, "in"))
         midpoint = (words[index - 1].end + words[index].start) / 2.0
-        snapped = float(round(midpoint))
+        snapped = float(_round_half_up(midpoint))
         lower = words[index - 1].end
         upper = words[index].start
         if snapped <= lower or snapped >= upper:
@@ -1286,28 +1370,55 @@ def _speech_snaps(stream: FeatureStream, policy: Policy, grid: Grid) -> list[Sna
     return out
 
 
+def _reach(words: Sequence[Word]) -> tuple[float, ...]:
+    """Running maximum of word end times: `reach[i] = max(w.end for w[:i+1])`.
+
+    `words` is sorted by START, so the word containing a time is not necessarily
+    the last one that started before it — diarised output from overlapping
+    speakers routinely nests a long word around several short ones. The search
+    therefore has to walk backwards, and it needs a correct stopping rule.
+
+    This is that rule. Once `reach[i] <= t`, no word at or before `i` can reach
+    `t`, so the walk can stop — exactly, not after a guessed number of entries.
+    """
+    out: list[float] = []
+    running = -math.inf
+    for word in words:
+        running = max(running, word.end)
+        out.append(running)
+    return tuple(out)
+
+
 def _covering_word(
-    time: float, words: Sequence[Word], starts: Sequence[float]
+    time: float,
+    words: Sequence[Word],
+    starts: Sequence[float],
+    reach: Sequence[float] | None = None,
 ) -> Word | None:
     """The word STRICTLY containing `time`, or None.
 
     Strict: a time equal to a word's start or end is a boundary, not an
     interior, and boundaries are exactly the positions we want to cut on.
+
+    The walk back used to be capped at five entries. That cap was a guess, and
+    it was wrong in exactly the case its own comment cited: with six or more
+    words starting inside a long one, the long word fell out of the walk, became
+    invisible to the mid-word filter, and `snap_points` then certified a cut
+    inside it — with `safe_trim` positively asserting the cut was safe. `reach`
+    replaces the guess with an exact early exit.
     """
     if not words:
         return None
-    index = bisect.bisect_right(starts, time + _EPS) - 1
-    # Walk back a few entries rather than trusting the single nearest start:
-    # diarised output from overlapping speakers produces words that overlap in
-    # time, so the word containing `time` is not always the last one that
-    # started before it.
-    for offset in range(0, 5):
-        position = index - offset
-        if position < 0:
+    if reach is None:
+        reach = _reach(words)
+    position = bisect.bisect_right(starts, time + _EPS) - 1
+    while position >= 0:
+        if reach[position] <= time + _EPS:
             break
         word = words[position]
         if word.start + _EPS < time < word.end - _EPS:
             return word
+        position -= 1
     return None
 
 
@@ -1422,7 +1533,13 @@ def plan_moments(
     candidates = _candidates(stream, policy, grid, segments, weights)
     accepted = _suppress(candidates, grid)
 
-    kept: list[ScoredMoment] = []
+    # Every sample covered by an eliminated record, at any stage. Starts as the
+    # classical mask and grows: a candidate dropped at the score floor or by the
+    # planner is footage the user does not get back, and leaving it out made
+    # `eliminated_fraction` report 0% on a card where nothing survived.
+    eliminated_indices: set[int] = {index for index, flag in enumerate(mask) if flag}
+
+    kept: list[_Candidate] = []
     dropped: list[ScoredMoment] = []
     for candidate in accepted:
         if candidate.fusion.value < policy.score_floor:
@@ -1432,11 +1549,24 @@ def plan_moments(
                     "fusion", candidate.shot_id,
                 )
             )
+            eliminated_indices.update(range(candidate.lo, candidate.hi))
             continue
         kept.append(candidate)
 
     moments, planner_dropped = _finalise(context, kept, segments)
-    dropped.extend(planner_dropped)
+    for record, lo, hi in planner_dropped:
+        dropped.append(record)
+        eliminated_indices.update(range(lo, hi))
+
+    # A kept moment may be extended over a span that a below-floor candidate
+    # also covered, so subtract what actually shipped. "No eliminated sample
+    # lies inside a kept moment" has to stay true of the figure as well as of
+    # the classical mask.
+    for scored in moments:
+        span_lo, span_hi = _sample_span(
+            context, scored.start, scored.start + scored.duration
+        )
+        eliminated_indices.difference_update(range(span_lo, span_hi))
 
     for start, end in _runs(mask, True):
         merged = sorted(
@@ -1454,7 +1584,7 @@ def plan_moments(
         moments=tuple(moments),
         eliminated=tuple(dropped),
         sample_count=n,
-        eliminated_samples=sum(1 for flag in mask if flag),
+        eliminated_samples=len(eliminated_indices),
         candidates_considered=len(candidates),
         weights_id=weights.weights_id,
         weights_digest=weights.digest(),
@@ -1579,31 +1709,68 @@ def _pick_snap(
     return best[1] if best else None
 
 
-def _word_safe_in(time: float, words: Sequence[Word], starts: Sequence[float]) -> float:
-    """Push an in-point out of any word it lands inside, to the next whole frame.
+def _word_safe_in(
+    time: float,
+    words: Sequence[Word],
+    starts: Sequence[float],
+    reach: Sequence[float] | None = None,
+) -> float:
+    """The SMALLEST word-safe position at or after `time`.
 
-    ceil, never round: rounding could land back inside the word by up to half a
-    frame, which is the exact failure this function exists to prevent.
+    Used for in-points, and for any boundary that must move FORWARD to become
+    legal. ceil, never round: rounding could land back inside the word by up to
+    half a frame, which is the exact failure this function exists to prevent.
+
+    Iterated to a fixpoint. One step is not enough when words overlap: stepping
+    out of the far end of one diarised speaker's word can land inside another
+    speaker's word that started later, and a single step would leave the
+    boundary inside a word while every caller treated it as certified.
     """
-    word = _covering_word(time, words, starts)
-    if word is None:
-        return time
-    return float(math.ceil(word.end - _EPS))
+    if reach is None:
+        reach = _reach(words)
+    for _ in range(len(words) + 1):
+        word = _covering_word(time, words, starts, reach)
+        if word is None:
+            return time
+        # Strictly increasing: `time < word.end - _EPS` by the strictness of
+        # `_covering_word`, so this terminates.
+        time = float(math.ceil(word.end - _EPS))
+    return time  # pragma: no cover - the loop bound exceeds the word count
 
 
-def _word_safe_out(time: float, words: Sequence[Word], starts: Sequence[float]) -> float:
-    word = _covering_word(time, words, starts)
-    if word is None:
-        return time
-    return float(math.floor(word.start + _EPS))
+def _word_safe_out(
+    time: float,
+    words: Sequence[Word],
+    starts: Sequence[float],
+    reach: Sequence[float] | None = None,
+) -> float:
+    """The LARGEST word-safe position at or before `time`.
+
+    Used for out-points, and for any boundary that must move BACKWARD to become
+    legal. Iterated for the same overlapping-speaker reason as `_word_safe_in`.
+    """
+    if reach is None:
+        reach = _reach(words)
+    for _ in range(len(words) + 1):
+        word = _covering_word(time, words, starts, reach)
+        if word is None:
+            return time
+        time = float(math.floor(word.start + _EPS))
+    return time  # pragma: no cover - the loop bound exceeds the word count
 
 
 def _finalise(
     context: _Context,
     kept: Sequence[_Candidate],
     segments: Sequence[tuple[int, int, str | None]],
-) -> tuple[list[ScoredMoment], list[ScoredMoment]]:
-    """Snap each accepted window to real boundaries and emit records."""
+) -> tuple[list[ScoredMoment], list[tuple[ScoredMoment, int, int]]]:
+    """Snap each accepted window to real boundaries and emit records.
+
+    Returns the kept moments, and the planner-dropped ones paired with the
+    sample span they occupied — the span is what makes them count toward
+    `MomentPlan.eliminated_samples` instead of vanishing from the culling
+    figure.
+    """
     stream = context.stream
     policy = context.policy
     grid = context.grid
@@ -1611,6 +1778,7 @@ def _finalise(
     base = stream.start_value
     words = stream.sorted_words
     starts = [w.start for w in words]
+    reach = _reach(words)
 
     bounds: dict[tuple[int, int], tuple[int, int]] = {}
     for start, end, _ in segments:
@@ -1637,7 +1805,14 @@ def _finalise(
             rate,
         )
         in_point = in_snap.time if in_snap else want_in
-        in_point = max(lo_val, _word_safe_in(in_point, words, starts))
+        # Clamp into the segment FIRST, then make it word-safe: a clamp applied
+        # AFTER the correction is free to put the boundary back inside the word
+        # it just escaped, which is exactly how the duration clamps below went
+        # wrong. Defensive rather than load-bearing here — `_pick_snap` already
+        # bounds the snap below by `lo_val` and `want_in` is a candidate start
+        # inside a segment, so `in_point >= lo_val` holds either way — but the
+        # order is the one that stays correct if either of those changes.
+        in_point = _word_safe_in(max(lo_val, in_point), words, starts, reach)
 
         out_snap = _pick_snap(
             context.snaps,
@@ -1649,30 +1824,70 @@ def _finalise(
             rate,
         )
         out_point = out_snap.time if out_snap else want_out
-        out_point = min(hi_val, _word_safe_out(out_point, words, starts))
+        out_point = _word_safe_out(min(hi_val, out_point), words, starts, reach)
 
+        # ------------------------------------------------------------------
+        # WORD SAFETY OUTRANKS BOTH DURATION BOUNDS.
+        #
+        # These two clamps used to run AFTER the word-safety correction and
+        # overwrite it unconditionally, which defeated the module's one stated
+        # inviolable guarantee with its own arithmetic: 129 of 3000 randomised
+        # streams under a fully default Policy() emitted an out-point strictly
+        # inside a spoken word, and `safe_trim.latest_out` then reported that
+        # illegal position to the planner as a bound it was free to trim to.
+        #
+        # Word safety wins, for three reasons:
+        #
+        #   1. Asymmetric cost. A moment 200ms under the minimum is a slightly
+        #      short clip. A cut through a word is instantly perceptible and
+        #      reads as broken — the module docstring already calls it "a
+        #      different class of bug", and the durations are the softer claim.
+        #   2. Only one of them has an honest failure path. A moment that
+        #      cannot reach `min_moment` is DROPPED, as an eliminated record
+        #      carrying `too_short` — visible, reasoned, and rendered by the
+        #      culling UI. Violating word safety has no such path: it is
+        #      silent, and hard rule 7 says no silent anything.
+        #   3. Overshoot is recoverable and a bad cut is not. `max_moment` is a
+        #      planner budget; the planner can always trim later, and
+        #      `safe_trim` tells it exactly where. Nothing downstream can undo
+        #      a boundary already placed mid-word, because the contract says a
+        #      certified position is safe to cut on.
+        #
+        # So both clamps move only to word-safe positions, and neither is
+        # allowed to leave the segment or exceed `max_moment`. When no such
+        # position exists the boundary is left where it is and the moment falls
+        # through to the `too_short` drop below.
+        # ------------------------------------------------------------------
+        ceiling = min(hi_val, in_point + grid.max_moment)
         if out_point - in_point < grid.min_moment:
-            out_point = min(hi_val, in_point + grid.min_moment)
+            # FORWARD (`_word_safe_in`), not backward: the point of this clamp
+            # is to REACH the minimum, and `_word_safe_out` searches backwards,
+            # which would make an already-too-short moment shorter still.
+            reached = _word_safe_in(in_point + grid.min_moment, words, starts, reach)
+            if reached <= ceiling + _EPS:
+                out_point = reached
         if out_point - in_point > grid.max_moment:
-            out_point = in_point + grid.max_moment
+            out_point = _word_safe_out(in_point + grid.max_moment, words, starts, reach)
         staged.append((candidate, in_point, out_point, in_snap, out_snap))
 
     moments: list[ScoredMoment] = []
-    dropped: list[ScoredMoment] = []
+    dropped: list[tuple[ScoredMoment, int, int]] = []
     previous_out: float | None = None
     for candidate, in_point, out_point, in_snap, out_snap in staged:
         if previous_out is not None and in_point < previous_out - _EPS:
             # Overlap after extension. Trim forward rather than dropping: the
             # footage is still good, it just cannot be claimed twice.
-            in_point = _word_safe_in(previous_out, words, starts)
+            in_point = _word_safe_in(previous_out, words, starts, reach)
             in_snap = None
         if out_point - in_point < grid.min_moment - _EPS:
-            dropped.append(
+            dropped.append((
                 _eliminated_record(
                     context, candidate.lo, candidate.hi, ("too_short",), "planner",
                     candidate.shot_id,
-                )
-            )
+                ),
+                candidate.lo,
+                candidate.hi,
+            ))
             continue
         moments.append(
             _kept_record(context, candidate, in_point, out_point, in_snap, out_snap)
@@ -1715,9 +1930,17 @@ def _kept_record(
     # Filtered, not ordered: `_features` is the single place that decides the
     # order events appear in a record, so that ordering has one home and one
     # test rather than two half-guarantees.
+    #
+    # The filter is half-open, [in_point, out_point), matching TimeRange,
+    # `_sample_span` and `_transcript`. It used to be closed at the top, so one
+    # laugh landing on a shared cut was carried by BOTH adjacent moments: the
+    # culling UI showed the event twice and the reel planner saw two emotional
+    # peaks where there was one. `test_a_word_starting_at_the_out_point_belongs
+    # _to_the_next_moment` already states the reasoning for words; an event is
+    # not different.
     events = [
         event for event in stream.audio_events
-        if in_point - _EPS <= event.time < out_point + _EPS
+        if in_point - _EPS <= event.time < out_point - _EPS
     ]
     peak_event = max(
         (event.confidence for event in events if event.label in PEAK_EVENT_LABELS),
@@ -1848,8 +2071,8 @@ def _proxy_range(stream: FeatureStream, in_point: float, duration: float) -> dic
         return None
     factor = stream.proxy_rate / stream.rate
     offset = (in_point - stream.start_value) * factor
-    start = stream.proxy_start_value + round(offset)
-    length = max(1.0, float(round(duration * factor)))
+    start = stream.proxy_start_value + _round_half_up(offset)
+    length = max(1.0, float(_round_half_up(duration * factor)))
     return {
         "start_time": _rt(start, stream.proxy_rate),
         "duration": _rt(length, stream.proxy_rate),
@@ -1964,6 +2187,16 @@ def _safe_trim(context: _Context, in_point: float, out_point: float) -> dict:
         # Null only when the moment contains no speech (schema): with speech
         # present these are the exact bounds derived from word timestamps, not
         # from voice-activity guesses.
+        #
+        # They are EQUAL to earliest_in/latest_out, and that equality is the
+        # point rather than a redundancy to optimise away. The schema defines
+        # speech_safe_in as "earliest in-point that does not land inside a
+        # spoken word"; `_finalise` now guarantees the emitted boundaries are
+        # already such positions, so agreement is the correct answer and a
+        # DISAGREEMENT would mean the module had emitted a cut it cannot
+        # certify. `test_the_speech_safe_bounds_agree_with_the_emitted_bounds`
+        # is that assertion. Before the duration clamps were fixed they did
+        # disagree, and `speech_safe_out` could land at or below `earliest_in`.
         trim["speech_safe_in"] = _rt(_word_safe_in(in_point, words, starts), rate)
         trim["speech_safe_out"] = _rt(_word_safe_out(out_point, words, starts), rate)
     return trim
