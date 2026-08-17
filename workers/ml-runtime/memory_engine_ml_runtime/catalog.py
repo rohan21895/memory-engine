@@ -72,6 +72,14 @@ class ModelInspection:
         return str(self.entry["task"])
 
 
+@dataclass(frozen=True)
+class PipelineDefinition:
+    pipeline_id: str
+    min_load_mode: str
+    steps: tuple[str, ...]
+    note: str
+
+
 ProviderProbe = Callable[[], frozenset[str]]
 
 
@@ -157,6 +165,33 @@ class ModelCatalog:
         if entry is None:
             return None
         return self._cached_inspection(entry)
+
+    def pipeline(self, pipeline_id: str) -> PipelineDefinition | None:
+        """Return one registry pipeline without exposing mutable registry data."""
+
+        pipelines = self._registry.get("pipelines")
+        if not isinstance(pipelines, Mapping):
+            raise CatalogError("model registry is missing pipelines")
+        raw = pipelines.get(pipeline_id)
+        if raw is None:
+            return None
+        if not isinstance(raw, Mapping):
+            raise CatalogError("model registry pipeline must be an object")
+        steps = raw.get("steps")
+        min_load_mode = raw.get("min_load_mode")
+        if (
+            not isinstance(steps, list)
+            or not steps
+            or any(not isinstance(step, str) or not step for step in steps)
+            or min_load_mode not in {"development", "release"}
+        ):
+            raise CatalogError("model registry pipeline is invalid")
+        return PipelineDefinition(
+            pipeline_id=pipeline_id,
+            min_load_mode=str(min_load_mode),
+            steps=tuple(steps),
+            note=str(raw.get("note") or ""),
+        )
 
     def _cached_inspection(self, entry: Mapping[str, Any]) -> ModelInspection:
         model_id = str(entry["model_id"])

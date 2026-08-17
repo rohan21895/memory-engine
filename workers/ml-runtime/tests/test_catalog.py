@@ -46,6 +46,23 @@ class CatalogFixture(unittest.TestCase):
 
 
 class TestModelCatalog(CatalogFixture):
+    def test_pipeline_is_exposed_as_an_immutable_definition(self) -> None:
+        pipeline = self.catalog().pipeline("photo_analysis")
+
+        self.assertIsNotNone(pipeline)
+        assert pipeline is not None
+        self.assertEqual("development", pipeline.min_load_mode)
+        self.assertEqual(
+            (
+                "classical_quality",
+                "siglip2-so400m-384",
+                "scrfd-10g-bnkps",
+                "arcface-buffalo-l",
+            ),
+            pipeline.steps,
+        )
+        self.assertIsNone(self.catalog().pipeline("not-registered"))
+
     def test_current_registry_configs_match_their_raw_byte_pins(self) -> None:
         inspections = self.catalog().inspect_all()
         registry = json.loads(

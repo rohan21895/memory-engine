@@ -315,12 +315,16 @@ def _output_by_stride(
         if output.get("meaning") != meaning:
             continue
         name = str(output["name"])
-        try:
-            stride = int(name.rsplit("_", 1)[1])
-        except (IndexError, ValueError) as error:
-            raise ValueError(
-                f"detector output {name!r} has no stride suffix"
-            ) from error
+        declared_stride = output.get("stride")
+        if declared_stride is not None:
+            stride = int(declared_stride)
+        else:
+            try:
+                stride = int(name.rsplit("_", 1)[1])
+            except (IndexError, ValueError) as error:
+                raise ValueError(
+                    f"detector output {name!r} has no declared stride"
+                ) from error
         if name not in outputs:
             raise ValueError(f"detector output {name!r} is missing")
         selected[stride] = outputs[name]
@@ -388,7 +392,7 @@ def _decode_scrfd(
     preprocessing = config["preprocessing"]
     target = preprocessing["input_size"]
     postprocessing = config["postprocessing"]
-    scores = _output_by_stride(outputs, config, "scores")
+    scores = _output_by_stride(outputs, config, "score")
     bboxes = _output_by_stride(outputs, config, "bboxes")
     keypoints = _output_by_stride(outputs, config, "keypoints")
     anchors_per_location = num_anchors_for(len(outputs))

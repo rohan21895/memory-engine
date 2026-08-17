@@ -44,15 +44,22 @@ memory-engine-photo-smoke /path/to/photos \
 
 The command creates a resumable scan JobSpec from the golden fixture, runs the Rust ingest worker,
 writes its MediaRecords and proxy references through media-db's public API, starts the loopback
-runtime, resolves those proxies back through media-db, and prints a JSON report containing every
-detection and every blocked stage. Work is content-addressed under the system temporary directory
-by default; pass `--work-dir` for a persistent location.
+runtime, and attempts every step declared by the registry's `photo_analysis` pipeline. Successful
+SigLIP vectors are written through media-db's vector API and referenced from updated, schema-
+validated MediaRecords. Detector results feed aligned ArcFace requests in memory; tensor reports
+include shape and dtype rather than dumping thousands of float values. The JSON report includes
+every detection, every step result, persistence counts, and every blocked stage. Work is content-
+addressed under the system temporary directory by default; pass `--work-dir` for a persistent
+location. The command exits `2` for a partial run so missing work cannot be mistaken for a pass.
 
 The model list reports `registry_loadable` rather than claiming the ONNX graph is loadable before
 a provider creates a session. Session creation separately verifies every configured input and
 output name and reports a typed `CONFIG_MISMATCH` when real weights disagree with registry metadata.
 
 This is deliberately a development command. It enables the registry's named development gate but
-does not download weights or make network requests. Detections are currently reported but not
-written as FaceRecords: issue #34 must freeze the canonical `face_id` encoding before a writer can
-do that without inventing a contract.
+does not download weights or make network requests. It is also deliberately honest about two
+contract gaps: issue #42 must provide a golden `analyze_image` JobSpec and an executable definition
+of `classical_quality` before the analysis pass can claim resumability or completion, and issue #34
+must freeze the canonical `face_id` encoding before detections or face vectors can be written as
+FaceRecords. The registry pipeline also has no selected sensitive-content gate, so its output must
+not feed unattended albums or sharing.

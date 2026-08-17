@@ -21,6 +21,7 @@ from contracts.proto.generated.python import ml_runtime_pb2_grpc as pb2_grpc
 
 from .catalog import DEFAULT_REPO_ROOT, ModelCatalog
 from .media_db import MediaDbProxyResolver, database_type
+from .photo_analysis import PhotoAnalysisRunner
 from .service import MlRuntimeService, start_server
 
 RUNTIME_ARGUMENTS = {
@@ -29,9 +30,6 @@ RUNTIME_ARGUMENTS = {
     "directml": pb2.RUNTIME_TARGET_ONNXRUNTIME_DIRECTML,
     "cuda": pb2.RUNTIME_TARGET_ONNXRUNTIME_CUDA,
 }
-
-MODEL_PREFERENCE = ("yunet-2023mar", "scrfd-10g-bnkps")
-
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -171,37 +169,34 @@ def _persist_media(
         return database.count_media()
 
 
-def _model_report(catalog: ModelCatalog) -> list[dict[str, Any]]:
-    return [
-        {
-            "model_id": inspection.model_id,
-            # The graph contract is validated only when a provider creates the
-            # real session.  Keep this label honest when registry metadata and
-            # a published checkpoint disagree (issue #36).
-            "registry_loadable": inspection.unloadable_reason is None,
-            "reason": inspection.unloadable_reason,
-            "runtimes": list(inspection.available_runtimes),
-        }
-        for inspection in catalog.inspect_all("face_detection")
-    ]
-
-
-def _choose_model(catalog: ModelCatalog, requested: str | None):
-    if requested:
-        inspection = catalog.inspect(requested)
-        if inspection is None or inspection.task != "face_detection":
-            return None
-        return inspection if inspection.unloadable_reason is None else None
-    inspections = {
-        item.model_id: item for item in catalog.inspect_all("face_detection")
-    }
-    for model_id in MODEL_PREFERENCE:
-        inspection = inspections.get(model_id)
-        if inspection is not None and inspection.unloadable_reason is None:
-            return inspection
-    return next(
-        (item for item in inspections.values() if item.unloadable_reason is None), None
-    )
+def _model_report(catalog: ModelCatalog, steps: tuple[str, ...]) -> list[dict[str, Any]]:
+    reports = []
+    for step_id in steps:
+        inspection = catalog.inspect(step_id)
+        if inspection is None:
+            reports.append(
+                {
+                    "step_id": step_id,
+                    "kind": "non_model_step",
+                    "registry_loadable": False,
+                    "reason": "no executable registry entry",
+                    "runtimes": [],
+                }
+            )
+            continue
+        reports.append(
+            {
+                "step_id": step_id,
+                "model_id": inspection.model_id,
+                "task": inspection.task,
+                # A provider validates the real graph only when it creates a
+                # session. Registry loadability is not a graph-load claim.
+                "registry_loadable": inspection.unloadable_reason is None,
+                "reason": inspection.unloadable_reason,
+                "runtimes": list(inspection.available_runtimes),
+            }
+        )
+    return reports
 
 
 def _proxy_items(records: list[dict[str, Any]], limit: int) -> list[tuple[str, str]]:
@@ -224,108 +219,48 @@ def _proxy_items(records: list[dict[str, Any]], limit: int) -> list[tuple[str, s
     return items
 
 
-def _detection_json(detection: pb2.Detection) -> dict[str, Any]:
-    return {
-        "score": round(detection.score, 6),
-        "box": {
-            "x": round(detection.box.x, 6),
-            "y": round(detection.box.y, 6),
-            "w": round(detection.box.w, 6),
-            "h": round(detection.box.h, 6),
-        },
-        "landmarks": [
-            {"x": round(point.x, 6), "y": round(point.y, 6)}
-            for point in detection.landmarks
-        ],
-        "landmarks_out_of_range": detection.landmarks_out_of_range,
-    }
-
-
-def _infer(
-    *,
-    catalog: ModelCatalog,
-    repo_root: Path,
-    database_path: Path,
-    model_id: str,
-    items: list[tuple[str, str]],
-    runtime: str,
-    timeout_seconds: float,
-) -> dict[str, Any]:
-    resolver = MediaDbProxyResolver(repo_root, database_path)
-    running = start_server(MlRuntimeService(catalog, proxy_resolver=resolver), port=0)
-    channel = grpc.insecure_channel(running.address)
-    try:
-        grpc.channel_ready_future(channel).result(timeout=5)
-        stub = pb2_grpc.MlRuntimeStub(channel)
-        request_bytes = b"\0".join(
-            [
-                model_id.encode("utf-8"),
-                *(proxy_id.encode("ascii") for _, proxy_id in items),
-            ]
+class _GrpcPipelineClient:
+    def __init__(
+        self,
+        *,
+        catalog: ModelCatalog,
+        repo_root: Path,
+        database_path: Path,
+        runtime: str,
+        timeout_seconds: float,
+    ) -> None:
+        resolver = MediaDbProxyResolver(repo_root, database_path)
+        self.running = start_server(
+            MlRuntimeService(catalog, proxy_resolver=resolver), port=0
         )
-        preferred = [] if runtime == "auto" else [RUNTIME_ARGUMENTS[runtime]]
-        response = stub.Infer(
+        self.channel = grpc.insecure_channel(self.running.address)
+        grpc.channel_ready_future(self.channel).result(timeout=5)
+        self.stub = pb2_grpc.MlRuntimeStub(self.channel)
+        self.preferred = [] if runtime == "auto" else [RUNTIME_ARGUMENTS[runtime]]
+        self.timeout_seconds = timeout_seconds
+
+    def __call__(
+        self, model_id: str, items: list[pb2.InferItem] | tuple[pb2.InferItem, ...]
+    ) -> pb2.InferResponse:
+        request_digest = blake3(b"real-photo-smoke-infer-v2\0")
+        request_digest.update(model_id.encode("utf-8"))
+        for item in items:
+            request_digest.update(b"\0")
+            request_digest.update(item.SerializeToString(deterministic=True))
+        return self.stub.Infer(
             pb2.InferRequest(
-                request_id=blake3(
-                    b"real-photo-smoke-infer-v1\0" + request_bytes
-                ).hexdigest(),
+                request_id=request_digest.hexdigest(),
                 model_id=model_id,
-                preferred_runtimes=preferred,
-                deadline_ms=int(timeout_seconds * 1000),
-                items=[
-                    pb2.InferItem(
-                        item_id=media_id,
-                        proxy_id=proxy_id,
-                        alignment=pb2.ALIGNMENT_NONE,
-                    )
-                    for media_id, proxy_id in items
-                ],
+                preferred_runtimes=self.preferred,
+                deadline_ms=int(self.timeout_seconds * 1000),
+                items=items,
             ),
-            timeout=timeout_seconds + 5,
+            timeout=self.timeout_seconds + 5,
         )
-        if response.HasField("error"):
-            return {
-                "status": "error",
-                "code": pb2.ErrorCode.Name(response.error.code),
-                "message": response.error.message,
-            }
-        results = []
-        for result in response.results:
-            if result.WhichOneof("outcome") == "error":
-                results.append(
-                    {
-                        "media_id": result.item_id,
-                        "status": "error",
-                        "code": pb2.ErrorCode.Name(result.error.code),
-                        "message": result.error.message,
-                    }
-                )
-            else:
-                results.append(
-                    {
-                        "media_id": result.item_id,
-                        "status": "ok",
-                        "detections": [
-                            _detection_json(value)
-                            for value in result.detections.detections
-                        ],
-                    }
-                )
-        return {
-            "status": "ok",
-            "runtime": pb2.RuntimeTarget.Name(response.runtime_used),
-            "duration_ms": response.duration_ms,
-            "model_pin": {
-                "model_id": response.pin.model_id,
-                "version": response.pin.version,
-                "weights_blake3": response.pin.weights_blake3,
-                "config_blake3": response.pin.config_blake3,
-            },
-            "results": results,
-        }
-    finally:
-        channel.close()
-        running.stop()
+
+    def close(self) -> None:
+        self.channel.close()
+        self.running.stop()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -333,7 +268,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("folder", type=Path, help="folder of real photos to scan")
     parser.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_ROOT)
     parser.add_argument("--weights-dir", type=Path)
-    parser.add_argument("--model", help="registered face detector id")
+    parser.add_argument("--pipeline", default="photo_analysis")
     parser.add_argument(
         "--runtime", choices=("auto", *RUNTIME_ARGUMENTS), default="auto"
     )
@@ -392,17 +327,17 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         weights_dir=args.weights_dir,
         environ=development_environment,
     )
-    report["models"] = _model_report(catalog)
-    inspection = _choose_model(catalog, args.model)
-    if inspection is None:
+    pipeline = catalog.pipeline(args.pipeline)
+    if pipeline is None:
         report["status"] = "blocked"
         report["breakages"].append(
             {
-                "stage": "ml_runtime",
-                "message": "no registered face detector is loadable; inspect models[]",
+                "stage": "photo_analysis",
+                "message": "requested pipeline is not registered",
             }
         )
         return 2, report
+    report["models"] = _model_report(catalog, pipeline.steps)
     items = _proxy_items(records, args.limit)
     if not items:
         report["status"] = "blocked"
@@ -414,49 +349,31 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         )
         return 2, report
 
-    inference = _infer(
+    Database = database_type(repo_root)
+    client = _GrpcPipelineClient(
         catalog=catalog,
         repo_root=repo_root,
         database_path=database_path,
-        model_id=inspection.model_id,
-        items=items,
         runtime=args.runtime,
         timeout_seconds=args.timeout_seconds,
     )
-    report["stages"]["ml_runtime"] = inference
-    Database = database_type(repo_root)
-    with Database.open(database_path, migrate=False) as database:
-        stored_faces = sum(
-            len(database.faces_for_media(media_id)) for media_id, _ in items
-        )
-        after_count = database.count_media()
-    report["stages"]["media_db_after_inference"] = {
-        "database_count": after_count,
-        "face_records_written": stored_faces,
-    }
-    if inference.get("status") != "ok":
-        report["status"] = "failed"
-        report["breakages"].append(
-            {
-                "stage": "ml_runtime",
-                "code": inference.get("code"),
-                "message": inference.get("message", "inference returned a typed error"),
-            }
-        )
-        return 1, report
-
-    report["breakages"].append(
-        {
-            "stage": "media_db_after_inference",
-            "issue": 34,
-            "message": (
-                "detections are not persisted as FaceRecords because the contract has no "
-                "canonical face_id encoding"
-            ),
-        }
-    )
-    report["status"] = "partial_success"
-    return 0, report
+    try:
+        analysis = PhotoAnalysisRunner(
+            repo_root=repo_root,
+            database_path=database_path,
+            database_class=Database,
+            catalog=catalog,
+            pipeline=pipeline,
+            records=records,
+            proxy_items=items,
+            infer=client,
+        ).run()
+    finally:
+        client.close()
+    report["stages"]["photo_analysis"] = analysis
+    report["breakages"].extend(analysis["breakages"])
+    report["status"] = analysis["status"]
+    return (0 if analysis["status"] == "complete" else 2), report
 
 
 def main(argv: list[str] | None = None) -> int:
