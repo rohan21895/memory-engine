@@ -6,11 +6,17 @@ processes, one SQLite file. That shape drives every pragma set here.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+
+# Four digits, an underscore, then lowercase words separated by single
+# underscores. Deliberately tight: the point is to reject a near-miss like
+# "0002_proxy_index 2.sql", not to describe every name someone might pick.
+MIGRATION_FILENAME = re.compile(r"[0-9]{4}_[a-z0-9]+(?:_[a-z0-9]+)*\.sql")
 
 
 class MigrationError(RuntimeError):
@@ -30,10 +36,25 @@ def discover_migrations() -> list[Migration]:
     Filenames are `NNNN_name.sql`. Version numbers must be contiguous from 1 --
     a gap means a migration was deleted or never committed, and applying the
     remainder would leave a database nobody can reproduce.
+
+    The name must match MIGRATION_FILENAME exactly, and anything else in this
+    directory is refused rather than skipped. That is not pedantry: this repo
+    has an environment that periodically drops byte-identical copies named
+    `0002_proxy_index 2.sql` beside the original, and a loader globbing `*.sql`
+    swallowed one, producing a duplicate version 2 and a contiguity error that
+    read as a broken migration set rather than as a stray file. Refusing by
+    name says which file is wrong; skipping unknown names would have hidden it
+    entirely, which is worse -- a shadow copy of a migration is a shadow copy
+    of the schema.
     """
     migrations: list[Migration] = []
     for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
         stem = path.stem
+        if not MIGRATION_FILENAME.fullmatch(path.name):
+            raise MigrationError(
+                f"{path.name} is not a migration filename (expected NNNN_name.sql). "
+                "Delete it if it is a stray copy; rename it if it is real."
+            )
         number, _, name = stem.partition("_")
         if not number.isdigit():
             raise MigrationError(f"migration {path.name} does not start with a version number")
