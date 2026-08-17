@@ -308,6 +308,11 @@ class ModelCatalog:
             actual_config_digest=actual_config_digest,
             is_placeholder=rollout.get("state") == "placeholder",
             available_providers=available_runtimes,
+            # Issue #33: computed from the config, never assumed. A letterbox
+            # config with a null pad_value has declared that it does not know
+            # what the padded band contains, and this host must not decide that
+            # for it.
+            preprocessing_pinned=self._load_gate.preprocessing_pinned(config),
         )
         refusal = self._load_gate.decide_load(candidate, self.mode, self._policy)
         release_refusal = self._load_gate.decide_load(

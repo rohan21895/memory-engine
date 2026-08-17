@@ -140,6 +140,10 @@
           "description": "Must be true, for the same reason hash_mismatch_is_always_fatal is. An edited config is the likelier of the two in practice: weights are downloaded once and never touched, thresholds get tuned by hand.",
           "type": "boolean",
           "const": true
+        },
+        "preprocessing_unpinned_note": {
+          "description": "Prose for whoever hits CONFIG_UNPINNED and wonders which pin is missing.",
+          "type": "string"
         }
       }
     },
@@ -152,7 +156,8 @@
         "require_pinned_hash",
         "require_license_verified",
         "allow_blocks_commercial_release",
-        "require_pinned_config"
+        "require_pinned_config",
+        "require_pinned_preprocessing"
       ],
       "properties": {
         "require_registered": {
@@ -190,6 +195,10 @@
         },
         "require_pinned_config": {
           "description": "Whether this mode refuses an entry with no pinned config digest. Omitted means it follows require_pinned_hash, so a mode that pins weights never silently accepts an unpinned config.",
+          "type": "boolean"
+        },
+        "require_pinned_preprocessing": {
+          "description": "Whether this mode refuses an entry that has not decided a preprocessing value which changes the tensor -- today, a letterboxing config whose `pad_value` is null (issue #33). Release refuses it; development permits it, because development is where the missing measurement gets taken. Omitted means it follows require_pinned_config, so a mode that pins the config never silently accepts preprocessing the config declined to specify.",
           "type": "boolean"
         }
       }

@@ -43,7 +43,8 @@
     ],
     "face_alignment": null,
     "audio": null,
-    "sequence_length": null
+    "sequence_length": null,
+    "pad_value": null
   },
   "postprocessing": {
     "steps": [
@@ -167,7 +168,8 @@
   "batching": {
     "supported": false,
     "max_batch": 1,
-    "dynamic_axes": false
+    "dynamic_axes": false,
+    "verified_against": null
   },
   "license": {
     "code_license": "MIT",
@@ -186,5 +188,5 @@
     "promoted_at": null
   },
   "eval": null,
-  "notes": "OUTPUT NAMES ARE THE EXPORT'S NUMERIC TENSOR IDS, NOT SEMANTIC LABELS. The published det_10g.onnx names nothing, so its outputs are 448/451/454 (stride 8), 471/474/477 (16) and 494/497/500 (32). This config previously declared readable names -- score_8, bbox_8, kps_8 -- which exist nowhere in the graph, so the host refused inference with CONFIG_MISMATCH. It failed SAFE, which is the system working, but SCRFD could not run at all. Found by Codex against real weights (issue #36).\n\nBINDING STAYS BY EXACT NAME. Positional binding would be tempting given the names carry no meaning, but a different nine-output export can reorder compatible shapes and the mistake would be silent -- keypoints decoded as boxes still produce plausible numbers. That is this repo's recurring failure mode, so the names are pinned to ONE checkpoint and a swap must be a deliberate re-pin rather than a lucky match.\n\nTHE SHAPES CONFIRM THE ANCHOR COUNT INDEPENDENTLY. At 640x640: stride 8 gives an 80x80 grid = 6400 locations against 12800 rows; stride 16 gives 1600 against 3200; stride 32 gives 400 against 800. Two anchors per location at every stride -- the same conclusion reached earlier from InsightFace's scrfd.py, now confirmed from the other direction by the real graph.\n\nBATCHING IS FIXED AT 1. The checkpoint's batch dimension is static, so the previous supported/max_batch 8/dynamic_axes true was aspiration rather than description. A host trusting it would have failed at session bind, or worse, silently processed only the first image of each batch.\n\nSTILL UNVERIFIED: blake3 and byte_size, because the checkpoint has not been downloaded and hashed here. They stay null, which keeps this development-only by the load gate rather than by anyone remembering."
+  "notes": "OUTPUT NAMES ARE THE EXPORT'S NUMERIC TENSOR IDS, NOT SEMANTIC LABELS. The published det_10g.onnx names nothing, so its outputs are 448/451/454 (stride 8), 471/474/477 (16) and 494/497/500 (32). This config previously declared readable names -- score_8, bbox_8, kps_8 -- which exist nowhere in the graph, so the host refused inference with CONFIG_MISMATCH. It failed SAFE, which is the system working, but SCRFD could not run at all. Found by Codex against real weights (issue #36).\n\nBINDING STAYS BY EXACT NAME. Positional binding would be tempting given the names carry no meaning, but a different nine-output export can reorder compatible shapes and the mistake would be silent -- keypoints decoded as boxes still produce plausible numbers. That is this repo's recurring failure mode, so the names are pinned to ONE checkpoint and a swap must be a deliberate re-pin rather than a lucky match.\n\nTHE SHAPES CONFIRM THE ANCHOR COUNT INDEPENDENTLY. At 640x640: stride 8 gives an 80x80 grid = 6400 locations against 12800 rows; stride 16 gives 1600 against 3200; stride 32 gives 400 against 800. Two anchors per location at every stride -- the same conclusion reached earlier from InsightFace's scrfd.py, now confirmed from the other direction by the real graph.\n\nBATCHING IS FIXED AT 1. The checkpoint's batch dimension is static, so the previous supported/max_batch 8/dynamic_axes true was aspiration rather than description. A host trusting it would have failed at session bind, or worse, silently processed only the first image of each batch.\n\nSTILL UNVERIFIED: blake3 and byte_size, because the checkpoint has not been downloaded and hashed here. They stay null, which keeps this development-only by the load gate rather than by anyone remembering.\n\nBATCHING (issue #31): batch 1, now explicitly UNVERIFIED. The declaration was already conservative and is probably right -- InsightFace's SCRFD wrapper runs one image per session.run -- but nothing here has read this graph's leading input dimension, and 'happens to be right' is not the same as 'checked'. The field now says which of the two this is."
 }

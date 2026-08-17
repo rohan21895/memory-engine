@@ -469,3 +469,219 @@ class TestLicenceHonesty(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _mutated(base: dict, path: tuple, value: object) -> dict:
+    """A deep copy of `base` with one nested key replaced (or removed, for
+    `value is _REMOVE`). Used to prove the schema REJECTS things, which is the
+    half of a validation test that usually goes missing."""
+    import copy
+
+    clone = copy.deepcopy(base)
+    node = clone
+    for key in path[:-1]:
+        node = node[key]
+    if value is _REMOVE:
+        node.pop(path[-1], None)
+    else:
+        node[path[-1]] = value
+    return clone
+
+
+_REMOVE = object()
+
+
+class SchemaRejectionTestCase(unittest.TestCase):
+    """Base for tests that assert the schema says NO.
+
+    `test_every_config_matches_the_schema` only proves the schema accepts what
+    is already on disk. A schema that accepted everything would pass it. These
+    take a real config, break one field, and require a rejection.
+    """
+
+    def setUp(self) -> None:
+        from jsonschema import Draft202012Validator
+
+        self.validator = Draft202012Validator(
+            json.loads(SCHEMA.read_text(encoding="utf-8"))
+        )
+
+    def assertRejected(self, config: dict, why: str) -> None:
+        errors = list(self.validator.iter_errors(config))
+        self.assertTrue(errors, f"the schema accepted {why}")
+
+    def assertAccepted(self, config: dict, why: str) -> None:
+        errors = [f"{list(e.path)}: {e.message}" for e in self.validator.iter_errors(config)]
+        self.assertEqual([], errors, f"the schema rejected {why}")
+
+
+class TestPaddingValueIsPinned(SchemaRejectionTestCase):
+    """Issue #33: letterbox geometry was pinned and the padding VALUE was not.
+
+    A 16:9 frame at 640x640 has 280 padded rows. For YuNet -- scale 1, no mean,
+    no std -- black padding puts 0.0 in that band and mean-grey padding puts
+    127.5, and detections near the frame edge move. Nothing raises, because a
+    tensor full of the wrong constant is still a valid tensor. PR #25 chose
+    black because the config offered nothing, which is an invented default
+    wearing the clothes of a decision.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.letterboxing = [
+            (name, config)
+            for name, config in configs()
+            if config["preprocessing"].get("resize") == "letterbox"
+        ]
+
+    def test_the_letterboxing_configs_are_the_ones_expected(self):
+        """If a third config starts letterboxing, this test is where someone
+        finds out that it needs a pad value too."""
+        self.assertEqual(
+            ["scrfd-10g-bnkps.json", "yunet-2023mar.json"],
+            sorted(name for name, _ in self.letterboxing),
+        )
+
+    def test_every_letterboxing_config_states_a_pad_value_or_states_that_it_cannot(self):
+        for name, config in self.letterboxing:
+            with self.subTest(config=name):
+                self.assertIn(
+                    "pad_value", config["preprocessing"],
+                    "a letterbox config without the field would let the runtime "
+                    "pick, which is the defect",
+                )
+
+    def test_a_stated_pad_value_cites_where_it_came_from(self):
+        for name, config in self.letterboxing:
+            pad = config["preprocessing"]["pad_value"]
+            if pad is None:
+                continue
+            with self.subTest(config=name):
+                self.assertIn(pad["space"], {"pixel", "normalized"})
+                self.assertTrue(
+                    "/" in pad["source"] or "::" in pad["source"],
+                    "the source must name a file and symbol; a citation nobody "
+                    f"can follow is a guess with a footnote: {pad['source']!r}",
+                )
+                self.assertGreater(len(pad["source"]), 60)
+
+    def test_an_unresolved_pad_value_keeps_the_entry_out_of_release(self):
+        """The consequence of declining to pin one. Without this, `null` is a
+        comment rather than a gate."""
+        unresolved = {
+            name.removesuffix(".json")
+            for name, config in self.letterboxing
+            if config["preprocessing"]["pad_value"] is None
+        }
+        for pipeline_name, pipeline in REGISTRY.get("pipelines", {}).items():
+            if pipeline["min_load_mode"] != "release":
+                continue
+            with self.subTest(pipeline=pipeline_name):
+                self.assertEqual(
+                    set(), unresolved & set(pipeline["steps"]),
+                    "a release pipeline cannot contain a model whose padded band "
+                    "value is undecided",
+                )
+
+    def test_the_schema_refuses_a_letterbox_config_with_no_pad_value_field(self):
+        yunet = dict(configs())["yunet-2023mar.json"]
+        self.assertRejected(
+            _mutated(yunet, ("preprocessing", "pad_value"), _REMOVE),
+            "a letterbox config with the pad_value field missing entirely",
+        )
+
+    def test_the_schema_refuses_a_pad_value_with_no_provenance(self):
+        yunet = dict(configs())["yunet-2023mar.json"]
+        for broken in (
+            {"space": "pixel", "values": [0]},
+            {"space": "pixel", "values": [0], "source": ""},
+            {"space": "tensor", "values": [0], "source": "somewhere"},
+            {"space": "pixel", "values": [0, 0], "source": "two channels is not a thing"},
+        ):
+            with self.subTest(pad=broken):
+                self.assertRejected(
+                    _mutated(yunet, ("preprocessing", "pad_value"), broken),
+                    f"pad_value {broken}",
+                )
+
+    def test_the_schema_still_allows_an_honest_null(self):
+        yunet = dict(configs())["yunet-2023mar.json"]
+        self.assertAccepted(
+            _mutated(yunet, ("preprocessing", "pad_value"), None),
+            "an explicit null, which is how a config says its sources disagree",
+        )
+
+
+class TestBatchingClaimsAreAttributable(SchemaRejectionTestCase):
+    """Issue #31, and the half of it the existing test could not catch.
+
+    `TestBatchingDescribesTheCheckpoint` above only checks the `supported:
+    false` direction -- that a config declining to batch does not also claim a
+    batch axis. It has nothing to say about a config claiming max_batch 8 and
+    dynamic axes against a graph fixed at 1, which is precisely what YuNet did.
+    A test that only exercises the conservative direction cannot catch an
+    over-claim.
+    """
+
+    def test_no_config_claims_a_batch_axis_it_has_not_measured(self):
+        for name, config in configs():
+            batching = config["batching"]
+            with self.subTest(config=name):
+                claims = (
+                    batching["supported"]
+                    or batching["max_batch"] > 1
+                    or batching["dynamic_axes"]
+                )
+                if claims:
+                    self.assertTrue(
+                        (batching.get("verified_against") or "").strip(),
+                        "a batching claim above 1 must cite the inspection that "
+                        "established it. An assumption and a measurement look "
+                        "identical in a config; this field is what tells them "
+                        "apart",
+                    )
+
+    def test_yunet_declares_batch_one_and_says_why(self):
+        yunet = dict(configs())["yunet-2023mar.json"]
+        batching = yunet["batching"]
+        self.assertFalse(batching["supported"])
+        self.assertEqual(1, batching["max_batch"])
+        self.assertFalse(batching["dynamic_axes"])
+        self.assertIn("[1,3,640,640]", batching["verified_against"])
+
+    def test_the_schema_refuses_the_claim_this_issue_was_filed_about(self):
+        """The exact pre-fix block, verbatim."""
+        yunet = dict(configs())["yunet-2023mar.json"]
+        self.assertRejected(
+            _mutated(
+                yunet, ("batching",),
+                {"supported": True, "max_batch": 8, "dynamic_axes": True},
+            ),
+            "supported/max_batch 8/dynamic_axes true with no verified_against",
+        )
+
+    def test_the_schema_refuses_each_over_claim_separately(self):
+        yunet = dict(configs())["yunet-2023mar.json"]
+        for batching in (
+            {"supported": True, "max_batch": 1, "dynamic_axes": False, "verified_against": None},
+            {"supported": False, "max_batch": 8, "dynamic_axes": False, "verified_against": None},
+            {"supported": False, "max_batch": 1, "dynamic_axes": True, "verified_against": None},
+        ):
+            with self.subTest(batching=batching):
+                self.assertRejected(
+                    _mutated(yunet, ("batching",), batching),
+                    f"batching {batching} with no citation",
+                )
+
+    def test_the_schema_allows_a_cited_claim(self):
+        yunet = dict(configs())["yunet-2023mar.json"]
+        self.assertAccepted(
+            _mutated(
+                yunet, ("batching",),
+                {
+                    "supported": True, "max_batch": 8, "dynamic_axes": True,
+                    "verified_against": "onnxruntime reported input shape [-1,3,640,640]",
+                },
+            ),
+            "a batching claim that names the measurement behind it",
+        )

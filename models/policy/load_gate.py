@@ -70,6 +70,38 @@ class Candidate:
     actual_config_digest: str | None = None
     is_placeholder: bool = False
     available_providers: tuple[str, ...] = ("onnxruntime_cpu",)
+    preprocessing_pinned: bool = True
+    """Whether every preprocessing value that changes the tensor is decided.
+
+    Issue #33. A config may legitimately say "I do not know what the padded
+    band contains" -- SCRFD's upstream sources disagree by a full unit in
+    tensor space -- and that is a better state than a guessed number. But it is
+    not a state a release may load in, because the tensor the model sees would
+    then be whatever the host's author reached for.
+
+    Computed by `preprocessing_pinned()` below; do not set it by hand. It
+    defaults True so existing call sites keep their meaning, which is
+    fail-OPEN, and that is deliberate: the alternative was a required field
+    that every caller would have had to pass and could have passed wrongly. The
+    guard against the default is a test at the catalog level asserting the real
+    loader computes it -- see models/tests/test_load_policy.py.
+    """
+
+
+def preprocessing_pinned(config: dict) -> bool:
+    """Whether a config leaves any tensor-visible preprocessing value undecided.
+
+    Today that means exactly one thing: a letterboxing config whose `pad_value`
+    is null. The schema already forces the FIELD to exist for letterbox modes,
+    so this is not checking for an omission -- it is reading a declaration the
+    config made on purpose.
+    """
+    preprocessing = config.get("preprocessing")
+    if not isinstance(preprocessing, dict):
+        return False
+    if preprocessing.get("resize") == "letterbox":
+        return preprocessing.get("pad_value") is not None
+    return True
 
 
 def load_policy(registry_path: Path | None = None) -> dict:
@@ -182,6 +214,22 @@ def decide_load(candidate: Candidate, mode: str, policy: dict | None = None) -> 
     if gate.get("require_pinned_config", gate["require_pinned_hash"]) and (
         candidate.pinned_config_digest is None
     ):
+        return UnloadableReason.CONFIG_UNPINNED
+
+    # Issue #33. Same reason and the same UnloadableReason: a config that has
+    # not decided what the padded band contains is not fully pinned, and the
+    # host would have to invent the value. Reported as CONFIG_UNPINNED rather
+    # than CONFIG_INVALID because the config is valid -- it is *honest about a
+    # gap*, which is a different thing from malformed, and the two must not
+    # look the same in ListModels.
+    #
+    # Mode-gated like the digest pins above, not fatal-in-every-mode like
+    # PLACEHOLDER: development is where the missing measurement gets taken, and
+    # a gate that forbids running the model makes taking it impossible.
+    if gate.get(
+        "require_pinned_preprocessing",
+        gate.get("require_pinned_config", gate["require_pinned_hash"]),
+    ) and not candidate.preprocessing_pinned:
         return UnloadableReason.CONFIG_UNPINNED
 
     if gate["require_license_verified"] and not candidate.license_verified:

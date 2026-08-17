@@ -361,3 +361,149 @@ def apply_transform(
 ) -> tuple[float, float]:
     a, b, tx, ty = transform
     return (a * x - b * y + tx, b * x + a * y + ty)
+
+
+# --------------------------------------------------------------- issue #33 ---
+
+
+class PadValueUnresolved(ValueError):
+    """The config declines to say what the padded band contains.
+
+    Not an oversight to route around with a default. `pad_value: null` is a
+    config saying out loud that its upstream sources disagree, and a
+    preprocessing step that quietly filled the band with zeros anyway would
+    reintroduce exactly the invented default this exists to prevent.
+    """
+
+
+def pad_band(
+    pad_value: dict | None,
+    *,
+    channels: int,
+    scale: float,
+    mean: list[float],
+    std: list[float],
+) -> tuple[float, ...]:
+    """What the padded band holds IN TENSOR UNITS, per channel.
+
+    Issue #33: the configs pinned letterbox geometry, resize interpolation,
+    colour order, scale, mean and std, and said nothing about the value of the
+    padding they created. A 16:9 image at 640x640 has 280 padded rows; for
+    YuNet (scale 1, no mean, no std) a band of 0 and a band of 127.5 are a full
+    half-range apart in the tensor, and detections near the frame edge move.
+    Nothing raises, because a tensor full of the wrong number is still a valid
+    tensor.
+
+    THE TWO SPACES ARE NOT INTERCHANGEABLE, which is why `space` is pinned
+    alongside the number:
+
+      * `pixel` -- the band is filled before normalisation, so it goes through
+        `(v * scale - mean) / std` with the image. This is what OpenCV's
+        FaceDetectorYN and InsightFace's ONNX wrappers do.
+      * `normalized` -- the band is written straight into the finished tensor.
+        This is what an mmdetection test pipeline does, because `Pad` runs
+        after `Normalize`, and its `pad_val=0` therefore means "the mean",
+        never "black".
+
+    Collapsing the two into a bare number is how a config comes to pin 0 and a
+    runtime to feed -0.996.
+
+    Pad values are given in the order the tensor stores channels, i.e. after
+    any RGB/BGR swap, so no swap is applied here. A single value broadcasts.
+    """
+    if pad_value is None:
+        raise PadValueUnresolved(
+            "this config's pad_value is null: the value the padded band should "
+            "contain has not been established from upstream. Preprocessing "
+            "cannot proceed, and inventing a default here is the defect."
+        )
+    space = pad_value["space"]
+    values = list(pad_value["values"])
+    if len(values) == 1:
+        values = values * channels
+    if len(values) != channels:
+        raise ValueError(
+            f"pad_value has {len(values)} values for {channels} channels"
+        )
+    if space == "normalized":
+        return tuple(float(v) for v in values)
+    if space != "pixel":
+        raise ValueError(f"unsupported pad space {space!r}")
+
+    band = []
+    for channel, value in enumerate(values):
+        v = float(value) * scale
+        if mean:
+            v -= mean[channel]
+        if std:
+            v /= std[channel]
+        band.append(v)
+    return tuple(band)
+
+
+def preprocess_letterboxed_image(
+    image: list[list[Pixel]],
+    *,
+    target_width: int,
+    target_height: int,
+    pad_value: dict | None,
+    color_order: str,
+    layout: str,
+    scale: float,
+    mean: list[float],
+    std: list[float],
+) -> tuple[list[float], IntegerLetterbox]:
+    """A letterboxed tensor, band included, driven entirely by config.
+
+    The image is assumed to be already at its scaled size -- resampling is
+    deliberately not pinned anywhere in this module (see the header), so the
+    fixtures feed images that need no resize and the padding is the only thing
+    under test. What this adds over `preprocess_image` is that the padded band
+    exists in the output at all, with a value that came from the config rather
+    than from whichever constant the implementer reached for.
+
+    Returns the tensor and the geometry, because a caller that pads has to
+    un-pad the boxes afterwards and the two must come from the same arithmetic.
+    """
+    if color_order not in {"rgb", "bgr"}:
+        raise ValueError(f"unsupported color_order {color_order!r}")
+    if layout not in {"nchw", "nhwc"}:
+        raise ValueError(f"unsupported layout {layout!r}")
+
+    height = len(image)
+    width = len(image[0])
+    box = integer_letterbox(width, height, target_width, target_height)
+    if (box.scaled_width, box.scaled_height) != (width, height):
+        raise ValueError(
+            f"image is {width}x{height} but the letterbox wants "
+            f"{box.scaled_width}x{box.scaled_height}; resample it first -- this "
+            "module does not pin a resampling convention"
+        )
+
+    band = pad_band(pad_value, channels=3, scale=scale, mean=mean, std=std)
+    source_channel = (0, 1, 2) if color_order == "rgb" else (2, 1, 0)
+
+    def value_at(x: int, y: int, channel: int) -> float:
+        ix = x - box.pad_left
+        iy = y - box.pad_top
+        if ix < 0 or iy < 0 or ix >= width or iy >= height:
+            return band[channel]
+        v = float(image[iy][ix][source_channel[channel]]) * scale
+        if mean:
+            v -= mean[channel]
+        if std:
+            v /= std[channel]
+        return v
+
+    flat: list[float] = []
+    if layout == "nchw":
+        for channel in range(3):
+            for y in range(target_height):
+                for x in range(target_width):
+                    flat.append(value_at(x, y, channel))
+    else:
+        for y in range(target_height):
+            for x in range(target_width):
+                for channel in range(3):
+                    flat.append(value_at(x, y, channel))
+    return flat, box
