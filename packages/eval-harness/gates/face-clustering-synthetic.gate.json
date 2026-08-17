@@ -1,0 +1,653 @@
+{
+  "as_of": "2026-08-17",
+  "baseline": [
+    {
+      "case_id": "synthetic_baby_family_precision",
+      "inputs_digest": "e8aaaced95ac24600feab445e0731b23e4b6aa400e5df500c84de3eea43881ed",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_baby_family_recall",
+      "inputs_digest": "e8aaaced95ac24600feab445e0731b23e4b6aa400e5df500c84de3eea43881ed",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_drone_precision",
+      "inputs_digest": "16c8fda421d148f1016114ec1c1b690cb322f2f177a8ad9680076cd8e906ec20",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_drone_recall",
+      "inputs_digest": "16c8fda421d148f1016114ec1c1b690cb322f2f177a8ad9680076cd8e906ec20",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        0.828571,
+        0.828571,
+        0.828571
+      ]
+    },
+    {
+      "case_id": "synthetic_festivals_precision",
+      "inputs_digest": "7ce89b455e17f58682f83bd5255925de59d01588b6aae6362f26081bf978d959",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_festivals_recall",
+      "inputs_digest": "7ce89b455e17f58682f83bd5255925de59d01588b6aae6362f26081bf978d959",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_gopro_adventure_precision",
+      "inputs_digest": "dbd4deffdaf11d79a8cd2ca5d249b763945e64e281ecbb4ba64e643fd04ac8a0",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_gopro_adventure_recall",
+      "inputs_digest": "dbd4deffdaf11d79a8cd2ca5d249b763945e64e281ecbb4ba64e643fd04ac8a0",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_indian_weddings_precision",
+      "inputs_digest": "0c774da5301c8db576faa8ccbe0d6f33e8ab97e7e2f226454f7f17fda49ebb5b",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_indian_weddings_recall",
+      "inputs_digest": "0c774da5301c8db576faa8ccbe0d6f33e8ab97e7e2f226454f7f17fda49ebb5b",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_travel_precision",
+      "inputs_digest": "610068c66325693bf236dd8d4717a2151777e7171952bb0773b638c93b69d105",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_travel_recall",
+      "inputs_digest": "610068c66325693bf236dd8d4717a2151777e7171952bb0773b638c93b69d105",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "candidate": [
+    {
+      "case_id": "synthetic_baby_family_precision",
+      "inputs_digest": "e8aaaced95ac24600feab445e0731b23e4b6aa400e5df500c84de3eea43881ed",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_baby_family_recall",
+      "inputs_digest": "e8aaaced95ac24600feab445e0731b23e4b6aa400e5df500c84de3eea43881ed",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_drone_precision",
+      "inputs_digest": "16c8fda421d148f1016114ec1c1b690cb322f2f177a8ad9680076cd8e906ec20",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_drone_recall",
+      "inputs_digest": "16c8fda421d148f1016114ec1c1b690cb322f2f177a8ad9680076cd8e906ec20",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        0.828571,
+        0.828571,
+        0.828571
+      ]
+    },
+    {
+      "case_id": "synthetic_festivals_precision",
+      "inputs_digest": "7ce89b455e17f58682f83bd5255925de59d01588b6aae6362f26081bf978d959",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_festivals_recall",
+      "inputs_digest": "7ce89b455e17f58682f83bd5255925de59d01588b6aae6362f26081bf978d959",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_gopro_adventure_precision",
+      "inputs_digest": "dbd4deffdaf11d79a8cd2ca5d249b763945e64e281ecbb4ba64e643fd04ac8a0",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_gopro_adventure_recall",
+      "inputs_digest": "dbd4deffdaf11d79a8cd2ca5d249b763945e64e281ecbb4ba64e643fd04ac8a0",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_indian_weddings_precision",
+      "inputs_digest": "0c774da5301c8db576faa8ccbe0d6f33e8ab97e7e2f226454f7f17fda49ebb5b",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_indian_weddings_recall",
+      "inputs_digest": "0c774da5301c8db576faa8ccbe0d6f33e8ab97e7e2f226454f7f17fda49ebb5b",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_travel_precision",
+      "inputs_digest": "610068c66325693bf236dd8d4717a2151777e7171952bb0773b638c93b69d105",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "synthetic_travel_recall",
+      "inputs_digest": "610068c66325693bf236dd8d4717a2151777e7171952bb0773b638c93b69d105",
+      "models": [
+        {
+          "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+          "model_id": "face-clustering-agglomerative",
+          "version": "1.0.0",
+          "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "description": "Synthetic face-clustering benchmark. Measures packages/face-identity's clustering algorithm on generated vectors with known ground truth. It does NOT measure face recognition precision -- see packages/face-identity/README.md.",
+  "policy": {
+    "enforce_expected": true,
+    "min_cases_per_category": 2,
+    "min_repeats": 3
+  },
+  "suite": {
+    "cases": [
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_baby_family_precision",
+        "category": "baby_family",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "e8aaaced95ac24600feab445e0731b23e4b6aa400e5df500c84de3eea43881ed",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "precision"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_baby_family_recall",
+        "category": "baby_family",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "e8aaaced95ac24600feab445e0731b23e4b6aa400e5df500c84de3eea43881ed",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "recall"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_drone_precision",
+        "category": "drone",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "16c8fda421d148f1016114ec1c1b690cb322f2f177a8ad9680076cd8e906ec20",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "precision"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_drone_recall",
+        "category": "drone",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.8,
+        "inputs_digest": "16c8fda421d148f1016114ec1c1b690cb322f2f177a8ad9680076cd8e906ec20",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "recall"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_festivals_precision",
+        "category": "festivals",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "7ce89b455e17f58682f83bd5255925de59d01588b6aae6362f26081bf978d959",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "precision"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_festivals_recall",
+        "category": "festivals",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "7ce89b455e17f58682f83bd5255925de59d01588b6aae6362f26081bf978d959",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "recall"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_gopro_adventure_precision",
+        "category": "gopro_adventure",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "dbd4deffdaf11d79a8cd2ca5d249b763945e64e281ecbb4ba64e643fd04ac8a0",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "precision"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_gopro_adventure_recall",
+        "category": "gopro_adventure",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "dbd4deffdaf11d79a8cd2ca5d249b763945e64e281ecbb4ba64e643fd04ac8a0",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "recall"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_indian_weddings_precision",
+        "category": "indian_weddings",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "0c774da5301c8db576faa8ccbe0d6f33e8ab97e7e2f226454f7f17fda49ebb5b",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "precision"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_indian_weddings_recall",
+        "category": "indian_weddings",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "0c774da5301c8db576faa8ccbe0d6f33e8ab97e7e2f226454f7f17fda49ebb5b",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "recall"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_travel_precision",
+        "category": "travel",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "610068c66325693bf236dd8d4717a2151777e7171952bb0773b638c93b69d105",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "precision"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "fd293fafa4837a0cf7cf885fd97625d1f9a58e88e8b55a237af95f94a7dc37d3",
+            "model_id": "face-clustering-agglomerative",
+            "version": "1.0.0",
+            "weights_blake3": "09dfcb2efbbbb1761693fec139296af69e738709e0781f840162108b7d18b1c1"
+          }
+        ],
+        "case_id": "synthetic_travel_recall",
+        "category": "travel",
+        "description": "synthetic clustering measurement; NOT face recognition precision",
+        "expected": 0.98,
+        "inputs_digest": "610068c66325693bf236dd8d4717a2151777e7171952bb0773b638c93b69d105",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "recall"
+        }
+      }
+    ]
+  }
+}

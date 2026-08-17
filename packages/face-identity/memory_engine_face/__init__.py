@@ -1,0 +1,138 @@
+"""Face identity: clustering, person assignment, and the review queue.
+
+The one thing to know before importing anything from here:
+
+    `eligible_for_automated_output` is a computed property of
+    `PersonAssignment`, not a field. Album, film and reel code should take an
+    `AutomatedFaceSet`, which cannot be constructed around an ineligible face.
+
+See identity.py for the gate, clustering.py for why complete linkage, review.py
+for what a human answer changes, and README.md for the eval that would measure
+the precision this package deliberately does not claim.
+"""
+
+from .clustering import (
+    Cluster,
+    ClusteringError,
+    ClusteringResult,
+    ClusterMembership,
+    FaceObservation,
+    PairConstraints,
+    cluster_faces,
+)
+from .embeddings import (
+    AlignedFace,
+    AlignmentMismatch,
+    EmbeddingError,
+    FaceEmbedder,
+    FaceEmbedding,
+    SpaceMismatch,
+    check_alignment,
+    cosine_distance,
+    cosine_similarity,
+)
+from .identity import (
+    Assignment,
+    AutomatedFaceSet,
+    Calibrator,
+    Candidate,
+    ConsentRef,
+    DecidedBy,
+    Decisions,
+    FaceContext,
+    FittedCalibrator,
+    IdentityError,
+    IneligibleFace,
+    MinorStatus,
+    Person,
+    PersonAssignment,
+    PersonGallery,
+    ReviewReason,
+    ThresholdProfile,
+    Thresholds,
+    UncalibratedSimilarity,
+    assign_identities,
+    effective_minor_status,
+    may_be_named,
+)
+from .records import (
+    DetectedFace,
+    Detection,
+    LayoutFaceBox,
+    ModelRef,
+    NormalizedBox,
+    RecordError,
+    face_boxes_for_layout,
+    face_context_from_record,
+    to_face_record,
+)
+from .review import (
+    Answer,
+    PropagationResult,
+    QuestionKind,
+    ReviewDecision,
+    ReviewError,
+    ReviewItem,
+    ReviewState,
+    apply_decisions,
+    build_review_queue,
+)
+
+__all__ = [
+    "AlignedFace",
+    "AlignmentMismatch",
+    "Answer",
+    "Assignment",
+    "AutomatedFaceSet",
+    "Calibrator",
+    "Candidate",
+    "Cluster",
+    "ClusterMembership",
+    "ClusteringError",
+    "ClusteringResult",
+    "ConsentRef",
+    "DecidedBy",
+    "Decisions",
+    "DetectedFace",
+    "Detection",
+    "EmbeddingError",
+    "FaceContext",
+    "FaceEmbedder",
+    "FaceEmbedding",
+    "FaceObservation",
+    "FittedCalibrator",
+    "IdentityError",
+    "IneligibleFace",
+    "LayoutFaceBox",
+    "MinorStatus",
+    "ModelRef",
+    "NormalizedBox",
+    "PairConstraints",
+    "Person",
+    "PersonAssignment",
+    "PersonGallery",
+    "PropagationResult",
+    "QuestionKind",
+    "RecordError",
+    "ReviewDecision",
+    "ReviewError",
+    "ReviewItem",
+    "ReviewReason",
+    "ReviewState",
+    "SpaceMismatch",
+    "ThresholdProfile",
+    "Thresholds",
+    "UncalibratedSimilarity",
+    "apply_decisions",
+    "assign_identities",
+    "build_review_queue",
+    "check_alignment",
+    "cluster_faces",
+    "cosine_distance",
+    "cosine_similarity",
+    "effective_minor_status",
+    "face_boxes_for_layout",
+    "face_context_from_record",
+    "may_be_named",
+    "to_face_record",
+]
