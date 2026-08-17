@@ -205,6 +205,16 @@ CoreML agreeing at ~0.9135; SCRFD at 0.790975, exercising the two-anchor decoder
 That is the first time anything here has touched real imagery rather than
 fixtures.
 
+**Video produces moments.** `workers/video-analysis` decodes the 480p proxy that
+`workers/ingest` already writes and produces the `FeatureStream` that
+`plan_moments` consumes — photometry, sharpness, motion, sub-pixel shake,
+novelty, K-weighted BS.1770 loudness (cross-checked against FFmpeg's `ebur128`),
+and classical shot boundaries. Ten clips of the demo library went proxy →
+features → `plan_moments` → 15 schema-valid MomentRecords. Faces, audio events
+and transcription are still absent and are reported as absent rather than
+filled in; TransNetV2 is wired behind the load gate and refuses for want of
+weights.
+
 Open, and honest about it:
 
 - **story-engine and prompt-engine are partial.** `moments.py` and `reel.py` are
@@ -217,8 +227,22 @@ Open, and honest about it:
 - **`DEFAULT_SHARPNESS_FLOOR` is uncalibrated** (issue #22) against a scale that
   does not exist yet, and it is a *hard* elimination gate — a wrong value
   silently discards real photos.
+- **No transcript producer exists.** `workers/video-analysis` ships the
+  interface and a null backend that says so. The consequence is precise: the
+  no-mid-word guarantee in `moments.py` is not violated — nothing claims a cut
+  is speech-safe — but it is **vacuous**, because nothing is checked. A moment
+  planned today may cut through a sentence.
+- **The video feature constants are uncalibrated**, the same hazard as issue #22
+  and with the same teeth: `Policy` applies hard elimination gates to them. One
+  such defect was already found there by measurement — an integer-only shake
+  estimator made every smooth pan read as unusable shake, and nothing raised.
+- **`services/pipeline`'s story stage still reports `unavailable`**, correctly:
+  the producers now exist, but that runner does not invoke them or the
+  `generate_video_proxy` job.
 - **Nothing has been tested on a large real library.** Every performance claim
-  in this repo is untested at scale.
+  in this repo is untested at scale. Video analysis measures 2.55x realtime on
+  480p over 44 seconds of synthetic footage, which extrapolates to ~78 hours for
+  a 200-hour library — an extrapolation, not a measurement.
 
 ---
 
