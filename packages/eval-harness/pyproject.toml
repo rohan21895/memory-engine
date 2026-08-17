@@ -1,0 +1,13 @@
+[project]
+name = "memory-engine-eval-harness"
+version = "0.0.0"
+description = "Benchmark cases, baseline comparison and the model-swap regression gate"
+requires-python = ">=3.12"
+# No runtime dependencies on purpose. This is the gate that stands between a
+# model swap and a shipped regression; it runs in CI on a bare Python before
+# anything else is installed, and a gate that can fail to import is a gate that
+# gets skipped.
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
