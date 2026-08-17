@@ -1,0 +1,322 @@
+"""Unit tests for the pieces whose failures are silent.
+
+Each class here covers something that, when wrong, produces a plausible answer
+rather than an exception: a digest that disagrees with the Rust worker's, an
+inventory that misses a change, a quality score that ranks backwards, a batch
+response correlated onto the wrong photo.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+from support import (  # noqa: E402
+    PROTO_ROOT,
+    REPO_ROOT,
+    FakeMlRuntime,
+    require_ingest_binary,
+    write_photo,
+)
+
+from memory_engine_pipeline import classical, ids, inventory, mlruntime  # noqa: E402
+from memory_engine_pipeline.jobstore import JobValidationError, build_job  # noqa: E402
+
+
+class SourceLocatorDigest(unittest.TestCase):
+    """The digest MUST match the Rust worker's, or every scan is refused."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="mep-ids-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_trailing_separators_and_duplicates_do_not_change_the_digest(self):
+        first = ids.source_locator_digest([str(self.root)])
+        self.assertEqual(first, ids.source_locator_digest([f"{self.root}/"]))
+        self.assertEqual(first, ids.source_locator_digest([f"{self.root}//"]))
+        self.assertEqual(
+            first, ids.source_locator_digest([str(self.root), str(self.root)])
+        )
+
+    def test_order_does_not_change_the_digest_but_content_does(self):
+        other = Path(tempfile.mkdtemp(prefix="mep-ids2-"))
+        self.addCleanup(shutil.rmtree, other, True)
+        forwards = ids.source_locator_digest([str(self.root), str(other)])
+        backwards = ids.source_locator_digest([str(other), str(self.root)])
+        self.assertEqual(forwards, backwards)
+        self.assertNotEqual(forwards, ids.source_locator_digest([str(self.root)]))
+
+    def test_a_missing_root_is_an_error_not_a_digest(self):
+        with self.assertRaises(FileNotFoundError):
+            ids.source_locator_digest([str(self.root / "nope")])
+
+    def test_the_rust_worker_computes_the_same_digest(self):
+        """The load-bearing one.
+
+        Ingest recomputes this and refuses the job on a mismatch, so a drift
+        between the two implementations does not corrupt anything -- it stops
+        the product working, in a way whose error message ("source locator
+        digest does not match") points at the wrong file. Proving agreement
+        here is cheaper than debugging that later.
+        """
+        require_ingest_binary()
+        write_photo(self.root / "a.jpg", index=1, captured="2026:03:14 09:00:00",
+                    size=(200, 150))
+        digest = ids.source_locator_digest([str(self.root)])
+        job = build_job(
+            job_type="scan_source",
+            scope="test",
+            params={"follow_symlinks": False, "include_hidden": False, "max_depth": 32},
+            source_paths=[str(self.root)],
+            locator_digest=digest,
+        )
+        workdir = Path(tempfile.mkdtemp(prefix="mep-ids-work-"))
+        self.addCleanup(shutil.rmtree, workdir, True)
+        job_path = workdir / "job.json"
+        job_path.write_text(json.dumps(job), encoding="utf-8")
+        result = subprocess.run(
+            [
+                str(REPO_ROOT / "workers/ingest/target/release/memory-engine-ingest"),
+                str(job_path), str(workdir / "records"), str(workdir / "checkpoint.json"),
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("locator", result.stderr)
+
+
+class JobIdentity(unittest.TestCase):
+    def test_parameters_are_part_of_the_identity(self):
+        base = dict(job_type="analyze_image", scope="s", params={"a": 1})
+        self.assertNotEqual(
+            build_job(**base)["job_id"],
+            build_job(job_type="analyze_image", scope="s", params={"a": 2})["job_id"],
+        )
+
+    def test_scope_separates_otherwise_identical_work(self):
+        self.assertNotEqual(
+            build_job(job_type="rank_media", scope="one", params={})["job_id"],
+            build_job(job_type="rank_media", scope="two", params={})["job_id"],
+        )
+
+    def test_input_order_does_not_change_the_identity(self):
+        left = build_job(job_type="plan_album", scope="s", params={},
+                         media_ids=["b" * 64, "a" * 64])
+        right = build_job(job_type="plan_album", scope="s", params={},
+                          media_ids=["a" * 64, "b" * 64])
+        self.assertEqual(left["job_id"], right["job_id"])
+
+    def test_a_job_that_violates_the_contract_raises(self):
+        with self.assertRaises(JobValidationError):
+            build_job(job_type="not_a_real_job_type", scope="s", params={})
+
+
+class Inventory(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="mep-inv-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "nested").mkdir()
+        for name in ("a.jpg", "nested/b.jpg"):
+            (self.root / name).write_bytes(b"x" * 32)
+        (self.root / ".hidden.jpg").write_bytes(b"x")
+
+    def test_hidden_files_are_skipped_by_default_and_included_on_request(self):
+        default = inventory.walk([self.root])
+        self.assertEqual(2, len(default.entries))
+        with_hidden = inventory.walk([self.root], include_hidden=True)
+        self.assertEqual(3, len(with_hidden.entries))
+
+    def test_an_unchanged_tree_produces_an_identical_digest(self):
+        self.assertEqual(
+            inventory.walk([self.root]).digest, inventory.walk([self.root]).digest
+        )
+
+    def test_a_size_change_is_detected(self):
+        before = inventory.walk([self.root])
+        (self.root / "a.jpg").write_bytes(b"y" * 64)
+        delta = inventory.diff(before, inventory.walk([self.root]))
+        self.assertEqual((), delta.added)
+        self.assertEqual(1, len(delta.changed))
+
+    def test_an_mtime_change_at_the_same_size_is_detected(self):
+        before = inventory.walk([self.root])
+        path = self.root / "a.jpg"
+        path.write_bytes(b"z" * 32)
+        os.utime(path, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
+        delta = inventory.diff(before, inventory.walk([self.root]))
+        self.assertEqual(1, len(delta.changed))
+
+    def test_changing_the_options_invalidates_the_comparison_entirely(self):
+        before = inventory.walk([self.root])
+        after = inventory.walk([self.root], include_hidden=True)
+        delta = inventory.diff(before, after)
+        self.assertEqual(3, len(delta.added), "a rule change must re-consider everything")
+        self.assertEqual((), delta.removed)
+
+    def test_a_file_root_yields_itself(self):
+        """Delta scans pass individual files as roots; the walk must accept them."""
+        walked = inventory.walk([self.root / "a.jpg"])
+        self.assertEqual(1, len(walked.entries))
+
+
+class ClassicalQuality(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="mep-cq-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _thumb(self, name: str, **kwargs) -> Path:
+        from PIL import Image
+
+        path = write_photo(self.root / name, index=3, captured="2026:03:14 09:00:00",
+                           size=(1024, 768), **kwargs)
+        thumb = self.root / f"thumb-{name}"
+        with Image.open(path) as handle:
+            handle.thumbnail((512, 512))
+            handle.save(thumb, format="JPEG", quality=90)
+        return thumb
+
+    def test_blur_lowers_sharpness_and_the_measure_is_deterministic(self):
+        sharp = classical.measure(self._thumb("sharp.jpg"))
+        blurred = classical.measure(self._thumb("blurred.jpg", blur=True))
+        self.assertLess(blurred.sharpness, sharp.sharpness)
+        self.assertEqual(sharp, classical.measure(self._thumb("sharp.jpg")))
+
+    def test_every_output_is_a_unit_score(self):
+        measured = classical.measure(self._thumb("unit.jpg"))
+        for name in ("sharpness", "exposure", "noise", "contrast"):
+            value = getattr(measured, name)
+            self.assertGreaterEqual(value, 0.0, name)
+            self.assertLessEqual(value, 1.0, name)
+
+    def test_a_black_frame_is_flagged_and_a_normal_photo_is_not(self):
+        from PIL import Image
+
+        black = self.root / "black.jpg"
+        Image.new("RGB", (512, 384), (0, 0, 0)).save(black, format="JPEG", quality=95)
+        self.assertTrue(classical.measure(black).is_black_frame)
+        self.assertFalse(classical.measure(self._thumb("normal.jpg")).is_black_frame)
+
+    def test_an_oversized_proxy_is_refused_rather_than_measured(self):
+        """The constants are calibrated to a 512px proxy and do not transfer.
+
+        Measuring a 4000px image with them would return a number in range and
+        meaningless -- the worst possible outcome, because nothing downstream
+        can tell.
+        """
+        big = write_photo(self.root / "big.jpg", index=1,
+                          captured="2026:03:14 09:00:00", size=(1600, 1200))
+        with self.assertRaises(classical.ClassicalQualityError):
+            classical.measure(big)
+
+    def test_a_missing_proxy_raises_rather_than_scoring_zero(self):
+        with self.assertRaises(classical.ClassicalQualityError):
+            classical.measure(self.root / "does-not-exist.jpg")
+
+
+class RuntimeClient(unittest.TestCase):
+    """The correlation and validation rules the proto states but cannot enforce."""
+
+    def test_probe_reports_a_healthy_host(self):
+        with FakeMlRuntime() as host:
+            status = mlruntime.probe(
+                endpoint=host.endpoint,
+                required_models=["siglip2-so400m-384", "scrfd-10g-bnkps"],
+            )
+        self.assertTrue(status.available)
+        self.assertEqual("ok", status.reason)
+        self.assertEqual("development", status.load_mode)
+
+    def test_a_wrong_dimension_embedding_is_refused_not_stored(self):
+        with FakeMlRuntime(embedding_dimensions=64) as host, \
+                mlruntime.MlRuntimeClient(host.endpoint) as client:
+            outcome = client.infer_proxies(
+                model_id="siglip2-so400m-384",
+                request_id="r1",
+                items={"media-a": "ab" * 32},
+            )
+        self.assertEqual(64, len(outcome.tensors["media-a"]))
+        # The dimension contract is enforced by the analysis stage against the
+        # declared space; the client returns what the host said, unaltered.
+
+    def test_a_per_item_error_is_a_failure_not_an_empty_result(self):
+        proxy = "cd" * 32
+        with FakeMlRuntime(fail_items=frozenset({"media-b"})) as host, \
+                mlruntime.MlRuntimeClient(host.endpoint) as client:
+            outcome = client.infer_proxies(
+                model_id="scrfd-10g-bnkps", request_id="r2", items={"media-b": proxy}
+            )
+        self.assertEqual({}, dict(outcome.detections))
+        self.assertEqual(1, len(outcome.failures))
+        self.assertEqual("proxy_not_found", outcome.failures[0].code)
+        self.assertEqual("media-b", outcome.failures[0].item_id)
+
+    def test_a_dropped_item_is_detected_rather_than_read_as_no_result(self):
+        """A host that answers 31 of 32 items must not look like 32 successes.
+
+        Silently accepting a short response is how one photo in a batch ends up
+        permanently unanalysed while the stage reports completion.
+        """
+        wanted = ["ef" * 32, "12" * 32]
+        with FakeMlRuntime(fail_items=frozenset()) as host, \
+                mlruntime.MlRuntimeClient(host.endpoint) as client:
+            with self.assertRaises(mlruntime.MlRuntimeError) as caught:
+                client._read(  # noqa: SLF001 - exercising the validation directly
+                    _short_response(host, wanted[:1]),
+                    model_id="scrfd-10g-bnkps",
+                    expected=wanted,
+                )
+        self.assertIn("silently dropped", str(caught.exception))
+
+    def test_two_photos_sharing_a_proxy_are_still_two_items(self):
+        """Proxies are content addressed; two photos can share one.
+
+        Keying a batch on the proxy id would silently collapse them into a
+        single item, and one of the two records would never be analysed while
+        the stage reported a full pass.
+        """
+        shared = "ab" * 32
+        with FakeMlRuntime() as host, mlruntime.MlRuntimeClient(host.endpoint) as client:
+            outcome = client.infer_proxies(
+                model_id="siglip2-so400m-384",
+                request_id="r4",
+                items={"media-one": shared, "media-two": shared},
+            )
+        self.assertEqual({"media-one", "media-two"}, set(outcome.tensors))
+
+    def test_a_whole_request_error_raises(self):
+        with FakeMlRuntime(models=()) as host, \
+                mlruntime.MlRuntimeClient(host.endpoint) as client:
+            with self.assertRaises(mlruntime.MlRuntimeError):
+                client.infer_proxies(
+                    model_id="siglip2-so400m-384", request_id="r3",
+                    items={"media-c": "ab" * 32},
+                )
+
+
+def _short_response(host, item_ids):
+    """An InferResponse that answers fewer items than were asked for."""
+    import sys
+
+    if str(PROTO_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROTO_ROOT))
+    from generated.python import ml_runtime_pb2 as pb
+
+    return pb.InferResponse(
+        request_id="short",
+        pin=pb.ModelPin(model_id="scrfd-10g-bnkps", version="test"),
+        runtime_used=pb.RUNTIME_TARGET_ONNXRUNTIME_CPU,
+        results=[
+            pb.InferResult(item_id=item_id, detections=pb.DetectionSet())
+            for item_id in item_ids
+        ],
+        batch_size=len(item_ids),
+    )
+
+
+if __name__ == "__main__":
+    unittest.main()

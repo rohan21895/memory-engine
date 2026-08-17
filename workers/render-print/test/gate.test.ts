@@ -24,10 +24,28 @@ describe("the non-overridable print gate", () => {
     expect(() => assertRenderGate(spec)).toThrowError(RenderPrintError);
   });
 
-  it("refuses a contradictory pass with a failed finding", () => {
+  it("refuses a contradictory pass with a failed error-severity finding", () => {
     const spec = makeAlbum();
     spec.validation.checks.push({ check_id: "dpi_floor", severity: "error", passed: false });
-    expect(() => assertRenderGate(spec)).toThrow(/failed finding/);
+    expect(() => assertRenderGate(spec)).toThrow(/failed error-severity finding/);
+  });
+
+  it("accepts an advisory warning that did not pass", () => {
+    // Every album the album engine currently produces carries one of these:
+    // both shipped vendor profiles leave `icc_hash` null, so the colour check
+    // records `passed: false` at warning severity with the remediation
+    // "obtain the vendor's ICC profile". The contract defines `pass` as zero
+    // ERRORS plus passing evidence for each hard gate, so refusing this would
+    // refuse every book while claiming the spec was invalid.
+    const spec = makeAlbum();
+    spec.validation.checks.push({
+      check_id: "color_profile_match",
+      severity: "warning",
+      passed: false,
+      detail: "vendor pins no icc_hash; matched by name only",
+    });
+    spec.validation.warning_count = 1;
+    expect(() => assertRenderGate(spec)).not.toThrow();
   });
 
   it("refuses missing hard-gate evidence, unsafe faces, licenses, and page increments", () => {

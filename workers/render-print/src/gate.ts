@@ -28,8 +28,23 @@ export function assertRenderGate(spec: AlbumSpec): void {
   if (spec.validation.status !== "pass") fail(`validation status is ${spec.validation.status}.`);
   if ((spec.validation.error_count ?? 0) !== 0) fail("validation error_count is not zero.");
 
-  const failed = spec.validation.checks.find((check) => !check.passed);
-  if (failed) fail(`${failed.check_id} contains a failed finding.`);
+  // Only ERROR-severity findings block. `warning` is a real severity in the
+  // contract -- "300.3 DPI clears the floor but is below the vendor's preferred
+  // 350", "the vendor pins no icc_hash so the profile was matched by name" --
+  // and `status: pass` is defined by the schema as `error_count == 0` plus a
+  // passing finding for each hard gate, not as "no finding anywhere is false".
+  //
+  // Refusing every unpassed finding made this gate stricter than the contract
+  // in a way that refused EVERY album the album engine can currently produce:
+  // both shipped vendor profiles leave `icc_hash` null, so every report carries
+  // a warning-severity color_profile_match finding with `passed: false`. This
+  // is still a hard gate -- an error-severity failure is refused below and
+  // error_count is checked above -- it just no longer treats an advisory as a
+  // defect.
+  const failed = spec.validation.checks.find(
+    (check) => !check.passed && check.severity === "error",
+  );
+  if (failed) fail(`${failed.check_id} contains a failed error-severity finding.`);
 
   for (const checkId of REQUIRED_CHECKS) {
     if (!spec.validation.checks.some((check) => check.check_id === checkId && check.passed)) {
