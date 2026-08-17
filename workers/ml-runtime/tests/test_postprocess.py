@@ -5,12 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 
-try:
-    import numpy as np  # noqa: F401
-except ModuleNotFoundError as error:
-    raise unittest.SkipTest(
-        f"install workers/ml-runtime dependencies: {error.name}"
-    ) from error
+import numpy as np  # noqa: F401
 
 WORKER_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = WORKER_ROOT.parents[1]

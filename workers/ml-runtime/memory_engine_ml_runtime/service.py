@@ -352,8 +352,10 @@ class MlRuntimeService(pb2_grpc.MlRuntimeServicer):
                 load_duration_ms=max(0, int((time.monotonic() - started) * 1000)),
             )
         warning = (
-            "development load gate enabled; model may not satisfy release policy"
+            "development gate relaxed release refusal: "
+            f"{inspection.release_unloadable_reason}"
             if self.catalog.mode == "development"
+            and inspection.release_unloadable_reason is not None
             else ""
         )
         return pb2.LoadModelResponse(
@@ -415,15 +417,22 @@ class MlRuntimeService(pb2_grpc.MlRuntimeServicer):
     @staticmethod
     def _model_pin(inspection: ModelInspection) -> pb2.ModelPin:
         config = inspection.config
+        registry_config_pin = inspection.entry.get("config_blake3")
+        config_matches_registry = (
+            isinstance(registry_config_pin, str)
+            and registry_config_pin == inspection.config_blake3
+        )
         weights = (
-            config.get("weights") if isinstance(config.get("weights"), dict) else {}
+            config.get("weights")
+            if config_matches_registry and isinstance(config.get("weights"), dict)
+            else {}
         )
         precision = str(weights.get("quantization", ""))
         return pb2.ModelPin(
             model_id=inspection.model_id,
-            version=str(config.get("version", "")),
-            weights_blake3=inspection.weights_blake3 or "",
-            config_blake3=inspection.config_blake3 or "",
+            version=str(config.get("version", "")) if config_matches_registry else "",
+            weights_blake3=str(weights.get("blake3") or ""),
+            config_blake3=str(registry_config_pin or ""),
             runtime=pb2.RUNTIME_TARGET_UNSPECIFIED,
             precision=getattr(
                 pb2,

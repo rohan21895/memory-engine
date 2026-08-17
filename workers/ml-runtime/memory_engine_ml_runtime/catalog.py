@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import sys
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ from typing import Any
 
 from blake3 import blake3
 from jsonschema import Draft202012Validator
+from models.policy import load_gate as TRUSTED_LOAD_GATE
 
 # The policy and protobuf files are repository-owned inputs to this worker. Keep their source
 # directories out of this package so there cannot be a private copy that drifts from them.
@@ -61,6 +61,7 @@ class ModelInspection:
     weights_path: Path | None
     available_runtimes: tuple[str, ...]
     unloadable_reason: str | None
+    release_unloadable_reason: str | None
 
     @property
     def model_id(self) -> str:
@@ -72,29 +73,6 @@ class ModelInspection:
 
 
 ProviderProbe = Callable[[], frozenset[str]]
-
-
-def _load_gate_module(repo_root: Path) -> ModuleType:
-    policy_path = (repo_root / "models" / "policy" / "load_gate.py").resolve()
-    if not policy_path.is_file():
-        raise CatalogError("shared model load gate is missing")
-    module_name = (
-        f"_memory_engine_load_gate_{blake3(str(policy_path).encode()).hexdigest()[:16]}"
-    )
-    if module_name in sys.modules:
-        return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, policy_path)
-    if spec is None or spec.loader is None:
-        raise CatalogError("shared model load gate cannot be imported")
-    module = importlib.util.module_from_spec(spec)
-    # dataclasses resolves postponed annotations through sys.modules while the module executes.
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(module_name, None)
-        raise
-    return module
 
 
 def detect_available_providers() -> frozenset[str]:
@@ -125,6 +103,7 @@ class ModelCatalog:
         weights_dir: Path | None = None,
         environ: Mapping[str, str] | None = None,
         provider_probe: ProviderProbe = detect_available_providers,
+        load_gate: ModuleType = TRUSTED_LOAD_GATE,
     ) -> None:
         self.repo_root = repo_root.resolve()
         self.models_root = self.repo_root / "models"
@@ -132,7 +111,10 @@ class ModelCatalog:
         self.weights_dir = (weights_dir or self.models_root / "weights").resolve()
         self._environ = dict(os.environ if environ is None else environ)
         self._provider_probe = provider_probe
-        self._load_gate = _load_gate_module(self.repo_root)
+        # The policy implementation is trusted application code, never code from the
+        # caller-selected model tree. Tests may inject a gate explicitly without
+        # weakening the production import boundary.
+        self._load_gate = load_gate
         self._registry = self._read_registry()
         self._policy = self._registry["load_policy"]
         self.mode = self._load_gate.resolve_mode(self._policy, self._environ)
@@ -209,19 +191,31 @@ class ModelCatalog:
         config_valid = False
         actual_config_digest: str | None = None
         if config_present and config_path is not None:
-            raw_config = config_path.read_bytes()
-            # This is intentionally the raw byte buffer, not parsed or re-serialised JSON.
-            actual_config_digest = blake3(raw_config).hexdigest()
             try:
-                candidate_config = json.loads(raw_config.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                candidate_config = None
-            if isinstance(candidate_config, dict):
-                config = candidate_config
-                config_valid = not any(self._validator.iter_errors(candidate_config))
-                config_valid = config_valid and candidate_config.get(
-                    "model_id"
-                ) == entry.get("model_id")
+                raw_config = config_path.read_bytes()
+            except OSError:
+                # One unreadable entry is an unloadable model, not a catalog-wide
+                # exception that makes every other model disappear from ListModels.
+                config_present = False
+            else:
+                # This is intentionally the raw byte buffer, not parsed or
+                # re-serialised JSON.
+                actual_config_digest = blake3(raw_config).hexdigest()
+                try:
+                    candidate_config = json.loads(raw_config.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    candidate_config = None
+                if isinstance(candidate_config, dict):
+                    config = candidate_config
+                    config_valid = not any(
+                        self._validator.iter_errors(candidate_config)
+                    )
+                    config_valid = config_valid and candidate_config.get(
+                        "model_id"
+                    ) == entry.get("model_id")
+                    config_valid = config_valid and candidate_config.get(
+                        "task"
+                    ) == entry.get("task")
 
         weights = (
             config.get("weights") if isinstance(config.get("weights"), dict) else {}
@@ -244,6 +238,9 @@ class ModelCatalog:
         licence = (
             config.get("license") if isinstance(config.get("license"), dict) else {}
         )
+        rollout = (
+            config.get("rollout") if isinstance(config.get("rollout"), dict) else {}
+        )
 
         candidate = self._load_gate.Candidate(
             registered=True,
@@ -256,9 +253,13 @@ class ModelCatalog:
             config_present=config_present,
             pinned_config_digest=entry.get("config_blake3"),
             actual_config_digest=actual_config_digest,
+            is_placeholder=rollout.get("state") == "placeholder",
             available_providers=available_runtimes,
         )
         refusal = self._load_gate.decide_load(candidate, self.mode, self._policy)
+        release_refusal = self._load_gate.decide_load(
+            candidate, "release", self._policy
+        )
         return ModelInspection(
             entry=entry,
             config=config,
@@ -267,6 +268,7 @@ class ModelCatalog:
             weights_path=weights_path if weights_present else None,
             available_runtimes=available_runtimes,
             unloadable_reason=refusal,
+            release_unloadable_reason=release_refusal,
         )
 
     @staticmethod

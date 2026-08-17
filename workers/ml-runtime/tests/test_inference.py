@@ -10,16 +10,10 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-try:
-    import cv2
-    import grpc
-    import jsonschema as _jsonschema_dependency  # noqa: F401
-    import numpy as np
-    from blake3 import blake3
-except ModuleNotFoundError as error:
-    raise unittest.SkipTest(
-        f"install workers/ml-runtime dependencies: {error.name}"
-    ) from error
+import cv2
+import grpc
+import numpy as np
+from blake3 import blake3
 
 WORKER_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = WORKER_ROOT.parents[1]
@@ -140,6 +134,17 @@ class TestRealInferPath(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        aesthetic["rollout"]["state"] = "candidate"
+        aesthetic_path = (
+            self.root / "models" / "configs" / "laion-aesthetic-v2.json"
+        )
+        aesthetic_path.write_text(json.dumps(aesthetic), encoding="utf-8")
+        registry_path = self.root / "models" / "registry.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        for entry in registry["entries"]:
+            if entry["model_id"] == "laion-aesthetic-v2":
+                entry["config_blake3"] = blake3(aesthetic_path.read_bytes()).hexdigest()
+        registry_path.write_text(json.dumps(registry), encoding="utf-8")
         (weights_dir / aesthetic["weights"]["filename"]).write_bytes(
             b"fake-aesthetic-onnx"
         )
@@ -327,6 +332,9 @@ class TestRealInferPath(unittest.TestCase):
         )
         self.assertTrue(loaded.loaded)
         self.assertEqual(pb2.RUNTIME_TARGET_ONNXRUNTIME_CPU, loaded.runtime_used)
+        self.assertIn(
+            "UNLOADABLE_REASON_HASH_UNPINNED", loaded.relaxed_gate_warning
+        )
         health = self.stub.Health(pb2.HealthRequest(), timeout=5)
         self.assertEqual(1, len(health.loaded))
         self.assertEqual(pb2.RUNTIME_TARGET_ONNXRUNTIME_CPU, health.loaded[0].runtime)
@@ -338,6 +346,19 @@ class TestRealInferPath(unittest.TestCase):
         self.assertEqual(
             [], list(self.stub.Health(pb2.HealthRequest(), timeout=5).loaded)
         )
+
+    def test_load_model_checks_expected_pin_before_returning_success(self) -> None:
+        request = pb2.LoadModelRequest(
+            model_id="yunet-2023mar",
+            preferred_runtimes=[pb2.RUNTIME_TARGET_ONNXRUNTIME_CPU],
+        )
+        request.expected_pin.config_blake3 = "f" * 64
+
+        response = self.stub.LoadModel(request, timeout=10)
+
+        self.assertFalse(response.loaded)
+        self.assertEqual(pb2.ERROR_CODE_PIN_MISMATCH, response.error.code)
+        self.assertFalse(response.error.retryable)
 
 
 if __name__ == "__main__":

@@ -51,9 +51,12 @@ jobs:
       # them through the generated pydantic models, so those two libraries have
       # to be present here as well as in the Contracts job.
       - run: python3 -m pip install --upgrade pip
-      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20"
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" ./workers/ml-runtime
       - run: npm ci --ignore-scripts
       - run: npm test
+      # Unlike unittest's default runner, this exits non-zero if any required
+      # ml-runtime module or test is skipped.
+      - run: python3 workers/ml-runtime/tests/run_required_suite.py
 
   windows-ingest:
     name: Windows Ingest
