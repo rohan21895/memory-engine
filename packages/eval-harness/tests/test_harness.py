@@ -17,16 +17,28 @@ Every test below is one of those.
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
+import io
+import json
 import math
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PACKAGE_ROOT))
 
 from memory_engine_eval.harness import (  # noqa: E402
     BENCHMARK_CATEGORIES,
+    EXIT_FAIL,
+    EXIT_PASS,
+    EXIT_REFUSED,
+    EXIT_USAGE,
     MAX_WAIVER_DROP,
     MAX_WAIVER_HORIZON_DAYS,
     BaselineDigestMismatch,
@@ -35,6 +47,8 @@ from memory_engine_eval.harness import (  # noqa: E402
     CaseResult,
     CaseStatus,
     Direction,
+    GateInput,
+    GateOutcome,
     GatePolicy,
     InputsDigestMismatch,
     Metric,
@@ -48,7 +62,13 @@ from memory_engine_eval.harness import (  # noqa: E402
     Waiver,
     _quantise,
     evaluate,
+    format_outcome,
     format_report,
+    load_gate_file,
+    load_gate_input,
+    main,
+    run_gate,
+    run_gate_file,
 )
 
 AS_OF = date(2026, 8, 17)
@@ -1077,6 +1097,540 @@ class TestClassification(unittest.TestCase):
         report = run(scores)
         self.assertEqual(case_of(report, "travel_0").status, CaseStatus.IMPROVED)
         self.assertEqual(report.verdict, Verdict.PASS, format_report(report))
+
+# --------------------------------------------------------------------------
+# The gate as a command: three answers, three exit codes
+# --------------------------------------------------------------------------
+
+
+def gate_document(scores=None, *, policy=None, waivers=(), as_of=AS_OF, **kwargs):
+    """The on-disk gate-file shape, built independently of the loader.
+
+    Deliberately not written with the dataclasses' own `to_dict`: a file format
+    validated by the same code that produced it proves nothing about the format
+    a human will type.
+    """
+    suite, base, cand = world(scores, **kwargs)
+
+    def result_json(result):
+        return {
+            "case_id": result.case_id,
+            "models": [p.to_dict() for p in result.models.pins],
+            "inputs_digest": result.inputs_digest,
+            "samples": list(result.samples),
+        }
+
+    document = {
+        "as_of": as_of.isoformat(),
+        "suite": {
+            "cases": [
+                {
+                    "case_id": case.case_id,
+                    "category": case.category,
+                    "inputs_digest": case.inputs_digest,
+                    "baseline_models": [p.to_dict() for p in case.baseline_models.pins],
+                    "metric": {
+                        "name": case.metric.name,
+                        "direction": case.metric.direction.value,
+                    },
+                    "expected": case.expected,
+                }
+                for case in suite.cases
+            ]
+        },
+        "baseline": [result_json(r) for r in base],
+        "candidate": [result_json(r) for r in cand],
+    }
+    if policy is not None:
+        document["policy"] = policy
+    if waivers:
+        document["waivers"] = list(waivers)
+    return document
+
+
+class GateFileCase(unittest.TestCase):
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.directory, True)
+
+    def write(self, document, name="gate.json"):
+        path = self.directory / name
+        if isinstance(document, str):
+            path.write_text(document, encoding="utf-8")
+        else:
+            path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
+    def call(self, argv):
+        """main(argv) with its output captured, returning (code, text)."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue() + err.getvalue()
+
+
+class TestVerdictExitCodes(unittest.TestCase):
+    """"I could not check" and "I checked and it got worse" are different answers.
+
+    models/policy/digest.py had to learn this at the other end and returns 2 for
+    "could not check". The same rule applies here: SKIP must not share a shell
+    status with FAIL, or a stale pin gets treated as a quality signal -- argued
+    with, waived, overridden.
+    """
+
+    def test_the_four_exit_codes_are_distinct(self):
+        self.assertEqual(
+            len({EXIT_PASS, EXIT_FAIL, EXIT_REFUSED, EXIT_USAGE}),
+            4,
+        )
+        self.assertEqual(EXIT_PASS, 0)
+
+    def test_every_verdict_has_its_own_exit_code(self):
+        codes_by_verdict = {verdict: verdict.exit_code for verdict in Verdict}
+        self.assertEqual(len(set(codes_by_verdict.values())), len(Verdict))
+        self.assertEqual(Verdict.PASS.exit_code, EXIT_PASS)
+        self.assertEqual(Verdict.FAIL.exit_code, EXIT_FAIL)
+        self.assertEqual(Verdict.SKIP.exit_code, EXIT_REFUSED)
+
+    def test_skip_does_not_share_a_code_with_fail(self):
+        self.assertNotEqual(Verdict.SKIP.exit_code, Verdict.FAIL.exit_code)
+
+    def test_only_a_non_zero_code_may_mean_anything_but_pass(self):
+        for verdict in Verdict:
+            if verdict is Verdict.PASS:
+                continue
+            self.assertNotEqual(verdict.exit_code, 0, verdict)
+
+    def test_a_report_can_never_carry_skip(self):
+        # A report is the record of a comparison that happened; SKIP means none
+        # did. Allowing it would put means, deltas and a digest on a run that
+        # was refused.
+        report = run()
+        with self.assertRaises(SuiteError):
+            dataclasses.replace(report, verdict=Verdict.SKIP)
+
+
+class TestRunGate(GateFileCase):
+    def gate(self, **kwargs):
+        return load_gate_input(gate_document(**kwargs))
+
+    def test_a_clean_run_is_a_pass_outcome(self):
+        outcome = run_gate(self.gate())
+        self.assertEqual(outcome.verdict, Verdict.PASS)
+        self.assertEqual(outcome.exit_code, EXIT_PASS)
+        self.assertIsNotNone(outcome.report)
+        self.assertIsNone(outcome.refusal)
+
+    def test_a_regression_is_a_fail_outcome(self):
+        scores = default_scores()
+        scores["baby_family"] = [(0.80, 0.60)] * 4
+        outcome = run_gate(self.gate(scores=scores))
+        self.assertEqual(outcome.verdict, Verdict.FAIL)
+        self.assertEqual(outcome.exit_code, EXIT_FAIL)
+        self.assertIn("case_drop_exceeds_cap", outcome.report.failure_codes())
+
+    def test_a_stale_baseline_pin_is_a_skip_not_a_fail(self):
+        outcome = run_gate(self.gate(case_pin=ModelSet([pin(weights=9)])))
+        self.assertEqual(outcome.verdict, Verdict.SKIP)
+        self.assertEqual(outcome.exit_code, EXIT_REFUSED)
+        self.assertIsNone(outcome.report)
+        self.assertEqual(outcome.refusal_type, "BaselineDigestMismatch")
+
+    def test_an_unpinned_candidate_is_a_skip(self):
+        outcome = run_gate(
+            self.gate(candidate_models=ModelSet([pin(model_id="scrfd", weights=None)]))
+        )
+        self.assertEqual(outcome.verdict, Verdict.SKIP)
+        self.assertEqual(outcome.refusal_type, "UnpinnedModel")
+
+    def test_a_malformed_suite_is_not_a_skip(self):
+        # SuiteError is "this gate was never set up", which is a different
+        # person's problem from "these two runs cannot be compared". Swallowing
+        # it into SKIP would report a broken harness as an unmeasurable model.
+        gate = self.gate()
+        broken = GateInput(
+            suite=gate.suite,
+            baseline=gate.baseline,
+            candidate=(),
+            policy=gate.policy,
+            waivers=gate.waivers,
+            as_of=gate.as_of,
+        )
+        with self.assertRaises(SuiteError):
+            run_gate(broken)
+
+    def test_a_skip_outcome_may_not_carry_a_report(self):
+        report = run()
+        with self.assertRaises(SuiteError):
+            GateOutcome(
+                source="x",
+                verdict=Verdict.SKIP,
+                report=report,
+                refusal="mismatch",
+                refusal_type="ModelSetMismatch",
+            )
+
+    def test_a_measured_outcome_must_carry_its_report(self):
+        with self.assertRaises(SuiteError):
+            GateOutcome(
+                source="x",
+                verdict=Verdict.FAIL,
+                report=None,
+                refusal=None,
+                refusal_type=None,
+            )
+
+    def test_a_skip_outcome_names_the_refusal_in_its_log_block(self):
+        text = format_outcome(run_gate(self.gate(case_pin=ModelSet([pin(weights=9)]))))
+        self.assertIn("SKIP", text)
+        self.assertIn("BaselineDigestMismatch", text)
+        self.assertNotIn("verdict: FAIL", text)
+
+
+class TestGateFileLoading(GateFileCase):
+    def test_a_gate_file_produces_the_same_report_as_the_library(self):
+        scores = default_scores()
+        scores["drone"] = [(0.80, 0.79)] * 4
+        document = gate_document(scores=scores)
+        from_file = run_gate_file(self.write(document))
+        direct = run(scores)
+        self.assertEqual(from_file.report.digest(), direct.digest())
+
+    def test_an_absent_policy_means_the_strict_defaults(self):
+        outcome = run_gate_file(self.write(gate_document()))
+        self.assertEqual(outcome.report.policy, GatePolicy())
+
+    def test_a_declared_policy_is_used(self):
+        document = gate_document(policy={"min_repeats": 3})
+        outcome = run_gate_file(self.write(document))
+        self.assertEqual(outcome.report.policy.min_repeats, 3)
+        self.assertEqual(outcome.verdict, Verdict.FAIL)
+
+    def test_an_unknown_top_level_field_is_refused(self):
+        document = gate_document()
+        document["baselines"] = document["baseline"]
+        with self.assertRaises(SuiteError) as caught:
+            load_gate_input(document)
+        self.assertIn("baselines", str(caught.exception))
+
+    def test_a_misspelled_policy_knob_is_refused(self):
+        # The whole failure mode: the file in the repository says one thing and
+        # the policy that ran took the default.
+        document = gate_document(policy={"max_case_drop_": 0.9})
+        with self.assertRaises(SuiteError) as caught:
+            load_gate_input(document)
+        self.assertIn("max_case_drop_", str(caught.exception))
+
+    def test_a_missing_as_of_is_refused(self):
+        document = gate_document()
+        del document["as_of"]
+        with self.assertRaises(SuiteError) as caught:
+            load_gate_input(document)
+        self.assertIn("as_of", str(caught.exception))
+
+    def test_as_of_must_be_a_date(self):
+        document = gate_document()
+        document["as_of"] = "yesterday"
+        with self.assertRaises(SuiteError):
+            load_gate_input(document)
+
+    def test_an_unknown_metric_direction_is_refused(self):
+        document = gate_document()
+        document["suite"]["cases"][0]["metric"]["direction"] = "up"
+        with self.assertRaises(SuiteError) as caught:
+            load_gate_input(document)
+        self.assertIn("direction", str(caught.exception))
+
+    def test_a_boolean_sample_is_refused_by_the_loader(self):
+        document = gate_document()
+        document["candidate"][0]["samples"] = [True]
+        with self.assertRaises(SuiteError):
+            load_gate_input(document)
+
+    def test_samples_must_be_an_array(self):
+        document = gate_document()
+        document["candidate"][0]["samples"] = 0.8
+        with self.assertRaises(SuiteError):
+            load_gate_input(document)
+
+    def test_a_file_that_is_not_json_is_a_suite_error(self):
+        path = self.write("{not json", name="broken.json")
+        with self.assertRaises(SuiteError):
+            load_gate_file(path)
+
+    def test_a_waiver_loads_and_applies(self):
+        scores = default_scores()
+        scores["baby_family"] = [(0.80, 0.72)] + [(0.80, 0.827)] * 3
+        document = gate_document(
+            scores=scores,
+            waivers=[
+                {
+                    "case_id": "baby_family_0",
+                    "baseline_models": [p.to_dict() for p in BASELINE.pins],
+                    "candidate_models": [p.to_dict() for p in CANDIDATE.pins],
+                    "max_drop": 0.09,
+                    "reason": "known low-light crop change, reviewed",
+                    "approved_by": "rohan",
+                    "approved_on": "2026-08-01",
+                    "expires_on": "2026-09-01",
+                }
+            ],
+        )
+        outcome = run_gate_file(self.write(document))
+        self.assertNotIn("case_drop_exceeds_cap", outcome.report.failure_codes())
+        self.assertTrue(case_of(outcome.report, "baby_family_0").waived)
+
+
+class TestCommandLine(GateFileCase):
+    def test_a_clean_gate_file_exits_zero(self):
+        code, _ = self.call([str(self.write(gate_document()))])
+        self.assertEqual(code, EXIT_PASS)
+
+    def test_a_regression_exits_one(self):
+        scores = default_scores()
+        scores["baby_family"] = [(0.80, 0.60)] * 4
+        code, text = self.call([str(self.write(gate_document(scores=scores)))])
+        self.assertEqual(code, EXIT_FAIL)
+        self.assertIn("case_drop_exceeds_cap", text)
+
+    def test_a_refusal_exits_two(self):
+        document = gate_document(case_pin=ModelSet([pin(weights=9)]))
+        code, text = self.call([str(self.write(document))])
+        self.assertEqual(code, EXIT_REFUSED)
+        self.assertIn("SKIP", text)
+
+    def test_a_malformed_gate_file_exits_three(self):
+        code, text = self.call([str(self.write("{not json", name="bad.json"))])
+        self.assertEqual(code, EXIT_USAGE)
+        self.assertIn("UNUSABLE", text)
+
+    def test_a_missing_gate_file_exits_three(self):
+        code, _ = self.call([str(self.directory / "absent.json")])
+        self.assertEqual(code, EXIT_USAGE)
+
+    def test_argparse_usage_errors_do_not_borrow_the_refusal_code(self):
+        # argparse exits 2 by default, which is EXIT_REFUSED here. A missing
+        # argument would then read to CI as "the comparison was refused".
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            main([])
+        self.assertEqual(caught.exception.code, EXIT_USAGE)
+
+    def test_a_real_failure_outranks_a_refusal(self):
+        scores = default_scores()
+        scores["baby_family"] = [(0.80, 0.60)] * 4
+        failing = self.write(gate_document(scores=scores), name="fail.json")
+        refused = self.write(
+            gate_document(case_pin=ModelSet([pin(weights=9)])), name="skip.json"
+        )
+        code, _ = self.call([str(refused), str(failing)])
+        self.assertEqual(code, EXIT_FAIL)
+
+    def test_a_refusal_outranks_a_pass(self):
+        clean = self.write(gate_document(), name="pass.json")
+        refused = self.write(
+            gate_document(case_pin=ModelSet([pin(weights=9)])), name="skip.json"
+        )
+        code, _ = self.call([str(clean), str(refused)])
+        self.assertEqual(code, EXIT_REFUSED)
+
+    def test_an_unusable_file_outranks_everything(self):
+        scores = default_scores()
+        scores["baby_family"] = [(0.80, 0.60)] * 4
+        failing = self.write(gate_document(scores=scores), name="fail.json")
+        broken = self.write("{", name="bad.json")
+        code, _ = self.call([str(failing), str(broken)])
+        self.assertEqual(code, EXIT_USAGE)
+
+    def test_json_output_records_the_verdict_and_the_code(self):
+        refused = self.write(gate_document(case_pin=ModelSet([pin(weights=9)])))
+        out = self.directory / "outcomes.json"
+        code, _ = self.call([str(refused), "--json", str(out)])
+        payload = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(code, EXIT_REFUSED)
+        self.assertEqual(payload[0]["verdict"], "skip")
+        self.assertEqual(payload[0]["exit_code"], EXIT_REFUSED)
+        self.assertIsNone(payload[0]["report"])
+
+    def test_the_module_runs_as_a_command_and_returns_the_refusal_code(self):
+        # Proof the entry point exists at all: CI invokes the module, not main().
+        document = gate_document(case_pin=ModelSet([pin(weights=9)]))
+        path = self.write(document)
+        done = subprocess.run(
+            [sys.executable, "-m", "memory_engine_eval.harness", str(path)],
+            capture_output=True,
+            text=True,
+            cwd=str(PACKAGE_ROOT),
+        )
+        self.assertEqual(done.returncode, EXIT_REFUSED, done.stderr)
+        self.assertIn("SKIP", done.stdout + done.stderr)
+
+    def test_the_module_runs_as_a_command_and_returns_zero_on_a_clean_gate(self):
+        path = self.write(gate_document())
+        done = subprocess.run(
+            [sys.executable, "-m", "memory_engine_eval.harness", str(path)],
+            capture_output=True,
+            text=True,
+            cwd=str(PACKAGE_ROOT),
+        )
+        self.assertEqual(done.returncode, EXIT_PASS, done.stderr)
+
+
+class TestToleranceCannotDisableTheCap(unittest.TestCase):
+    """`case_regression_tolerance` used to gate `max_case_drop`.
+
+    The per-case cap was only checked on a case already classified REGRESSED,
+    so a policy whose tolerance exceeded the cap made the cap unreachable: a
+    baby/family case falling 0.09 against a documented 0.05 cap returned PASS
+    with an empty failure list. Two independent defences now.
+    """
+
+    def test_a_tolerance_above_the_cap_is_refused(self):
+        with self.assertRaises(SuiteError) as caught:
+            GatePolicy(case_regression_tolerance=0.10, max_case_drop=0.05)
+        message = str(caught.exception)
+        self.assertIn("case_regression_tolerance", message)
+        self.assertIn("max_case_drop", message)
+
+    def test_a_tolerance_equal_to_the_cap_is_allowed(self):
+        # At equality the cap is still reachable: REGRESSED needs drop > tol,
+        # and the cap needs drop > cap, so the two fire together.
+        policy = GatePolicy(case_regression_tolerance=0.05, max_case_drop=0.05)
+        self.assertEqual(policy.case_regression_tolerance, 0.05)
+
+    def test_the_defaults_keep_the_cap_reachable(self):
+        policy = GatePolicy()
+        self.assertLess(policy.case_regression_tolerance, policy.max_case_drop)
+
+    def test_the_cliff_edge_case_still_fails_at_the_loosest_legal_tolerance(self):
+        scores = default_scores()
+        scores["baby_family"] = [(0.80, 0.71)] + [(0.80, 0.80)] * 3
+        report = run(
+            scores,
+            policy=GatePolicy(case_regression_tolerance=0.05, max_case_drop=0.05),
+        )
+        self.assertEqual(report.verdict, Verdict.FAIL)
+        self.assertIn("case_drop_exceeds_cap", codes(report))
+        self.assertIn("baby_family_0", scoped(report, "case_drop_exceeds_cap"))
+
+    def test_the_cap_does_not_depend_on_the_classification(self):
+        # Belt and braces, tested rather than asserted in a comment: even with
+        # the constructor guard bypassed -- which is what a future edit to
+        # __post_init__ amounts to -- a drop past the cap still fails, and the
+        # case is not quietly labelled UNCHANGED and forgotten.
+        policy = GatePolicy(case_regression_tolerance=0.01, max_case_drop=0.05)
+        object.__setattr__(policy, "case_regression_tolerance", 0.10)
+        scores = default_scores()
+        scores["baby_family"] = [(0.80, 0.71)] + [(0.80, 0.80)] * 3
+        report = run(scores, policy=policy)
+        self.assertEqual(case_of(report, "baby_family_0").status, CaseStatus.UNCHANGED)
+        self.assertIn("case_drop_exceeds_cap", codes(report))
+        self.assertEqual(report.verdict, Verdict.FAIL)
+
+    def test_a_nondeterministic_case_is_not_also_capped(self):
+        # Its delta is not a measurement (decision 6), so failing it twice
+        # would blame model quality for an unrepeatable number.
+        scores = default_scores()
+        scores["drone"] = [(0.80, (0.10, 0.90))] + [(0.80, 0.80)] * 3
+        report = run(scores)
+        self.assertEqual(case_of(report, "drone_0").status, CaseStatus.NONDETERMINISTIC)
+        self.assertIn("case_nondeterministic", codes(report))
+        self.assertNotIn("drone_0", scoped(report, "case_drop_exceeds_cap"))
+
+
+class TestTrailingNewlineAnchoring(unittest.TestCase):
+    """`$` in a `.match()` pattern also matches before a FINAL newline.
+
+    A digest read with `open(path).read()` instead of `.read().strip()` was
+    accepted as a 65-character "BLAKE3" digest, and then compared unequal to
+    the same digest without the newline -- BaselineDigestMismatch, a refusal,
+    chased as a stale-baseline ghost. A case_id with a trailing newline forged
+    a second line in format_report().
+    """
+
+    def test_a_digest_with_a_trailing_newline_is_not_a_digest(self):
+        with self.assertRaises(SuiteError):
+            ModelPin("siglip2", "1.0", digest(1) + "\n", digest(2))
+        with self.assertRaises(SuiteError):
+            ModelPin("siglip2", "1.0", digest(1), digest(2) + "\n")
+
+    def test_a_case_id_with_a_trailing_newline_is_not_a_slug(self):
+        with self.assertRaises(SuiteError):
+            BenchmarkCase(
+                case_id="travel_0\n",
+                category="travel",
+                inputs_digest=digest(7),
+                baseline_models=BASELINE,
+                metric=ACCEPTANCE,
+                expected=0.0,
+            )
+
+    def test_a_category_with_a_trailing_newline_is_not_a_slug(self):
+        with self.assertRaises(SuiteError):
+            BenchmarkCase(
+                case_id="travel_0",
+                category="travel\n",
+                inputs_digest=digest(7),
+                baseline_models=BASELINE,
+                metric=ACCEPTANCE,
+                expected=0.0,
+            )
+
+    def test_an_inputs_digest_with_a_trailing_newline_is_refused(self):
+        with self.assertRaises(SuiteError):
+            BenchmarkCase(
+                case_id="travel_0",
+                category="travel",
+                inputs_digest=digest(7) + "\n",
+                baseline_models=BASELINE,
+                metric=ACCEPTANCE,
+                expected=0.0,
+            )
+        with self.assertRaises(SuiteError):
+            CaseResult("travel_0", BASELINE, digest(7) + "\n", (0.8,))
+
+    def test_a_model_id_or_metric_name_with_a_trailing_newline_is_refused(self):
+        with self.assertRaises(SuiteError):
+            ModelPin("siglip2\n", "1.0", digest(1), digest(2))
+        with self.assertRaises(SuiteError):
+            Metric("reel_acceptance\n", Direction.HIGHER_IS_BETTER)
+
+    def test_a_waiver_case_id_with_a_trailing_newline_is_refused(self):
+        with self.assertRaises(SuiteError):
+            Waiver(
+                case_id="travel_0\n",
+                baseline_models=BASELINE,
+                candidate_models=CANDIDATE,
+                max_drop=0.01,
+                reason="r",
+                approved_by="rohan",
+                approved_on=date(2026, 8, 1),
+                expires_on=date(2026, 9, 1),
+            )
+
+    def test_two_pins_naming_the_same_weights_cannot_differ_by_whitespace(self):
+        # The ghost this prevents: one runner strips the digest file, another
+        # does not, and the gate refuses the comparison as a model change.
+        clean = ModelPin("siglip2", "1.0", digest(1), digest(2))
+        with self.assertRaises(SuiteError):
+            ModelPin("siglip2", "1.0", digest(1) + "\n", digest(2))
+        self.assertEqual(clean.weights_blake3, digest(1))
+
+class TestCommittedGateFiles(unittest.TestCase):
+    """CI runs `gates/*.gate.json`; this makes a broken one a unit-test failure.
+
+    Without the first assertion the CI step would glob nothing, succeed, and
+    report a green gate over zero measurements -- which is the same shape of
+    lie as a gate that is never invoked.
+    """
+
+    def test_every_committed_gate_file_passes(self):
+        gates = sorted((PACKAGE_ROOT / "gates").glob("*.gate.json"))
+        self.assertTrue(gates, "no committed gate file; the CI gate would run on nothing")
+        for path in gates:
+            with self.subTest(gate=path.name):
+                outcome = run_gate_file(path)
+                self.assertEqual(outcome.exit_code, EXIT_PASS, format_outcome(outcome))
 
 
 if __name__ == "__main__":

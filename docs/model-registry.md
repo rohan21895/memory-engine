@@ -140,6 +140,30 @@ python3 models/policy/digest.py --write
 
 Steps 4–6 are the eval harness's job (`packages/eval-harness`, Phase 6). Steps 1–3 are the gate that applies from day one.
 
+### Running step 6
+
+The gate is a command, and CI runs it over every committed gate file
+(`.github/workflows/ci.yml`, job `Test`):
+
+```bash
+cd packages/eval-harness
+python3 -m memory_engine_eval.harness gates/*.gate.json
+```
+
+It answers with a number, and three of the four numbers are failures:
+
+| Exit | Meaning |
+|---|---|
+| 0 | Pass — the comparison ran and nothing failed. |
+| 1 | Fail — a measured regression. Fix the model, move the baseline deliberately, or waive one case. |
+| 2 | **Refused** — no comparison exists (mismatched digests, mixed model sets, unpinned weights, different inputs). Not a quality signal, not waivable. |
+| 3 | Unusable — the gate file is malformed or unreadable. Nothing was measured. |
+
+2 is separate from 1 for the same reason `models/policy/digest.py` returns 2
+rather than 1: "I could not check" and "I checked and it got worse" call for
+different actions, and a refusal that arrives as a FAIL gets waived like one.
+See `packages/eval-harness/gates/README.md` for the gate-file format.
+
 ---
 
 ## Decision: the face stack, taken 2026-08-16

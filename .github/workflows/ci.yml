@@ -72,6 +72,20 @@ jobs:
       # Unlike unittest's default runner, this exits non-zero if any required
       # ml-runtime module or test is skipped.
       - run: python3 workers/ml-runtime/tests/run_required_suite.py
+      # CLAUDE.md hard rule 7: "Model swaps are gated by the eval harness in
+      # CI." Until this step existed the harness was a library nothing but its
+      # own test file imported, so the rule was not true. Every committed
+      # gate file runs here.
+      #
+      # Exit codes are three separate answers, not two: 0 pass, 1 a measured
+      # regression, 2 a REFUSED comparison (mismatched digests, mixed model
+      # sets, unpinned weights -- no measurement exists), 3 an unusable gate
+      # file. All of 1/2/3 fail this job; the number says which human should
+      # act. Do not collapse them, and note that 2 is also argparse's default
+      # usage code, which is why the command overrides it.
+      - name: Eval harness regression gate
+        working-directory: packages/eval-harness
+        run: python3 -m memory_engine_eval.harness gates/*.gate.json
 
   windows-ingest:
     name: Windows Ingest

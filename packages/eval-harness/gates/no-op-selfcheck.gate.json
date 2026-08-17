@@ -1,0 +1,869 @@
+{
+  "as_of": "2026-08-17",
+  "baseline": [
+    {
+      "case_id": "baby_family_0",
+      "inputs_digest": "3131313131300000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "baby_family_1",
+      "inputs_digest": "3131313131310000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "drone_0",
+      "inputs_digest": "3131313131313000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "drone_1",
+      "inputs_digest": "3131313131313100000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "festivals_0",
+      "inputs_digest": "3131313131323000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "festivals_1",
+      "inputs_digest": "3131313131323100000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "gopro_adventure_0",
+      "inputs_digest": "3131313131333000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "gopro_adventure_1",
+      "inputs_digest": "3131313131333100000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "indian_weddings_0",
+      "inputs_digest": "3131313131343000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "indian_weddings_1",
+      "inputs_digest": "3131313131343100000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "travel_0",
+      "inputs_digest": "3131313131353000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "travel_1",
+      "inputs_digest": "3131313131353100000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    }
+  ],
+  "candidate": [
+    {
+      "case_id": "baby_family_0",
+      "inputs_digest": "3131313131300000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "baby_family_1",
+      "inputs_digest": "3131313131310000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "drone_0",
+      "inputs_digest": "3131313131313000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "drone_1",
+      "inputs_digest": "3131313131313100000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "festivals_0",
+      "inputs_digest": "3131313131323000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "festivals_1",
+      "inputs_digest": "3131313131323100000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "gopro_adventure_0",
+      "inputs_digest": "3131313131333000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "gopro_adventure_1",
+      "inputs_digest": "3131313131333100000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "indian_weddings_0",
+      "inputs_digest": "3131313131343000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "indian_weddings_1",
+      "inputs_digest": "3131313131343100000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "travel_0",
+      "inputs_digest": "3131313131353000000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    {
+      "case_id": "travel_1",
+      "inputs_digest": "3131313131353100000000000000000000000000000000000000000000000000",
+      "models": [
+        {
+          "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+          "model_id": "scrfd",
+          "version": "selfcheck",
+          "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+        },
+        {
+          "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+          "model_id": "siglip2",
+          "version": "selfcheck",
+          "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "samples": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    }
+  ],
+  "description": "SELF-CHECK, NOT A MODEL MEASUREMENT. The digests here are synthetic and pin nothing real; the samples are fixed constants. Its only job is to make CI execute the gate end to end on every push, so that CLAUDE.md hard rule 7 is a thing that runs rather than a thing that is written down. Candidate and baseline pin identical digests, so this is a no-op run: every delta must be exactly zero, min_repeats proves the numbers repeat, and any drift means something outside the model moved. Real swap gates are added next to this file as their own *.gate.json.",
+  "policy": {
+    "enforce_expected": true,
+    "min_cases_per_category": 2,
+    "min_repeats": 3
+  },
+  "suite": {
+    "cases": [
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "baby_family_0",
+        "category": "baby_family",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131300000000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "baby_family_1",
+        "category": "baby_family",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131310000000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "drone_0",
+        "category": "drone",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131313000000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "drone_1",
+        "category": "drone",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131313100000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "festivals_0",
+        "category": "festivals",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131323000000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "festivals_1",
+        "category": "festivals",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131323100000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "gopro_adventure_0",
+        "category": "gopro_adventure",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131333000000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "gopro_adventure_1",
+        "category": "gopro_adventure",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131333100000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "indian_weddings_0",
+        "category": "indian_weddings",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131343000000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "indian_weddings_1",
+        "category": "indian_weddings",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131343100000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "travel_0",
+        "category": "travel",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131353000000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "3563346664320000000000000000000000000000000000000000000000000000",
+            "model_id": "scrfd",
+            "version": "selfcheck",
+            "weights_blake3": "3563346664310000000000000000000000000000000000000000000000000000"
+          },
+          {
+            "config_blake3": "3531393131323200000000000000000000000000000000000000000000000000",
+            "model_id": "siglip2",
+            "version": "selfcheck",
+            "weights_blake3": "3531393131323100000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "case_id": "travel_1",
+        "category": "travel",
+        "description": "fixed fixture value; measures the harness, not a model",
+        "expected": 0.5,
+        "inputs_digest": "3131313131353100000000000000000000000000000000000000000000000000",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "selfcheck_fixture_score"
+        }
+      }
+    ]
+  }
+}
