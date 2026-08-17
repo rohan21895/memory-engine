@@ -56,9 +56,12 @@ jobs:
       # absent, deliberately, since an id that claims to be a content address
       # and is not would break job idempotency without ever raising.
       - run: python3 -m pip install --upgrade pip
-      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4"
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" ./workers/ml-runtime
       - run: npm ci --ignore-scripts
       - run: npm test
+      # Unlike unittest's default runner, this exits non-zero if any required
+      # ml-runtime module or test is skipped.
+      - run: python3 workers/ml-runtime/tests/run_required_suite.py
 
   windows-ingest:
     name: Windows Ingest

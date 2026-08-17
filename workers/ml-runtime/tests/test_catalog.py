@@ -6,17 +6,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
-
-try:
-    import blake3 as _blake3_dependency  # noqa: F401
-    import jsonschema as _jsonschema_dependency  # noqa: F401
-except (
-    ModuleNotFoundError
-) as error:  # The repository CI does not install worker projects yet.
-    raise unittest.SkipTest(
-        f"install workers/ml-runtime dependencies: {error.name}"
-    ) from error
 
 WORKER_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = WORKER_ROOT.parents[1]
@@ -24,6 +15,7 @@ sys.path.insert(0, str(WORKER_ROOT))
 
 from blake3 import blake3
 from memory_engine_ml_runtime.catalog import ModelCatalog
+from models.policy import load_gate as trusted_load_gate
 
 
 class CatalogFixture(unittest.TestCase):
@@ -62,23 +54,34 @@ class TestModelCatalog(CatalogFixture):
         expected = {
             entry["model_id"]: entry["config_blake3"] for entry in registry["entries"]
         }
-        self.assertEqual(6, len(inspections))
+        self.assertEqual(len(expected), len(inspections))
         for inspection in inspections:
             with self.subTest(model=inspection.model_id):
                 self.assertEqual(
                     expected[inspection.model_id], inspection.config_blake3
                 )
+                rollout = inspection.config.get("rollout", {})
+                expected_reason = (
+                    "UNLOADABLE_REASON_PLACEHOLDER"
+                    if rollout.get("state") == "placeholder"
+                    else "UNLOADABLE_REASON_WEIGHTS_MISSING"
+                )
                 self.assertEqual(
-                    "UNLOADABLE_REASON_WEIGHTS_MISSING", inspection.unloadable_reason
+                    expected_reason, inspection.unloadable_reason
                 )
 
     def test_development_opt_in_allows_unpinned_weight_files(self) -> None:
         self.add_declared_weights()
         catalog = self.catalog(development=True)
         self.assertEqual("development", catalog.mode)
-        self.assertTrue(
-            all(item.unloadable_reason is None for item in catalog.inspect_all())
-        )
+        for item in catalog.inspect_all():
+            with self.subTest(model=item.model_id):
+                expected = (
+                    "UNLOADABLE_REASON_PLACEHOLDER"
+                    if item.config.get("rollout", {}).get("state") == "placeholder"
+                    else None
+                )
+                self.assertEqual(expected, item.unloadable_reason)
 
     def test_semantically_equal_reformatted_config_fails_its_byte_pin(self) -> None:
         self.add_declared_weights()
@@ -106,9 +109,98 @@ class TestModelCatalog(CatalogFixture):
         ) as decide_load:
             inspected = catalog.inspect_all(task="face_embedding")
         self.assertEqual(1, len(inspected))
-        decide_load.assert_called_once()
+        self.assertEqual(2, decide_load.call_count)
         self.assertEqual(
             "UNLOADABLE_REASON_CONFIG_INVALID", inspected[0].unloadable_reason
+        )
+
+    def test_caller_selected_tree_cannot_replace_the_trusted_load_gate(self) -> None:
+        self.add_declared_weights()
+        policy_path = self.repo_root / "models" / "policy" / "load_gate.py"
+        policy_path.write_text(
+            "def decide_load(candidate, mode, policy=None): return None\n",
+            encoding="utf-8",
+        )
+
+        inspections = self.catalog().inspect_all()
+
+        self.assertTrue(inspections)
+        self.assertTrue(all(item.unloadable_reason for item in inspections))
+
+    def test_load_gate_has_an_explicit_injection_seam_for_tests(self) -> None:
+        self.add_declared_weights()
+        calls = []
+
+        def decide(candidate, mode, policy):
+            calls.append((candidate, mode, policy))
+            return "UNLOADABLE_REASON_CONFIG_INVALID"
+
+        fake_gate = SimpleNamespace(
+            Candidate=trusted_load_gate.Candidate,
+            resolve_mode=trusted_load_gate.resolve_mode,
+            decide_load=decide,
+        )
+        catalog = ModelCatalog(
+            repo_root=self.repo_root,
+            environ={},
+            provider_probe=lambda: frozenset({"onnxruntime_cpu"}),
+            load_gate=fake_gate,
+        )
+
+        inspected = catalog.inspect("siglip2-so400m-384")
+
+        self.assertIsNotNone(inspected)
+        assert inspected is not None
+        self.assertEqual("UNLOADABLE_REASON_CONFIG_INVALID", inspected.unloadable_reason)
+        self.assertEqual(["release", "release"], [call[1] for call in calls])
+
+    def test_unreadable_config_only_marks_that_model_missing(self) -> None:
+        target = (
+            self.repo_root / "models" / "configs" / "siglip2-so400m-384.json"
+        ).resolve()
+        original_read_bytes = Path.read_bytes
+
+        def selective_read_bytes(path: Path) -> bytes:
+            if path == target:
+                raise PermissionError("fixture denies reads")
+            return original_read_bytes(path)
+
+        with mock.patch.object(type(target), "read_bytes", selective_read_bytes):
+            inspections = self.catalog().inspect_all()
+
+        by_id = {item.model_id: item for item in inspections}
+        self.assertEqual(
+            "UNLOADABLE_REASON_CONFIG_MISSING",
+            by_id["siglip2-so400m-384"].unloadable_reason,
+        )
+        self.assertTrue(
+            any(
+                item.model_id != "siglip2-so400m-384" and item.config
+                for item in inspections
+            )
+        )
+
+    def test_config_task_must_match_the_registry_entry(self) -> None:
+        self.add_declared_weights()
+        config_path = (
+            self.repo_root / "models" / "configs" / "arcface-buffalo-l.json"
+        )
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["task"] = "face_detection"
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        registry_path = self.repo_root / "models" / "registry.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        for entry in registry["entries"]:
+            if entry["model_id"] == "arcface-buffalo-l":
+                entry["config_blake3"] = blake3(config_path.read_bytes()).hexdigest()
+        registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+        inspected = self.catalog(development=True).inspect("arcface-buffalo-l")
+
+        self.assertIsNotNone(inspected)
+        assert inspected is not None
+        self.assertEqual(
+            "UNLOADABLE_REASON_CONFIG_INVALID", inspected.unloadable_reason
         )
 
     def test_registry_paths_cannot_escape_the_models_or_weights_roots(self) -> None:

@@ -73,15 +73,24 @@ class LoadedModel:
     @property
     def pin(self) -> pb2.ModelPin:
         config = self.inspection.config
+        registry_config_pin = self.inspection.entry.get("config_blake3")
+        config_matches_registry = (
+            isinstance(registry_config_pin, str)
+            and registry_config_pin == self.inspection.config_blake3
+        )
         weights = (
-            config.get("weights") if isinstance(config.get("weights"), Mapping) else {}
+            config.get("weights")
+            if config_matches_registry and isinstance(config.get("weights"), Mapping)
+            else {}
         )
         precision = str(weights.get("quantization", ""))
         return pb2.ModelPin(
             model_id=self.inspection.model_id,
-            version=str(config.get("version", "")),
-            weights_blake3=self.inspection.weights_blake3 or "",
-            config_blake3=self.inspection.config_blake3 or "",
+            version=(
+                str(config.get("version", "")) if config_matches_registry else ""
+            ),
+            weights_blake3=str(weights.get("blake3") or ""),
+            config_blake3=str(registry_config_pin or ""),
             runtime=self.runtime_enum,
             precision=getattr(
                 pb2,
