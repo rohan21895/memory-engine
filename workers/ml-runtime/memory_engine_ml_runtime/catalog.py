@@ -116,7 +116,22 @@ class ModelCatalog:
         # weakening the production import boundary.
         self._load_gate = load_gate
         self._registry = self._read_registry()
-        self._policy = self._registry["load_policy"]
+        # And neither is the policy the gate is CONFIGURED with. Making
+        # decide_load a trusted import closed half of this: the code can no
+        # longer come from the model tree. The policy could, and that reaches
+        # the same place one indirection over -- a tree shipping
+        # {"require_pinned_hash": false, "require_license_verified": false,
+        # "allow_blocks_commercial_release": true} under "release" turns every
+        # gate off without executing a line of its own code. Reproduced against
+        # this file before the fix: transnetv2 went from HASH_UNPINNED to
+        # loadable-but-for-the-absent-runtime.
+        #
+        # Per-entry PINS still come from the tree, necessarily -- a pin is a
+        # claim about a specific file and has nowhere else to live. The
+        # difference that matters is that the policy decides whether a claim is
+        # required at all, so it is application configuration and is read from
+        # the installed registry.
+        self._policy = self._load_gate.load_policy()
         self.mode = self._load_gate.resolve_mode(self._policy, self._environ)
         self._schema = self._read_json(
             self.models_root / "schema" / "model-config.schema.json"
@@ -158,6 +173,9 @@ class ModelCatalog:
     def _read_registry(self) -> Mapping[str, Any]:
         registry = self._read_json(self.registry_path)
         entries = registry.get("entries")
+        # load_policy is still required to be present and well-shaped -- a
+        # registry without one is malformed -- but it is no longer what the gate
+        # runs on. See the comment in __init__.
         policy = registry.get("load_policy")
         if not isinstance(entries, list) or not isinstance(policy, dict):
             raise CatalogError("model registry is missing entries or load_policy")
