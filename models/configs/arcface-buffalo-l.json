@@ -7,7 +7,8 @@
   "weights": {
     "filename": "w600k_r50.onnx",
     "format": "onnx",
-    "source_url": "https://github.com/deepinsight/insightface/tree/master/model_zoo",
+    "source_url": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
+    "archive_member": "w600k_r50.onnx",
     "blake3": null,
     "byte_size": null,
     "quantization": "fp32"
@@ -83,7 +84,7 @@
   },
   "outputs": [
     {
-      "name": "embedding",
+      "name": "683",
       "meaning": "embedding",
       "shape": [
         -1,
@@ -115,5 +116,5 @@
     "promoted_at": null
   },
   "eval": null,
-  "notes": "ALIGNMENT IS NOT OPTIONAL. The template above is the standard ArcFace 112x112 canonical five-point destination; the detected landmarks are mapped onto it with a similarity transform (estimateAffinePartial2D / umeyama), and the warped crop is what the model sees. Feeding an unaligned crop does not fail -- it returns a confidently wrong embedding, which then clusters wrongly and puts the wrong person in an album. Verify the template against the upstream arcface_src constant before pinning weights. PREPROCESSING CORRECTION: scale was 1/128 alongside mean=127.5/std=128, which applied the division twice and collapsed the whole 0-255 range into a 0.016-wide sliver -- detection and embeddings would have been silently wrong rather than failing. The reference is cv2.dnn.blobFromImage(img, 1/128, size, (127.5,)*3) = (pixel - mean) * scalefactor, which under this config's (pixel * scale - mean) / std form is scale=1.0, mean=127.5, std=128. Caught by Codex in review."
+  "notes": "ALIGNMENT IS NOT OPTIONAL. The template above is the standard ArcFace 112x112 canonical five-point destination; the detected landmarks are mapped onto it with a similarity transform (estimateAffinePartial2D / umeyama), and the warped crop is what the model sees. Feeding an unaligned crop does not fail -- it returns a confidently wrong embedding, which then clusters wrongly and puts the wrong person in an album. Verify the template against the upstream arcface_src constant before pinning weights. PREPROCESSING CORRECTION: scale was 1/128 alongside mean=127.5/std=128, which applied the division twice and collapsed the whole 0-255 range into a 0.016-wide sliver -- detection and embeddings would have been silently wrong rather than failing. The reference is cv2.dnn.blobFromImage(img, 1/128, size, (127.5,)*3) = (pixel - mean) * scalefactor, which under this config's (pixel * scale - mean) / std form is scale=1.0, mean=127.5, std=128. Caught by Codex in review.\n\nOUTPUT NAME IS THE EXPORT'S NUMERIC TENSOR ID, NOT A SEMANTIC LABEL -- the same defect Codex found in SCRFD (issue #36), which was fixed there and never checked here. This config declared `embedding`; the real w600k_r50.onnx from buffalo_l.zip names its single output `683`. ml-runtime binds outputs by exact name (execution.py refuses with CONFIG_MISMATCH: 'configured model output is absent from the weights'), so ArcFace could never have run -- it would have failed at session bind on the first face embedded. Found by loading the fetched weights in onnxruntime, which is possible for the first time now that scripts/models/fetch_weights.py puts them on disk. Names are pinned to ONE checkpoint: a different export renumbers, so a swap must be a deliberate re-pin. The declared SHAPE stays [-1, 512] even though the graph's output metadata says {1, 512}: the input's batch axis is dynamic and a real batch of 4 returns (4, 512), with onnxruntime logging 'Expected shape from model of {1,512} does not match actual shape of {4,512}'. The export's static output shape is stale metadata, so `batching.supported: true` is right and copying {1, 512} into this config would have declared a batching limit the model does not have. Measured, not read off the graph."
 }

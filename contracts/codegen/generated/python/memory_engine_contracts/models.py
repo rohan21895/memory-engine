@@ -1473,10 +1473,14 @@ class Clip(ContractModel):
     name: str = Field(default="")
 
     # Derived position on the timeline. Carried for validation only; excluded from the
-    # determinism digest and not exported to OTIO, which recomputes it.
+    # determinism digest and not exported to OTIO, which recomputes it. Its DURATION
+    # is derived from source_range and any time_effect by the rule in TimeEffect's
+    # $comment -- equal to source_range.duration when there is no effect -- and its
+    # START is the running sum of the extents before it. A timeline_range that
+    # disagrees with that arithmetic is a validation failure, never a correction.
     timeline_range: TimeRange | None = Field(
         default=None,
-        description="Derived position on the timeline. Carried for validation only; excluded from the determinism digest and not exported to OTIO, which recomputes it.",
+        description="Derived position on the timeline. Carried for validation only; excluded from the determinism digest and not exported to OTIO, which recomputes it. Its DURATION is derived from source_range and any time_effect by the rule in TimeEffect's ...",
     )
 
     # The MomentRecord this clip realises. The provenance link that lets 'more of her'
@@ -1524,9 +1528,22 @@ class ClipAudio(ContractModel):
 
     muted: bool = Field(default=False)
 
-    fade_in: RationalTime | None = Field(default=None)
+    # Fade length at the clip's in-point. The curve is a LINEAR RAMP IN AMPLITUDE from
+    # 0 to 1 over the declared frames -- not equal-power, not linear in dB
+    # (contracts#60). Equal-power is the usual choice for a music crossfade and would
+    # be audibly different on a long fade, so it is named here rather than left to the
+    # mixer; a planner that wants a different shape emits a Transition.
+    fade_in: RationalTime | None = Field(
+        default=None,
+        description="Fade length at the clip's in-point. The curve is a LINEAR RAMP IN AMPLITUDE from 0 to 1 over the declared frames -- not equal-power, not linear in dB (contracts#60). Equal-power is the usual choice for a music crossfade and would be audi...",
+    )
 
-    fade_out: RationalTime | None = Field(default=None)
+    # Fade length ending on the clip's last frame, a linear ramp in amplitude from 1
+    # to 0. Same convention as fade_in.
+    fade_out: RationalTime | None = Field(
+        default=None,
+        description="Fade length ending on the clip's last frame, a linear ramp in amplitude from 1 to 0. Same convention as fade_in.",
+    )
 
     # L-cut: hold this clip's audio past its visual out-point, so a laugh finishes
     # over the next shot. Realises MomentRecord.safe_trim.preserve_audio_tail.
@@ -1662,6 +1679,8 @@ class EdlValidationChecksItemCheckId(str, Enum):
     SOURCE_RANGE_WITHIN_AVAILABLE = "source_range_within_available"
     MEDIA_REFS_RESOLVABLE = "media_refs_resolvable"
     TIMELINE_CONTIGUOUS = "timeline_contiguous"
+    TIME_EFFECT_EXTENT_DERIVED = "time_effect_extent_derived"
+    MUSIC_CUES_PLACED_ONCE = "music_cues_placed_once"
     TRANSITION_HANDLES_AVAILABLE = "transition_handles_available"
     BEAT_ALIGNMENT_WITHIN_TOLERANCE = "beat_alignment_within_tolerance"
     NO_MID_WORD_CUT = "no_mid_word_cut"
@@ -1848,13 +1867,27 @@ class MixPlan(ContractModel):
 
 
 class MusicCue(ContractModel):
+    """
+    Licence and provenance for one piece of music, attached to the clips that place
+    it. A cue is NOT a placement: the bed lives on an audio track like every other
+    sound, and the cue says what it is and what may legally be done with it.
+    """
+
     cue_id: Slug
 
-    media_ref_id: Slug
+    # The source this cue licenses. Must equal the media_ref_id of every clip in
+    # clip_ids.
+    media_ref_id: Slug = Field(
+        description="The source this cue licenses. Must equal the media_ref_id of every clip in clip_ids.",
+    )
 
-    source_range: TimeRange
-
-    timeline_range: TimeRange
+    # The audio-track clips that place this cue, in timeline order. One entry for a
+    # bed that plays once, one per pass for a bed that repeats. Every clip on a track
+    # whose role is `music` must be claimed by exactly one cue -- that is how an
+    # unlicensed bed becomes impossible rather than merely unlikely.
+    clip_ids: list[Slug] = Field(
+        description="The audio-track clips that place this cue, in timeline order. One entry for a bed that plays once, one per pass for a bed that repeats. Every clip on a track whose role is `music` must be claimed by exactly one cue -- that is how an unli...",
+    )
 
     # Required, not optional. Music licensing is a Phase 0 decision precisely because
     # an unlicensed track in a shared reel is a legal problem, and the plan is the
@@ -1862,14 +1895,6 @@ class MusicCue(ContractModel):
     license: MusicLicense = Field(
         description="Required, not optional. Music licensing is a Phase 0 decision precisely because an unlicensed track in a shared reel is a legal problem, and the plan is the place it becomes checkable.",
     )
-
-    gain_db: float = Field(default=0)
-
-    fade_in: RationalTime | None = Field(default=None)
-
-    fade_out: RationalTime | None = Field(default=None)
-
-    loop: bool = Field(default=False)
 
 
 class MusicLicenseProvider(str, Enum):
@@ -1962,10 +1987,11 @@ class ReframeKeyframe(ContractModel):
     )
 
     # How to reach the NEXT keyframe. `hold` produces a snap, which is occasionally
-    # what a hard beat wants.
+    # what a hard beat wants. Every mode is a stated formula, not a name -- see the
+    # $comment.
     interpolation: ReframeKeyframeInterpolation = Field(
         default="smooth",
-        description="How to reach the NEXT keyframe. `hold` produces a snap, which is occasionally what a hard beat wants.",
+        description="How to reach the NEXT keyframe. `hold` produces a snap, which is occasionally what a hard beat wants. Every mode is a stated formula, not a name -- see the $comment.",
     )
 
     # Control points for bezier interpolation, as (x,y) in normalised keyframe-
@@ -2258,28 +2284,42 @@ class TimeEffect(ContractModel):
     """
     Speed change. Restricted to what OTIO models natively, because a speed ramp that
     cannot round-trip is a speed ramp that silently disappears in Resolve.
+    `source_range` stays authoritative under an effect and the timeline extent is
+    derived from it -- see the $comment, which is the rule the renderer implements.
     """
 
     kind: TimeEffectKind
 
-    # OTIO LinearTimeWarp.time_scalar. 0.5 is half speed, 2.0 is double. Required for
-    # linear_speed.
+    # OTIO LinearTimeWarp.time_scalar: the ratio of media time to timeline time. 0.5
+    # is half speed (twice the timeline extent), 2.0 is double. Required for
+    # linear_speed, and must divide source_range.duration into a whole number of
+    # timeline frames.
     time_scalar: float | None = Field(
         default=None,
-        description="OTIO LinearTimeWarp.time_scalar. 0.5 is half speed, 2.0 is double. Required for linear_speed.",
+        description="OTIO LinearTimeWarp.time_scalar: the ratio of media time to timeline time. 0.5 is half speed (twice the timeline extent), 2.0 is double. Required for linear_speed, and must divide source_range.duration into a whole number of timeline fra...",
     )
 
-    # Source time to hold. Required for freeze_frame.
+    # Source time to hold. Required for freeze_frame, and must equal
+    # source_range.start_time -- the frozen frame is the one frame the clip reads.
     freeze_at: RationalTime | None = Field(
         default=None,
-        description="Source time to hold. Required for freeze_frame.",
+        description="Source time to hold. Required for freeze_frame, and must equal source_range.start_time -- the frozen frame is the one frame the clip reads.",
+    )
+
+    # How long the frozen frame is held, in TIMELINE time. Required for freeze_frame,
+    # forbidden otherwise: it is the clip's timeline extent, and without it a freeze
+    # has a start and no end.
+    hold_duration: RationalTime | None = Field(
+        default=None,
+        description="How long the frozen frame is held, in TIMELINE time. Required for freeze_frame, forbidden otherwise: it is the clip's timeline extent, and without it a freeze has a start and no end.",
     )
 
     # What happens to this clip's audio under a speed change. Almost always `mute` for
-    # slow motion, because pitch-shifted ambient sounds broken.
+    # slow motion, because pitch-shifted ambient sounds broken. `mute` suppresses this
+    # clip's ambient bed entirely, whatever AmbientPlan says about it.
     audio_handling: TimeEffectAudioHandling = Field(
         default="mute",
-        description="What happens to this clip's audio under a speed change. Almost always `mute` for slow motion, because pitch-shifted ambient sounds broken.",
+        description="What happens to this clip's audio under a speed change. Almost always `mute` for slow motion, because pitch-shifted ambient sounds broken. `mute` suppresses this clip's ambient bed entirely, whatever AmbientPlan says about it.",
     )
 
 
@@ -2426,10 +2466,10 @@ class EDL(ContractModel):
 
     schema_version: SchemaVersion
 
-    # BLAKE3 over the canonical JSON of this EDL with volatile fields (generated_at,
-    # timeline_range) removed. Two EDLs with the same id render identically.
+    # BLAKE3 over the canonical JSON of this EDL with the volatile fields removed. Two
+    # EDLs with the same id render identically.
     edl_id: Blake3Hash = Field(
-        description="BLAKE3 over the canonical JSON of this EDL with volatile fields (generated_at, timeline_range) removed. Two EDLs with the same id render identically.",
+        description="BLAKE3 over the canonical JSON of this EDL with the volatile fields removed. Two EDLs with the same id render identically.",
     )
 
     kind: EDLKind

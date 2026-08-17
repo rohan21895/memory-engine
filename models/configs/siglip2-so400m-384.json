@@ -8,6 +8,7 @@
     "filename": "siglip2-so400m-patch14-384-vision.onnx",
     "format": "onnx",
     "source_url": "https://huggingface.co/google/siglip2-so400m-patch14-384",
+    "archive_member": null,
     "blake3": null,
     "byte_size": null,
     "quantization": "fp16"
@@ -87,5 +88,5 @@
     "promoted_at": null
   },
   "eval": null,
-  "notes": "SigLIP 2 uses a sigmoid loss rather than CLIP's softmax contrastive loss, so raw logits are not comparable to CLIP's and any threshold tuned on a CLIP model must be re-tuned. Stretch resize rather than centre crop is deliberate: cropping loses the edges of a composition, and composition is part of what we score."
+  "notes": "SigLIP 2 uses a sigmoid loss rather than CLIP's softmax contrastive loss, so raw logits are not comparable to CLIP's and any threshold tuned on a CLIP model must be re-tuned. Stretch resize rather than centre crop is deliberate: cropping loses the edges of a composition, and composition is part of what we score.\n\nNO ONNX AT THE DECLARED SOURCE (checked 2026-08-17 via the HF API). google/siglip2-so400m-patch14-384 publishes safetensors only, so there is no siglip2-so400m-patch14-384-vision.onnx to download and scripts/models/fetch_weights.py reports this entry UNAVAILABLE. source_url stays the provenance page rather than being repointed at something plausible: the two ways to actually get this file are to export the vision tower locally from the safetensors, or to adopt the third-party conversion at onnx-community/siglip2-so400m-patch14-384-ONNX. The conversion is NOT a URL edit -- its graph exposes last_hidden_state and pooler_output where this config binds `image_embeds`, and its fp32 vision tower is 1.7GB against this config's declared fp16 -- so adopting it changes `outputs`, `quantization` and the embedding that every stored vector lives in, which is an eval-harness decision, not a fetch. The repository is NOT gated (HF API reports gated:false), so no token is involved either way."
 }

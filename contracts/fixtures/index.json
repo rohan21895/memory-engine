@@ -78,11 +78,13 @@
         "exact NTSC rate 60000/1001 throughout, with fractional beat positions and integer frame positions",
         "8 reframe tracks producing 9:16 from 16:9, SAM 2 subject lock, Savitzky-Golay smoothing, explicit fallback",
         "one dissolve with handles; every other join is a hard cut expressed as the ABSENCE of a transition, per OTIO",
-        "a linear_speed time effect on the peak clip and an L-cut on the reaction clip",
-        "full audio plan: licensed music cue, ambient with per-clip gain, an explicit-range ducking rule, and a mix target",
+        "a linear_speed time effect on the peak clip: 56 source frames at 0.5x holding 112 timeline frames, which is the one arrangement that distinguishes the two readings of source_range under a speed change (contracts#50) -- and an L-cut on the reaction clip",
+        "full audio plan: the music bed placed exactly once, on track a2, with a MusicCue that licenses that clip by id rather than placing a second copy of it (contracts#59); ambient with per-clip gain, an explicit-range ducking rule, and a mix target",
         "a Tier 3 story arc with four acts, five required beats all satisfied, and its ConsentRef",
         "variant metadata, determinism block, and a passing validation report",
-        "clip-04 spans the GH01/GH02 chapter boundary at source frame 3067485, proving a cut can cross a chaptered file split via the span assembly"
+        "clip-04 spans the GH01/GH02 chapter boundary at source frame 3067485, proving a cut can cross a chaptered file split via the span assembly",
+        "every reframe keyframe uses `smooth`, which is the clamped uniform Catmull-Rom spline the schema states (contracts#51) and the only mode the reel planner emits",
+        "an edl_id that recomputes from the plan under the stated canonicalisation, checked rather than asserted"
       ]
     },
     {

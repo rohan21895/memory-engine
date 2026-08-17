@@ -8,6 +8,7 @@
     "filename": "ch_PP-OCRv4_det_infer.onnx",
     "format": "onnx",
     "source_url": "https://github.com/PaddlePaddle/PaddleOCR",
+    "archive_member": null,
     "blake3": null,
     "byte_size": null,
     "quantization": "fp16"

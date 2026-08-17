@@ -162,7 +162,19 @@
           ]
         },
         "source_url": {
-          "description": "Where the weights come from. Null ONLY for rollout.state 'placeholder' -- a slot the product needs where no checkpoint has been chosen. Enforced: a null source_url with any other rollout state is invalid, so an entry cannot be promoted with no checkpoint provenance.",
+          "description": "Where the weights come from. Null ONLY for rollout.state 'placeholder' -- a slot the product needs where no checkpoint has been chosen. Enforced: a null source_url with any other rollout state is invalid, so an entry cannot be promoted with no checkpoint provenance. A URL whose last path segment is a file name (or a Hugging Face /resolve/ URL) is a fetchable ARTIFACT and scripts/models/fetch_weights.py downloads it; anything else is a provenance page only, and the fetcher reports the entry unavailable rather than saving a web page as a model.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "archive_member": {
+          "description": "Path inside the archive at source_url that holds these weights, when the publisher ships a bundle rather than a bare file. Null when source_url is the artifact itself. `filename` stays the name the file is installed and loaded under, so a bundle member may be renamed on install -- det_10g.onnx becomes scrfd_10g_bnkps.onnx. This exists because the member used to be written into source_url as a parenthetical, which no fetcher could act on.",
           "oneOf": [
             {
               "type": "string",
@@ -227,9 +239,12 @@
               },
               "byte_size": {
                 "type": "null"
+              },
+              "archive_member": {
+                "type": "null"
               }
             },
-            "$comment": "No source means no artifact, so a hash or byte size alongside a null source_url is describing a file that does not exist."
+            "$comment": "No source means no artifact, so a hash, byte size or archive member alongside a null source_url is describing a file that does not exist."
           }
         }
       ]

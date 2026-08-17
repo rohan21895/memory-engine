@@ -895,12 +895,23 @@ class TestSpeechAndAudio(unittest.TestCase):
         self.assertLessEqual(source_end + tail["value"], 3049410)
 
     def test_the_music_cue_covers_the_whole_reel(self):
+        """contracts#59: the bed is placed once, on a track. The cue carries the
+        licence and points at that placement; it does not repeat it."""
         plan = plan_reel(request())
         cue = plan.edl["audio_plan"]["music"][0]
-        self.assertEqual(0, cue["timeline_range"]["start_time"]["value"])
-        self.assertEqual(plan.duration_frames, cue["timeline_range"]["duration"]["value"])
-        self.assertEqual(1798, cue["source_range"]["start_time"]["value"])
-        self.assertFalse(cue["loop"])
+        music_track_block = next(
+            t for t in plan.edl["tracks"] if t.get("role") == "music"
+        )
+        items = music_track_block["items"]
+        self.assertEqual([i["clip_id"] for i in items], cue["clip_ids"])
+        self.assertEqual(1, len(items))
+        self.assertEqual(0, items[0]["timeline_range"]["start_time"]["value"])
+        self.assertEqual(
+            plan.duration_frames, items[0]["timeline_range"]["duration"]["value"]
+        )
+        self.assertEqual(1798, items[0]["source_range"]["start_time"]["value"])
+        self.assertNotIn("timeline_range", cue)
+        self.assertNotIn("loop", cue)
 
     def test_a_short_track_loops_and_says_so(self):
         short = music_media(available_duration=120)
@@ -910,7 +921,8 @@ class TestSpeechAndAudio(unittest.TestCase):
                 media=(source_media(), short),
             )
         )
-        self.assertTrue(plan.edl["audio_plan"]["music"][0]["loop"])
+        cue = plan.edl["audio_plan"]["music"][0]
+        self.assertGreater(len(cue["clip_ids"]), 1, "a loop is more than one placement")
         self.assertTrue(any("loops" in note for note in plan.notes), plan.notes)
 
     def test_an_uncleared_track_fails_the_licence_check(self):
@@ -2510,15 +2522,19 @@ class TestMusicShorterThanTheReel(unittest.TestCase):
         )
         self.assertEqual("pass", plan.status)
         cue = plan.edl["audio_plan"]["music"][0]
-        self.assertTrue(cue["loop"])
-        # The cue reads what the track HAS ...
-        self.assertEqual(120, cue["source_range"]["duration"]["value"])
-        # ... and covers the reel on the timeline.
+        items = self.a1_items(plan.edl)
+        # contracts#59: the cue places nothing. It names the clips that place
+        # it, in order, and every pass is one of them.
+        self.assertEqual([i["clip_id"] for i in items], cue["clip_ids"])
+        self.assertGreater(len(items), 1, "a track shorter than the reel is laid down twice")
+        # The first pass reads what the track HAS ...
+        self.assertEqual(120, items[0]["source_range"]["duration"]["value"])
+        # ... and the passes together cover the reel on the timeline.
         self.assertEqual(
-            plan.duration_frames, cue["timeline_range"]["duration"]["value"]
+            plan.duration_frames,
+            sum(i["timeline_range"]["duration"]["value"] for i in items),
         )
 
-        items = self.a1_items(plan.edl)
         self.assertEqual(math.ceil(plan.duration_frames / 120), len(items))
         self.assertEqual(len(items), len({i["clip_id"] for i in items}))
         cursor = 0
@@ -2551,9 +2567,10 @@ class TestMusicShorterThanTheReel(unittest.TestCase):
             )
         )
         cue = plan.edl["audio_plan"]["music"][0]
-        self.assertFalse(cue["loop"], "a track that exactly covers the reel is not a loop")
-        self.assertEqual(1, len(self.a1_items(plan.edl)))
-        self.assertEqual(total, cue["source_range"]["duration"]["value"])
+        items = self.a1_items(plan.edl)
+        self.assertEqual(1, len(items), "a track that exactly covers the reel is not a loop")
+        self.assertEqual([items[0]["clip_id"]], cue["clip_ids"])
+        self.assertEqual(total, items[0]["source_range"]["duration"]["value"])
         self.assertEqual("pass", plan.status)
 
         # One frame shorter -- measured FROM THE CUE IN-POINT, not from the
@@ -2562,14 +2579,18 @@ class TestMusicShorterThanTheReel(unittest.TestCase):
         looped = plan_reel(
             request(music=music_track(media=short), media=(source_media(), short))
         )
-        self.assertTrue(looped.edl["audio_plan"]["music"][0]["loop"])
         self.assertEqual(2, len(self.a1_items(looped.edl)))
+        self.assertEqual(
+            [i["clip_id"] for i in self.a1_items(looped.edl)],
+            looped.edl["audio_plan"]["music"][0]["clip_ids"],
+            "a loop is two clips the cue claims, not a boolean",
+        )
         self.assertEqual("pass", looped.status)
 
     def test_a_track_that_is_not_a_whole_number_of_frames_is_read_in_whole_frames(self):
         # 120.5 frames of track: the half frame does not exist as a frame, and
-        # a cue declaring 120.5 while its clips read 120 would put the two
-        # halves of one decision half a frame apart.
+        # a pass declaring 120.5 while the decoder has 120 would read a frame
+        # that is not there.
         ragged = music_media(available_duration=120.5)
         plan = plan_reel(
             request(
@@ -2578,10 +2599,9 @@ class TestMusicShorterThanTheReel(unittest.TestCase):
             )
         )
         cue = plan.edl["audio_plan"]["music"][0]
-        self.assertEqual(120, cue["source_range"]["duration"]["value"])
-        spans = [
-            item["source_range"]["duration"]["value"] for item in self.a1_items(plan.edl)
-        ]
+        items = self.a1_items(plan.edl)
+        self.assertEqual([i["clip_id"] for i in items], cue["clip_ids"])
+        spans = [item["source_range"]["duration"]["value"] for item in items]
         self.assertEqual(120, spans[0])
         self.assertTrue(all(span <= 120 for span in spans), spans)
         self.assertEqual("pass", plan.status)

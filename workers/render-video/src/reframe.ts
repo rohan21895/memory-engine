@@ -92,6 +92,26 @@ function mix(from: number, to: number, fraction: number): number {
   return from + (to - from) * fraction;
 }
 
+/**
+ * `smooth` is a UNIFORM Catmull-Rom spline through the keyframe values with the endpoints
+ * clamped, which is what edl.schema.json's ReframeKeyframe.interpolation $comment states
+ * (contracts#51). Written exactly as the contract writes it, in the same order, because
+ * this is the one interpolation the planner emits for every keyframe of every reel.
+ *
+ * Uniform, not centripetal: the uniform form uses only +, - and *, so every conforming
+ * implementation lands on the same IEEE-754 double. The centripetal variant needs a fourth
+ * root, and pow() is not bit-identical across libms — which would make the crop window
+ * machine-dependent, and `edl_id` promises it is not.
+ */
+function catmullRom(a: number, b: number, c: number, d: number, u: number): number {
+  const u2 = u * u;
+  const u3 = u2 * u;
+  return (
+    0.5 *
+    (2 * b + (-a + c) * u + (2 * a - 5 * b + 4 * c - d) * u2 + (-a + 3 * b - 3 * c + d) * u3)
+  );
+}
+
 /** The crop window, in normalised coordinates, at one absolute source frame. */
 export function cropAt(track: ReframeTrack, keyed: readonly KeyedFrame[], sourceFrame: number): NormalizedBox {
   const first = keyed[0]!;
@@ -113,6 +133,24 @@ export function cropAt(track: ReframeTrack, keyed: readonly KeyedFrame[], source
   const span = to.frame - from.frame;
   const raw = (sourceFrame - from.frame) / span;
 
+  if (from.interpolation === "smooth") {
+    // Endpoints clamped: the keyframe before the first is the first, and the keyframe after
+    // the last is the last. That is what makes a two-keyframe track degenerate to a straight
+    // line instead of needing a special case.
+    const before = keyed[index - 1] ?? from;
+    const after = keyed[index + 2] ?? to;
+    return {
+      x: catmullRom(before.crop.x, from.crop.x, to.crop.x, after.crop.x, raw),
+      y: catmullRom(before.crop.y, from.crop.y, to.crop.y, after.crop.y, raw),
+      // Every component is interpolated by the same formula; for a constant w and h the
+      // spline evaluates to that constant, and a crop whose size changes is refused in
+      // planCrop rather than resampled here.
+      w: from.crop.w,
+      h: from.crop.h,
+      rotation_deg: 0,
+    };
+  }
+
   let fraction: number;
   switch (from.interpolation) {
     case "hold":
@@ -128,7 +166,7 @@ export function cropAt(track: ReframeTrack, keyed: readonly KeyedFrame[], source
     default:
       fail(
         `${track.reframe_track_id} uses "${from.interpolation}" interpolation, which the contract ` +
-          "does not define (contracts#51).",
+          "does not define.",
       );
   }
 

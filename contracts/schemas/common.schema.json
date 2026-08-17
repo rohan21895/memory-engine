@@ -44,6 +44,7 @@
     "RationalTime": {
       "title": "RationalTime",
       "description": "A time expressed as an exact rational: value frames (or samples) at the given rate. Maps 1:1 onto opentimelineio.opentime.RationalTime. Seconds = value / rate. Never store seconds as a float in this contract.",
+      "$comment": "CONVERTING FRAMES TO SAMPLES (contracts#60)\n\n Every consumer of this contract eventually has to turn a frame position into\n an audio sample position, and if two of them do it differently the same plan\n produces two different mixes. The conversion is:\n\n   sample = round_half_away_from_zero(value * sample_rate / rate)\n\n computed from the ABSOLUTE position every time -- never by accumulating a\n per-item delta. Accumulation makes the error grow along the timeline; from\n an absolute index it is bounded at half a sample per conversion, for ever.\n Durations are converted the same way, as the difference of two absolute\n conversions (end_sample - start_sample), so a clip's sample length is\n exactly what the next clip's start assumes it is.\n\n `rate` here is the rate carried by this RationalTime, and `sample_rate` is\n MixPlan.sample_rate. Both are exact; the division is the only place a float\n enters, and it is rounded immediately.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -97,6 +98,7 @@
     "NormalizedBox": {
       "title": "NormalizedBox",
       "description": "Axis-aligned rectangle in normalised image coordinates: origin top-left, x to the right, y down, all values in [0,1] relative to the ORIENTED image (after EXIF rotation is applied). Normalised so a box computed on a 512px thumbnail is valid against the 6000px original without rescaling -- this is what lets analysis run on proxies and render run on sources.",
+      "$comment": "RESOLVING A NORMALISED BOX TO PIXELS (contracts#60)\n\n Every consumer -- the video reframe, the album placement -- has to turn this\n into a whole-pixel window, and the rounding rule is part of the contract\n rather than each worker's habit:\n\n   px = round_half_up(x * width)      pw = round_half_up(w * width)\n   py = round_half_up(y * height)     ph = round_half_up(h * height)\n\n against the ORIENTED source dimensions, each component rounded\n independently (never derived as right-minus-left, which would make the size\n depend on the position). Half-up, not banker's rounding: banker's rounding\n makes an otherwise identical crop land a pixel apart depending on whether\n its position happens to be even.\n\n The resulting window is then BOUNDS-CHECKED against the frame, never\n clamped. A box that rounds outside the image is a hard failure: clamping is\n exactly how a crop silently slides off the subject it was tracking, and a\n one-pixel overhang is a planner bug worth hearing about.",
       "type": "object",
       "additionalProperties": false,
       "required": [

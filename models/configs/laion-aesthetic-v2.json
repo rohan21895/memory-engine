@@ -8,6 +8,7 @@
     "filename": "aesthetic_head_v2.onnx",
     "format": "onnx",
     "source_url": "https://github.com/LAION-AI/aesthetic-predictor",
+    "archive_member": null,
     "blake3": null,
     "byte_size": null,
     "quantization": "fp32"
