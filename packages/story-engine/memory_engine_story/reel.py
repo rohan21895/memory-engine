@@ -601,6 +601,31 @@ class SelectedMoment:
                     f"outside its source range "
                     f"[{self.source_start}, {self.source_end})"
                 )
+        # Same rule for safe_trim, and for the same reason. SafeTrim is "hard
+        # bounds on TRIMMING" (moment-record.schema.json), and you can only
+        # trim within the window analysis actually scored: `window()` hands
+        # `latest_out` straight to the placement walk, so a trim wider than its
+        # moment silently lets a clip leave the moment -- into footage the
+        # elimination-first pass may have discarded as shaken or blown. The
+        # only downstream guard, `source_range_within_available`, checks MEDIA
+        # bounds, not moment bounds, so nothing else can catch this.
+        trim = self.safe_trim
+        if trim is not None:
+            for name in (
+                "earliest_in",
+                "latest_out",
+                "speech_safe_in",
+                "speech_safe_out",
+            ):
+                bound = getattr(trim, name)
+                if bound is None:
+                    continue
+                if not self.source_start <= bound <= self.source_end:
+                    raise ValueError(
+                        f"moment {self.moment_id}: safe_trim.{name} at {bound} "
+                        f"falls outside its source range "
+                        f"[{self.source_start}, {self.source_end})"
+                    )
 
     @property
     def source_end(self) -> float:
@@ -875,6 +900,18 @@ class ReelRequest:
                 "ReelRequest.music.media must also appear in ReelRequest.media, "
                 "so the EDL declares every source once"
             )
+        if self.music is not None:
+            # The cue in-point has to leave at least one frame of track behind
+            # it, or there is nothing to play and nothing to loop. Caught here
+            # rather than in `_audio_plan`, where it would divide by zero.
+            music_media = self.music.media
+            usable = music_media.available_end - self.music.source_start
+            if self.music.source_start < music_media.available_start or usable < 1:
+                raise ValueError(
+                    f"music cue starts at {self.music.source_start}, outside the "
+                    f"usable part of its track "
+                    f"[{music_media.available_start}, {music_media.available_end})"
+                )
         if self.beat_grid is not None and self.music is None:
             # A beat grid is a description of a music cue; BeatGrid.source_cue_id
             # is required and there would be no cue to point it at.
@@ -1617,6 +1654,14 @@ def plan_reel(request: ReelRequest) -> ReelPlan:
     end_index = _end_index(grid, request)
 
     ordered = _assign_acts(request)
+    # The pool BEFORE the capacity cut is what `candidate_moment_ids` is for:
+    # "retained so a revision can swap in an alternative without re-running
+    # retrieval" (edl.schema.json#StoryBeat). Handing `_story_arc` the
+    # post-drop list instead would make the candidate pool equal the placed
+    # clips exactly, carrying no information at all -- and the notes that do
+    # record the drops live on ReelPlan, not in the EDL, so anything reading
+    # the persisted plan would have lost them.
+    considered = ordered
     ordered = _fit_to_capacity(ordered, 0, end_index, request, notes)
     placements = _place(ordered, grid, 0, end_index, request, notes)
     if not placements:
@@ -1710,7 +1755,14 @@ def plan_reel(request: ReelRequest) -> ReelPlan:
             # the next shot. Bounded by latest_out, not by the speech-safe out:
             # the tail is exactly the audio the narrower window excluded, and
             # clamping it to that window would extend the audio by nothing.
-            spare = trim.latest_out - placement.source_end
+            #
+            # Bounded by the MEDIA as well. `latest_out` is a claim about the
+            # moment; whether the file has those frames is a different question,
+            # and a moment whose window runs to the end of a truncated recording
+            # would otherwise have the renderer decode past EOF -- silence or a
+            # decode error at exactly the frame the plan says a laugh lands.
+            reachable = min(trim.latest_out, medium.available_end)
+            spare = reachable - placement.source_end
             if spare > 0 and position < len(placements) - 1:
                 audio_tail = _rational(min(spare, placement.duration), rate)
 
@@ -1718,7 +1770,14 @@ def plan_reel(request: ReelRequest) -> ReelPlan:
             items.append(
                 {
                     "item_type": "transition",
-                    "transition_id": "xfade-into-button",
+                    # Named for the clip it dissolves into, not for the act it
+                    # is assumed to serve. `_dissolve_before` puts the dissolve
+                    # in front of the LAST placement, which is the button only
+                    # when a button exists: with two moments the acts are hook
+                    # and peak, and a transition labelled "into-button" in a
+                    # plan whose whole purpose is to state decisions honestly
+                    # is a mislabelled decision.
+                    "transition_id": f"xfade-into-{placement.clip_id}",
                     "transition_type": "dissolve",
                     "in_offset": _rational(request.dissolve_frames, rate),
                     "out_offset": _rational(request.dissolve_frames, rate),
@@ -1793,7 +1852,13 @@ def plan_reel(request: ReelRequest) -> ReelPlan:
     if request.beat_grid is not None and request.music is not None:
         beat_grid_block = _beat_grid_block(request)
 
-    story_arc = _story_arc(request, placements, ordered, total_frames)
+    if len(placements) == 1 and request.arc_template == "hook_build_peak_button":
+        notes.append(
+            f"single-shot reel: {placements[0].clip_id} is both the hook and "
+            "the peak, and satisfies both required story beats"
+        )
+
+    story_arc = _story_arc(request, placements, considered, total_frames)
 
     edl: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -1915,6 +1980,10 @@ def _dissolve_before(
     handles = request.dissolve_frames
     outgoing_media = media_by_id[outgoing.moment.media_id]
     incoming_media = media_by_id[incoming.moment.media_id]
+    # Tail on the outgoing side, head on the incoming side -- the same charge
+    # `transition_handles_available` makes, and the reason the two offsets are
+    # emitted equal below: an asymmetric dissolve would need this to split into
+    # out_offset against the tail and in_offset against the head.
     if (
         outgoing.source_end + handles <= outgoing_media.available_end
         and incoming.source_start - handles >= incoming_media.available_start
@@ -1927,6 +1996,75 @@ def _dissolve_before(
     return None
 
 
+def _music_items(
+    request: ReelRequest, total_frames: int, pass_frames: int
+) -> list[dict[str, Any]]:
+    """The music cue as timeline items: one clip per pass over the track.
+
+    A track shorter than the reel is the ordinary case -- a 15-second cut over
+    a 3-second sting -- and `MusicCue.loop` is how the plan says so. The loop
+    still has to be REALISED on the track, though: one clip whose source_range
+    spans the whole reel would read past the end of the file, and a renderer
+    that "just knows" to wrap around would be making the decision instead of
+    executing it (AGENTS.md rule 3). So each pass is its own clip over the
+    material that exists, the last one cut short, and the timeline tiles
+    exactly once with no frame of silence.
+
+    The first clip keeps the unsuffixed id, so the ordinary single-pass cue is
+    emitted exactly as it was before looping was expressible.
+    """
+    music = request.music
+    assert music is not None
+    rate = request.rate
+    items: list[dict[str, Any]] = []
+    cursor = 0
+    while cursor < total_frames:
+        span = min(pass_frames, total_frames - cursor)
+        index = len(items) + 1
+        last = cursor + span >= total_frames
+        items.append(
+            {
+                "item_type": "clip",
+                "clip_id": (
+                    f"{music.cue_id}-clip"
+                    if index == 1
+                    else f"{music.cue_id}-clip-{index:02d}"
+                ),
+                "name": music.license.track_title or "",
+                "media_ref_id": music.media.media_ref_id,
+                "source_range": _range(music.source_start, span, rate),
+                "timeline_range": _range(cursor, span, rate),
+                "moment_id": None,
+                "enabled": True,
+                "time_effect": None,
+                "reframe_track_id": None,
+                "color_ops": [],
+                "audio": {
+                    "gain_db": music.gain_db,
+                    "muted": False,
+                    # A fade belongs to the cue, not to every pass of it: the
+                    # music fades in once at the top and out once at the end.
+                    "fade_in": (
+                        None
+                        if music.fade_in is None or index != 1
+                        else _rational(music.fade_in, rate)
+                    ),
+                    "fade_out": (
+                        None
+                        if music.fade_out is None or not last
+                        else _rational(music.fade_out, rate)
+                    ),
+                    "audio_extends_past_out": None,
+                },
+                "beat_lock": None,
+                "story_beat_id": None,
+                "markers": [],
+            }
+        )
+        cursor += span
+    return items
+
+
 def _audio_plan(
     request: ReelRequest,
     placements: Sequence[_Placement],
@@ -1935,10 +2073,15 @@ def _audio_plan(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     rate = request.rate
     ambient = request.ambient
+    # With ambient off every clip is emitted muted, so a per-clip ambient gain
+    # is a level for a signal that is not in the mix. Emitting it anyway would
+    # have a renderer -- or a human reading the plan -- believe the location
+    # sound is coming up 6 dB under the music when it is not there at all.
     per_clip = [
         {"clip_id": placement.clip_id, "gain_db": _clip_gain_db(placement, request)}
         for placement in placements
-        if _clip_gain_db(placement, request) != ambient.default_gain_db
+        if ambient.enabled
+        and _clip_gain_db(placement, request) != ambient.default_gain_db
     ]
 
     music_cues: list[dict[str, Any]] = []
@@ -1956,10 +2099,23 @@ def _audio_plan(
                 f"music cue loops: {available:g} frames of track under a "
                 f"{total_frames}-frame reel"
             )
+        # The cue reads what the track HAS, never the length of the reel. A
+        # source_range of `total_frames` over a shorter track claims frames the
+        # file does not contain, which `source_range_within_available` then
+        # fails at severity error -- the planner deliberately planning a loop
+        # and then declaring its own plan unrenderable, with an error message
+        # about source ranges rather than about looping.
+        #
+        # Whole frames only, and the SAME number the track items below read: a
+        # fractional last frame is a frame the decoder does not have, and a cue
+        # that declared 200.5 while its clips read 200 would put the two halves
+        # of one decision half a frame apart.
+        pass_frames = max(1, int(math.floor(available)))
+        cue_frames = min(pass_frames, total_frames)
         cue = {
             "cue_id": music.cue_id,
             "media_ref_id": music.media.media_ref_id,
-            "source_range": _range(music.source_start, total_frames, rate),
+            "source_range": _range(music.source_start, cue_frames, rate),
             "timeline_range": _range(0, total_frames, rate),
             "license": {
                 "provider": music.license.provider,
@@ -1978,45 +2134,20 @@ def _audio_plan(
             "loop": loop,
         }
         music_cues.append(cue)
+        repeats = _music_items(request, total_frames, pass_frames)
+        if len(repeats) > 1:
+            notes.append(
+                f"the music track is laid down {len(repeats)} times to cover "
+                f"the reel; the last pass is cut short at "
+                f"{repeats[-1]['source_range']['duration']['value']} frames"
+            )
         music_track_block = {
             "track_id": "a1",
             "kind": "audio",
             "name": "A1 music",
             "role": "music",
             "enabled": True,
-            "items": [
-                {
-                    "item_type": "clip",
-                    "clip_id": f"{music.cue_id}-clip",
-                    "name": music.license.track_title or "",
-                    "media_ref_id": music.media.media_ref_id,
-                    "source_range": _range(music.source_start, total_frames, rate),
-                    "timeline_range": _range(0, total_frames, rate),
-                    "moment_id": None,
-                    "enabled": True,
-                    "time_effect": None,
-                    "reframe_track_id": None,
-                    "color_ops": [],
-                    "audio": {
-                        "gain_db": music.gain_db,
-                        "muted": False,
-                        "fade_in": (
-                            None
-                            if music.fade_in is None
-                            else _rational(music.fade_in, rate)
-                        ),
-                        "fade_out": (
-                            None
-                            if music.fade_out is None
-                            else _rational(music.fade_out, rate)
-                        ),
-                        "audio_extends_past_out": None,
-                    },
-                    "beat_lock": None,
-                    "story_beat_id": None,
-                    "markers": [],
-                }
-            ],
+            "items": repeats,
         }
 
         speech_ranges = _merge_ranges(
@@ -2026,7 +2157,12 @@ def _audio_plan(
                 if _speech_clip(placement, request)
             ]
         )
-        if speech_ranges and ambient.preserve_speech:
+        # `ambient.enabled` as well as `preserve_speech`: with ambient off the
+        # clips are muted, so there is no dialogue for the music to make room
+        # for. Ducking anyway pulls the track down 9 dB under silence for a
+        # quarter of the reel -- audible, wrong, and nothing in the plan says
+        # why, because the reason is a rule that should not have been emitted.
+        if speech_ranges and ambient.preserve_speech and ambient.enabled:
             # explicit_ranges, not `speech`: the planner already knows where the
             # words are, and a renderer re-detecting them at mix time would make
             # the same EDL mix differently on a different build.
@@ -2154,21 +2290,41 @@ def _story_arc(
     for act, moment in considered:
         candidates[act].append(moment.moment_id)
 
+    # A one-shot reel is a legitimate cut, and its single shot IS the opening
+    # frame as well as the moment the reel is about: `_assign_acts` calls it
+    # the peak, leaves no moment for the hook, and the required hook beat then
+    # fails -- a hard rejection of a valid reel on a technicality of the act
+    # table. So with exactly one clip that clip satisfies both required beats.
+    # Stated here rather than by relaxing `required`, because the required flag
+    # is what makes "the film has an arc" checkable at all.
+    single = placements[0] if len(placements) == 1 else None
+
     acts = []
     energy_curve = []
     for act_key in (_ACT_HOOK, _ACT_BUILD, _ACT_PEAK, _ACT_BUTTON):
         act_id, name, beat_id, required, energy = _ACT_SPECS[act_key]
         members = by_act[act_key]
-        if not members and not required:
-            # An optional act with nothing in it is not part of this arc. A
-            # required one IS emitted empty, so the unsatisfied beat fails
-            # validation instead of vanishing.
+        borrowed = False
+        if not members and required and single is not None:
+            members = [single]
+            borrowed = True
+        if not members and not required and not candidates[act_key]:
+            # An optional act with nothing in it AND nothing that was
+            # considered for it is not part of this arc. A required one IS
+            # emitted empty, so the unsatisfied beat fails validation instead
+            # of vanishing -- and so is an optional one whose candidates were
+            # all dropped by the capacity cut, because "these are the shots we
+            # weighed for the build and could not fit" is exactly what the
+            # revision path needs and the only place the EDL can carry it.
             continue
         timeline_range = None
         if members:
             start = members[0].timeline_start
             timeline_range = _range(start, members[-1].timeline_end - start, rate)
-            energy_curve.append({"time": _rational(start, rate), "energy": energy})
+            if not borrowed:
+                # One clip, one energy point. A borrowed member would put two
+                # different target energies on the same timeline frame.
+                energy_curve.append({"time": _rational(start, rate), "energy": energy})
         acts.append(
             {
                 "act_id": act_id,
@@ -2502,8 +2658,19 @@ def _validate(
             available_end = available_start + ref["available_range"]["duration"]["value"]
             start = item["source_range"]["start_time"]["value"]
             end = start + item["source_range"]["duration"]["value"]
-            if start < available_start or end > available_end:
-                escapes.append((item["clip_id"], f"[{start}, {end})"))
+            # An L-cut reads past the picture's out-point, so the frames it
+            # reaches are part of what this clip asks the decoder for. Checking
+            # only `source_range` would pass a plan that holds audio past the
+            # end of the file, which is the same defect as a clip escaping its
+            # source and is invisible in every other check.
+            reach = end + _audio_tail_frames(item)
+            if start < available_start or reach > available_end:
+                span = (
+                    f"[{start}, {end})"
+                    if reach == end
+                    else f"[{start}, {end}) plus {reach - end} frames of audio tail"
+                )
+                escapes.append((item["clip_id"], span))
     checks.append(
         _check(
             "source_range_within_available",
@@ -2522,7 +2689,20 @@ def _validate(
         cursor = 0
         for item in track["items"]:
             if item["item_type"] == "transition":
-                continue  # zero-duration in OTIO; the handles come out of the clips
+                # Zero-duration in OTIO: a transition consumes no timeline, so
+                # the clips either side still butt up. The handles it overlaps
+                # come from OUTSIDE the neighbours' source_ranges -- which is
+                # what `transition_handles_available` checks them against.
+                # (edl.schema.json's OTIO header says the opposite in one
+                # sentence: "The clips' source_ranges already include the
+                # handles the overlap consumes." Under that reading the handle
+                # check would be pure duplication of
+                # `source_range_within_available`, and every dissolve would
+                # shorten its two shots by `dissolve_frames` of picture. The
+                # planner implements the OTIO reading; the contract sentence
+                # needs Codex sign-off to correct, so it is flagged rather than
+                # edited here -- see the branch report.)
+                continue
             if item["item_type"] == "gap":
                 cursor += item["duration"]["value"]
                 continue
@@ -2564,15 +2744,34 @@ def _validate(
             handle_failures.append(f"{item['transition_id']} lacks two clip neighbours")
             continue
         outgoing, incoming = neighbours
-        out_ref = media_by_ref[outgoing["media_ref_id"]]
-        in_ref = media_by_ref[incoming["media_ref_id"]]
+        out_ref = media_by_ref.get(outgoing["media_ref_id"])
+        in_ref = media_by_ref.get(incoming["media_ref_id"])
+        if out_ref is None or in_ref is None:
+            # `media_refs_resolvable` has already failed on this; raising a
+            # KeyError here would abort the whole validation block and hand the
+            # caller a traceback instead of the list of everything that is
+            # wrong with the plan.
+            handle_failures.append(
+                f"{item['transition_id']} sits between clips whose media "
+                "cannot be resolved"
+            )
+            continue
+        # Which offset is charged to which neighbour is not symmetric.
+        # `in_offset` extends the transition BACKWARDS into the outgoing item
+        # and `out_offset` FORWARDS into the incoming one (edl.schema.json),
+        # so during the overlap the outgoing clip is still on screen for
+        # `out_offset` frames after its own out-point -- it needs that much
+        # TAIL -- and the incoming clip is already on screen for `in_offset`
+        # frames before its in-point, so it needs that much HEAD. Charging
+        # them the other way round is invisible while every dissolve we emit
+        # has in_offset == out_offset, and wrong the day one does not.
         out_end = (
             outgoing["source_range"]["start_time"]["value"]
             + outgoing["source_range"]["duration"]["value"]
-            + item["in_offset"]["value"]
+            + item["out_offset"]["value"]
         )
         in_start = (
-            incoming["source_range"]["start_time"]["value"] - item["out_offset"]["value"]
+            incoming["source_range"]["start_time"]["value"] - item["in_offset"]["value"]
         )
         available_out_end = (
             out_ref["available_range"]["start_time"]["value"]
@@ -2669,8 +2868,16 @@ def _validate(
         for reframe in reframe_tracks:
             clip = clip_by_reframe.get(reframe["reframe_track_id"])
             source_aspect = (
-                (16, 9) if clip is None else source_aspect_by_ref[clip["media_ref_id"]]
+                (16, 9)
+                if clip is None
+                else source_aspect_by_ref.get(clip["media_ref_id"])
             )
+            if source_aspect is None:
+                # The clip points at a source the request does not declare, so
+                # `media_refs_resolvable` has already failed. Guessing an
+                # aspect ratio here would either invent an aspect failure or
+                # hide a real one, and raising would abort the whole block.
+                continue
             wanted = Fraction(
                 reframe["target_aspect_ratio"]["numerator"],
                 reframe["target_aspect_ratio"]["denominator"],
@@ -2808,6 +3015,12 @@ def _validate(
         "validated_at": request.validated_at,
         "validator_version": f"{PLANNER_ID}/{request.planner_version}",
     }
+
+
+def _audio_tail_frames(item: Mapping[str, Any]) -> float:
+    """How far past its picture out-point a clip's audio reads, in frames."""
+    tail = (item.get("audio") or {}).get("audio_extends_past_out")
+    return 0 if tail is None else tail["value"]
 
 
 def _clip_count(edl: Mapping[str, Any]) -> int:

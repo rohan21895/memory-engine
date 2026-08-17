@@ -1268,16 +1268,26 @@ class TestStoryArc(unittest.TestCase):
                 self.assertLessEqual(member_end, end)
 
     def test_a_missing_required_beat_fails_validation(self):
-        # One moment: it becomes the peak, and the hook and button beats have
-        # nothing to satisfy them. The plan says so rather than pretending.
-        plan = plan_reel(request(moments=(moment(0xE1, 3031860, emotional_peak=0.9),)))
+        # This used to plan a ONE-MOMENT reel, whose hook beat came out empty:
+        # it was asserting the defect fixed in TestSingleShotReel, where a
+        # legitimate single-shot cut was hard-failed for lacking an act it has
+        # no room for. The check itself is real, so it is exercised against an
+        # arc that genuinely leaves a required beat unsatisfied.
+        req = request()
+        plan = plan_reel(req)
+        edl = json.loads(json.dumps(plan.edl))
+        hook = next(a for a in edl["story_arc"]["acts"] if a["act_id"] == "act-hook")
+        hook["beats"][0]["satisfied_by_clip_ids"] = []
+        validation = reel._validate(edl, req, (), plan.duration_frames)
         check = next(
             c
-            for c in plan.edl["validation"]["checks"]
+            for c in validation["checks"]
             if c["check_id"] == "required_story_beats_satisfied"
         )
         self.assertFalse(check["passed"])
-        self.assertEqual("fail", plan.status)
+        self.assertEqual("error", check["severity"])
+        self.assertIn("beat-hook-open", check["detail"])
+        self.assertEqual("fail", validation["status"])
         _assert_schema_valid(self, plan.edl)
 
     def test_candidate_moments_are_retained_for_re_planning(self):
@@ -1800,27 +1810,59 @@ class TestValidationBlock(unittest.TestCase):
         self.assertIn("determinism_digest_present", ids)
 
     def test_a_failed_error_check_fails_the_plan(self):
-        plan = plan_reel(request(moments=(moment(0xE1, 3031860, emotional_peak=0.9),)))
+        # This used to plan a ONE-MOMENT reel and assert "fail" -- it was
+        # asserting the defect fixed in TestSingleShotReel below, where the
+        # planner called its own single shot the peak and then failed the plan
+        # for having no hook. An uncleared licence is a real error failure.
+        plan = plan_reel(
+            request(
+                music=music_track(
+                    license=MusicLicense(
+                        provider="user_supplied",
+                        license_type="personal_use_only",
+                        cleared_for=("private_playback",),
+                    )
+                )
+            )
+        )
+        failed = [c for c in plan.edl["validation"]["checks"] if not c["passed"]]
+        self.assertEqual(
+            ["music_license_covers_destination"], [c["check_id"] for c in failed]
+        )
+        self.assertEqual("error", failed[0]["severity"])
         self.assertEqual("fail", plan.status)
 
     def test_a_failed_warning_check_only_warns(self):
-        plan = plan_reel(
-            request(
-                target=RenderTarget(
-                    destination="instagram_reel",
-                    resolution=(1080, 1920),
-                    aspect_ratio=(9, 16),
-                    target_duration=899,
-                    max_duration=5395,
-                    loudness_target_lufs=-16.0,
-                ),
-                ambient=AmbientSettings(),
-            )
+        req = request(
+            target=RenderTarget(
+                destination="instagram_reel",
+                resolution=(1080, 1920),
+                aspect_ratio=(9, 16),
+                target_duration=899,
+                max_duration=5395,
+                loudness_target_lufs=-16.0,
+            ),
+            ambient=AmbientSettings(),
         )
+        plan = plan_reel(req)
         # The mix takes the target's LUFS, so this one passes; force the
         # mismatch through the check itself instead.
         self.assertEqual(-16.0, plan.edl["audio_plan"]["mix"]["loudness_target_lufs"])
         self.assertEqual("pass", plan.status)
+
+        # A mix that does NOT match the target warns, and warning-only
+        # failures leave the plan renderable.
+        damaged = json.loads(json.dumps(plan.edl))
+        damaged["audio_plan"]["mix"]["loudness_target_lufs"] = -9.0
+        validation = reel._validate(damaged, req, (), plan.duration_frames)
+        check = next(
+            c
+            for c in validation["checks"]
+            if c["check_id"] == "audio_loudness_target_set"
+        )
+        self.assertFalse(check["passed"])
+        self.assertEqual("warning", check["severity"])
+        self.assertEqual("warn", validation["status"])
 
     def test_an_unsatisfied_optional_beat_does_not_fail_the_plan(self):
         # Only REQUIRED beats gate the plan. Every act the planner emits today
@@ -1859,6 +1901,1173 @@ class TestValidationBlock(unittest.TestCase):
         block = plan_reel(request()).edl["validation"]
         self.assertEqual(f"reel-planner/{reel.PLANNER_VERSION}", block["validator_version"])
         self.assertEqual("2026-03-16T20:04:53+05:30", block["validated_at"])
+
+
+def open_target(**kwargs) -> RenderTarget:
+    """A target with no duration ask and no ceiling, for the grid tests."""
+    defaults = dict(
+        destination="instagram_reel",
+        resolution=(1080, 1920),
+        aspect_ratio=(9, 16),
+        target_duration=None,
+        max_duration=None,
+        loudness_target_lufs=-14.0,
+    )
+    defaults.update(kwargs)
+    return RenderTarget(**defaults)
+
+
+class TestSyntheticGridArithmetic(unittest.TestCase):
+    """Without music the grid is invented, so its arithmetic is the only thing
+    holding the cut positions up.
+
+    Every number below is derived here from `unlocked_clip_frames /
+    beats_per_cut` and half-away-from-zero rounding -- the same two rules the
+    module docstring states -- rather than read back out of a plan. An
+    off-by-one tick is invisible in a plan that still validates, still tiles
+    and still ends on a grid point.
+    """
+
+    @staticmethod
+    def ticks(unlocked: float, beats_per_cut: int, count: int) -> list[int]:
+        step = unlocked / beats_per_cut
+        return [reel._round_half_up(i * step) for i in range(count)]
+
+    def silent_request(self, **kwargs) -> ReelRequest:
+        moments = kwargs.pop(
+            "moments",
+            (
+                moment(0x711, 3031860, hook_potential=0.9),
+                moment(0x712, 3040000, emotional_peak=0.9),
+                moment(0x713, 3049200, motion_energy=0.05),
+            ),
+        )
+        return request(
+            music=None,
+            beat_grid=None,
+            media=(source_media(),),
+            moments=moments,
+            target=kwargs.pop("target", open_target()),
+            **kwargs,
+        )
+
+    def test_the_default_grid_is_four_ticks_to_a_ninety_frame_shot(self):
+        # No target and no ceiling: the span is one nominal shot per moment
+        # (3 x 90 = 270 frames), the grid is 22.5 frames per tick, and the reel
+        # runs to the LAST tick it can reach -- one shot of four ticks each.
+        plan = plan_reel(self.silent_request())
+        ticks = self.ticks(90.0, 4, 13)
+        self.assertEqual([0, 23, 45, 68, 90], ticks[:5])
+        clips = video_clips(plan.edl)
+        self.assertEqual(3, len(clips))
+        self.assertEqual(
+            [ticks[0], ticks[4], ticks[8]],
+            [c["timeline_range"]["start_time"]["value"] for c in clips],
+        )
+        self.assertEqual(
+            [90, 90, 90],
+            [c["timeline_range"]["duration"]["value"] for c in clips],
+        )
+        self.assertEqual(ticks[12], plan.duration_frames)
+        self.assertEqual(270, plan.duration_frames)
+        for clip in clips:
+            self.assertIsNone(clip["beat_lock"], "no music, no beat lock")
+        self.assertEqual("pass", plan.status)
+
+    def test_a_one_tick_slot_cuts_on_the_rounded_tick_not_the_truncated_one(self):
+        # 22.5 frames per tick with one tick per cut: the cut points are 0, 23,
+        # 45, 68 -- rounded half away from zero, alternating 23- and 22-frame
+        # shots. Truncating instead gives 0, 22, 45, 67, which is a different
+        # cut on every second shot and still tiles perfectly.
+        plan = plan_reel(
+            self.silent_request(
+                beats_per_cut=1,
+                unlocked_clip_frames=22.5,
+                target=open_target(target_duration=90),
+            )
+        )
+        ticks = self.ticks(22.5, 1, 6)
+        self.assertEqual([0, 23, 45, 68, 90], ticks[:5])
+        clips = video_clips(plan.edl)
+        self.assertEqual(
+            [ticks[0], ticks[1], ticks[2]],
+            [c["timeline_range"]["start_time"]["value"] for c in clips],
+        )
+        self.assertEqual(
+            [23, 22, 23],
+            [c["timeline_range"]["duration"]["value"] for c in clips],
+        )
+        self.assertEqual(ticks[3], plan.duration_frames)
+
+    def test_with_no_target_the_reel_runs_to_the_last_reachable_tick(self):
+        # `_end_index` falls back to the LAST allowed grid point, not the
+        # first. Taking the first would end every unasked-for reel one tick in.
+        plan = plan_reel(self.silent_request())
+        self.assertEqual(270, plan.duration_frames)
+        self.assertEqual(3, len(video_clips(plan.edl)))
+
+    def test_the_grid_still_reaches_its_span_when_the_division_is_inexact(self):
+        # 100 frames over 3 ticks is 33.333333333333336 in binary, so a
+        # 500-frame span divides into "14.999999999999998" ticks rather than
+        # the 15 it mathematically is. Rounding the tick count DOWN there costs
+        # the grid its last tick, the timeline one shot of capacity, and the
+        # reel its fifth moment -- and the short reel that comes out still
+        # validates, still tiles and still ends on a grid point.
+        moments = tuple(
+            moment(0x715 + i, 3031860 + 2000 * i, duration=300, score=0.5 + 0.01 * i)
+            for i in range(5)
+        )
+        plan = plan_reel(
+            self.silent_request(
+                moments=moments, unlocked_clip_frames=100.0, beats_per_cut=3
+            )
+        )
+        clips = video_clips(plan.edl)
+        self.assertEqual(5, len(clips), "a moment was dropped for want of a tick")
+        self.assertEqual([100] * 5, [c["timeline_range"]["duration"]["value"] for c in clips])
+        self.assertEqual(500, plan.duration_frames)
+        self.assertEqual([], [n for n in plan.notes if "dropped" in n], plan.notes)
+
+    def test_a_ceiling_alone_still_ends_on_a_tick_under_it(self):
+        plan = plan_reel(
+            self.silent_request(target=open_target(max_duration=200))
+        )
+        ticks = self.ticks(90.0, 4, 13)
+        self.assertLessEqual(plan.duration_frames, 200)
+        self.assertIn(plan.duration_frames, ticks)
+        check = next(
+            c
+            for c in plan.edl["validation"]["checks"]
+            if c["check_id"] == "duration_within_max"
+        )
+        self.assertTrue(check["passed"])
+
+
+class TestActSelectionTieBreaks(unittest.TestCase):
+    """Which moment gets which act is the reel's whole creative content.
+
+    These are all cases where two plausible orderings disagree: a rule that
+    reads the wrong score, or places the peak before the build, reorders every
+    clip in the reel and still emits a plan that validates, tiles and locks to
+    the beat.
+    """
+
+    def beat_of(self, edl, beat_id):
+        return next(c for c in video_clips(edl) if c["story_beat_id"] == beat_id)
+
+    def test_the_peak_is_chosen_on_emotional_peak_not_on_overall_score(self):
+        peak = moment(0x721, 3031860, emotional_peak=0.90, score=0.20)
+        loud = moment(0x722, 3040000, emotional_peak=0.10, score=0.99)
+        hook = moment(0x723, 3049200, hook_potential=0.95, score=0.50)
+        plan = plan_reel(request(moments=(peak, loud, hook)))
+        self.assertEqual(
+            peak.moment_id, self.beat_of(plan.edl, "beat-peak")["moment_id"]
+        )
+
+    def test_the_hook_is_chosen_on_hook_potential_not_on_overall_score(self):
+        peak = moment(0x731, 3031860, emotional_peak=0.99, score=0.50)
+        hook = moment(0x732, 3040000, hook_potential=0.90, score=0.20)
+        loud = moment(0x733, 3049200, hook_potential=0.10, score=0.95)
+        plan = plan_reel(request(moments=(peak, hook, loud)))
+        self.assertEqual(
+            hook.moment_id, self.beat_of(plan.edl, "beat-hook-open")["moment_id"]
+        )
+
+    def test_the_clips_run_hook_build_peak_button_in_that_order(self):
+        # The ACT list is emitted in a fixed order whatever happens, so it
+        # cannot catch a peak placed before the build. The clip order can.
+        plan = plan_reel(request())
+        self.assertEqual(
+            [
+                "beat-hook-open",
+                "beat-build-place",
+                "beat-peak",
+                "beat-button-close",
+            ],
+            [c["story_beat_id"] for c in video_clips(plan.edl)],
+        )
+
+    def test_the_calmest_shot_closes_the_reel_even_when_it_scores_lower(self):
+        # calm = half stillness, half score. These two swap places under any
+        # other weighting: 0.2 motion / 0.4 score against 0.4 motion / 0.8.
+        peak = moment(0x741, 3031860, emotional_peak=0.95, score=0.5)
+        hook = moment(0x742, 3040000, hook_potential=0.95, score=0.5)
+        still_but_weak = moment(0x743, 3049200, motion_energy=0.2, score=0.4)
+        livelier_but_better = moment(0x744, 3055440, motion_energy=0.4, score=0.8)
+        plan = plan_reel(
+            request(
+                moments=(peak, hook, still_but_weak, livelier_but_better)
+            )
+        )
+        self.assertEqual(
+            livelier_but_better.moment_id,
+            self.beat_of(plan.edl, "beat-button-close")["moment_id"],
+        )
+
+    def test_the_build_orders_by_media_first_then_by_source_time(self):
+        # Two files have no comparable source clock. Ordering the build by raw
+        # source offset across files is chronology-shaped noise: here it would
+        # put a second camera's frame 100 before the first camera's frame
+        # 3060000, as though one had happened before the other.
+        other = SourceMedia(
+            media_ref_id="src-other",
+            media_id="f" * 64,
+            available_start=0,
+            available_duration=5000,
+            aspect_ratio=(16, 9),
+        )
+        first_file = moment(0x751, 3060000, motion_energy=0.9, score=0.7)
+        second_file = moment(
+            0x752, 100, motion_energy=0.9, score=0.7, media_id=other.media_id
+        )
+        plan = plan_reel(
+            request(
+                media=(source_media(), music_media(), other),
+                beats_per_cut=2,
+                moments=(
+                    moment(0x753, 3031860, hook_potential=0.99),
+                    moment(0x754, 3049200, emotional_peak=0.95),
+                    moment(0x755, 3055440, motion_energy=0.02, score=0.6),
+                    first_file,
+                    second_file,
+                ),
+            )
+        )
+        build = [
+            c["moment_id"]
+            for c in video_clips(plan.edl)
+            if c["story_beat_id"] == "beat-build-place"
+        ]
+        self.assertEqual([first_file.moment_id, second_file.moment_id], build)
+
+    def test_the_capacity_cut_never_takes_the_peak_or_the_button(self):
+        # Ten moments into a three-shot timeline, with the peak deliberately
+        # the LOWEST-scoring moment in the pool: a drop policy that ranked on
+        # score alone would throw away the shot the reel exists for.
+        peak = moment(0x761, 3031860, emotional_peak=0.95, score=0.05)
+        hook = moment(0x762, 3032400, hook_potential=0.99, score=0.80)
+        button = moment(0x763, 3033000, motion_energy=0.02, score=0.06)
+        builds = tuple(
+            moment(0x770 + i, 3034000 + 400 * i, score=0.30 + 0.05 * i)
+            for i in range(7)
+        )
+        plan = plan_reel(
+            request(
+                moments=(peak, hook, button) + builds,
+                target=RenderTarget(
+                    destination="instagram_reel",
+                    resolution=(1080, 1920),
+                    aspect_ratio=(9, 16),
+                    target_duration=340,
+                    max_duration=5395,
+                    loudness_target_lufs=-14.0,
+                ),
+            )
+        )
+        placed = [c["moment_id"] for c in video_clips(plan.edl)]
+        self.assertEqual(3, len(placed), "the timeline holds exactly three shots")
+        self.assertEqual([hook.moment_id, peak.moment_id, button.moment_id], placed)
+        self.assertEqual("pass", plan.status)
+
+
+class TestSnapAndMinimumLength(unittest.TestCase):
+    def test_two_equally_strong_onsets_cut_on_the_earlier_one(self):
+        # Strength leads; the tie goes to the EARLIER onset, which leaves the
+        # most footage behind the cut for the tail. Both orderings produce a
+        # certified cut position, so nothing else can tell them apart.
+        tied = moment(
+            0x781,
+            3031860,
+            hook_potential=0.9,
+            snap_points=(
+                SnapPoint(
+                    time=3031860, kind="shot_boundary", strength=0.95, cut_direction="in"
+                ),
+                SnapPoint(
+                    time=3031890, kind="motion_onset", strength=0.95, cut_direction="both"
+                ),
+            ),
+        )
+        plan = plan_reel(
+            request(moments=(tied, moment(0x782, 3049200, emotional_peak=0.9)))
+        )
+        clip = next(
+            c for c in video_clips(plan.edl) if c["moment_id"] == tied.moment_id
+        )
+        self.assertEqual(3031860, clip["source_range"]["start_time"]["value"])
+
+    def test_a_shot_below_the_eight_frame_floor_is_refused(self):
+        # A three-frame grid, three ticks to a cut: the slots on offer are 9,
+        # 6 and 3 frames. An eight-frame window can only take the 6, which is
+        # under the floor, so the moment is skipped and said to be skipped. A
+        # nine-frame window takes the 9 and is kept -- which pins the floor at
+        # 8 from both sides rather than asserting the constant.
+        rate = 30.0
+        grid = BeatGrid(
+            bpm=600.0,
+            beats=tuple(
+                Beat(index=i, time=3 * i, is_downbeat=(i % 4 == 0)) for i in range(41)
+            ),
+            bpm_confidence=0.9,
+        )
+        track = music_track(media=music_media(), source_start=0)
+
+        def tight(tag: int, start: float, duration: float, **kwargs) -> SelectedMoment:
+            return moment(
+                tag,
+                start,
+                duration=duration,
+                with_subject=False,
+                snap_points=(
+                    SnapPoint(
+                        time=start,
+                        kind="shot_boundary",
+                        strength=0.9,
+                        cut_direction="in",
+                    ),
+                ),
+                safe_trim=SafeTrim(earliest_in=start, latest_out=start + duration),
+                **kwargs,
+            )
+
+        too_short = tight(0x791, 3040000, 8, score=0.5)
+        just_long_enough = tight(0x792, 3041000, 9, score=0.6)
+        plan = plan_reel(
+            request(
+                rate=rate,
+                beats_per_cut=3,
+                beat_grid=grid,
+                music=track,
+                media=(source_media(), track.media),
+                moments=(
+                    moment(0x793, 3031860, hook_potential=0.9),
+                    moment(0x794, 3049200, emotional_peak=0.9),
+                    too_short,
+                    just_long_enough,
+                ),
+                target=RenderTarget(
+                    destination="instagram_reel",
+                    resolution=(1080, 1920),
+                    aspect_ratio=(9, 16),
+                    target_duration=36,
+                    max_duration=None,
+                    loudness_target_lufs=-14.0,
+                ),
+            )
+        )
+        placed = {c["moment_id"] for c in video_clips(plan.edl)}
+        self.assertNotIn(too_short.moment_id, placed)
+        self.assertIn(just_long_enough.moment_id, placed)
+        self.assertTrue(
+            any(too_short.moment_id in note and "skipped" in note for note in plan.notes),
+            plan.notes,
+        )
+        self.assertEqual(
+            [9, 9, 9],
+            [c["timeline_range"]["duration"]["value"] for c in video_clips(plan.edl)],
+        )
+
+
+class TestValidatorCatchesDamagedPlans(unittest.TestCase):
+    """The validation block is a GATE, not a report.
+
+    `workers/render-video` refuses to render a plan whose status is "fail", so
+    every check in that block is load-bearing. A check only ever run against a
+    correct plan is untested by construction: hard-wire it to `True` and every
+    other test still passes. So each check here is handed a plan damaged in the
+    one way it exists to catch, re-validated, and required to fail -- with the
+    right severity, because a check demoted to "warning" leaves the plan
+    renderable and is the same defect as deleting it.
+
+    `_validate` re-derives everything from the emitted EDL, which is what makes
+    this possible without a second planner: `placements` feeds only the
+    mid-word check, so `()` is honest for the rest.
+    """
+
+    def setUp(self):
+        self.request = request(dissolve_frames=6)
+        self.plan = plan_reel(self.request)
+        self.assertEqual("pass", self.plan.status)
+
+    def damaged(self):
+        return json.loads(json.dumps(self.plan.edl))
+
+    def revalidate(self, edl, total_frames=None):
+        return reel._validate(
+            edl,
+            self.request,
+            (),
+            self.plan.duration_frames if total_frames is None else total_frames,
+        )
+
+    def check(self, validation, check_id):
+        return next(
+            c for c in validation["checks"] if c["check_id"] == check_id
+        )
+
+    def assert_error_failure(self, validation, check_id):
+        check = self.check(validation, check_id)
+        self.assertFalse(check["passed"], f"{check_id} did not catch the damage")
+        self.assertEqual("error", check["severity"], f"{check_id} is not a hard gate")
+        self.assertEqual("fail", validation["status"])
+        return check
+
+    # -- timeline_contiguous ----------------------------------------------
+    def test_a_clip_that_does_not_butt_up_fails_the_plan(self):
+        edl = self.damaged()
+        clips = video_clips(edl)
+        clips[1]["timeline_range"]["start_time"]["value"] += 1
+        check = self.assert_error_failure(
+            self.revalidate(edl), "timeline_contiguous"
+        )
+        self.assertIn(clips[1]["clip_id"], check["detail"])
+
+    def test_a_one_frame_overlap_fails_too(self):
+        # The half-open convention means an overlap and a gap are the same
+        # defect with opposite signs; a check that only looked for gaps would
+        # pass a plan that renders one frame twice.
+        edl = self.damaged()
+        video_clips(edl)[1]["timeline_range"]["start_time"]["value"] -= 1
+        self.assert_error_failure(self.revalidate(edl), "timeline_contiguous")
+
+    # -- status precedence -------------------------------------------------
+    def test_an_error_outranks_a_warning_when_both_fail(self):
+        # A plan whose status reads "warn" gets rendered. If a failed error
+        # check can be masked by a failed warning, the gate is open exactly
+        # when two things are wrong instead of one.
+        edl = self.damaged()
+        video_clips(edl)[1]["timeline_range"]["start_time"]["value"] += 1
+        edl["audio_plan"]["mix"]["loudness_target_lufs"] = -9.0
+        validation = self.revalidate(edl)
+        self.assertFalse(self.check(validation, "timeline_contiguous")["passed"])
+        self.assertFalse(self.check(validation, "audio_loudness_target_set")["passed"])
+        self.assertEqual("fail", validation["status"])
+
+    # -- duration_within_max ----------------------------------------------
+    def test_a_reel_over_the_platform_ceiling_fails(self):
+        ceiling = reel._round_half_up(self.request.target.max_duration)
+        validation = self.revalidate(self.damaged(), total_frames=ceiling + 1)
+        self.assert_error_failure(validation, "duration_within_max")
+        # ... and exactly on the ceiling is the good case.
+        self.assertTrue(
+            self.check(
+                self.revalidate(self.damaged(), total_frames=ceiling),
+                "duration_within_max",
+            )["passed"]
+        )
+
+    # -- media_refs_resolvable --------------------------------------------
+    def test_a_clip_pointing_at_an_undeclared_source_fails(self):
+        edl = self.damaged()
+        video_clips(edl)[0]["media_ref_id"] = "src-not-declared"
+        check = self.assert_error_failure(
+            self.revalidate(edl), "media_refs_resolvable"
+        )
+        self.assertIn("src-not-declared", check["detail"])
+
+    # -- source_range_within_available ------------------------------------
+    def test_an_audio_tail_reading_past_the_end_of_the_file_fails(self):
+        # The picture is inside the file and the AUDIO is not: checking only
+        # source_range would pass a plan that decodes past EOF at exactly the
+        # frame the plan says a laugh lands.
+        edl = self.damaged()
+        clip = video_clips(edl)[0]
+        ref = next(
+            r for r in edl["media_refs"] if r["media_ref_id"] == clip["media_ref_id"]
+        )
+        available_end = (
+            ref["available_range"]["start_time"]["value"]
+            + ref["available_range"]["duration"]["value"]
+        )
+        source_end = (
+            clip["source_range"]["start_time"]["value"]
+            + clip["source_range"]["duration"]["value"]
+        )
+        clip["audio"]["audio_extends_past_out"] = {
+            "value": available_end - source_end + 1,
+            "rate": edl["rate"],
+        }
+        check = self.assert_error_failure(
+            self.revalidate(edl), "source_range_within_available"
+        )
+        self.assertIn("audio tail", check["detail"])
+
+    # -- determinism_digest_present ---------------------------------------
+    def test_a_digest_that_is_not_a_hash_fails(self):
+        edl = self.damaged()
+        edl["determinism"]["inputs_digest"] = "not-a-blake3-digest"
+        self.assert_error_failure(self.revalidate(edl), "determinism_digest_present")
+
+    # -- reframe -----------------------------------------------------------
+    def test_a_crop_of_the_wrong_aspect_fails(self):
+        # One percent off is invisible to the eye and fatal to a 9:16 master:
+        # the tolerance is 1e-9 relative, so a check loosened to a few percent
+        # would pass this and still look like a check.
+        edl = self.damaged()
+        edl["reframe_tracks"][0]["keyframes"][0]["crop"]["w"] *= 1.01
+        self.assert_error_failure(
+            self.revalidate(edl), "reframe_aspect_matches_target"
+        )
+
+    def test_two_keyframes_at_the_same_time_fail(self):
+        # Not "out of order" -- EQUAL. Two keyframes on one frame make the
+        # interpolation ambiguous, which is how a deterministic plan renders
+        # differently on a different build.
+        # A subject sampled inside the kept frames, so the track has more than
+        # the single held keyframe the default moments produce.
+        tracked = moment(
+            0x3F1,
+            3031860,
+            hook_potential=0.9,
+            subject_track=(
+                SubjectSample(time=3031860, center_x=0.40, confidence=0.9),
+                SubjectSample(time=3031900, center_x=0.46, confidence=0.9),
+                SubjectSample(time=3031940, center_x=0.52, confidence=0.9),
+            ),
+        )
+        req = request(moments=(tracked, moment(0x3F2, 3049200, emotional_peak=0.9)))
+        plan = plan_reel(req)
+        edl = json.loads(json.dumps(plan.edl))
+        keyframes = edl["reframe_tracks"][0]["keyframes"]
+        self.assertGreaterEqual(len(keyframes), 2)
+        keyframes[1]["time"]["value"] = keyframes[0]["time"]["value"]
+        validation = reel._validate(edl, req, (), plan.duration_frames)
+        check = next(
+            c
+            for c in validation["checks"]
+            if c["check_id"] == "reframe_keyframes_ordered"
+        )
+        self.assertFalse(check["passed"])
+        self.assertEqual("error", check["severity"])
+        self.assertEqual("fail", validation["status"])
+
+    # -- transition_handles_available --------------------------------------
+    def test_a_dissolve_without_a_tail_handle_names_the_outgoing_clip(self):
+        # in_offset reaches BACKWARDS into the outgoing item and out_offset
+        # FORWARDS into the incoming one (edl.schema.json), so the outgoing
+        # clip owes `out_offset` frames of TAIL and the incoming owes
+        # `in_offset` frames of HEAD. Charging them the other way round is
+        # invisible while every dissolve we emit is symmetric -- so this
+        # asymmetric one is the only thing that can tell them apart.
+        edl = self.damaged()
+        items = video_items(edl)
+        index = next(
+            i for i, item in enumerate(items) if item["item_type"] == "transition"
+        )
+        transition = items[index]
+        outgoing = items[index - 1]
+        transition["in_offset"]["value"] = 0
+        transition["out_offset"]["value"] = 100000
+        check = self.assert_error_failure(
+            self.revalidate(edl), "transition_handles_available"
+        )
+        self.assertEqual(
+            f"{outgoing['clip_id']} has no tail handle for "
+            f"{transition['transition_id']}",
+            check["detail"],
+        )
+
+    def test_a_dissolve_without_a_head_handle_names_the_incoming_clip(self):
+        edl = self.damaged()
+        items = video_items(edl)
+        index = next(
+            i for i, item in enumerate(items) if item["item_type"] == "transition"
+        )
+        transition = items[index]
+        incoming = items[index + 1]
+        transition["in_offset"]["value"] = 100000
+        transition["out_offset"]["value"] = 0
+        check = self.assert_error_failure(
+            self.revalidate(edl), "transition_handles_available"
+        )
+        self.assertEqual(
+            f"{incoming['clip_id']} has no head handle for "
+            f"{transition['transition_id']}",
+            check["detail"],
+        )
+
+
+class TestMusicShorterThanTheReel(unittest.TestCase):
+    """A 15-second cut over a 3-second sting is the ordinary case.
+
+    The planner used to declare `loop: true` and then write a source_range the
+    length of the REEL over a track that short, which its own
+    `source_range_within_available` check fails at severity error -- so every
+    such reel came out `status: "fail"`, unrenderable, with an error message
+    about source ranges rather than about looping.
+    """
+
+    def a1_items(self, edl):
+        return next(t for t in edl["tracks"] if t["track_id"] == "a1")["items"]
+
+    def test_a_short_track_is_laid_down_repeatedly_and_the_plan_passes(self):
+        short = music_media(available_duration=120)
+        plan = plan_reel(
+            request(
+                music=music_track(media=short, source_start=0),
+                media=(source_media(), short),
+            )
+        )
+        self.assertEqual("pass", plan.status)
+        cue = plan.edl["audio_plan"]["music"][0]
+        self.assertTrue(cue["loop"])
+        # The cue reads what the track HAS ...
+        self.assertEqual(120, cue["source_range"]["duration"]["value"])
+        # ... and covers the reel on the timeline.
+        self.assertEqual(
+            plan.duration_frames, cue["timeline_range"]["duration"]["value"]
+        )
+
+        items = self.a1_items(plan.edl)
+        self.assertEqual(math.ceil(plan.duration_frames / 120), len(items))
+        self.assertEqual(len(items), len({i["clip_id"] for i in items}))
+        cursor = 0
+        for item in items:
+            self.assertEqual(cursor, item["timeline_range"]["start_time"]["value"])
+            span = item["timeline_range"]["duration"]["value"]
+            self.assertEqual(span, item["source_range"]["duration"]["value"])
+            self.assertEqual(0, item["source_range"]["start_time"]["value"])
+            self.assertLessEqual(span, 120, "a pass longer than the track exists")
+            cursor += span
+        self.assertEqual(plan.duration_frames, cursor)
+        # The fade belongs to the cue, not to every pass of it.
+        self.assertEqual(
+            [None] * (len(items) - 1) + [36],
+            [
+                None if i["audio"]["fade_out"] is None else i["audio"]["fade_out"]["value"]
+                for i in items
+            ],
+        )
+        self.assertTrue(any("loops" in note for note in plan.notes), plan.notes)
+        _assert_schema_valid(self, plan.edl)
+
+    def test_a_track_exactly_as_long_as_the_reel_does_not_loop(self):
+        reference = plan_reel(request())
+        total = reference.duration_frames
+        exact = music_media(available_duration=total + 1798)
+        plan = plan_reel(
+            request(
+                music=music_track(media=exact), media=(source_media(), exact)
+            )
+        )
+        cue = plan.edl["audio_plan"]["music"][0]
+        self.assertFalse(cue["loop"], "a track that exactly covers the reel is not a loop")
+        self.assertEqual(1, len(self.a1_items(plan.edl)))
+        self.assertEqual(total, cue["source_range"]["duration"]["value"])
+        self.assertEqual("pass", plan.status)
+
+        # One frame shorter -- measured FROM THE CUE IN-POINT, not from the
+        # top of the file -- and it does loop.
+        short = music_media(available_duration=total + 1798 - 1)
+        looped = plan_reel(
+            request(music=music_track(media=short), media=(source_media(), short))
+        )
+        self.assertTrue(looped.edl["audio_plan"]["music"][0]["loop"])
+        self.assertEqual(2, len(self.a1_items(looped.edl)))
+        self.assertEqual("pass", looped.status)
+
+    def test_a_track_that_is_not_a_whole_number_of_frames_is_read_in_whole_frames(self):
+        # 120.5 frames of track: the half frame does not exist as a frame, and
+        # a cue declaring 120.5 while its clips read 120 would put the two
+        # halves of one decision half a frame apart.
+        ragged = music_media(available_duration=120.5)
+        plan = plan_reel(
+            request(
+                music=music_track(media=ragged, source_start=0),
+                media=(source_media(), ragged),
+            )
+        )
+        cue = plan.edl["audio_plan"]["music"][0]
+        self.assertEqual(120, cue["source_range"]["duration"]["value"])
+        spans = [
+            item["source_range"]["duration"]["value"] for item in self.a1_items(plan.edl)
+        ]
+        self.assertEqual(120, spans[0])
+        self.assertTrue(all(span <= 120 for span in spans), spans)
+        self.assertEqual("pass", plan.status)
+
+    def test_a_cue_in_point_past_the_end_of_the_track_is_refused(self):
+        track = music_media(available_duration=100)
+        with self.assertRaises(ValueError):
+            request(
+                music=music_track(media=track, source_start=100),
+                media=(source_media(), track),
+            )
+
+
+class TestSingleShotReel(unittest.TestCase):
+    """One moment in, one shot out -- and that is a legitimate reel.
+
+    `_assign_acts` calls the sole moment the peak, which used to leave the
+    required hook beat empty and hard-fail the plan. A render worker gates on
+    that status, so a perfectly good one-shot cut was unrenderable.
+    """
+
+    def setUp(self):
+        self.plan = plan_reel(
+            request(moments=(moment(0xE1, 3031860, emotional_peak=0.9),))
+        )
+
+    def test_it_passes_its_own_validation(self):
+        self.assertEqual("pass", self.plan.status)
+        self.assertEqual(
+            [], [c for c in self.plan.edl["validation"]["checks"] if not c["passed"]]
+        )
+
+    def test_the_one_clip_satisfies_both_required_beats(self):
+        clips = video_clips(self.plan.edl)
+        self.assertEqual(1, len(clips))
+        satisfied = {
+            beat["beat_id"]: beat["satisfied_by_clip_ids"]
+            for act in self.plan.edl["story_arc"]["acts"]
+            for beat in act["beats"]
+            if beat["required"]
+        }
+        self.assertEqual(
+            {"beat-hook-open": ["clip-01"], "beat-peak": ["clip-01"]}, satisfied
+        )
+        # It is still the peak on the clip itself, and it still carries the
+        # marker the human editor looks for.
+        self.assertEqual("beat-peak", clips[0]["story_beat_id"])
+        self.assertEqual(1, len(clips[0]["markers"]))
+
+    def test_the_double_duty_is_stated_and_the_energy_curve_stays_single_valued(self):
+        self.assertTrue(
+            any("single-shot" in note for note in self.plan.notes), self.plan.notes
+        )
+        curve = self.plan.edl["story_arc"]["energy_curve"]
+        self.assertEqual(1, len(curve))
+        _assert_schema_valid(self, self.plan.edl)
+
+
+class TestAmbientDisabled(unittest.TestCase):
+    """With ambient off the location sound is not in the mix at all."""
+
+    def _speech_request(self, **kwargs):
+        start = 3049200
+        speech = moment(
+            0x7A1,
+            start,
+            duration=210,
+            emotional_peak=0.93,
+            score=0.91,
+            speech_ratio=0.31,
+            safe_trim=SafeTrim(earliest_in=start, latest_out=start + 210),
+        )
+        return request(
+            moments=(speech, moment(0x7A2, 3031860, hook_potential=0.9)), **kwargs
+        )
+
+    def test_ambient_on_ducks_the_music_and_keeps_the_clip_audio(self):
+        plan = plan_reel(self._speech_request())
+        self.assertEqual(1, len(plan.edl["audio_plan"]["ducking"]))
+        self.assertTrue(plan.edl["audio_plan"]["ambient"]["per_clip_gain_db"])
+        for clip in video_clips(plan.edl):
+            self.assertFalse(clip["audio"]["muted"])
+
+    def test_ambient_off_mutes_the_clips_and_stops_ducking_under_silence(self):
+        # Ducking here would pull the music down 9 dB for a quarter of the reel
+        # with nothing underneath it: audible, wrong, and silent in the plan.
+        plan = plan_reel(self._speech_request(ambient=AmbientSettings(enabled=False)))
+        self.assertFalse(plan.edl["audio_plan"]["ambient"]["enabled"])
+        for clip in video_clips(plan.edl):
+            self.assertTrue(clip["audio"]["muted"])
+        self.assertEqual([], plan.edl["audio_plan"]["ducking"])
+        self.assertEqual([], plan.edl["audio_plan"]["ambient"]["per_clip_gain_db"])
+        self.assertEqual("pass", plan.status)
+        _assert_schema_valid(self, plan.edl)
+
+
+class TestAudioTailBounds(unittest.TestCase):
+    """The L-cut is the one place the plan reads outside the picture."""
+
+    def tail_of(self, edl, moment_id):
+        clip = next(c for c in video_clips(edl) if c["moment_id"] == moment_id)
+        tail = clip["audio"]["audio_extends_past_out"]
+        return clip, 0 if tail is None else tail["value"]
+
+    def test_the_tail_stops_at_the_end_of_the_media_file(self):
+        # The moment claims 400 frames; the file holds 150. `latest_out` is a
+        # claim about the MOMENT, and whether those frames exist is a different
+        # question -- one FFmpeg answers with silence or a decode error at
+        # exactly the frame the plan says a laugh lands.
+        truncated = SourceMedia(
+            media_ref_id="src-truncated",
+            media_id="b" * 64,
+            available_start=2000,
+            available_duration=150,
+            aspect_ratio=(16, 9),
+        )
+        laugh = SelectedMoment(
+            moment_id=f"{0x7B1:064x}",
+            media_id=truncated.media_id,
+            source_start=2000,
+            source_duration=400,
+            score=0.6,
+            hook_potential=0.99,
+            snap_points=(
+                SnapPoint(
+                    time=2000, kind="shot_boundary", strength=0.9, cut_direction="in"
+                ),
+            ),
+            safe_trim=SafeTrim(
+                earliest_in=2000, latest_out=2400, preserve_audio_tail=True
+            ),
+        )
+        plan = plan_reel(
+            request(
+                media=(source_media(), music_media(), truncated),
+                moments=(laugh, moment(0x7B2, 3049200, emotional_peak=0.95)),
+            )
+        )
+        clip, tail = self.tail_of(plan.edl, laugh.moment_id)
+        source_end = (
+            clip["source_range"]["start_time"]["value"]
+            + clip["source_range"]["duration"]["value"]
+        )
+        self.assertGreater(tail, 0)
+        self.assertEqual(2150, source_end + tail, "the tail reads past the file")
+        self.assertEqual("pass", plan.status)
+        _assert_schema_valid(self, plan.edl)
+
+    def test_the_tail_never_outlasts_the_shot_it_belongs_to(self):
+        # 288 frames of spare audio behind a 112-frame shot: holding all of it
+        # would run the laugh over the next TWO shots.
+        start = 3040000
+        talky = SelectedMoment(
+            moment_id=f"{0x7C1:064x}",
+            media_id=RIDE_MEDIA_ID,
+            source_start=start,
+            source_duration=400,
+            score=0.6,
+            hook_potential=0.99,
+            snap_points=(
+                SnapPoint(
+                    time=start, kind="shot_boundary", strength=0.9, cut_direction="in"
+                ),
+            ),
+            safe_trim=SafeTrim(
+                earliest_in=start,
+                latest_out=start + 400,
+                speech_safe_out=start + 120,
+                preserve_audio_tail=True,
+            ),
+        )
+        plan = plan_reel(
+            request(moments=(talky, moment(0x7C2, 3049200, emotional_peak=0.95)))
+        )
+        clip, tail = self.tail_of(plan.edl, talky.moment_id)
+        self.assertEqual(clip["source_range"]["duration"]["value"], tail)
+
+    def test_the_last_shot_gets_no_tail_because_nothing_follows_it(self):
+        start = 3055440
+        closing = SelectedMoment(
+            moment_id=f"{0x7D1:064x}",
+            media_id=RIDE_MEDIA_ID,
+            source_start=start,
+            source_duration=400,
+            score=0.6,
+            motion_energy=0.01,
+            snap_points=(
+                SnapPoint(
+                    time=start, kind="shot_boundary", strength=0.9, cut_direction="in"
+                ),
+            ),
+            safe_trim=SafeTrim(
+                earliest_in=start,
+                latest_out=start + 400,
+                speech_safe_out=start + 120,
+                preserve_audio_tail=True,
+            ),
+        )
+        plan = plan_reel(
+            request(
+                moments=(
+                    moment(0x7D2, 3031860, hook_potential=0.99),
+                    moment(0x7D3, 3049200, emotional_peak=0.95),
+                    closing,
+                )
+            )
+        )
+        clips = video_clips(plan.edl)
+        self.assertEqual(closing.moment_id, clips[-1]["moment_id"])
+        self.assertIsNone(clips[-1]["audio"]["audio_extends_past_out"])
+
+
+class TestSafeTrimStaysInsideItsMoment(unittest.TestCase):
+    """`window()` hands `latest_out` straight to the placement walk.
+
+    A trim wider than the moment therefore lets a clip cut into footage the
+    analysis layer never scored -- and may have discarded as shaken or blown --
+    with nothing downstream to catch it: `source_range_within_available`
+    checks MEDIA bounds, not moment bounds.
+    """
+
+    def test_a_trim_reaching_past_the_end_of_the_moment_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            SelectedMoment(
+                moment_id=f"{0x7E1:064x}",
+                media_id=RIDE_MEDIA_ID,
+                source_start=2000,
+                source_duration=100,
+                safe_trim=SafeTrim(earliest_in=2000, latest_out=9000),
+            )
+        self.assertIn("latest_out", str(caught.exception))
+
+    def test_a_trim_starting_before_the_moment_is_refused(self):
+        with self.assertRaises(ValueError):
+            SelectedMoment(
+                moment_id=f"{0x7E2:064x}",
+                media_id=RIDE_MEDIA_ID,
+                source_start=2000,
+                source_duration=100,
+                safe_trim=SafeTrim(earliest_in=1900, latest_out=2100),
+            )
+
+    def test_a_speech_safe_bound_outside_the_moment_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            SelectedMoment(
+                moment_id=f"{0x7E3:064x}",
+                media_id=RIDE_MEDIA_ID,
+                source_start=2000,
+                source_duration=100,
+                safe_trim=SafeTrim(
+                    earliest_in=2000, latest_out=2100, speech_safe_out=2500
+                ),
+            )
+        self.assertIn("speech_safe_out", str(caught.exception))
+
+    def test_a_trim_exactly_on_the_moment_bounds_is_accepted(self):
+        SelectedMoment(
+            moment_id=f"{0x7E4:064x}",
+            media_id=RIDE_MEDIA_ID,
+            source_start=2000,
+            source_duration=100,
+            safe_trim=SafeTrim(earliest_in=2000, latest_out=2100),
+        )
+
+
+class TestTransitionLabelling(unittest.TestCase):
+    def test_the_dissolve_is_named_for_the_clip_it_dissolves_into(self):
+        # Two moments: the acts are hook and peak, and there is no button at
+        # all. A transition hard-coded "xfade-into-button" would be stating a
+        # creative decision the plan did not make.
+        plan = plan_reel(
+            request(
+                moments=(
+                    moment(0x7F1, 3031860, hook_potential=0.9),
+                    moment(0x7F2, 3049200, emotional_peak=0.9),
+                ),
+                dissolve_frames=6,
+            )
+        )
+        acts = {act["act_id"] for act in plan.edl["story_arc"]["acts"]}
+        self.assertNotIn("act-button", acts)
+        items = video_items(plan.edl)
+        transition = next(i for i in items if i["item_type"] == "transition")
+        incoming = next(
+            i for i in items[items.index(transition) + 1 :] if i["item_type"] == "clip"
+        )
+        self.assertEqual(
+            f"xfade-into-{incoming['clip_id']}", transition["transition_id"]
+        )
+        self.assertNotIn("button", transition["transition_id"])
+        _assert_schema_valid(self, plan.edl)
+
+
+class TestEmittedDecisionsAreStated(unittest.TestCase):
+    """Constants that reach the renderer as instructions.
+
+    Each of these is a decision the plan is making on the user's behalf; a
+    plan that quietly changed one would render differently and validate just
+    the same.
+    """
+
+    def test_the_colour_pipeline_tone_maps_hdr_sources(self):
+        # Left off, an HLG or PQ source renders washed out; on, an SDR source
+        # is already inside the target volume, so the transform is identity.
+        self.assertEqual(
+            {
+                "input_transform": "auto",
+                "working_space": "rec709",
+                "output_transform": "rec709",
+                "tone_map_hdr_to_sdr": True,
+            },
+            plan_reel(request()).edl["color_pipeline"],
+        )
+
+    def test_the_timeline_starts_at_zero_even_when_the_music_does_not(self):
+        # The lead-in is a Gap, never a shifted origin: `global_start_time` is
+        # where the TIMELINE begins, and moving it would desync it from a beat
+        # grid that is authored in timeline time.
+        offset = 60
+        late = BeatGrid(
+            bpm=128.0,
+            bpm_confidence=0.97,
+            beats=tuple(
+                Beat(index=i, time=offset + i * BEAT_INTERVAL, is_downbeat=(i % 4 == 0))
+                for i in range(33)
+            ),
+        )
+        plan = plan_reel(request(beat_grid=late))
+        self.assertEqual(0, plan.edl["global_start_time"]["value"])
+        self.assertEqual("gap", video_items(plan.edl)[0]["item_type"])
+
+    def test_whole_frame_times_are_emitted_as_integers(self):
+        # RFC 8785 writes 112.0 as "112", so this cannot change a digest -- but
+        # it does change what a Rust or TypeScript reader deserialises into,
+        # and "112.0" in a plan invites a float frame index downstream.
+        #
+        # The request deliberately carries FLOATS for whole-frame times: a
+        # planner that merely passes its inputs through emits integers here
+        # only because the caller happened to hand it integers.
+        floaty = moment(0x7F8, 3031860.0, duration=300.0, hook_potential=0.9)
+        plan = plan_reel(
+            request(
+                moments=(floaty, moment(0x7F9, 3049200.0, emotional_peak=0.9)),
+                target=RenderTarget(
+                    destination="instagram_reel",
+                    resolution=(1080, 1920),
+                    aspect_ratio=(9, 16),
+                    target_duration=899.0,
+                    max_duration=5395.0,
+                    loudness_target_lufs=-14.0,
+                ),
+            )
+        )
+        self.assertIsInstance(plan.edl["target"]["target_duration"]["value"], int)
+        self.assertIsInstance(plan.edl["target"]["max_duration"]["value"], int)
+        self.assertIsInstance(plan.edl["global_start_time"]["value"], int)
+        for clip in video_clips(plan.edl):
+            for field in ("source_range", "timeline_range"):
+                for part in ("start_time", "duration"):
+                    value = clip[field][part]["value"]
+                    self.assertIsInstance(
+                        value, int, f"{field}.{part} is not an integer"
+                    )
+
+    def test_the_crop_travels_at_most_a_third_of_the_frame_per_second(self):
+        # 0.35 normalised units per second is the difference between a
+        # considered pan and a whip. The budget is spent on the PLAN, so the
+        # exact clamped position is checkable from the declared limit.
+        self.assertEqual(0.35, ReframeSettings().max_velocity_per_second)
+        jumpy = moment(
+            0x7F5,
+            3031860,
+            hook_potential=0.9,
+            snap_points=(
+                SnapPoint(
+                    time=3031860, kind="shot_boundary", strength=0.9, cut_direction="in"
+                ),
+            ),
+            subject_track=(
+                SubjectSample(time=3031860, center_x=0.10, confidence=0.9),
+                SubjectSample(time=3031866, center_x=0.90, confidence=0.9),
+            ),
+        )
+        plan = plan_reel(
+            request(moments=(jumpy, moment(0x7F6, 3049200, emotional_peak=0.9)))
+        )
+        clip = next(
+            c for c in video_clips(plan.edl) if c["moment_id"] == jumpy.moment_id
+        )
+        track = next(
+            t
+            for t in plan.edl["reframe_tracks"]
+            if t["reframe_track_id"] == clip["reframe_track_id"]
+        )
+        self.assertEqual(0.35, track["smoothing"]["max_velocity_per_second"])
+        first, second = track["keyframes"][0], track["keyframes"][1]
+        # The subject jumps 0.8 of the frame in 6 frames; the crop is allowed
+        # 6 * 0.35 / rate, and lags the subject for the rest.
+        self.assertEqual(0.0, first["crop"]["x"])
+        self.assertAlmostEqual(6 * 0.35 / RATE, second["crop"]["x"], places=6)
+
+    def test_an_unstated_loudness_target_defaults_to_minus_fourteen_and_says_so(self):
+        plan = plan_reel(
+            request(
+                target=RenderTarget(
+                    destination="instagram_reel",
+                    resolution=(1080, 1920),
+                    aspect_ratio=(9, 16),
+                    target_duration=899,
+                    max_duration=5395,
+                    loudness_target_lufs=None,
+                )
+            )
+        )
+        self.assertEqual(-14.0, plan.edl["audio_plan"]["mix"]["loudness_target_lufs"])
+        self.assertTrue(any("-14 LUFS" in note for note in plan.notes), plan.notes)
+
+
+class TestCandidatePoolSurvivesTheCapacityCut(unittest.TestCase):
+    def test_dropped_moments_stay_in_the_candidate_pool(self):
+        # "Retained so a revision can swap in an alternative without re-running
+        # retrieval" (edl.schema.json#StoryBeat). Handing the arc the
+        # post-capacity list makes the pool equal the placed clips exactly,
+        # which carries no information at all -- and the drop notes live on
+        # ReelPlan, not in the EDL, so a persisted plan has lost them.
+        moments = tuple(
+            moment(
+                0x800 + i,
+                3031860 + 400 * i,
+                score=0.30 + 0.05 * i,
+                hook_potential=0.1 * i,
+                emotional_peak=0.05 * i,
+                motion_energy=0.4,
+            )
+            for i in range(10)
+        )
+        plan = plan_reel(
+            request(
+                moments=moments,
+                target=RenderTarget(
+                    destination="instagram_reel",
+                    resolution=(1080, 1920),
+                    aspect_ratio=(9, 16),
+                    target_duration=340,
+                    max_duration=5395,
+                    loudness_target_lufs=-14.0,
+                ),
+            )
+        )
+        placed = {c["moment_id"] for c in video_clips(plan.edl)}
+        candidates = {
+            mid
+            for act in plan.edl["story_arc"]["acts"]
+            for beat in act["beats"]
+            for mid in beat["candidate_moment_ids"]
+        }
+        self.assertEqual(3, len(placed))
+        self.assertEqual({m.moment_id for m in moments}, candidates)
+        self.assertLess(len(placed), len(candidates))
+        self.assertTrue(any("dropped" in note for note in plan.notes), plan.notes)
+
+
+class TestBeatToleranceIsEnforced(unittest.TestCase):
+    def test_a_grid_the_planner_cannot_hit_fails_the_plan(self):
+        # The <50ms downbeat gate is the reason `alignment_error_ms` is in the
+        # plan at all. Frames are integers, so a grid whose beats fall between
+        # frames cannot be hit exactly; with a 1ms tolerance the planner has to
+        # SAY it missed rather than emit a plan the render worker would trust.
+        plan = plan_reel(request(beat_grid=beat_grid(tolerance_ms=1.0)))
+        check = next(
+            c
+            for c in plan.edl["validation"]["checks"]
+            if c["check_id"] == "beat_alignment_within_tolerance"
+        )
+        self.assertFalse(check["passed"])
+        self.assertEqual("error", check["severity"])
+        self.assertEqual("fail", plan.status)
+        # The worst clip is named, and the error it reports is a real one.
+        worst = next(
+            c for c in video_clips(plan.edl) if c["clip_id"] == check["clip_id"]
+        )
+        self.assertGreater(abs(worst["beat_lock"]["alignment_error_ms"]), 1.0)
+
+    def test_the_same_grid_at_the_contract_tolerance_passes(self):
+        plan = plan_reel(request(beat_grid=beat_grid(tolerance_ms=50.0)))
+        self.assertEqual("pass", plan.status)
 
 
 class TestOtioMapping(unittest.TestCase):
