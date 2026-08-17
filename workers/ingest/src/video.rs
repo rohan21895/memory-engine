@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File},
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
@@ -9,12 +10,12 @@ use chrono::Utc;
 use memory_engine_contracts::{
     FrameIndexSidecar, FrameIndexSidecarMapping, JobError, JobErrorCode, JobOutput, JobOutputKind,
     JobSpec, JobSpecJobType, JobStateStatus, MediaRecord, PixelSize, ProcessingStateState,
-    Progress, ProgressUnit, ProxyRef, ProxyRefKind, StageState, StageStateStatus,
+    Progress, ProgressUnit, ProxyRef, ProxyRefKind, SpanRole, StageState, StageStateStatus,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{job::JobExecutionError, media::atomic_write, CheckpointStore};
+use crate::{gopro, job::JobExecutionError, media::atomic_write, CheckpointStore};
 
 const CHECKPOINT_VERSION: i64 = 1;
 const SIDECAR_VERSION: i64 = 1;
@@ -45,6 +46,8 @@ pub enum VideoProxyError {
     FfmpegFailed,
     #[error("frame-index output was incomplete")]
     IncompleteFrameIndex,
+    #[error("GoPro span assembly is inconsistent")]
+    SpanAssemblyInvalid,
     #[error("video proxy I/O failed")]
     Io(#[from] io::Error),
     #[error("video proxy contract serialization failed")]
@@ -61,6 +64,7 @@ pub struct VideoProxyReport {
     pub resumed_skips: usize,
     pub frames: i64,
     pub complete: bool,
+    pub issues: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -171,18 +175,21 @@ pub fn execute_video_proxy(
     let params = validate_job(job)?;
     let backend = HardwareBackend::parse(&params.hardware_decode)?;
     verify_backend(ffmpeg_path, backend)?;
-    if job.state.status == JobStateStatus::Completed {
-        return Ok(VideoProxyReport {
-            complete: true,
-            ..VideoProxyReport::default()
-        });
-    }
     let media_ids = job
         .inputs
         .media_ids
         .clone()
         .filter(|ids| !ids.is_empty())
         .ok_or(VideoProxyError::MissingInputs)?;
+    let span_ids = input_span_ids(output_dir, &media_ids)?;
+    if job.state.status == JobStateStatus::Completed {
+        let mut report = VideoProxyReport {
+            complete: true,
+            ..VideoProxyReport::default()
+        };
+        refresh_spans_for_job(output_dir, &span_ids, &mut report);
+        return Ok(report);
+    }
     let completed = job
         .checkpoint
         .as_ref()
@@ -256,6 +263,10 @@ pub fn execute_video_proxy(
     job.state.finished_at = Some(now.clone());
     job.state.heartbeat_at = Some(now);
     checkpoint_store.save(job)?;
+    // Span reconciliation is downstream bookkeeping. Proxy artifacts and their
+    // completed checkpoint remain terminal success even when a card was ejected
+    // or a sibling record is temporarily unavailable.
+    refresh_spans_for_job(output_dir, &span_ids, &mut report);
     Ok(report)
 }
 
@@ -653,6 +664,80 @@ fn load_record(output_dir: &Path, media_id: &str) -> Result<MediaRecord, VideoPr
     serde_json::from_slice(&bytes).map_err(VideoProxyError::Serialize)
 }
 
+fn input_span_ids(
+    output_dir: &Path,
+    media_ids: &[String],
+) -> Result<BTreeSet<String>, VideoProxyError> {
+    let mut spans = BTreeSet::new();
+    for media_id in media_ids {
+        if let Some(span) = load_record(output_dir, media_id)?.span {
+            if span.role == SpanRole::Member {
+                spans.insert(span.span_id);
+            }
+        }
+    }
+    Ok(spans)
+}
+
+fn refresh_spans_for_job(
+    output_dir: &Path,
+    span_ids: &BTreeSet<String>,
+    report: &mut VideoProxyReport,
+) {
+    if refresh_span_assemblies(output_dir, span_ids).is_err() {
+        report.issues.push(
+            "video proxies completed; GoPro span refresh deferred because a local record was unavailable"
+                .to_owned(),
+        );
+    }
+}
+
+fn refresh_span_assemblies(
+    output_dir: &Path,
+    span_ids: &BTreeSet<String>,
+) -> Result<(), VideoProxyError> {
+    for span_id in span_ids {
+        let existing =
+            load_record(output_dir, span_id).map_err(|_| VideoProxyError::SpanAssemblyInvalid)?;
+        let span = existing
+            .span
+            .as_ref()
+            .filter(|span| span.role == SpanRole::Assembly && span.span_id == *span_id)
+            .ok_or(VideoProxyError::SpanAssemblyInvalid)?;
+        let member_ids = span
+            .member_media_ids
+            .as_deref()
+            .filter(|members| members.len() >= 2)
+            .ok_or(VideoProxyError::SpanAssemblyInvalid)?;
+        let mut records = Vec::with_capacity(member_ids.len() + 1);
+        records.push(existing.clone());
+        for media_id in member_ids {
+            records.push(
+                load_record(output_dir, media_id)
+                    .map_err(|_| VideoProxyError::SpanAssemblyInvalid)?,
+            );
+        }
+        let built = gopro::build(&records);
+        if !built.issues.is_empty() {
+            return Err(VideoProxyError::SpanAssemblyInvalid);
+        }
+        for member in built.members {
+            persist_record(output_dir, &member)?;
+        }
+        let desired = built
+            .assemblies
+            .into_iter()
+            .find(|assembly| assembly.media_id == *span_id)
+            .ok_or(VideoProxyError::SpanAssemblyInvalid)?;
+        let refreshed =
+            gopro::merge_existing_assembly(&existing, &desired, &Utc::now().to_rfc3339());
+        if refreshed != existing {
+            persist_record(output_dir, &refreshed)?;
+        }
+    }
+    Ok(())
+}
+
 fn persist_record(output_dir: &Path, record: &MediaRecord) -> Result<(), VideoProxyError> {
     let bytes = serde_json::to_vec_pretty(record)?;
     atomic_write(&record_path(output_dir, &record.media_id), &bytes)?;
@@ -751,11 +836,17 @@ fn record_failure(job: &mut JobSpec, media_id: &str, error: &VideoProxyError) {
             JobErrorCode::GpuUnavailable
         }
         VideoProxyError::FfmpegFailed => JobErrorCode::UnsupportedCodec,
+        VideoProxyError::SpanAssemblyInvalid => JobErrorCode::DependencyFailed,
         _ => JobErrorCode::InternalError,
+    };
+    let message = if matches!(error, VideoProxyError::SpanAssemblyInvalid) {
+        "video proxy completed but span assembly refresh failed; details redacted"
+    } else {
+        "hardware video proxy failed; source details redacted"
     };
     job.error = Some(JobError {
         code,
-        message: "hardware video proxy failed; source details redacted".to_owned(),
+        message: message.to_owned(),
         retryable: matches!(error, VideoProxyError::FfmpegFailed),
         attempt: Some(job.state.attempts),
         occurred_at: Some(now.clone()),
@@ -807,6 +898,118 @@ mod tests {
             );
         }
         assert!(stats.variable_delta);
+    }
+
+    #[test]
+    fn completed_proxy_indexes_refresh_gopro_member_offsets() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let output = directory.path();
+        let mut first: MediaRecord = serde_json::from_str(include_str!(
+            "../../../contracts/fixtures/media-record/valid/video-gopro-chapter-01.json"
+        ))
+        .expect("chapter one");
+        let mut second: MediaRecord = serde_json::from_str(include_str!(
+            "../../../contracts/fixtures/media-record/valid/video-gopro-chapter-02.json"
+        ))
+        .expect("chapter two");
+        let mut proxies = std::collections::BTreeMap::new();
+        proxies.insert(
+            first.media_id.clone(),
+            first.proxies.take().unwrap().remove(0),
+        );
+        proxies.insert(
+            second.media_id.clone(),
+            second.proxies.take().unwrap().remove(0),
+        );
+        first.video = None;
+        first.span.as_mut().unwrap().offset_in_span = None;
+        first.span.as_mut().unwrap().continuity =
+            Some(memory_engine_contracts::SpanContinuity::Unverified);
+        second.video = None;
+        second.span.as_mut().unwrap().offset_in_span = None;
+        second.span.as_mut().unwrap().continuity =
+            Some(memory_engine_contracts::SpanContinuity::Unverified);
+        let initial = gopro::build(&[second.clone(), first.clone()]);
+        let assembly = initial.assemblies.into_iter().next().expect("assembly");
+        let span_id = assembly.media_id.clone();
+        for record in [first, second].into_iter().chain(std::iter::once(assembly)) {
+            fs::create_dir_all(record_path(output, &record.media_id).parent().unwrap()).unwrap();
+            persist_record(output, &record).unwrap();
+        }
+        for (media_id, proxy) in proxies {
+            let mut member = load_record(output, &media_id).unwrap();
+            attach_proxy(&mut member, proxy);
+            persist_record(output, &member).unwrap();
+        }
+
+        refresh_span_assemblies(output, &BTreeSet::from([span_id.clone()])).unwrap();
+        let refreshed = load_record(output, &span_id).unwrap();
+        let member_ids = refreshed
+            .span
+            .as_ref()
+            .unwrap()
+            .member_media_ids
+            .as_ref()
+            .unwrap();
+        let chapter_two = load_record(output, &member_ids[1]).unwrap();
+        assert_eq!(
+            chapter_two
+                .span
+                .as_ref()
+                .unwrap()
+                .offset_in_span
+                .as_ref()
+                .unwrap()
+                .value,
+            42_405.0
+        );
+        assert_eq!(
+            refreshed
+                .span
+                .as_ref()
+                .unwrap()
+                .offset_in_span
+                .as_ref()
+                .unwrap()
+                .value,
+            0.0
+        );
+    }
+
+    #[test]
+    fn unavailable_span_after_proxy_completion_is_a_report_issue_not_a_failure() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let output = directory.path();
+        let first: MediaRecord = serde_json::from_str(include_str!(
+            "../../../contracts/fixtures/media-record/valid/video-gopro-chapter-01.json"
+        ))
+        .expect("chapter one");
+        let second: MediaRecord = serde_json::from_str(include_str!(
+            "../../../contracts/fixtures/media-record/valid/video-gopro-chapter-02.json"
+        ))
+        .expect("chapter two");
+        let initial = gopro::build(&[second.clone(), first.clone()]);
+        let assembly = initial.assemblies.into_iter().next().expect("assembly");
+        let span_id = assembly.media_id.clone();
+        for mut record in [first, second].into_iter().chain(std::iter::once(assembly)) {
+            if record.asset_kind == memory_engine_contracts::MediaRecordAssetKind::PhysicalFile {
+                for source in &mut record.sources {
+                    source.present = false;
+                }
+            }
+            fs::create_dir_all(record_path(output, &record.media_id).parent().unwrap()).unwrap();
+            persist_record(output, &record).unwrap();
+        }
+        let mut report = VideoProxyReport {
+            complete: true,
+            ..VideoProxyReport::default()
+        };
+
+        refresh_spans_for_job(output, &BTreeSet::from([span_id]), &mut report);
+
+        assert!(report.complete);
+        assert_eq!(report.issues.len(), 1);
+        assert!(report.issues[0].contains("span refresh deferred"));
     }
 
     #[test]

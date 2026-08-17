@@ -4,6 +4,7 @@
 //! the same byte buffer feeds BLAKE3, metadata extraction, pHash, and thumbnail creation.
 
 mod format;
+mod gopro;
 mod job;
 mod media;
 mod metadata;
