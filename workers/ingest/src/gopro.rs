@@ -35,15 +35,15 @@ pub(crate) struct SpanBuild {
 #[derive(Clone)]
 struct Sequence {
     span_id: String,
+    closed: bool,
     members: Vec<(i64, MediaRecord)>,
 }
 
 pub(crate) fn parse_filename(filename: &str) -> Option<GoproChapter> {
     let path = Path::new(filename);
-    if !path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp4"))
-    {
+    if !path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("mp4") || extension.eq_ignore_ascii_case("lrv")
+    }) {
         return None;
     }
     let stem = path.file_stem()?.to_str()?.to_ascii_uppercase();
@@ -131,7 +131,7 @@ pub(crate) fn build(records: &[MediaRecord]) -> SpanBuild {
     let mut result = SpanBuild::default();
     let mut sequences = BTreeMap::<String, Sequence>::new();
     let mut conflicting_sequences = BTreeSet::new();
-    for chapters in groups.into_values() {
+    for (group, chapters) in groups {
         if chapters.len() < 2 {
             continue;
         }
@@ -156,7 +156,14 @@ pub(crate) fn build(records: &[MediaRecord]) -> SpanBuild {
             );
             continue;
         }
-        let span_id = span_id(members.iter().map(|(_, record)| record.media_id.as_str()));
+        let final_span_id = span_id(members.iter().map(|(_, record)| record.media_id.as_str()));
+        let closed = certified_closed_span(&members, &final_span_id);
+        let span_id = if closed {
+            final_span_id
+        } else {
+            carried_provisional_span(&members, &final_span_id)
+                .unwrap_or_else(|| provisional_span_id(&group, &members))
+        };
         if let Some(existing) = sequences.get(&span_id) {
             let existing_identity = existing
                 .members
@@ -167,11 +174,30 @@ pub(crate) fn build(records: &[MediaRecord]) -> SpanBuild {
                 .iter()
                 .map(|(index, member)| (*index, member.media_id.as_str()))
                 .collect::<Vec<_>>();
-            if existing_identity != candidate_identity {
+            if existing_identity == candidate_identity {
+                continue;
+            }
+            if identity_is_prefix(&existing_identity, &candidate_identity) {
+                sequences.insert(
+                    span_id.clone(),
+                    Sequence {
+                        span_id,
+                        closed,
+                        members,
+                    },
+                );
+            } else if !identity_is_prefix(&candidate_identity, &existing_identity) {
                 conflicting_sequences.insert(span_id);
             }
         } else {
-            sequences.insert(span_id.clone(), Sequence { span_id, members });
+            sequences.insert(
+                span_id.clone(),
+                Sequence {
+                    span_id,
+                    closed,
+                    members,
+                },
+            );
         }
     }
     if !conflicting_sequences.is_empty() {
@@ -207,11 +233,12 @@ pub(crate) fn build(records: &[MediaRecord]) -> SpanBuild {
             .any(|(_, member)| ambiguous.contains(&member.media_id))
     }) {
         let now = Utc::now().to_rfc3339();
-        let incomplete = sequence
+        let missing_index = sequence
             .members
             .iter()
             .enumerate()
             .any(|(expected, (actual, _))| *actual != expected as i64);
+        let incomplete = !sequence.closed || missing_index;
         let (assembly_video, offsets, continuity) = timeline(&sequence.members, incomplete);
         let assembly_offset = offsets.first().cloned().flatten();
         let member_ids = sequence
@@ -219,7 +246,7 @@ pub(crate) fn build(records: &[MediaRecord]) -> SpanBuild {
             .iter()
             .map(|(_, member)| member.media_id.clone())
             .collect::<Vec<_>>();
-        let member_count = member_ids.len() as i64;
+        let member_count = sequence.closed.then_some(member_ids.len() as i64);
 
         for (((index, member), offset), media_id) in
             sequence.members.iter().zip(offsets).zip(member_ids.iter())
@@ -233,10 +260,13 @@ pub(crate) fn build(records: &[MediaRecord]) -> SpanBuild {
                 role: SpanRole::Member,
                 span_kind: SpanSpanKind::GoproChapter,
                 index: Some(*index),
-                member_count: Some(member_count),
+                member_count,
                 member_media_ids: Some(Vec::new()),
-                offset_in_span: offset
-                    .or_else(|| previous_span.and_then(|span| span.offset_in_span.clone())),
+                offset_in_span: if continuity == SpanContinuity::IncompleteSet {
+                    None
+                } else {
+                    offset.or_else(|| previous_span.and_then(|span| span.offset_in_span.clone()))
+                },
                 continuity: Some(prefer_known_continuity(
                     continuity,
                     previous_span.and_then(|span| span.continuity),
@@ -256,6 +286,7 @@ pub(crate) fn build(records: &[MediaRecord]) -> SpanBuild {
             member_ids,
             assembly_video,
             assembly_offset,
+            member_count,
             continuity,
             &now,
         );
@@ -279,6 +310,51 @@ fn span_id<'a>(media_ids: impl Iterator<Item = &'a str>) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
+fn certified_closed_span(members: &[(i64, MediaRecord)], final_span_id: &str) -> bool {
+    let member_count = members.len() as i64;
+    members.iter().all(|(index, member)| {
+        member.span.as_ref().is_some_and(|span| {
+            span.role == SpanRole::Member
+                && span.span_kind == SpanSpanKind::GoproChapter
+                && span.span_id == final_span_id
+                && span.index == Some(*index)
+                && span.member_count == Some(member_count)
+        })
+    })
+}
+
+fn carried_provisional_span(members: &[(i64, MediaRecord)], final_span_id: &str) -> Option<String> {
+    let ids = members
+        .iter()
+        .filter_map(|(_, member)| member.span.as_ref())
+        .filter(|span| {
+            span.role == SpanRole::Member
+                && span.span_kind == SpanSpanKind::GoproChapter
+                && span.span_id != final_span_id
+        })
+        .map(|span| span.span_id.clone())
+        .collect::<BTreeSet<_>>();
+    (ids.len() == 1).then(|| ids.into_iter().next().expect("one provisional span"))
+}
+
+fn provisional_span_id(group: &GroupKey, members: &[(i64, MediaRecord)]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"memory-engine:gopro-provisional:v1\0");
+    hasher.update(group.family.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(group.recording.as_bytes());
+    hasher.update(&[0]);
+    // The earliest known chapter anchors different cameras that reused the same
+    // four-digit recording number, while the group id keeps a trailing arrival
+    // from changing provisional identity.
+    hasher.update(members[0].1.media_id.as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+fn identity_is_prefix(left: &[(i64, &str)], right: &[(i64, &str)]) -> bool {
+    left.len() < right.len() && left.iter().zip(right).all(|(left, right)| left == right)
+}
+
 fn timeline(
     members: &[(i64, MediaRecord)],
     incomplete: bool,
@@ -287,21 +363,20 @@ fn timeline(
     Vec<Option<RationalTime>>,
     SpanContinuity,
 ) {
+    if incomplete {
+        return (
+            None,
+            vec![None; members.len()],
+            SpanContinuity::IncompleteSet,
+        );
+    }
     let videos = members
         .iter()
         .map(|(_, member)| member.video.as_ref())
         .collect::<Option<Vec<_>>>();
     let Some(videos) = videos else {
         let offsets = proxy_offsets(members).unwrap_or_else(|| vec![None; members.len()]);
-        return (
-            None,
-            offsets,
-            if incomplete {
-                SpanContinuity::IncompleteSet
-            } else {
-                SpanContinuity::Unverified
-            },
-        );
+        return (None, offsets, SpanContinuity::Unverified);
     };
     let base_rate = videos[0].duration.rate;
     if !base_rate.is_finite()
@@ -341,9 +416,7 @@ fn timeline(
         };
         video
     });
-    let continuity = if incomplete {
-        SpanContinuity::IncompleteSet
-    } else if timecodes_are_gapless(&videos, &offsets, base_rate) == Some(true) {
+    let continuity = if timecodes_are_gapless(&videos, &offsets, base_rate) == Some(true) {
         SpanContinuity::VerifiedGapless
     } else if timecodes_are_gapless(&videos, &offsets, base_rate) == Some(false) {
         SpanContinuity::VerifiedGap
@@ -424,6 +497,7 @@ fn new_assembly(
     member_ids: Vec<String>,
     video: Option<VideoProperties>,
     offset: Option<RationalTime>,
+    member_count: Option<i64>,
     continuity: SpanContinuity,
     now: &str,
 ) -> MediaRecord {
@@ -442,7 +516,7 @@ fn new_assembly(
             role: SpanRole::Assembly,
             span_kind: SpanSpanKind::GoproChapter,
             index: None,
-            member_count: Some(member_ids.len() as i64),
+            member_count,
             member_media_ids: Some(member_ids),
             offset_in_span: offset,
             continuity: Some(continuity),
@@ -488,7 +562,9 @@ pub(crate) fn merge_existing_assembly(
             && previous.span_id == next.span_id
             && previous.member_media_ids == next.member_media_ids
         {
-            if next.offset_in_span.is_none() {
+            if next.continuity != Some(SpanContinuity::IncompleteSet)
+                && next.offset_in_span.is_none()
+            {
                 next.offset_in_span = previous.offset_in_span.clone();
             }
             next.continuity = Some(prefer_known_continuity(
@@ -498,7 +574,12 @@ pub(crate) fn merge_existing_assembly(
         }
     }
     merged.span = desired_span;
-    if desired.video.is_some() {
+    if desired.video.is_some()
+        || desired
+            .span
+            .as_ref()
+            .is_some_and(|span| span.continuity == Some(SpanContinuity::IncompleteSet))
+    {
         merged.video = desired.video.clone();
     }
     merged.proxies = Some(Vec::new());
@@ -600,6 +681,7 @@ mod tests {
         );
         assert!(parse_filename("G0012345.JPG").is_none());
         assert!(parse_filename("GH001234.MP4").is_none());
+        assert!(parse_filename("GH011234.LRV").is_some());
     }
 
     #[test]
@@ -610,13 +692,15 @@ mod tests {
         let second = member(include_str!(
             "../../../contracts/fixtures/media-record/valid/video-gopro-chapter-02.json"
         ));
-        let expected_id = span_id([first.media_id.as_str(), second.media_id.as_str()].into_iter());
+        let expected = member(include_str!(
+            "../../../contracts/fixtures/media-record/valid/video-gopro-span-assembly.json"
+        ));
         let built = build(&[second.clone(), first.clone()]);
         assert!(built.issues.is_empty());
-        assert_eq!(built.members.len(), 2);
+        assert!(built.members.is_empty());
         assert_eq!(built.assemblies.len(), 1);
         let assembly = &built.assemblies[0];
-        assert_eq!(assembly.media_id, expected_id);
+        assert_eq!(assembly.media_id, expected.media_id);
         assert_eq!(assembly.asset_kind, MediaRecordAssetKind::VirtualAssembly);
         assert_eq!(assembly.byte_size, 0);
         assert!(assembly.sources.is_empty());
@@ -626,14 +710,17 @@ mod tests {
         assert_eq!(span.span_id, assembly.media_id);
         assert_eq!(
             span.member_media_ids.as_deref(),
-            Some([first.media_id.clone(), second.media_id.clone()].as_slice())
+            expected
+                .span
+                .as_ref()
+                .and_then(|span| span.member_media_ids.as_deref())
         );
         assert_eq!(span.continuity, Some(SpanContinuity::VerifiedGapless));
         let video = assembly.video.as_ref().expect("aggregate video properties");
         assert_eq!(video.duration.value, 61_593.0);
-        assert_eq!(built.members[0].span.as_ref().unwrap().index, Some(0));
+        assert_eq!(first.span.as_ref().unwrap().index, Some(0));
         assert_eq!(
-            built.members[1]
+            second
                 .span
                 .as_ref()
                 .unwrap()
@@ -661,6 +748,94 @@ mod tests {
             built.assemblies[0].span.as_ref().unwrap().continuity,
             Some(SpanContinuity::IncompleteSet)
         );
+        assert!(built.assemblies[0].video.is_none());
+        assert_eq!(
+            built.assemblies[0].span.as_ref().unwrap().member_count,
+            None
+        );
+        assert!(built.assemblies[0]
+            .span
+            .as_ref()
+            .unwrap()
+            .offset_in_span
+            .is_none());
+        assert!(built.members.iter().all(|member| member
+            .span
+            .as_ref()
+            .is_some_and(|span| span.offset_in_span.is_none())));
+    }
+
+    #[test]
+    fn trailing_chapter_arrival_keeps_one_provisional_identity() {
+        let mut first = member(include_str!(
+            "../../../contracts/fixtures/media-record/valid/video-gopro-chapter-01.json"
+        ));
+        let mut second = member(include_str!(
+            "../../../contracts/fixtures/media-record/valid/video-gopro-chapter-02.json"
+        ));
+        first.span = None;
+        second.span = None;
+        let partial = build(&[first.clone(), second.clone()]);
+        let partial_id = partial.assemblies[0].media_id.clone();
+        assert_eq!(
+            partial.assemblies[0].span.as_ref().unwrap().continuity,
+            Some(SpanContinuity::IncompleteSet)
+        );
+
+        let mut third = second.clone();
+        third.media_id = "c".repeat(64);
+        third.sources[0].path = "/Volumes/GOPRO/DCIM/100GOPRO/GH031234.MP4".to_owned();
+        third.sources[0].original_filename = Some("GH031234.MP4".to_owned());
+        let complete_copy = build(&[first, second, third]);
+
+        assert_eq!(complete_copy.assemblies.len(), 1);
+        assert_eq!(complete_copy.assemblies[0].media_id, partial_id);
+        assert_eq!(
+            complete_copy.assemblies[0]
+                .span
+                .as_ref()
+                .unwrap()
+                .member_media_ids
+                .as_ref()
+                .map(Vec::len),
+            Some(3)
+        );
+        assert_eq!(
+            complete_copy.assemblies[0]
+                .span
+                .as_ref()
+                .unwrap()
+                .continuity,
+            Some(SpanContinuity::IncompleteSet)
+        );
+    }
+
+    #[test]
+    fn previously_published_prefix_identity_is_reused_when_the_tail_arrives() {
+        let first = member(include_str!(
+            "../../../contracts/fixtures/media-record/valid/video-gopro-chapter-01.json"
+        ));
+        let mut second = member(include_str!(
+            "../../../contracts/fixtures/media-record/valid/video-gopro-chapter-02.json"
+        ));
+        let previous_id = first.span.as_ref().unwrap().span_id.clone();
+        let mut third = second.clone();
+        third.media_id = "c".repeat(64);
+        third.span = None;
+        third.sources[0].path = "/Volumes/GOPRO/DCIM/100GOPRO/GH031234.MP4".to_owned();
+        third.sources[0].original_filename = Some("GH031234.MP4".to_owned());
+        // Keep chapter two's previously published span to reproduce an upgrade
+        // from the old premature-closure behavior.
+        second.span.as_mut().unwrap().continuity = Some(SpanContinuity::VerifiedGapless);
+
+        let rebuilt = build(&[first, second, third]);
+
+        assert_eq!(rebuilt.assemblies.len(), 1);
+        assert_eq!(rebuilt.assemblies[0].media_id, previous_id);
+        assert_eq!(
+            rebuilt.assemblies[0].span.as_ref().unwrap().continuity,
+            Some(SpanContinuity::IncompleteSet)
+        );
     }
 
     #[test]
@@ -672,9 +847,11 @@ mod tests {
             "../../../contracts/fixtures/media-record/valid/video-gopro-chapter-02.json"
         ));
         first.video = None;
-        first.span = None;
+        first.span.as_mut().unwrap().offset_in_span = None;
+        first.span.as_mut().unwrap().continuity = Some(SpanContinuity::Unverified);
         second.video = None;
-        second.span = None;
+        second.span.as_mut().unwrap().offset_in_span = None;
+        second.span.as_mut().unwrap().continuity = Some(SpanContinuity::Unverified);
         let built = build(&[second, first]);
         assert_eq!(built.assemblies.len(), 1);
         assert!(built.assemblies[0].video.is_none());

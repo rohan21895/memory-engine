@@ -41,6 +41,8 @@ pub enum JobExecutionError {
     Checkpoint(#[source] std::io::Error),
     #[error("media record could not be serialized")]
     Serialize(#[source] serde_json::Error),
+    #[error("persisted media record could not be loaded; location redacted")]
+    PersistedRecordUnreadable,
     #[error(transparent)]
     Ingest(#[from] IngestError),
 }
@@ -225,13 +227,7 @@ fn reconcile_gopro_outputs(
             .ok_or(())
             .and_then(|path| fs::read(path).map_err(|_| ()))
             .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|_| ()));
-        match loaded {
-            Ok(record) => records.push(record),
-            Err(()) => report.issues.push(ScanIssue {
-                code: memory_engine_contracts::JobErrorCode::FileUnreadable,
-                message: "persisted media record could not be loaded; location redacted".to_owned(),
-            }),
-        }
+        records.push(loaded.map_err(|()| JobExecutionError::PersistedRecordUnreadable)?);
     }
     let built = gopro::build(&records);
     report
@@ -246,7 +242,6 @@ fn reconcile_gopro_outputs(
         upsert_output(job, &member.media_id, &path, artifact_bytes);
         update_partial_outputs(job, &member.media_id);
         report.span_members_updated += 1;
-        checkpoint_store.save(job)?;
     }
     for desired in built.assemblies {
         let now = Utc::now().to_rfc3339();
@@ -278,9 +273,12 @@ fn reconcile_gopro_outputs(
         }
         if !existed || output_changed || existing.as_ref() != Some(&assembly) {
             update_partial_outputs(job, &assembly.media_id);
-            checkpoint_store.save(job)?;
         }
     }
+    // Reconciliation writes are content-addressed and idempotent. One checkpoint
+    // after the batch avoids serialising a 100k-output JobSpec for every member;
+    // a crash before this save simply replays the same deterministic upserts.
+    checkpoint_store.save(job)?;
     Ok(())
 }
 
@@ -407,6 +405,9 @@ fn persist_record(
         if let Ok(existing) =
             serde_json::from_slice::<memory_engine_contracts::MediaRecord>(&existing_bytes)
         {
+            if merged.span.is_none() {
+                merged.span = existing.span.clone();
+            }
             for source in existing.sources {
                 if !merged
                     .sources
@@ -499,8 +500,8 @@ mod tests {
             "job_type": "scan_source",
             "inputs": {
                 "media_ids": [],
-                "source_paths": [source],
-                "source_locator_digest": locator
+                "source_paths": [source.clone()],
+                "source_locator_digest": locator.clone()
             },
             "params": {"follow_symlinks": false, "include_hidden": false, "max_depth": 32},
             "params_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -526,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn gopro_assembly_is_emitted_only_after_scan_closure_and_is_idempotent() {
+    fn gopro_assembly_uses_a_stable_provisional_id_across_trailing_arrivals() {
         let directory = tempdir().expect("tempdir");
         let source = directory.path().join("source");
         let output = directory.path().join("output");
@@ -544,8 +545,8 @@ mod tests {
             "job_type": "scan_source",
             "inputs": {
                 "media_ids": [],
-                "source_paths": [source],
-                "source_locator_digest": locator
+                "source_paths": [source.clone()],
+                "source_locator_digest": locator.clone()
             },
             "params": {"follow_symlinks": false, "include_hidden": false, "max_depth": 32},
             "params_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -602,6 +603,15 @@ mod tests {
             assembly.span.as_ref().unwrap().role,
             memory_engine_contracts::SpanRole::Assembly
         );
+        assert_eq!(
+            assembly.span.as_ref().unwrap().continuity,
+            Some(memory_engine_contracts::SpanContinuity::IncompleteSet)
+        );
+        assert_eq!(assembly.span.as_ref().unwrap().member_count, None);
+        assert!(members.iter().all(|member| member
+            .span
+            .as_ref()
+            .is_some_and(|span| span.offset_in_span.is_none())));
         assert!(members.iter().all(|member| {
             member.span.as_ref().is_some_and(|span| {
                 span.role == memory_engine_contracts::SpanRole::Member
@@ -619,6 +629,112 @@ mod tests {
             fs::read(assembly_path).expect("stable assembly bytes")
         );
         assert_eq!(job.outputs.as_ref().map(Vec::len), Some(3));
+
+        let provisional_id = assembly.media_id.clone();
+        let mut bytes = vec![0, 0, 0, 24];
+        bytes.extend_from_slice(b"ftypmp42");
+        bytes.extend_from_slice(&[3_u8; 64]);
+        fs::write(source.join("GH030042.MP4"), bytes).expect("third GoPro chapter");
+        let mut rescan: JobSpec = serde_json::from_value(json!({
+            "schema_version": "v0",
+            "job_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "job_type": "scan_source",
+            "inputs": {
+                "media_ids": [],
+                "source_paths": [source],
+                "source_locator_digest": locator
+            },
+            "params": {"follow_symlinks": false, "include_hidden": false, "max_depth": 32},
+            "params_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "scope": "library:test",
+            "egress": {"requires_egress": false},
+            "state": {"status": "pending", "attempts": 0},
+            "checkpoint": {"resumable": true, "cursor": null, "checkpoint_version": 1}
+        }))
+        .expect("rescan job contract");
+        let rescan_store = CheckpointStore::new(directory.path().join("rescan.json"));
+        execute_scan(&mut rescan, &output, &rescan_store).expect("rescan with trailing chapter");
+        let rescan_records = rescan
+            .outputs
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|artifact| {
+                serde_json::from_slice::<memory_engine_contracts::MediaRecord>(
+                    &fs::read(artifact.path.as_ref().unwrap()).unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let rescanned_assembly = rescan_records
+            .iter()
+            .find(|record| {
+                record.asset_kind == memory_engine_contracts::MediaRecordAssetKind::VirtualAssembly
+            })
+            .expect("rescanned virtual assembly");
+        assert_eq!(rescanned_assembly.media_id, provisional_id);
+        assert_eq!(
+            rescanned_assembly
+                .span
+                .as_ref()
+                .and_then(|span| span.member_media_ids.as_ref())
+                .map(Vec::len),
+            Some(3)
+        );
+        let virtual_records = walkdir::WalkDir::new(output.join("records"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .filter_map(|entry| fs::read(entry.path()).ok())
+            .filter_map(|bytes| {
+                serde_json::from_slice::<memory_engine_contracts::MediaRecord>(&bytes).ok()
+            })
+            .filter(|record| {
+                record.asset_kind == memory_engine_contracts::MediaRecordAssetKind::VirtualAssembly
+            })
+            .count();
+        assert_eq!(virtual_records, 1);
+    }
+
+    #[test]
+    fn unreadable_persisted_record_aborts_reconciliation() {
+        let directory = tempdir().expect("tempdir");
+        let source = directory.path().join("source");
+        let output = directory.path().join("output");
+        fs::create_dir(&source).expect("source directory");
+        ImageBuffer::from_pixel(8, 8, Rgb([1_u8, 2, 3]))
+            .save(source.join("photo.jpg"))
+            .expect("fixture image");
+        let locator = source_locator_digest(std::slice::from_ref(&source)).expect("locator digest");
+        let mut job: JobSpec = serde_json::from_value(json!({
+            "schema_version": "v0",
+            "job_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "job_type": "scan_source",
+            "inputs": {
+                "media_ids": [],
+                "source_paths": [source],
+                "source_locator_digest": locator
+            },
+            "params": {"follow_symlinks": false, "include_hidden": false, "max_depth": 32},
+            "params_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "scope": "library:test",
+            "egress": {"requires_egress": false},
+            "state": {"status": "pending", "attempts": 0},
+            "checkpoint": {"resumable": true, "cursor": null, "checkpoint_version": 1}
+        }))
+        .expect("job contract");
+        let store = CheckpointStore::new(directory.path().join("checkpoint.json"));
+        execute_scan(&mut job, &output, &store).expect("initial scan");
+        let persisted = job.outputs.as_ref().unwrap()[0].path.as_ref().unwrap();
+        fs::write(persisted, b"{").expect("corrupt persisted record");
+
+        let replay = execute_scan(&mut job, &output, &store);
+
+        assert!(matches!(
+            replay,
+            Err(JobExecutionError::PersistedRecordUnreadable)
+        ));
+        assert_eq!(job.state.status, JobStateStatus::Completed);
     }
 
     #[test]

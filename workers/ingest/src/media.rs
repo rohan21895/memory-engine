@@ -480,6 +480,12 @@ mod tests {
     }
 
     #[test]
+    fn gopro_lrv_sidecar_keeps_the_gopro_source_adapter() {
+        let path = Path::new("/Volumes/GOPRO/DCIM/100GOPRO/GH011234.LRV");
+        assert_eq!(detect_adapter(path), SourceLocationAdapter::GoproCard);
+    }
+
+    #[test]
     fn extracts_exif_date_and_applies_orientation() {
         let directory = tempdir().expect("tempdir");
         let source_path = directory.path().join("camera.jpg");
