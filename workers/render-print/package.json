@@ -1,0 +1,23 @@
+{
+  "name": "@memory-engine/render-print",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "memory-engine-render-print": "dist/workers/render-print/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit --pretty false",
+    "test": "vitest run --exclude 'dist/**'"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.3.0",
+    "sharp": "0.35.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}
