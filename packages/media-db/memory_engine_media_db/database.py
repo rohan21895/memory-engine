@@ -305,6 +305,36 @@ class Database:
                 rows,
             )
 
+            # Proxies are indexed in their own table because `resolve_proxy` is
+            # on the hot path of every inference and had no index to use --
+            # issue #32. Replaced wholesale, like every other child table: a
+            # MediaRecord is the complete truth about a file, so a proxy absent
+            # from it has genuinely been deleted or regenerated under a new
+            # content hash.
+            #
+            # Scoped to this media_id in both directions. A content-addressed
+            # proxy can be shared with another record, and deleting by proxy_id
+            # would silently unindex that record's copy.
+            self._connection.execute(
+                "DELETE FROM media_proxy WHERE media_id = ?", (media_id,)
+            )
+            self._connection.executemany(
+                """INSERT OR REPLACE INTO media_proxy
+                       (proxy_id, media_id, kind, path, byte_size, proxy_json)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        proxy["proxy_id"],
+                        media_id,
+                        proxy["kind"],
+                        proxy["path"],
+                        proxy.get("byte_size"),
+                        json.dumps(proxy, sort_keys=True, separators=(",", ":")),
+                    )
+                    for proxy in record.get("proxies", []) or []
+                ],
+            )
+
             self._connection.execute("DELETE FROM media_fts WHERE media_id = ?", (media_id,))
             body = _search_body(record)
             if body:
@@ -355,24 +385,62 @@ class Database:
 
         Returns the ProxyRef as stored, so the caller gets kind, size and the
         frame-index sidecar without a second query.
+
+        INDEXED SINCE MIGRATION 0002 (issue #32). This used to be
+        `record_json LIKE '%' || ? || '%' LIMIT 50`, which was a full scan of the
+        media table on every inference AND was incorrect above 50 incidental
+        matches -- an id mentioned in fifty other records' JSON pushed the
+        owning record out of the candidate set, and the resolver returned None.
+        A miss here is reported downstream as PROXY_NOT_FOUND, which reads as
+        "no such proxy" rather than "the query gave up", so the failure grew
+        with library size and would never have raised.
+
+        The signature is unchanged on purpose: ml-runtime deliberately calls
+        only this and never queries tables directly, because `resolve_path` can
+        return an ORIGINAL.
+
+        ORDER BY media_id resolves the one genuine ambiguity. Proxy ids are
+        BLAKE3 of the proxy bytes, so two records sharing an id have byte-
+        identical proxies; the ProxyRefs differ at most in which record listed
+        them. Returning the lowest media_id's copy is arbitrary among equals but
+        it is the SAME arbitrary choice on every host and every run, which is
+        what determinism requires. Callers needing to know whose it is ask
+        `media_id_for_proxy`.
         """
         row = self._connection.execute(
-            """
-            SELECT record_json FROM media
-            WHERE record_json LIKE '%' || ? || '%'
-            LIMIT 50
-            """,
+            """SELECT proxy_json FROM media_proxy
+               WHERE proxy_id = ? ORDER BY media_id LIMIT 1""",
             (proxy_id,),
-        ).fetchall()
-        for candidate in row:
-            record = json.loads(candidate["record_json"])
-            for proxy in record.get("proxies") or []:
-                if proxy.get("proxy_id") == proxy_id:
-                    return proxy
-        return None
+        ).fetchone()
+        return json.loads(row["proxy_json"]) if row else None
+
+    def media_id_for_proxy(self, proxy_id: str) -> str | None:
+        """Which record a proxy belongs to, or None.
+
+        Separate from `resolve_proxy` because the inference path must not have
+        it: handing back a media_id is one `resolve_path` call away from an
+        original, and the point of the proxy resolver is that no such step
+        exists on that path. This is for the review and diagnostics surfaces,
+        which legitimately need to say "this thumbnail came from that photo".
+        """
+        row = self._connection.execute(
+            """SELECT media_id FROM media_proxy
+               WHERE proxy_id = ? ORDER BY media_id LIMIT 1""",
+            (proxy_id,),
+        ).fetchone()
+        return row["media_id"] if row else None
 
     def proxies_for_media(self, media_id: str, kind: str | None = None) -> list[dict]:
-        """Every proxy belonging to one record, optionally filtered by kind."""
+        """Every proxy belonging to one record, optionally filtered by kind.
+
+        Reads the RECORD, not `media_proxy`, and both are one indexed lookup so
+        this is not about speed. The record's array is ORDERED and the table's
+        rows are not: ingest writes thumbnail before preview before video proxy,
+        and a caller taking `proxies_for_media(id)[0]` would get a different
+        rendition depending on how SQLite happened to return the rows. The
+        record is the source of truth; the table is an index for the one query
+        that could not use it.
+        """
         record = self.get_media(media_id)
         if record is None:
             return []

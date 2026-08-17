@@ -674,3 +674,261 @@ class TestProxyResolution(DatabaseTestCase):
         self.load_media()
         assembly = fixture_named("media-record", "span-assembly")
         self.assertEqual([], self.db.proxies_for_media(assembly["media_id"]))
+
+
+# --------------------------------------------------------------- issue #32 ---
+
+LEGACY_RESOLVE_SQL = (
+    "SELECT record_json FROM media WHERE record_json LIKE '%' || ? || '%' LIMIT 50"
+)
+INDEXED_RESOLVE_SQL = (
+    "SELECT proxy_json FROM media_proxy WHERE proxy_id = ? ORDER BY media_id LIMIT 1"
+)
+
+
+def legacy_resolve_proxy(connection: sqlite3.Connection, proxy_id: str) -> dict | None:
+    """`resolve_proxy` exactly as it was before migration 0002.
+
+    Kept here, in the tests, so the regression is demonstrated rather than
+    asserted: every test below that says "this would have failed" runs this and
+    watches it fail.
+    """
+    for row in connection.execute(LEGACY_RESOLVE_SQL, (proxy_id,)):
+        record = json.loads(row["record_json"])
+        for proxy in record.get("proxies") or []:
+            if proxy.get("proxy_id") == proxy_id:
+                return proxy
+    return None
+
+
+def vm_steps(connection: sqlite3.Connection, sql: str, params: tuple) -> int:
+    """How much work SQLite does to answer a query, in units of 10 VM steps.
+
+    Wall-clock timing is the obvious way to test a performance fix and it is
+    the wrong one: it is flaky under CI load and it measures the machine as
+    much as the query. SQLite's progress handler fires every N virtual-machine
+    instructions, so counting invocations is a deterministic measure of work
+    done -- it returns the same number on a busy laptop and an idle one.
+    """
+    count = [0]
+
+    def handler() -> int:
+        count[0] += 1
+        return 0
+
+    connection.set_progress_handler(handler, 10)
+    try:
+        connection.execute(sql, params).fetchall()
+    finally:
+        connection.set_progress_handler(None, 0)
+    return count[0]
+
+
+class TestProxyLookupIsIndexed(unittest.TestCase):
+    """Issue #32: `resolve_proxy` was an unindexed JSON substring scan.
+
+    Two defects in one query, and the slower one was not the worse one:
+
+      * COST. `record_json LIKE '%id%'` cannot use an index, so every proxy
+        inference read and substring-matched every MediaRecord in the library.
+        One lookup per analysed item makes the analysis pass quadratic in
+        library size, against a 100k-record responsiveness gate.
+
+      * CORRECTNESS. The substring matches any record whose JSON mentions the
+        id anywhere, and `LIMIT 50` then truncates. Past fifty incidental
+        mentions the owning record can fall outside the candidate set and the
+        resolver returns None -- surfacing as PROXY_NOT_FOUND, which reads as
+        "no such proxy" rather than "the query gave up". It never raised, and
+        it got worse as the library grew.
+    """
+
+    def setUp(self) -> None:
+        self.db = Database.open(":memory:")
+        self.addCleanup(self.db.close)
+        self.record = fixture_named("media-record", "image-beach-sunset")
+        self.proxy_id = self.record["proxies"][0]["proxy_id"]
+
+    def _add_mentioning_decoys(self, count: int) -> None:
+        """Records that MENTION the proxy id without owning it.
+
+        Not contrived: `dedupe.group_id`, `span_id`, provenance fields and
+        proxy paths are all content-addressed hex in the same alphabet, and the
+        substring match cannot tell one from another.
+        """
+        for index in range(count):
+            decoy = json.loads(json.dumps(self.record))
+            decoy["media_id"] = "%064x" % index
+            decoy["proxies"] = []
+            decoy["dedupe"] = {"group_id": self.proxy_id, "is_primary": False}
+            self.db.put_media(decoy)
+
+    def _add_unrelated(self, count: int) -> None:
+        """Records that do not mention the id at all -- an ordinary library."""
+        raw = json.dumps(self.record)
+        for index in range(count):
+            replacement = "%064x" % (10 ** 6 + index)
+            decoy = json.loads(
+                raw.replace(self.proxy_id, replacement).replace(
+                    self.record["media_id"], "%064x" % index
+                )
+            )
+            self.assertNotIn(self.proxy_id, json.dumps(decoy))
+            self.db.put_media(decoy)
+
+    def test_fifty_incidental_mentions_hid_a_proxy_that_exists(self):
+        """The correctness half, and the reason this is a defect not a chore.
+
+        The decoys are written first so the owning record falls outside the
+        fifty rows the scan reads. Which side of the limit it lands on is
+        insertion order -- i.e. the order the user happened to import their
+        files in -- so the old resolver did not fail predictably. It failed for
+        some proxies and not others, in a way no run could reproduce.
+        """
+        self._add_mentioning_decoys(60)
+        self.db.put_media(self.record)
+
+        self.assertIsNone(
+            legacy_resolve_proxy(self.db.connection, self.proxy_id),
+            "the LIMIT 50 substring scan is expected to miss here -- if it "
+            "finds the proxy, this test is no longer reproducing the defect",
+        )
+        resolved = self.db.resolve_proxy(self.proxy_id)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(self.proxy_id, resolved["proxy_id"])
+
+    def test_the_lookup_uses_an_index_and_does_not_touch_the_media_table(self):
+        self.db.put_media(self.record)
+        plan = " | ".join(
+            str(row[3])
+            for row in self.db.connection.execute(
+                "EXPLAIN QUERY PLAN " + INDEXED_RESOLVE_SQL, (self.proxy_id,)
+            )
+        )
+        self.assertIn("SEARCH media_proxy", plan)
+        self.assertNotIn("SCAN", plan)
+
+        legacy_plan = " | ".join(
+            str(row[3])
+            for row in self.db.connection.execute(
+                "EXPLAIN QUERY PLAN " + LEGACY_RESOLVE_SQL, (self.proxy_id,)
+            )
+        )
+        self.assertIn(
+            "SCAN media", legacy_plan,
+            "the old query is expected to plan as a full scan; if it no longer "
+            "does, this test is measuring something else",
+        )
+
+    def test_lookup_cost_does_not_grow_with_the_library(self):
+        """The scaling half. Measured in VM steps, not seconds."""
+        self.db.put_media(self.record)
+        self._add_unrelated(200)
+        small_new = vm_steps(self.db.connection, INDEXED_RESOLVE_SQL, (self.proxy_id,))
+        small_old = vm_steps(self.db.connection, LEGACY_RESOLVE_SQL, (self.proxy_id,))
+
+        self._add_unrelated(4000)
+        large_new = vm_steps(self.db.connection, INDEXED_RESOLVE_SQL, (self.proxy_id,))
+        large_old = vm_steps(self.db.connection, LEGACY_RESOLVE_SQL, (self.proxy_id,))
+
+        self.assertGreater(
+            large_old, small_old * 5,
+            "the old query is expected to cost proportionally more on a bigger "
+            "library; if it does not, the fixture is not exercising the scan",
+        )
+        self.assertLessEqual(
+            large_new, small_new + 2,
+            f"a twentyfold library grew the indexed lookup from {small_new} to "
+            f"{large_new} -- it is not using the index",
+        )
+
+    def test_an_existing_database_is_backfilled_when_it_migrates(self):
+        """A user upgrading does not have to re-scan their library.
+
+        Exercised by removing the table from a populated database and
+        re-migrating, which runs the real backfill against real records rather
+        than against rows invented for the test.
+        """
+        records = [self.record, fixture_named("media-record", "video-gopro-chapter-01")]
+        for record in records:
+            self.db.put_media(record)
+
+        self.db.connection.execute("DROP TABLE media_proxy")
+        self.db.connection.execute("PRAGMA user_version = 1")
+        self.assertEqual(1, current_version(self.db.connection))
+
+        self.assertEqual(SCHEMA_VERSION, migrate(self.db.connection))
+        for record in records:
+            for proxy in record["proxies"]:
+                with self.subTest(proxy=proxy["proxy_id"][:12]):
+                    resolved = self.db.resolve_proxy(proxy["proxy_id"])
+                    self.assertIsNotNone(resolved)
+                    self.assertEqual(proxy["kind"], resolved["kind"])
+
+    def test_a_proxy_removed_from_its_record_stops_resolving(self):
+        """The index is derived data; it may not outlive what it describes."""
+        self.db.put_media(self.record)
+        self.assertIsNotNone(self.db.resolve_proxy(self.proxy_id))
+
+        without = json.loads(json.dumps(self.record))
+        without["proxies"] = []
+        self.db.put_media(without)
+        self.assertIsNone(
+            self.db.resolve_proxy(self.proxy_id),
+            "a stale index row would send the runtime to a proxy file the "
+            "record no longer claims exists",
+        )
+
+    def test_deleting_a_record_takes_its_proxy_rows(self):
+        self.db.put_media(self.record)
+        self.db.connection.execute(
+            "DELETE FROM media WHERE media_id = ?", (self.record["media_id"],)
+        )
+        self.db.connection.commit()
+        self.assertIsNone(self.db.resolve_proxy(self.proxy_id))
+
+    def test_a_proxy_shared_by_two_records_survives_deleting_one(self):
+        """Why the key is (proxy_id, media_id) and not proxy_id alone.
+
+        Proxy ids are BLAKE3 of the proxy BYTES, so two records can share one
+        (a JPEG and its HEIC twin reduce to the same 512px thumbnail). Keyed on
+        proxy_id alone, the second write would replace the first's row and
+        deleting the second record would cascade away a proxy the first still
+        lists -- the same silent miss, just rarer.
+        """
+        self.db.put_media(self.record)
+        twin = json.loads(json.dumps(self.record))
+        twin["media_id"] = "f" * 64
+        self.db.put_media(twin)
+
+        self.assertEqual(
+            2,
+            self.db.connection.execute(
+                "SELECT count(*) FROM media_proxy WHERE proxy_id = ?", (self.proxy_id,)
+            ).fetchone()[0],
+        )
+
+        self.db.connection.execute("DELETE FROM media WHERE media_id = ?", (twin["media_id"],))
+        self.db.connection.commit()
+        self.assertIsNotNone(
+            self.db.resolve_proxy(self.proxy_id),
+            "deleting one owner must not unindex a proxy the other still has",
+        )
+
+    def test_resolution_is_the_same_choice_on_every_run(self):
+        """Determinism where the answer is genuinely ambiguous."""
+        self.db.put_media(self.record)
+        twin = json.loads(json.dumps(self.record))
+        twin["media_id"] = "0" * 63 + "1"
+        self.db.put_media(twin)
+        self.assertEqual(twin["media_id"], self.db.media_id_for_proxy(self.proxy_id))
+        self.assertEqual(
+            [self.db.resolve_proxy(self.proxy_id)] * 4,
+            [self.db.resolve_proxy(self.proxy_id) for _ in range(4)],
+        )
+
+    def test_the_resolver_still_refuses_a_media_id(self):
+        """The structural guarantee the whole method exists for, re-checked
+        against the new implementation rather than assumed to have survived it."""
+        self.db.put_media(self.record)
+        self.assertIsNone(self.db.resolve_proxy(self.record["media_id"]))
+        self.assertIsNone(self.db.media_id_for_proxy(self.record["media_id"]))
