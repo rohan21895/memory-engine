@@ -57,6 +57,18 @@ from memory_engine_story.moments import (  # noqa: E402
 # Private, and tested directly on purpose: the public path cannot isolate the
 # boundary picker, and the trade-off it encodes is a stated design decision.
 from memory_engine_story.moments import _pick_snap  # noqa: E402
+# Same justification, for the word-safety primitives. The overlapping-speaker
+# case they exist to survive cannot be isolated through `plan_moments` — it
+# needs a boundary landing at a specific time inside a specific pair of
+# overlapping words — and "never cut inside a word" is THE stated guarantee of
+# this module, so it is tested where it is decided as well as end to end.
+from memory_engine_story.moments import (  # noqa: E402
+    AUDIO_EVENT_LABELS,
+    _covering_word,
+    _round_half_up,
+    _word_safe_in,
+    _word_safe_out,
+)
 
 REPO = Path(__file__).resolve().parents[3]
 SCHEMA_DIR = REPO / "contracts" / "schemas"
@@ -1208,6 +1220,30 @@ class TestDeterminism(unittest.TestCase):
             for value in _floats(record):
                 self.assertEqual(round(value, 6), value, f"unquantised float {value}")
 
+    def test_the_rate_is_carried_exactly_and_everything_else_is_quantised(self):
+        """The module docstring's determinism claim is about MEASURED floats.
+
+        At RATE = 30.0 the distinction is invisible, which is why the test above
+        passes while the claim as originally written ("every float that reaches
+        a record") was false. `rate` is an exact input, not a measurement:
+        30000/1001 must survive into every record bit for bit, because rounding
+        it to 29.97 makes every derived source timecode drift.
+        """
+        ntsc = 30000.0 / 1001.0
+        records = plan_moments(
+            stream(self.frames(), rate=ntsc, proxy_rate=ntsc, proxy_start_value=0.0),
+            id_hasher=fake_hasher,
+        ).records
+        self.assertTrue(records)
+        rates_seen = 0
+        for record in records:
+            for value in _floats(record, skip_keys=("rate",)):
+                self.assertEqual(round(value, 6), value, f"unquantised float {value}")
+            for value in _rates(record):
+                rates_seen += 1
+                self.assertEqual(ntsc, value, "rate must be carried exactly")
+        self.assertTrue(rates_seen)
+
     def test_a_tie_is_broken_by_time_not_by_construction_order(self):
         """Uniform footage means every window scores identically; the earliest
         must win, every time."""
@@ -1215,15 +1251,29 @@ class TestDeterminism(unittest.TestCase):
         self.assertEqual(0, span(first.record)[0])
 
 
-def _floats(node):
+def _floats(node, skip_keys=()):
     if isinstance(node, dict):
-        for value in node.values():
-            yield from _floats(value)
+        for key, value in node.items():
+            if key in skip_keys:
+                continue
+            yield from _floats(value, skip_keys)
     elif isinstance(node, list):
         for value in node:
-            yield from _floats(value)
+            yield from _floats(value, skip_keys)
     elif isinstance(node, float):
         yield node
+
+
+def _rates(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "rate":
+                yield value
+            else:
+                yield from _rates(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _rates(value)
 
 
 class TestValidation(unittest.TestCase):
@@ -1304,6 +1354,688 @@ class TestValidation(unittest.TestCase):
         self.assertNotEqual(
             0.0, result.records[1]["scores"]["moment_score"]["value"]
         )
+
+
+# --------------------------------------------------------------------------
+# The word-safety guarantee, tested where it is DECIDED rather than only where
+# it is convenient. Everything below exists because a mutation survived, a
+# probe found a violation, or both.
+# --------------------------------------------------------------------------
+
+
+class TestWordSafetyOutranksTheDurationBounds(unittest.TestCase):
+    """D1. `_finalise` made the out-point word-safe and then let the min/max
+    duration clamps overwrite it, so the module's one stated inviolable
+    guarantee was defeated by its own arithmetic under a fully DEFAULT policy.
+    129 of 3000 randomised speech streams produced a mid-word out-point, and
+    `safe_trim.latest_out` then handed that illegal position to the planner as a
+    bound it was free to trim to.
+    """
+
+    def test_the_minimum_duration_clamp_extends_past_the_word_instead_of_into_it(self):
+        # The window at 65 wants an 18-frame moment. 65+18 = 83 sits 600ms
+        # inside 'wonderful', so the out-point goes FORWARD to the frame after
+        # the word rather than landing in the middle of it.
+        words = [Word("hello", 25.0, 39.0), Word("wonderful", 65.0, 155.0)]
+        result = plan_moments(
+            stream([good()] * 300, words=words, language="en-IN"),
+            id_hasher=fake_hasher,
+        )
+        spans = [span(m.record) for m in result.moments]
+        self.assertIn((65, 155), spans, spans)
+        for lo, hi in spans:
+            for word in words:
+                self.assertFalse(word.start < lo < word.end,
+                                 f"in-point {lo} inside {word.word!r}")
+                self.assertFalse(word.start < hi < word.end,
+                                 f"out-point {hi} inside {word.word!r}")
+
+    def test_the_maximum_duration_clamp_shrinks_back_out_of_the_word(self):
+        # The ceiling cannot be exceeded, so this clamp moves BACKWARD: the
+        # largest word-safe position at or before in_point + max_moment.
+        words = [Word("unbelievable", 40.0, 50.0)]
+        result = plan_moments(
+            stream([good()] * 300, words=words, language="en-IN"),
+            policy=Policy(max_moment_seconds=1.5),
+            id_hasher=fake_hasher,
+        )
+        spans = [span(m.record) for m in result.moments]
+        self.assertEqual((0, 40), spans[0], spans)
+        for lo, hi in spans:
+            self.assertLessEqual(hi - lo, 45, "the maximum is still a hard ceiling")
+            self.assertFalse(40.0 < hi < 50.0, f"out-point {hi} inside the word")
+
+    def test_a_moment_that_cannot_be_both_long_enough_and_word_safe_is_dropped(self):
+        """The documented tie-break, exercised.
+
+        One word covers almost the whole stream, so no word-safe out-point sits
+        at least `min_moment` after any legal in-point. The module must NOT
+        emit a short moment and must NOT emit a mid-word one: it drops the
+        candidate as `too_short` at the `planner` stage, which is a visible,
+        reasoned rejection the culling UI can render.
+        """
+        words = [Word("aaaa", 1.0, 299.0)]
+        result = plan_moments(
+            stream([good()] * 300, words=words, language="en-IN"),
+            id_hasher=fake_hasher,
+        )
+        self.assertEqual((), result.moments)
+        self.assertTrue(result.eliminated)
+        for dropped in result.eliminated:
+            self.assertEqual(["too_short"], dropped.record["elimination"]["reasons"])
+            self.assertEqual("planner", dropped.record["elimination"]["stage"])
+
+    def test_no_default_policy_stream_ever_emits_a_mid_word_boundary(self):
+        """The property, over randomised realistic speech, at the defaults.
+
+        This is the shape of the probe that found D1: 129 violations before the
+        fix, zero after. Kept small enough to run in the unit suite and seeded
+        so a failure is reproducible. Gaps are allowed to be negative so
+        overlapping diarised speakers are covered too.
+
+        The margin is the record's own storage precision. The guarantee is exact
+        on the computed boundary; the record stores `start_time` and `duration`
+        rounded to six decimals INDEPENDENTLY, so the out-point reconstructed as
+        start + duration carries up to two half-steps, 1e-6 frames — 33
+        nanoseconds at 30fps. Asserting at that bound is what makes this a real
+        gate: the pre-fix code failed the same assertion by up to eighteen
+        FRAMES, six hundred milliseconds.
+        """
+        margin = 1e-6
+        rng = random.Random(20260817)
+        for trial in range(120):
+            words = []
+            cursor = rng.uniform(0.0, 30.0)
+            while cursor < 280.0:
+                length = rng.uniform(8.0, 26.0)
+                words.append(Word(f"w{len(words)}", cursor, cursor + length))
+                cursor += length + rng.uniform(-6.0, 14.0)
+            words = [word for word in words if word.end > word.start]
+            result = plan_moments(
+                stream([good()] * 300, words=words, language="en-IN"),
+                id_hasher=fake_hasher,
+            )
+            for moment in result.moments:
+                lo, hi = span(moment.record)
+                for word in words:
+                    for name, time in (("in-point", lo), ("out-point", hi)):
+                        if not word.start < time < word.end:
+                            continue
+                        depth = min(time - word.start, word.end - time)
+                        self.assertLessEqual(
+                            depth, margin,
+                            f"trial {trial}: {name} {time} is {depth} frames "
+                            f"inside {word.word!r} [{word.start},{word.end}]",
+                        )
+
+    def test_the_speech_safe_bounds_agree_with_the_emitted_bounds(self):
+        """Agreement is the assertion, not a redundancy.
+
+        The schema defines `speech_safe_in` as the earliest in-point that does
+        not land inside a spoken word. Since every emitted boundary is now such
+        a position, the two must agree — and a disagreement means the module
+        emitted a cut it cannot certify. Before the fix `speech_safe_out` could
+        come back EQUAL TO `earliest_in`, i.e. a zero-length trim range.
+        """
+        words = [Word("hello", 25.0, 39.0), Word("wonderful", 65.0, 155.0)]
+        result = plan_moments(
+            stream([good()] * 300, words=words, language="en-IN"),
+            id_hasher=fake_hasher,
+        )
+        with_speech = 0
+        for moment in result.moments:
+            trim = moment.record["safe_trim"]
+            if trim["speech_safe_in"] is None:
+                self.assertIsNone(trim["speech_safe_out"])
+                continue
+            with_speech += 1
+            self.assertEqual(trim["earliest_in"], trim["speech_safe_in"])
+            self.assertEqual(trim["latest_out"], trim["speech_safe_out"])
+            self.assertLess(trim["speech_safe_in"]["value"],
+                            trim["speech_safe_out"]["value"])
+        self.assertTrue(with_speech)
+
+    def test_a_segment_starting_inside_a_word_still_yields_a_safe_in_point(self):
+        """The eliminated block ends at 60, so the segment starts there —
+        inside 'shouting'. The in-point must leave the word rather than sit on
+        the segment edge.
+
+        (The clamp/correct ORDER in `_finalise` is defensive rather than
+        load-bearing: `_pick_snap` already bounds the snap below by `lo_val` and
+        `want_in` is the candidate start, so `in_point >= lo_val` holds before
+        the clamp. Swapping the two back is an equivalent mutation, and this
+        test does not claim otherwise — it pins the outcome.)
+        """
+        frames = [good(shake=0.99)] * 60 + [good()] * 240
+        words = [Word("shouting", 55.0, 96.0)]
+        result = plan_moments(
+            stream(frames, words=words, language="en-IN"), id_hasher=fake_hasher
+        )
+        self.assertTrue(result.moments)
+        first_in = span(result.moments[0].record)[0]
+        self.assertEqual(96, first_in,
+                         "in-point ceils past the word, not back to the segment edge")
+
+    def test_a_moment_shorter_than_the_minimum_is_dropped_not_shipped(self):
+        """The `too_short` gate at the end of `_finalise`, exercised at the only
+        range that distinguishes it: a duration strictly between zero and
+        `min_moment`.
+
+        With a 2s ceiling and no extension budget, the word-safe out-point for
+        the first candidate lands 10 frames after its in-point, and the forward
+        extension that would reach 18 frames overshoots the ceiling. 10 frames
+        is a flash frame, and the module drops it.
+        """
+        result = plan_moments(
+            stream([good()] * 300, words=[Word("aaa", 10.0, 100.0)],
+                   language="en-IN"),
+            policy=Policy(max_moment_seconds=2.0, max_extend_seconds=0.0),
+            id_hasher=fake_hasher,
+        )
+        for moment in result.moments:
+            self.assertGreaterEqual(moment.duration, 18, span(moment.record))
+        self.assertEqual(
+            [(0, 60, "too_short", "planner")],
+            [(int(m.start), int(m.start + m.duration),
+              m.record["elimination"]["reasons"][0],
+              m.record["elimination"]["stage"]) for m in result.eliminated],
+        )
+
+
+class TestOverlappingSpeakers(unittest.TestCase):
+    """D2. The covering-word search walked back a fixed five entries. That cap
+    was a guess, and it failed in exactly the case its own comment cited: with
+    six or more words starting inside a long one, the long word fell out of the
+    walk and `snap_points` certified a cut inside it."""
+
+    def long_word_stream(self, interjections: int) -> FeatureStream:
+        long_word = Word("aaaaaaaaaa", 100.0, 190.0)
+        others = [Word(f"w{i}", 101.0 + i, 101.4 + i) for i in range(interjections)]
+        return stream(
+            [good()] * 300,
+            words=[long_word] + others,
+            shots=[Shot("shot-0001", 0, 120), Shot("shot-0002", 120, 300)],
+            language="en-IN",
+        )
+
+    def test_a_long_word_stays_visible_under_many_short_overlapping_ones(self):
+        for interjections in (0, 4, 8, 20):
+            with self.subTest(interjections=interjections):
+                source = self.long_word_stream(interjections)
+                inside = [
+                    (point.kind, point.time)
+                    for point in snap_points(source, Policy())
+                    if 100.0 < point.time < 190.0
+                ]
+                self.assertEqual([], inside,
+                                 "a certified snap point inside a spoken word")
+
+    def test_a_moment_boundary_does_not_enter_the_long_word_either(self):
+        source = self.long_word_stream(8)
+        result = plan_moments(source, id_hasher=fake_hasher)
+        self.assertTrue(result.moments)
+        for moment in result.moments:
+            lo, hi = span(moment.record)
+            self.assertFalse(100.0 < lo < 190.0, f"in-point {lo} inside the long word")
+            self.assertFalse(100.0 < hi < 190.0, f"out-point {hi} inside the long word")
+
+    def test_the_covering_word_search_is_exact_not_capped(self):
+        long_word = Word("aaaa", 100.0, 190.0)
+        words = tuple(sorted(
+            [long_word] + [Word(f"w{i}", 101.0 + i, 101.4 + i) for i in range(30)],
+            key=lambda w: (w.start, w.end, w.word),
+        ))
+        starts = [w.start for w in words]
+        self.assertIs(long_word, _covering_word(150.0, words, starts))
+        self.assertIsNone(_covering_word(100.0, words, starts), "start is a boundary")
+        self.assertIsNone(_covering_word(190.0, words, starts), "end is a boundary")
+        self.assertIsNone(_covering_word(220.0, words, starts))
+
+    def test_stepping_out_of_one_word_into_the_next_iterates_to_a_fixpoint(self):
+        """Two diarised speakers overlap. One step out of the first word lands
+        inside the second, and a single step would leave the boundary inside a
+        word while every caller treated it as certified."""
+        words = (Word("A", 50.0, 60.0), Word("B", 58.0, 80.0))
+        starts = [w.start for w in words]
+        self.assertEqual(80.0, _word_safe_in(55.0, words, starts))
+        self.assertEqual(50.0, _word_safe_out(59.0, words, starts))
+        # Unchanged where the position is already legal.
+        self.assertEqual(45.0, _word_safe_in(45.0, words, starts))
+        self.assertEqual(90.0, _word_safe_out(90.0, words, starts))
+
+
+class TestAudioEventsAreValidatedNotRepaired(unittest.TestCase):
+    """D4/D5. `AudioEvent` went into a record unchecked: the label is a closed
+    contract enum and was written verbatim, and the confidence was clamped
+    rather than refused — the exact treatment `Frame.validate` rejects."""
+
+    def test_a_label_outside_the_contract_enum_is_refused(self):
+        with self.assertRaises(StreamError) as caught:
+            plan_moments(
+                stream([good()] * 120,
+                       audio_events=[AudioEvent("dog_bark", 0.9, 30.0)]),
+                id_hasher=fake_hasher,
+            )
+        self.assertIn("dog_bark", str(caught.exception))
+
+    def test_the_mirrored_enum_matches_the_contract_exactly(self):
+        """AUDIO_EVENT_LABELS is a COPY of a closed enum in
+        contracts/schemas/moment-record.schema.json. A copy that nothing
+        compares against drifts, and the direction it drifts in is silent: drop
+        a label and a legitimate CLAP output starts raising; add one and a
+        schema-invalid record ships again. The contract is the authority, so the
+        test reads it rather than restating it.
+        """
+        schema = json.loads(
+            (SCHEMA_DIR / "moment-record.schema.json").read_text(encoding="utf-8")
+        )
+        contract = schema["$defs"]["AudioFeatures"]["properties"]["events"]["items"][
+            "properties"]["label"]["enum"]
+        self.assertEqual(set(contract), set(AUDIO_EVENT_LABELS))
+
+    def test_every_contract_label_really_is_accepted(self):
+        schema = json.loads(
+            (SCHEMA_DIR / "moment-record.schema.json").read_text(encoding="utf-8")
+        )
+        contract = schema["$defs"]["AudioFeatures"]["properties"]["events"]["items"][
+            "properties"]["label"]["enum"]
+        self.assertTrue(contract)
+        for label in sorted(contract):
+            with self.subTest(label=label):
+                plan_moments(
+                    stream([good()] * 120,
+                           audio_events=[AudioEvent(label, 0.9, 30.0)]),
+                    id_hasher=fake_hasher,
+                )
+
+    def test_a_confidence_outside_the_unit_range_is_refused_not_clamped(self):
+        for confidence in (7.5, -0.2):
+            with self.subTest(confidence=confidence):
+                with self.assertRaises(StreamError):
+                    plan_moments(
+                        stream([good()] * 120,
+                               audio_events=[AudioEvent("laughter", confidence, 30.0)]),
+                        id_hasher=fake_hasher,
+                    )
+
+    def test_an_event_on_a_shared_cut_belongs_to_exactly_one_moment(self):
+        """D3. The event filter was closed at the top while `_sample_span` and
+        `_transcript` are half-open, so one laugh on a shared boundary was
+        carried by BOTH adjacent moments: the culling UI showed it twice and the
+        planner saw two emotional peaks where there was one."""
+        frames = [good()] * 300
+        shots = [Shot("shot-0001", 0, 60), Shot("shot-0002", 60, 120),
+                 Shot("shot-0003", 120, 180)]
+        result = plan_moments(
+            stream(frames, shots=shots,
+                   audio_events=[AudioEvent("laughter", 0.9, 60.0)]),
+            id_hasher=fake_hasher,
+        )
+        carriers = [
+            span(m.record) for m in result.moments
+            if any(e["label"] == "laughter"
+                   for e in m.record["features"].get("audio", {}).get("events", []))
+        ]
+        self.assertEqual(1, len(carriers), carriers)
+        self.assertEqual(60, carriers[0][0],
+                         "the event belongs to the moment that STARTS on the cut")
+
+
+class TestTheCullingFigureCountsEverythingItDropped(unittest.TestCase):
+    """D7. `eliminated_samples` counted the classical mask alone, so the number
+    behind "your 40 usable minutes" read 0% eliminated on a card where nothing
+    survived at all."""
+
+    def test_below_floor_candidates_count_toward_the_eliminated_fraction(self):
+        result = plan([dull()] * 300)
+        self.assertEqual((), result.moments)
+        self.assertEqual(240, result.eliminated_samples)
+        self.assertEqual(0.8, result.eliminated_fraction)
+
+    def test_no_sample_inside_a_kept_moment_is_counted_as_eliminated(self):
+        """A kept moment is extended past the window it was selected from, so
+        it can cover samples a below-floor candidate also claimed. Counting
+        those would make the culling figure describe footage that shipped.
+
+        Here the kept moment runs [0,70) and the first below-floor candidate
+        covers [64,124): the six shared samples belong to what shipped.
+        """
+        frames = [good()] * 70 + [dull()] * 230
+        frames[69] = good(motion=0.95)
+        for index in range(70, 73):
+            frames[index] = dull(motion=0.01)
+        result = plan(frames)
+        self.assertEqual([(0, 70)], [span(m.record) for m in result.moments])
+        self.assertEqual(
+            [(64, 124), (128, 188), (192, 252)],
+            [span(m.record) for m in result.eliminated],
+        )
+        self.assertEqual(
+            174, result.eliminated_samples,
+            "180 samples are covered by eliminated records, six of which are "
+            "inside the moment that shipped",
+        )
+
+    def test_planner_drops_count_too(self):
+        words = [Word("aaaa", 1.0, 299.0)]
+        result = plan_moments(
+            stream([good()] * 300, words=words, language="en-IN"),
+            id_hasher=fake_hasher,
+        )
+        self.assertEqual((), result.moments)
+        self.assertGreater(result.eliminated_samples, 0)
+
+    def test_eliminated_records_are_ordered_by_time_not_by_id(self):
+        result = plan([dull()] * 300)
+        starts = [m.start for m in result.eliminated]
+        self.assertEqual(sorted(starts), starts)
+        ids = [m.record["moment_id"] for m in result.eliminated]
+        self.assertNotEqual(sorted(ids), ids,
+                            "fixture no longer distinguishes id order from time order")
+
+
+class TestRecordAssembly(unittest.TestCase):
+    """The region the adversarial report measured at 15/16 survivors: turning a
+    decision into a record. Every assertion here corresponds to a mutation that
+    passed the whole suite."""
+
+    def test_the_id_payload_is_media_start_duration_rate_and_scorer(self):
+        seen: list[str] = []
+
+        def capture(payload: bytes) -> str:
+            seen.append(payload.decode("utf-8"))
+            return "0" * 64
+
+        moment_id(MEDIA_ID, 12.0, 30.0, RATE, Scorer(), capture)
+        self.assertEqual(
+            "|".join(["moment-v1", MEDIA_ID, "12.000000", "30.000000",
+                      "30.000000", "moment-fusion-linear", "1.0.0"]),
+            seen[0],
+            "the id is a content address; its payload is part of the contract",
+        )
+
+    def test_safe_trim_bounds_are_the_emitted_range_not_its_reverse(self):
+        result = plan([good()] * 300)
+        for moment in result.moments:
+            lo, hi = span(moment.record)
+            trim = moment.record["safe_trim"]
+            self.assertEqual(lo, trim["earliest_in"]["value"])
+            self.assertEqual(hi, trim["latest_out"]["value"])
+
+    def test_the_source_range_duration_is_a_duration_not_an_end_time(self):
+        result = plan([good()] * 300)
+        for moment in result.moments:
+            source = moment.record["source_range"]
+            self.assertEqual(60, source["duration"]["value"])
+            self.assertLess(source["duration"]["value"],
+                            source["start_time"]["value"] + 1e9)
+        starts = [m.record["source_range"]["start_time"]["value"]
+                  for m in result.moments]
+        self.assertEqual([0, 64, 128, 192], starts)
+
+    def test_scores_carry_the_run_id_they_were_produced_under(self):
+        result = plan([good()] * 300, run_id="run-1")
+        scores = result.moments[0].record["scores"]
+        for name in ("moment_score", "technical", "hook_potential", "emotional_peak"):
+            self.assertEqual("run-1", scores[name]["run_id"], name)
+
+    def test_an_eliminated_record_scores_zero_not_one(self):
+        """0.0 is not a measurement; it exists so a caller that ignores
+        `elimination.eliminated` sorts the record LAST rather than first."""
+        result = plan([good(luma=0.0)] * 300)
+        self.assertTrue(result.eliminated)
+        for dropped in result.eliminated:
+            self.assertEqual(0.0, dropped.record["scores"]["moment_score"]["value"])
+            self.assertIsNone(dropped.record["scores"]["technical"])
+
+    def test_the_representative_frame_is_in_source_time_not_a_window_offset(self):
+        frames = [good(sharpness=0.2) for _ in range(300)]
+        frames[150] = good(sharpness=1.0)
+        result = plan_moments(
+            stream(frames, start_value=3049200.0), id_hasher=fake_hasher
+        )
+        self.assertTrue(result.moments)
+        for moment in result.moments:
+            time = moment.record["features"]["representative_frame_time"]["value"]
+            lo, hi = span(moment.record)
+            self.assertGreaterEqual(time, 3049200.0)
+            self.assertTrue(lo <= time < hi, f"{time} outside ({lo},{hi})")
+
+    def test_emotional_peak_takes_the_strongest_event_not_the_weakest(self):
+        frames = [good()] * 300
+        events = [AudioEvent("laughter", 0.2, 10.0), AudioEvent("cheering", 0.9, 20.0)]
+        result = plan_moments(stream(frames, audio_events=events),
+                              id_hasher=fake_hasher)
+        first = result.moments[0]
+        # smile 0.70 * 0.4 + peak_event 0.90 * 0.4 + motion_peak 0.60 * 0.2
+        self.assertEqual(0.76, first.record["scores"]["emotional_peak"]["value"])
+
+    def test_the_peak_event_enters_its_own_slot_not_another_signal(self):
+        """`peak_event` carries weight 0.4 in the emotion fusion and
+        `motion_peak` carries 0.2; writing the event into the wrong key changes
+        the number without changing anything visible."""
+        without = plan([good()] * 300)
+        with_event = plan_moments(
+            stream([good()] * 300,
+                   audio_events=[AudioEvent("fireworks", 0.9, 20.0)]),
+            id_hasher=fake_hasher,
+        )
+        self.assertEqual(0.666667,
+                         without.moments[0].record["scores"]["emotional_peak"]["value"])
+        self.assertEqual(0.76,
+                         with_event.moments[0].record["scores"]["emotional_peak"]["value"])
+
+    def test_hook_potential_is_the_documented_weighting(self):
+        """0.6*0.4 + 0.6*0.2 + 1.0*0.4, with no build penalty on uniform
+        footage. Pinned as a value because every plausible reweighting of
+        _HOOK_WEIGHTS still produces a plausible-looking score."""
+        result = plan([good()] * 300)
+        self.assertEqual(0.76,
+                         result.moments[0].record["scores"]["hook_potential"]["value"])
+
+    def test_transcript_words_are_joined_with_spaces(self):
+        frames = [good()] * 300
+        words = [Word("kitne", 10.0, 20.0), Word("acche", 22.0, 32.0)]
+        result = plan_moments(stream(frames, words=words, language="hi-IN"),
+                              id_hasher=fake_hasher)
+        transcripts = [m.record["transcript"] for m in result.moments
+                       if "transcript" in m.record]
+        self.assertTrue(transcripts)
+        self.assertEqual("kitne acche", transcripts[0]["text"])
+
+    def test_a_word_ending_exactly_on_the_in_point_is_not_in_the_transcript(self):
+        """Half-open at both ends, the same rule the out-point already follows:
+        the word belongs to the moment that contains it, once."""
+        frames = [good()] * 300
+        shots = [Shot("shot-0001", 0, 64), Shot("shot-0002", 64, 300)]
+        words = [Word("before", 40.0, 64.0)]
+        result = plan_moments(
+            stream(frames, shots=shots, words=words, language="en-IN"),
+            id_hasher=fake_hasher,
+        )
+        for moment in result.moments:
+            lo, _ = span(moment.record)
+            if lo != 64:
+                continue
+            self.assertNotIn("transcript", moment.record,
+                             "a word ending at the in-point is in the PREVIOUS moment")
+            self.assertIsNone(moment.record["safe_trim"]["speech_safe_in"],
+                              "and it does not make the moment 'contain speech'")
+
+    def test_a_snap_point_exactly_on_a_boundary_is_kept_in_the_record(self):
+        """The boundary IS the cut position; excluding it would leave the
+        planner a record whose own in-point is not among its certified
+        positions."""
+        frames = [good(motion=0.02)] * 300
+        for index in range(100, 140):
+            frames[index] = good(motion=0.95)
+        result = plan(frames)
+        first = result.moments[0]
+        lo, hi = span(first.record)
+        times = [p["time"]["value"] for p in first.record["snap_points"]]
+        self.assertIn(lo, times)
+
+    def test_the_proxy_mapping_rounds_to_the_nearest_frame_not_toward_zero(self):
+        result = plan_moments(
+            stream([good()] * 300, proxy_rate=10.0, proxy_start_value=0.0),
+            id_hasher=fake_hasher,
+        )
+        by_start = {span(m.record)[0]: m.record["proxy_range"] for m in result.moments}
+        # 128 source frames at 30fps is 42.667 proxy frames at 10fps.
+        self.assertEqual(43, by_start[128]["start_time"]["value"])
+        self.assertEqual(21, by_start[64]["start_time"]["value"])
+
+    def test_rounding_is_half_up_not_half_to_even(self):
+        """Bare round() is half-to-even, so 22.5 lands on 22 and 23.5 on 24 —
+        a proxy mapping whose result depends on the parity of its neighbour."""
+        self.assertEqual(23, _round_half_up(22.5))
+        self.assertEqual(24, _round_half_up(23.5))
+        self.assertEqual(-23, _round_half_up(-22.5))
+        self.assertEqual(22, _round_half_up(22.4))
+
+
+class TestAggregationAndFusionInternals(unittest.TestCase):
+    """4/4 and 4/4 survivors in the adversarial report."""
+
+    def test_the_coverage_gate_rounds_up_not_down(self):
+        """A window of 61 samples at 0.5 coverage needs 31, not 30. Rounding
+        down admits a signal measured on less than half the window while the
+        docstring promises 'enough samples'."""
+        frames = [Frame(motion=0.5) for _ in range(61)]
+        for index in range(30):
+            frames[index] = Frame(motion=0.5, sharpness=0.9)
+        source = stream(frames)
+        self.assertNotIn("sharpness", aggregate(source, 0, 61, Policy()))
+        frames[30] = Frame(motion=0.5, sharpness=0.9)
+        self.assertIn("sharpness", aggregate(stream(frames), 0, 61, Policy()))
+
+    def test_speech_presence_is_a_mean_not_a_peak(self):
+        """Unlike smile, speech is a proportion: one loud frame in sixty is not
+        a talking moment."""
+        frames = [good(speech=0.0) for _ in range(60)]
+        frames[10] = good(speech=1.0)
+        values = aggregate(stream(frames), 0, 60, Policy())
+        self.assertAlmostEqual(1.0 / 60.0, values["speech_presence"])
+
+    def test_contributions_are_in_a_fixed_order_not_weight_map_order(self):
+        """Determinism: the contribution list reaches PrefEvent feature context
+        and `explain()`, and weight-map order is neither sorted nor stable
+        against a future reordering of SIGNAL_NAMES."""
+        values = aggregate(stream([good()] * 60), 0, 60, Policy())
+        fused = fuse_window(values, Weights())
+        names = [name for name, _, _ in fused.contributions]
+        self.assertEqual(sorted(names), names)
+        self.assertEqual([(name, _quantised_value(values, name)) for name in names],
+                         [(name, value) for name, value, _ in fused.contributions])
+
+    def test_a_missing_smile_with_a_face_present_is_under_measurement(self):
+        """Not-applicable is only when face detection RAN and found nothing.
+        With a face present, a missing smile is a signal the model has not
+        reached, and coverage must say so."""
+        with_face_no_smile = fuse_window(
+            {"face_presence": 0.8, "sharpness": 0.9}, Weights()
+        )
+        no_face_no_smile = fuse_window(
+            {"face_presence": 0.0, "sharpness": 0.9}, Weights()
+        )
+        self.assertNotIn("smile_intensity", with_face_no_smile.measured)
+        self.assertNotIn("smile_intensity", no_face_no_smile.measured)
+        self.assertLess(with_face_no_smile.coverage, no_face_no_smile.coverage,
+                        "a face with no smile measurement is under-measured; a "
+                        "frame with no face has nothing to measure")
+
+    def test_an_unmeasurable_sub_score_is_null_rather_than_zero(self):
+        """`technical` over a window with no stability, exposure or sharpness is
+        not 0.0 — that is a claim of bad technical quality nobody made."""
+        frames = [Frame(motion=0.9, luma=0.5, face_presence=1.0,
+                        smile_intensity=0.8, loudness_lufs=-10.0, speech=0.3,
+                        noise=0.1, novelty=0.7, clipped_highlights=0.01,
+                        clipped_shadows=0.01)] * 300
+        result = plan(frames)
+        self.assertTrue(result.moments)
+        self.assertIsNone(result.moments[0].record["scores"]["technical"])
+        self.assertIsNotNone(result.moments[0].record["scores"]["moment_score"])
+
+
+class TestSnapDetectionDetails(unittest.TestCase):
+    """7/8 survivors in the adversarial report."""
+
+    def test_a_brightness_DROP_is_a_snap_point_too(self):
+        """`abs`, not a rise: a light going out is exactly as good a cut as a
+        light coming on, and the schema's kind is scene_brightness_change."""
+        frames = [good(luma=0.80) for _ in range(150)]
+        for index in range(75, 150):
+            frames[index] = good(luma=0.20)
+        kinds = {
+            (p.kind, p.time) for p in snap_points(stream(frames), Policy())
+            if p.kind == "scene_brightness_change"
+        }
+        self.assertIn(("scene_brightness_change", 75.0), kinds, sorted(kinds))
+
+    def test_a_motion_offset_is_judged_on_the_level_it_fell_FROM(self):
+        """The level test asks 'was there motion here'. On an offset that is the
+        previous sample; reading the current one rejects every full stop, which
+        is the strongest out-point there is."""
+        frames = [good(motion=0.90) for _ in range(120)]
+        for index in range(60, 120):
+            frames[index] = good(motion=0.01)
+        offsets = [p.time for p in snap_points(stream(frames), Policy())
+                   if p.kind == "motion_offset"]
+        self.assertIn(60.0, offsets, offsets)
+
+    def test_a_snap_at_a_fractional_time_uses_the_sample_it_falls_IN(self):
+        """The eliminated-sample lookup floors: a snap at 59.5 lives in sample
+        59. Rounding up would place it in sample 60 and let a certified cut
+        survive inside an eliminated block."""
+        frames = [good()] * 50 + [good(shake=0.99)] * 10 + [good()] * 240
+        words = [Word("cut", 40.0, 59.5)]
+        source = stream(frames, words=words, language="en-IN")
+        mask = [bool(row) for row in eliminate_frames(source, Policy())]
+        self.assertTrue(mask[59])
+        self.assertFalse(mask[60])
+        times = [p.time for p in snap_points(source, Policy(), mask)]
+        self.assertNotIn(59.5, times, "a snap inside an eliminated sample survived")
+
+
+class TestPolicyConstantsAreLoadBearing(unittest.TestCase):
+    """6/8 survivors. A constant nothing asserts is a constant anyone can
+    change."""
+
+    def test_dark_footage_is_not_a_black_frame(self):
+        """0.02 is digital black. A night shot at 0.15 is footage, and widening
+        this threshold silently deletes an evening."""
+        found = eliminate_frames(stream([good(luma=0.15, sharpness=0.8)] * 60),
+                                 Policy())
+        self.assertTrue(all(not row for row in found), found[0])
+        black = eliminate_frames(stream([good(luma=0.02)] * 60), Policy())
+        self.assertTrue(all("black_frame" in row for row in black))
+
+    def test_fireworks_are_an_event_not_just_a_sound(self):
+        """PEAK_EVENT_LABELS is the difference between 'something happened' and
+        'sound existed'; it drives emotional_peak and the L-cut decision."""
+        frames = [good()] * 120
+        out = span(plan(frames).moments[0].record)[1]
+        result = plan_moments(
+            stream(frames, audio_events=[AudioEvent("fireworks", 0.9, out + 2)]),
+            id_hasher=fake_hasher,
+        )
+        self.assertTrue(result.moments[0].record["safe_trim"]["preserve_audio_tail"])
+
+    def test_the_suppression_radius_is_the_wider_of_separation_and_window(self):
+        """Documented in decision 4 and inert below `window_seconds`. Pinned so
+        a later flip to min() is caught: it would accept two 'moments' sharing
+        seven eighths of their frames."""
+        frames = [good()] * 400
+        narrow = plan(frames, policy=Policy(min_separation_seconds=0.1))
+        at_window = plan(frames, policy=Policy(min_separation_seconds=2.0))
+        wide = plan(frames, policy=Policy(min_separation_seconds=4.0))
+        self.assertEqual([span(m.record) for m in narrow.moments],
+                         [span(m.record) for m in at_window.moments])
+        self.assertLess(len(wide.moments), len(narrow.moments))
+
+
+def _quantised_value(values, name):
+    return round(values[name] + 0.0, 6)
 
 
 if __name__ == "__main__":  # pragma: no cover
