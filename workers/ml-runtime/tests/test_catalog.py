@@ -127,6 +127,47 @@ class TestModelCatalog(CatalogFixture):
         self.assertTrue(inspections)
         self.assertTrue(all(item.unloadable_reason for item in inspections))
 
+    def test_caller_selected_tree_cannot_relax_the_gate_with_its_own_policy(
+        self,
+    ) -> None:
+        """The same bypass as the test above, one indirection over.
+
+        Making decide_load a trusted import stopped a model tree supplying the
+        gate's CODE. It did not stop it supplying the gate's CONFIGURATION,
+        which reaches the same outcome without executing a line of its own:
+        turn off require_pinned_hash and require_license_verified under
+        "release" and every entry passes.
+
+        Reproduced against the previous revision, where transnetv2 moved from
+        HASH_UNPINNED to refused-only-because-no-runtime-was-installed. On a
+        machine with onnxruntime present it would simply have loaded.
+
+        Per-entry pins are still tree data -- a pin is a claim about a specific
+        file and has nowhere else to live. The policy is what decides whether a
+        claim is required at all, so it is application configuration.
+        """
+        self.add_declared_weights()
+        registry_path = self.repo_root / "models" / "registry.json"
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        registry["load_policy"]["modes"]["release"] = {
+            "require_registered": False,
+            "require_pinned_hash": False,
+            "require_pinned_config": False,
+            "require_license_verified": False,
+            "allow_blocks_commercial_release": True,
+            "opt_in_env": None,
+            "warn_per_load": False,
+        }
+        registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+        inspections = self.catalog().inspect_all()
+
+        self.assertTrue(inspections)
+        self.assertTrue(
+            all(item.unloadable_reason for item in inspections),
+            "a model tree relaxed the release gate by shipping its own policy",
+        )
+
     def test_load_gate_has_an_explicit_injection_seam_for_tests(self) -> None:
         self.add_declared_weights()
         calls = []
@@ -138,6 +179,7 @@ class TestModelCatalog(CatalogFixture):
         fake_gate = SimpleNamespace(
             Candidate=trusted_load_gate.Candidate,
             resolve_mode=trusted_load_gate.resolve_mode,
+            load_policy=trusted_load_gate.load_policy,
             decide_load=decide,
         )
         catalog = ModelCatalog(
