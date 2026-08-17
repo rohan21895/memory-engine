@@ -43,7 +43,7 @@
         "siglip2-so400m-384",
         "yunet-2023mar"
       ],
-      "note": "The licence-clean swap path. Detection only -- there is still no commercially-usable recognition model, which is the real open problem behind issue #3. Kept working so the swap is mechanical when it is needed. laion-aesthetic-v2 is removed until its head is retrained on SigLIP 2 features; a pipeline must be end-to-end runnable, and a known-broken step makes it a plan rather than a pipeline."
+      "note": "The licence-clean swap path. Detection only -- there is still no commercially-usable recognition model, which is the real open problem behind issue #3. Kept working so the swap is mechanical when it is needed. laion-aesthetic-v2 is removed until its head is retrained on SigLIP 2 features; a pipeline must be end-to-end runnable, and a known-broken step makes it a plan rather than a pipeline. NO SAFETY GATE YET: nsfw-siglip-head is registered but unselected, so this pipeline cannot filter sensitive content. That is a hard release blocker in its own right -- shipping automated albums and shared reels with no sensitive-content gate is a user-visible harm, not a quality gap -- and it is recorded here rather than in somebody's memory."
     },
     "video_analysis": {
       "min_load_mode": "development",
@@ -113,7 +113,39 @@
       "required_for": [
         "ranking"
       ],
-      "config_blake3": "5ddde69b895e849e073f405f16f98832fddd11d89f3510007ed910985ba16da7"
+      "config_blake3": "9458aa250361a476a0eb4b8eda8865b34ef75fec07b6f7e2687c31a5aaf8b8e5"
+    },
+    {
+      "model_id": "musiq-spaq",
+      "config": "configs/musiq-spaq.json",
+      "task": "technical_iqa",
+      "required_for": [
+        "quality_fusion",
+        "primary_selection",
+        "album_selection"
+      ],
+      "config_blake3": "f410a25d27b7db49408f4070b9cd9939054b199eeaffbd7ccd0565d84d33f377"
+    },
+    {
+      "model_id": "nsfw-siglip-head",
+      "config": "configs/nsfw-siglip-head.json",
+      "task": "safety_classifier",
+      "required_for": [
+        "automated_output_gating",
+        "share_gating",
+        "egress_gating"
+      ],
+      "config_blake3": "566288d93610c2337bfb8d7e2c109bfc213b4413954c57e30251e869a5cfee40"
+    },
+    {
+      "model_id": "paddleocr-mobile-det",
+      "config": "configs/paddleocr-mobile-det.json",
+      "task": "ocr",
+      "required_for": [
+        "screenshot_exclusion",
+        "document_exclusion"
+      ],
+      "config_blake3": "7060dfd290c9ac881d6714874a93f5f28ad953160772747377901d576bdf778d"
     }
   ]
 }

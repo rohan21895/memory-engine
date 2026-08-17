@@ -162,9 +162,16 @@
           ]
         },
         "source_url": {
-          "description": "Where the weights come from. Required even while unpinned, so the audit and the download are the same fact.",
-          "type": "string",
-          "minLength": 1
+          "description": "Where the weights come from. Null ONLY for rollout.state 'placeholder' -- a slot the product needs where no checkpoint has been chosen. Enforced: a null source_url with any other rollout state is invalid, so an entry cannot be promoted with no checkpoint provenance.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "blake3": {
           "description": "Hash of the exact bytes. Null means UNPINNED: the file has not been downloaded and hashed yet, so this entry is not reproducible and must not be promoted past `candidate`. 'The same version' of a HuggingFace repo has had its weights changed underneath people before.",
@@ -200,7 +207,32 @@
           ],
           "default": "fp32"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source_url": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "source_url"
+            ]
+          },
+          "then": {
+            "properties": {
+              "blake3": {
+                "type": "null"
+              },
+              "byte_size": {
+                "type": "null"
+              }
+            },
+            "$comment": "No source means no artifact, so a hash or byte size alongside a null source_url is describing a file that does not exist."
+          }
+        }
+      ]
     },
     "Preprocessing": {
       "title": "Preprocessing",
@@ -256,9 +288,11 @@
             "letterbox",
             "center_crop",
             "shortest_side",
-            "none"
+            "none",
+            "longest_side"
           ],
-          "default": "stretch"
+          "default": "stretch",
+          "description": "How the source is fitted to the model input. `longest_side` limits the LONGER dimension to `resize_limit` and preserves aspect, which is what detectors with dynamic input shapes do; it is not letterbox, because there is no padding and therefore no padded region to dilute a coverage measure."
         },
         "interpolation": {
           "type": "string",
@@ -333,6 +367,30 @@
         },
         "sequence_length": {
           "description": "For image_sequence models such as shot detection.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resize_limit": {
+          "description": "Pixel limit for the resize mode that needs one (`longest_side`, `shortest_side`). PP-OCRv4 detection uses 960.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "size_multiple": {
+          "description": "Round both dimensions to a multiple of this after resizing. Fully convolutional detectors require it (PP-OCRv4 uses 32) because the feature-map strides do not divide arbitrary sizes -- getting it wrong changes the output grid rather than raising.",
           "oneOf": [
             {
               "type": "integer",
@@ -781,9 +839,10 @@
       ],
       "properties": {
         "state": {
-          "description": "`candidate` is unproven, `shadow` runs alongside the default and is diffed, `default` is live, `deprecated` is retained only to reproduce old records.",
+          "description": "`placeholder` means the config records a SHAPE, not a runnable model: the checkpoint is unselected or its export is unverified. It is a load-gate input, not documentation -- the gate refuses it in every mode, because a placeholder whose weights file happens to exist would otherwise load and return plausible numbers from constants nobody checked.",
           "type": "string",
           "enum": [
+            "placeholder",
             "candidate",
             "shadow",
             "default",

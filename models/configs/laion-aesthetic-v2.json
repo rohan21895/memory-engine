@@ -76,7 +76,7 @@
     "note": "Desk assessment only."
   },
   "rollout": {
-    "state": "candidate",
+    "state": "placeholder",
     "replaces": null,
     "promoted_at": null
   },

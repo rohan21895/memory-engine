@@ -312,6 +312,13 @@ enum UnloadableReason {
   // this is a loader bug rather than a policy choice -- deferred hashing looks
   // like an ABSENT pin, which development mode already permits.
   UNLOADABLE_REASON_INTEGRITY_UNVERIFIED = 12;
+  // The registry entry records a config SHAPE rather than a runnable model:
+  // its checkpoint is unselected, or its export is unverified and its
+  // preprocessing constants are defaults nobody has checked against a real
+  // artifact. Refused in every mode -- development relaxes verification of
+  // things that are merely unverified, while a placeholder is
+  // known-unverified by construction.
+  UNLOADABLE_REASON_PLACEHOLDER = 13;
 }
 
 // ------------------------------------------------------------------ health ---

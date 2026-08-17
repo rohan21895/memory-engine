@@ -56,6 +56,7 @@ class UnloadableReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     UNLOADABLE_REASON_CONFIG_MISMATCH: _ClassVar[UnloadableReason]
     UNLOADABLE_REASON_CONFIG_UNPINNED: _ClassVar[UnloadableReason]
     UNLOADABLE_REASON_INTEGRITY_UNVERIFIED: _ClassVar[UnloadableReason]
+    UNLOADABLE_REASON_PLACEHOLDER: _ClassVar[UnloadableReason]
 
 class Alignment(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -140,6 +141,7 @@ UNLOADABLE_REASON_CONFIG_MISSING: UnloadableReason
 UNLOADABLE_REASON_CONFIG_MISMATCH: UnloadableReason
 UNLOADABLE_REASON_CONFIG_UNPINNED: UnloadableReason
 UNLOADABLE_REASON_INTEGRITY_UNVERIFIED: UnloadableReason
+UNLOADABLE_REASON_PLACEHOLDER: UnloadableReason
 ALIGNMENT_UNSPECIFIED: Alignment
 ALIGNMENT_NEEDS_ALIGNMENT: Alignment
 ALIGNMENT_PREALIGNED: Alignment
