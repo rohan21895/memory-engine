@@ -415,6 +415,80 @@
               "type": "null"
             }
           ]
+        },
+        "pad_value": {
+          "description": "What the padded band CONTAINS, for any resize mode that pads. Issue #33. The geometry was pinned and the contents were not: a 16:9 image letterboxed into 640x640 has 280 padded rows, and 0 vs 127.5 vs the dataset mean send materially different tensors through the network -- for YuNet, whose scale is 1 with no mean or std, the difference between a band of 0.0 and a band of 127.5 in the tensor itself. Detections near the image edge change and nothing raises. Null means UNRESOLVED, not zero: an entry whose upstream sources disagree about the value must say so and be refused by the load gate, because a wrongly pinned value is worse than an absent one. Required whenever `resize` is `letterbox`, so it cannot be defaulted by omission.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PadValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "resize": {
+                "const": "letterbox"
+              }
+            },
+            "required": [
+              "resize"
+            ]
+          },
+          "then": {
+            "required": [
+              "pad_value"
+            ]
+          },
+          "$comment": "MISSING must fail validation; only an explicit null may say 'unresolved'. An absent field would be indistinguishable from a decision nobody made, which is how the runtime came to invent black padding in the first place."
+        }
+      ]
+    },
+    "PadValue": {
+      "title": "PadValue",
+      "description": "The pixel value written into the padded band, and where it came from.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "space",
+        "values",
+        "source"
+      ],
+      "properties": {
+        "space": {
+          "description": "WHERE IN THE PIPELINE THE VALUE IS APPLIED, which is not cosmetic. `pixel` means the band is filled before normalisation and then normalised with everything else, so it lands at (value * scale - mean) / std. `normalized` means the band is written directly into the finished tensor. mmdetection's test pipelines normalise and THEN pad with 0, which is a band of 0.0 in tensor units -- equivalent to a pixel value of the mean, not of black. Recording only the number would collapse those two into one and pick the wrong one half the time.",
+          "type": "string",
+          "enum": [
+            "pixel",
+            "normalized"
+          ]
+        },
+        "values": {
+          "description": "One value applied to every channel, or one per channel in the order the tensor stores them (i.e. after any RGB/BGR swap).",
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "oneOf": [
+            {
+              "minItems": 1,
+              "maxItems": 1
+            },
+            {
+              "minItems": 3,
+              "maxItems": 3
+            }
+          ]
+        },
+        "source": {
+          "description": "The upstream artifact this was read out of -- file and symbol, not 'the docs'. A citation nobody can follow is indistinguishable from a guess, and this field exists because the previous guess looked exactly like a decision.",
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -763,8 +837,12 @@
     },
     "Batching": {
       "title": "Batching",
+      "description": "What the CHECKPOINT can do, not what the product would like. Issue #31: YuNet declared supported/max_batch 8/dynamic_axes true against a graph whose input is fixed at [1,3,640,640]; a batch of 2 fails ONNX Runtime dimension validation. Five of nine configs carried a dynamic-batching claim and not one of them said where the claim came from, so an assumption and a measurement were indistinguishable in a diff. `verified_against` is the fix: a capability claim beyond one-at-a-time must cite what established it.",
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "verified_against"
+      ],
       "properties": {
         "supported": {
           "type": "boolean",
@@ -779,8 +857,67 @@
           "type": "boolean",
           "default": true,
           "description": "Whether the BATCH axis is dynamic. Not spatial dynamism: a model can take any height and width while its batch dimension is fixed at 1, which is true of both MUSIQ and PP-OCRv4. Variable input SIZE is expressed by `preprocessing.input_size: null` with `resize_limit` and `size_multiple`. Conflating the two makes a host either batch a model that cannot be batched, or refuse to resize one that must be."
+        },
+        "verified_against": {
+          "description": "How the claim above was established -- the checkpoint inspected and the tool that reported its input shape. Null is the honest state for an unverified entry, and null forces `supported: false`, `max_batch: 1`, `dynamic_axes: false`, because an unverified capability claim is exactly the defect. Getting this wrong is not silent at inference -- ONNX Runtime raises on a bad leading dimension -- but the CONFIG is silent, and the host clamping to the real graph is what let a wrong config survive review.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "supported": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "supported"
+                ]
+              },
+              {
+                "properties": {
+                  "dynamic_axes": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "dynamic_axes"
+                ]
+              },
+              {
+                "properties": {
+                  "max_batch": {
+                    "minimum": 2
+                  }
+                },
+                "required": [
+                  "max_batch"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "verified_against": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "$comment": "Any claim beyond 'one at a time' needs a citation. Declining to batch costs throughput; claiming a batch axis that is not there costs a whole inference pass with an error nobody expected in a background worker."
+        }
+      ]
     },
     "LicenseStatus": {
       "title": "LicenseStatus",

@@ -129,6 +129,13 @@ def _declare_batching(models_root: Path, model_id: str, *, max_batch: int) -> No
         "supported": True,
         "max_batch": max_batch,
         "dynamic_axes": True,
+        # Required by the schema since issue #31: a batching claim must cite what
+        # measured it. This one is measuring a fake, and says so -- the alternative
+        # was exempting tests from the rule, which is how the rule stops applying to
+        # the thing it was written for.
+        "verified_against": (
+            "test double: _FakeSession.get_inputs reports [None, 3, 640, 640]"
+        ),
     }
     config_path.write_bytes(
         (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
@@ -182,6 +189,17 @@ class TestRealInferPath(unittest.TestCase):
             )
         )
         aesthetic["rollout"]["state"] = "candidate"
+        # Same reasoning as the YuNet rewrite above: the shipped config declares
+        # batch 1 because no aesthetic head has ever been exported or hashed
+        # (issue #31), while `_FakeSession` for this path reports [None,1152].
+        aesthetic["batching"] = {
+            "supported": True,
+            "max_batch": 256,
+            "dynamic_axes": True,
+            "verified_against": (
+                "test double: _FakeSession.get_inputs reports [None,1152]"
+            ),
+        }
         aesthetic_path = (
             self.root / "models" / "configs" / "laion-aesthetic-v2.json"
         )

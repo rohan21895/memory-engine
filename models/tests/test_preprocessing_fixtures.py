@@ -40,10 +40,13 @@ from reference.postprocess import (  # noqa: E402
     to_normalized_box,
 )
 from reference.preprocess import (  # noqa: E402
+    PadValueUnresolved,
     apply_transform,
     integer_letterbox,
     letterbox,
+    pad_band,
     preprocess_image,
+    preprocess_letterboxed_image,
     similarity_transform,
     summarise,
     synthetic_image,
@@ -663,3 +666,150 @@ class TestDetectionsToNormalizedBoxes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLetterboxPaddingValue(unittest.TestCase):
+    """Issue #33: what the padded band CONTAINS, not just where it is.
+
+    Every other preprocessing fixture in this directory feeds a square image,
+    so none of them has any padding, so none of them pinned anything about it.
+    A 64x36 frame into 64x64 is 28 padded rows -- 43.75% of the tensor -- and
+    the value in them changes detections near the frame edge while changing
+    nothing that raises.
+
+    The fixture is regenerated from the CONFIG, not from itself, so a config
+    edit that changes the padding value fails here rather than being absorbed.
+    """
+
+    def setUp(self) -> None:
+        self.data = fixture("letterbox-pad-value-yunet.json")
+        self.config = json.loads(
+            (CONFIGS / "yunet-2023mar.json").read_text(encoding="utf-8")
+        )
+        self.pre = self.config["preprocessing"]
+        source = self.data["input"]
+        self.image = synthetic_image(
+            source["width"], source["height"], source["seed"]
+        )
+
+    def _tensor(self, pad_value):
+        target = self.data["applied"]["target"]
+        return preprocess_letterboxed_image(
+            self.image,
+            target_width=target["width"],
+            target_height=target["height"],
+            pad_value=pad_value,
+            color_order=self.pre["color_order"],
+            layout=self.pre["layout"],
+            scale=self.pre["scale"],
+            mean=self.pre["mean"],
+            std=self.pre["std"],
+        )
+
+    def test_the_fixture_describes_the_config_that_ships(self):
+        """The fixture cannot drift from the registry without failing."""
+        self.assertEqual(self.pre["pad_value"], self.data["applied"]["pad_value"])
+        self.assertEqual(self.pre["color_order"], self.data["applied"]["color_order"])
+        self.assertEqual(self.pre["scale"], self.data["applied"]["scale"])
+        self.assertEqual(self.pre["mean"], self.data["applied"]["mean"])
+        self.assertEqual(self.pre["std"], self.data["applied"]["std"])
+
+    def test_the_padding_is_not_empty(self):
+        """A fixture with no padded pixels would pin nothing, which is exactly
+        how the value went unspecified in the first place."""
+        expected = self.data["expected"]["geometry"]
+        self.assertGreater(expected["pad_top"] + expected["pad_bottom"], 0)
+        flat, box = self._tensor(self.pre["pad_value"])
+        self.assertEqual(expected["pad_top"], box.pad_top)
+        self.assertEqual(expected["pad_bottom"], box.pad_bottom)
+        self.assertEqual(expected["pad_left"], box.pad_left)
+        self.assertEqual(expected["pad_right"], box.pad_right)
+
+    def test_the_tensor_reproduces_the_golden_numbers(self):
+        flat, _ = self._tensor(self.pre["pad_value"])
+        stats = summarise(flat, tuple(self.data["expected"]["tensor"]["shape"]))
+        expected = self.data["expected"]["tensor"]
+        self.assertEqual(expected["count"], stats.count)
+        self.assertAlmostEqual(expected["mean"], stats.mean, delta=TOLERANCE)
+        self.assertAlmostEqual(expected["min"], stats.minimum, delta=TOLERANCE)
+        self.assertAlmostEqual(expected["max"], stats.maximum, delta=TOLERANCE)
+        for index, value in expected["sampled"].items():
+            self.assertAlmostEqual(value, flat[int(index)], delta=TOLERANCE)
+
+    def test_the_band_lands_where_the_fixture_says_in_tensor_units(self):
+        band = pad_band(
+            self.pre["pad_value"], channels=3,
+            scale=self.pre["scale"], mean=self.pre["mean"], std=self.pre["std"],
+        )
+        self.assertEqual(
+            tuple(self.data["expected"]["band_in_tensor_units"]), band
+        )
+
+    def test_the_other_plausible_padding_values_give_different_tensors(self):
+        """What the fixture is FOR. 0, 114 (the YOLO convention) and 127.5
+        (mean grey) are all defensible-looking choices, all produce a perfectly
+        valid tensor, and all send a different image to the network."""
+        expected = self.data["counter_cases"]
+        pinned, _ = self._tensor(self.pre["pad_value"])
+        pinned_mean = summarise(pinned, (1, 3, 64, 64)).mean
+
+        for key, value in (("yolo_114", 114), ("mean_grey_127_5", 127.5)):
+            with self.subTest(pad=value):
+                other, _ = self._tensor(
+                    {"space": "pixel", "values": [value], "source": "counter-case"}
+                )
+                mean = summarise(other, (1, 3, 64, 64)).mean
+                self.assertAlmostEqual(expected[key]["mean"], mean, delta=TOLERANCE)
+                self.assertGreater(
+                    abs(mean - pinned_mean), 1.0,
+                    "if the alternatives were indistinguishable there would be "
+                    "nothing to pin",
+                )
+
+    def test_pixel_space_and_normalized_space_are_not_interchangeable(self):
+        """The distinction that makes SCRFD unresolvable. Under a config with a
+        mean and std, a band of pixel 0 and a band of tensor 0 are different
+        numbers -- mmdetection pads AFTER normalising, so its `pad_val=0` means
+        the mean, not black."""
+        as_pixel = pad_band(
+            {"space": "pixel", "values": [0], "source": "x"},
+            channels=3, scale=1.0, mean=[127.5] * 3, std=[128.0] * 3,
+        )
+        as_normalized = pad_band(
+            {"space": "normalized", "values": [0], "source": "x"},
+            channels=3, scale=1.0, mean=[127.5] * 3, std=[128.0] * 3,
+        )
+        self.assertEqual((-0.99609375,) * 3, as_pixel)
+        self.assertEqual((0.0,) * 3, as_normalized)
+
+    def test_an_unresolved_pad_value_refuses_to_preprocess(self):
+        """SCRFD's state. The reference must not fill the band with a default,
+        because a default here is the whole defect."""
+        with self.assertRaises(PadValueUnresolved):
+            pad_band(None, channels=3, scale=1.0, mean=[], std=[])
+        with self.assertRaises(PadValueUnresolved):
+            self._tensor(None)
+
+    def test_scrfd_cannot_be_preprocessed_at_all_today(self):
+        """Not a hypothetical: the shipped SCRFD config reaches this path."""
+        scrfd = json.loads((CONFIGS / "scrfd-10g-bnkps.json").read_text(encoding="utf-8"))
+        self.assertIsNone(scrfd["preprocessing"]["pad_value"])
+        with self.assertRaises(PadValueUnresolved):
+            pad_band(
+                scrfd["preprocessing"]["pad_value"], channels=3,
+                scale=scrfd["preprocessing"]["scale"],
+                mean=scrfd["preprocessing"]["mean"],
+                std=scrfd["preprocessing"]["std"],
+            )
+
+    def test_a_single_pad_value_broadcasts_and_three_do_not(self):
+        self.assertEqual(
+            (5.0, 5.0, 5.0),
+            pad_band({"space": "normalized", "values": [5], "source": "x"},
+                     channels=3, scale=1.0, mean=[], std=[]),
+        )
+        self.assertEqual(
+            (1.0, 2.0, 3.0),
+            pad_band({"space": "normalized", "values": [1, 2, 3], "source": "x"},
+                     channels=3, scale=1.0, mean=[], std=[]),
+        )

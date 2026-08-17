@@ -9,7 +9,7 @@ that swap, which is why weights are data rather than constants in code.
 
 FOUR DECISIONS, AND WHAT THE ALTERNATIVES LOOK LIKE
 
-1. ELIMINATION IS NOT SCORING.
+1. ELIMINATION IS NOT SCORING, AND ONLY A DETERMINATION MAY ELIMINATE.
    A black frame, a lens-capped frame, a pocket shot: these are rejected, not
    scored low. The distinction is load-bearing. A low score still competes, and
    still wins whenever the pool is bad enough -- which is exactly the situation
@@ -17,6 +17,15 @@ FOUR DECISIONS, AND WHAT THE ALTERNATIVES LOOK LIKE
    another pocket shot. Build plan §4.3 puts elimination first for cost reasons
    (90-95% of an action-camera library discards before any expensive analysis);
    it belongs first for correctness reasons too.
+
+   ISSUE #22 ADDED THE SECOND HALF OF THAT SENTENCE. Black frame and lens
+   obstruction are booleans: something upstream determined a fact. Sharpness is
+   a measurement on a scale that this repository has never defined -- ingest
+   writes `quality = None`, and no Laplacian-to-Unit normalisation exists -- and
+   it was nonetheless wired to a hard gate at 0.08. See `SharpnessFloor` for
+   what 0.08 actually eliminates (measured: between 0% and 77.5% of the same
+   images, depending only on an unwritten divisor). An uncalibrated measurement
+   may rank. It may not eliminate.
 
 2. MISSING SIGNALS RENORMALISE. THEY DO NOT DEFAULT.
    Most of QualityScores is optional, and mid-scan almost everything is missing.
@@ -96,11 +105,154 @@ class WeightError(ValueError):
 class IncomparableScores(ValueError):
     """Scores that were not measured the same way cannot be ordered."""
 
-# Below this, a frame is junk rather than a weak candidate. Deliberately low:
-# this is an elimination floor, not a quality bar, and a genuine low-light
-# handheld shot of a first birthday is worth keeping at 0.15 sharpness when the
-# alternative is nothing.
-DEFAULT_SHARPNESS_FLOOR = 0.08
+
+class UncalibratedFloor(ValueError):
+    """A threshold that would delete photographs on the strength of a guess."""
+
+
+@dataclass(frozen=True)
+class SharpnessFloor:
+    """A sharpness value that is allowed to ELIMINATE, and the measurement that
+    earned it that right.
+
+    ISSUE #22. This used to be `DEFAULT_SHARPNESS_FLOOR = 0.08`, a bare float,
+    and `eliminate()` discarded any frame below it. Three facts made that
+    indefensible:
+
+      * `workers/ingest` writes `quality = None` for every record, so nothing
+        in the repository has ever produced a sharpness value.
+      * No Laplacian-variance-to-unit normalisation exists anywhere. The
+        contract declares `sharpness` as a Unit; nothing maps a measurement
+        onto that Unit.
+      * Therefore 0.08 was a number against a scale that does not exist. Not
+        conservative, not aggressive -- undefined.
+
+    MEASURED, NOT ARGUED. Laplacian variance over the 200 stills of
+    `scripts/demo/make_library.py` spans 11.6 to 99.2. Feed those through
+    three equally plausible normalisations and ask what 0.08 eliminates:
+
+        min(1, lv/100)      0.0%
+        min(1, lv/500)      0.5%
+        min(1, lv/1000)    77.5%
+
+    The same constant, the same library, the same photographs: between nothing
+    and three quarters of them, decided entirely by a divisor nobody has
+    chosen. That is the whole argument. A gate whose behaviour is set by an
+    unwritten constant is not a gate.
+
+    WHY THIS IS A TYPE AND NOT A NUMBER
+
+    The alternative fix was to calibrate 0.08 against the synthetic library and
+    move on. It was rejected, and the reason is worth keeping:
+
+      * The synthetic library has no blurred variants. Every still gets one
+        uniform `GaussianBlur(radius=0.4)` anti-aliasing pass; there is no junk
+        tail and no bimodality. Measured: 8.6x total spread, no gap.
+      * Synthetic blur is not camera blur. Gaussian defocus of flat vector
+        shapes has none of what makes a real frame unrecoverable -- directional
+        motion smear, sensor noise raising Laplacian variance while destroying
+        detail, JPEG ringing, rolling-shutter skew.
+      * The HARD NEGATIVES cannot be synthesised at all. A dim handheld shot of
+        a first birthday, a deliberate long exposure, a shallow-depth-of-field
+        portrait: these are technically poor and are exactly the photographs a
+        family would be most upset to lose. Nothing procedurally drawn stands
+        in for them.
+
+    A floor calibrated on synthetic blur would LOOK calibrated -- it would have
+    a number, a fixture and a green test -- and would still delete real
+    photographs. Every defect this codebase has caught looked exactly like
+    that.
+
+    So the design changed instead: an uncalibrated threshold may rank, and may
+    not eliminate. Low sharpness still costs a photo heavily (it carries the
+    largest weight in the default profile, 0.22), so a blurry frame ranks last
+    and only wins when the alternative is nothing -- which is the correct
+    behaviour at the tail of a card, and the behaviour a hard gate destroys.
+
+    WHAT THE FIELDS ARE FOR
+
+    They are the evidence, and they are validated rather than decorative,
+    because a provenance string nobody checks becomes "TODO" within a month.
+    `hard_negatives_retained` must equal `hard_negatives_total`: a floor that
+    eliminates even one photograph a family would want is refused outright, no
+    matter how much junk it catches. That asymmetry is the entire point --
+    keeping a bad photo costs a slot in an album, losing a good one is
+    unrecoverable.
+    """
+
+    value: float
+    benchmark_id: str
+    measured_at: str
+    junk_total: int
+    junk_eliminated: int
+    hard_negatives_total: int
+    hard_negatives_retained: int
+    normalisation_id: str
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, (int, float)) or isinstance(self.value, bool):
+            raise UncalibratedFloor(f"value={self.value!r} is not a number")
+        if not math.isfinite(self.value) or not 0.0 <= self.value <= 1.0:
+            raise UncalibratedFloor(
+                f"value={self.value!r} is not a finite Unit; the contract declares "
+                "sharpness on [0,1] and a floor outside it eliminates everything "
+                "or nothing"
+            )
+        if not self.benchmark_id.strip():
+            raise UncalibratedFloor(
+                "benchmark_id is empty: a floor with no named benchmark cannot be "
+                "re-measured, so nobody can ever tell whether it is still right"
+            )
+        if not self.normalisation_id.strip():
+            raise UncalibratedFloor(
+                "normalisation_id is empty. THE FLOOR MEANS NOTHING WITHOUT IT: "
+                "0.08 eliminated 0% or 77.5% of the same 200 images depending on "
+                "which unit mapping was used. A floor is a pair (threshold, "
+                "normalisation), never a threshold alone"
+            )
+        if not self.measured_at.strip():
+            raise UncalibratedFloor("measured_at is empty")
+        if self.junk_total <= 0 or self.hard_negatives_total <= 0:
+            raise UncalibratedFloor(
+                "a calibration set needs both junk AND hard negatives. Junk alone "
+                "proves the floor catches something; it cannot prove the floor "
+                "keeps what matters, which is the failure that costs a memory"
+            )
+        if not 0 <= self.junk_eliminated <= self.junk_total:
+            raise UncalibratedFloor("junk_eliminated is outside junk_total")
+        if not 0 <= self.hard_negatives_retained <= self.hard_negatives_total:
+            raise UncalibratedFloor(
+                "hard_negatives_retained is outside hard_negatives_total"
+            )
+        if self.hard_negatives_retained != self.hard_negatives_total:
+            lost = self.hard_negatives_total - self.hard_negatives_retained
+            raise UncalibratedFloor(
+                f"this floor eliminates {lost} of {self.hard_negatives_total} hard "
+                "negatives. A hard negative is a technically poor photograph a "
+                "family would keep -- a dim shot of a first birthday, a long "
+                "exposure, a shallow-depth-of-field portrait. Losing one is not a "
+                "tolerable error rate, it is the failure the floor exists to avoid; "
+                "lower the threshold or improve the signal"
+            )
+        if self.junk_eliminated == 0:
+            raise UncalibratedFloor(
+                "this floor eliminates no junk, so it is pure risk: it can only "
+                "ever discard something, never save any work"
+            )
+
+
+# THE DEFAULT IS "DO NOT ELIMINATE ON SHARPNESS", AND THAT IS THE FIX.
+#
+# It stays None until someone runs the calibration described on SharpnessFloor
+# against real photographs -- which needs ingest to write `quality.sharpness`
+# first (issue #22 item 1, Codex's side) because the normalisation is upstream
+# and determines what any threshold means.
+#
+# The name is unchanged so that a caller passing `sharpness_floor=` still type-
+# checks; the TYPE changed, so a caller passing a bare float now fails loudly
+# instead of silently reinstating a guess.
+DEFAULT_SHARPNESS_FLOOR: SharpnessFloor | None = None
 
 # Coverage below which a score is provisional. Two of seven signals is enough to
 # order a scan-in-progress preview and not enough to decide what goes in a
@@ -428,19 +580,48 @@ REJECT_BELOW_SHARPNESS_FLOOR = "below_sharpness_floor"
 
 
 def eliminate(
-    signals: Signals, *, sharpness_floor: float = DEFAULT_SHARPNESS_FLOOR
+    signals: Signals,
+    *,
+    sharpness_floor: SharpnessFloor | None = DEFAULT_SHARPNESS_FLOOR,
 ) -> str | None:
     """The reason this frame is junk, or None if it is a candidate.
 
     Runs before any weighting, because the answer is not "a low number" -- it is
     "this frame does not enter the pool at all". Build plan §4.3: elimination
     first, always.
+
+    WHAT MAY ELIMINATE, AND WHAT MAY ONLY RANK (issue #22)
+
+    Black frame and lens obstruction are DETERMINATIONS. Something upstream
+    looked at the frame and concluded a fact about it, and the value is a
+    boolean whose meaning does not depend on a scale nobody has defined. They
+    eliminate.
+
+    Sharpness is a MEASUREMENT on a continuum, and until a calibrated
+    `SharpnessFloor` exists it eliminates nothing -- it only pushes the score
+    down, where a weak frame still competes and still wins if the pool is bad
+    enough. That distinction is the fix: the previous code treated an
+    uncalibrated constant as if it were a determination, and a hard gate on an
+    undefined scale deletes photographs without anyone seeing what went.
+
+    Passing a bare float is refused rather than accepted, because "just put the
+    number back" is exactly how this returns.
     """
     if signals.is_black_frame:
         return REJECT_BLACK_FRAME
     if signals.is_lens_obstructed:
         return REJECT_LENS_OBSTRUCTED
-    if signals.sharpness < sharpness_floor:
+    if sharpness_floor is None:
+        return None
+    if not isinstance(sharpness_floor, SharpnessFloor):
+        raise UncalibratedFloor(
+            f"sharpness_floor={sharpness_floor!r} is a bare number. Elimination "
+            "deletes a photograph from a person's memories, so the floor has to "
+            "carry the measurement that justifies it: construct a SharpnessFloor "
+            "naming the benchmark, the normalisation and the hard negatives it "
+            "was checked against."
+        )
+    if signals.sharpness < sharpness_floor.value:
         return REJECT_BELOW_SHARPNESS_FLOOR
     return None
 
@@ -483,7 +664,7 @@ def fuse(
     signals: Signals,
     weights: Weights | None = None,
     *,
-    sharpness_floor: float = DEFAULT_SHARPNESS_FLOOR,
+    sharpness_floor: SharpnessFloor | None = DEFAULT_SHARPNESS_FLOOR,
 ) -> FusedScore:
     """Fuse one photo's signals into a single comparable quality score.
 

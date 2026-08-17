@@ -21,7 +21,9 @@ from memory_engine_ranking.fusion import (  # noqa: E402
     FEATURE_SET_ID,
     FaceState,
     IncomparableScores,
+    SharpnessFloor,
     SignalError,
+    UncalibratedFloor,
     WeightError,
     signals_from_media_record,
     REJECT_BELOW_SHARPNESS_FLOOR,
@@ -105,12 +107,95 @@ class TestElimination(unittest.TestCase):
             rank({"a_black": black, "z_unmeasured": unmeasured}),
         )
 
-    def test_the_sharpness_floor_is_an_elimination_not_a_quality_bar(self):
-        """A dim handheld shot of a first birthday is worth keeping. Only
-        genuinely unrecoverable blur is eliminated."""
-        self.assertIsNone(eliminate(measured(sharpness=0.15)))
+    def test_an_uncalibrated_sharpness_scale_eliminates_nothing(self):
+        """Issue #22. The default floor is None, so no sharpness value -- not
+        even 0.0 -- removes a photo from the pool.
+
+        This test used to assert the opposite: 0.02 was eliminated and 0.15 was
+        kept, against a constant chosen for a normalisation that has never
+        existed. It passed for months while the gate it described could have
+        deleted anywhere between 0% and 77.5% of a library depending on a
+        divisor nobody had written down."""
+        for sharpness in (0.0, 0.02, 0.15, 0.9):
+            with self.subTest(sharpness=sharpness):
+                self.assertIsNone(eliminate(measured(sharpness=sharpness)))
+        self.assertFalse(fuse(measured(sharpness=0.0)).rejected)
+
+    def test_low_sharpness_still_costs_a_photo_its_place(self):
+        """Rank-only is not the same as ignored. The signal carries the largest
+        weight in the default profile, so a blurry frame sorts last and wins
+        only when the alternative is nothing -- which is the behaviour a hard
+        gate destroys at the tail of a card."""
+        blurry = fuse(measured(sharpness=0.02))
+        sharp = fuse(measured(sharpness=0.95))
+        self.assertLess(blurry.value, sharp.value)
         self.assertEqual(
-            REJECT_BELOW_SHARPNESS_FLOOR, eliminate(measured(sharpness=0.02))
+            ["sharp", "blurry"], rank({"blurry": blurry, "sharp": sharp})
+        )
+
+    def test_a_calibrated_floor_eliminates(self):
+        """The capability is not removed, only gated behind evidence."""
+        floor = SharpnessFloor(
+            value=0.08,
+            benchmark_id="test-only",
+            measured_at="2026-08-17",
+            normalisation_id="test-only",
+            junk_total=10,
+            junk_eliminated=9,
+            hard_negatives_total=12,
+            hard_negatives_retained=12,
+        )
+        self.assertEqual(
+            REJECT_BELOW_SHARPNESS_FLOOR,
+            eliminate(measured(sharpness=0.02), sharpness_floor=floor),
+        )
+        self.assertIsNone(eliminate(measured(sharpness=0.15), sharpness_floor=floor))
+        self.assertTrue(fuse(measured(sharpness=0.02), sharpness_floor=floor).rejected)
+
+    def test_a_bare_number_is_refused(self):
+        """`sharpness_floor=0.08` is exactly how the guess comes back."""
+        with self.assertRaises(UncalibratedFloor):
+            eliminate(measured(sharpness=0.9), sharpness_floor=0.08)
+        with self.assertRaises(UncalibratedFloor):
+            fuse(measured(sharpness=0.9), sharpness_floor=0.08)
+
+    def test_a_floor_that_loses_one_hard_negative_is_refused(self):
+        """The asymmetry, enforced: keeping a bad photo costs an album slot,
+        losing a good one is unrecoverable. No error rate is acceptable here."""
+        with self.assertRaises(UncalibratedFloor) as raised:
+            SharpnessFloor(
+                value=0.4, benchmark_id="b", measured_at="2026-08-17",
+                normalisation_id="n", junk_total=100, junk_eliminated=98,
+                hard_negatives_total=40, hard_negatives_retained=39,
+            )
+        self.assertIn("hard negative", str(raised.exception))
+
+    def test_a_floor_without_a_normalisation_is_refused(self):
+        """A threshold is meaningless without the unit mapping it was measured
+        against -- the whole content of issue #22."""
+        with self.assertRaises(UncalibratedFloor):
+            SharpnessFloor(
+                value=0.08, benchmark_id="b", measured_at="2026-08-17",
+                normalisation_id="  ", junk_total=10, junk_eliminated=9,
+                hard_negatives_total=10, hard_negatives_retained=10,
+            )
+
+    def test_a_floor_calibrated_only_on_junk_is_refused(self):
+        """Junk alone proves the floor catches something. It cannot prove the
+        floor keeps what matters, which is the failure that costs a memory."""
+        with self.assertRaises(UncalibratedFloor):
+            SharpnessFloor(
+                value=0.08, benchmark_id="b", measured_at="2026-08-17",
+                normalisation_id="n", junk_total=50, junk_eliminated=50,
+                hard_negatives_total=0, hard_negatives_retained=0,
+            )
+
+    def test_a_determination_still_eliminates(self):
+        """Black frame and lens obstruction are facts, not measurements on an
+        undefined scale, and are unaffected by the change."""
+        self.assertEqual(REJECT_BLACK_FRAME, eliminate(measured(is_black_frame=True)))
+        self.assertEqual(
+            REJECT_LENS_OBSTRUCTED, eliminate(measured(is_lens_obstructed=True))
         )
 
     def test_elimination_order_is_fixed_when_several_apply(self):

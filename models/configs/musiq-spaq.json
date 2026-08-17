@@ -79,7 +79,8 @@
   "batching": {
     "supported": false,
     "max_batch": 1,
-    "dynamic_axes": false
+    "dynamic_axes": false,
+    "verified_against": null
   },
   "license": {
     "code_license": "Apache-2.0",
@@ -98,5 +99,5 @@
     "promoted_at": null
   },
   "eval": null,
-  "notes": "PLACEHOLDER FOR THE SHAPE, not a working entry. MUSIQ is resolution-preserving by design -- it consumes the native aspect ratio through a multi-scale patch encoder -- and the input size, resize mode and normalisation constants recorded here are the COMMON defaults, not values read off the actual ONNX export. Writing plausible preprocessing constants for a model nobody has run is precisely how the SCRFD double-scaling bug happened, so this entry stays out of every pipeline until the export is inspected and these are replaced with measured values. The score normalisation is the part worth keeping: the SPAQ checkpoint predicts a 0-100 mean opinion score, and writing that raw into a Score field the contract declares as [0,1] would make every photo look technically perfect to any consumer that clamps."
+  "notes": "PLACEHOLDER FOR THE SHAPE, not a working entry. MUSIQ is resolution-preserving by design -- it consumes the native aspect ratio through a multi-scale patch encoder -- and the input size, resize mode and normalisation constants recorded here are the COMMON defaults, not values read off the actual ONNX export. Writing plausible preprocessing constants for a model nobody has run is precisely how the SCRFD double-scaling bug happened, so this entry stays out of every pipeline until the export is inspected and these are replaced with measured values. The score normalisation is the part worth keeping: the SPAQ checkpoint predicts a 0-100 mean opinion score, and writing that raw into a Score field the contract declares as [0,1] would make every photo look technically perfect to any consumer that clamps.\n\nBATCHING (issue #31): this entry already declared batch 1, which remains correct, but it declared it without evidence. batching.verified_against is now null and says so: weights.blake3 is null, so the graph has never been inspected, and 'happens to be right' is not the same as 'checked'."
 }

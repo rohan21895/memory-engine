@@ -207,6 +207,10 @@ class TestModelCatalog(CatalogFixture):
             resolve_mode=trusted_load_gate.resolve_mode,
             load_policy=trusted_load_gate.load_policy,
             decide_load=decide,
+            # Part of the seam's interface since issue #33: the catalog asks the
+            # gate whether a config has pinned every preprocessing value that
+            # changes the tensor, rather than deciding that itself.
+            preprocessing_pinned=trusted_load_gate.preprocessing_pinned,
         )
         catalog = ModelCatalog(
             repo_root=self.repo_root,

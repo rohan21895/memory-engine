@@ -66,9 +66,10 @@
     }
   ],
   "batching": {
-    "supported": true,
-    "max_batch": 256,
-    "dynamic_axes": true
+    "supported": false,
+    "max_batch": 1,
+    "dynamic_axes": false,
+    "verified_against": null
   },
   "license": {
     "code_license": "unknown",
@@ -87,5 +88,5 @@
     "promoted_at": null
   },
   "eval": null,
-  "notes": "PLACEHOLDER FOR THE SHAPE: no specific head has been selected. THREE CLASSES, NOT ONE FLAG. The head emits explicit / suggestive / medical-or-artistic rather than a single 'nsfw' bit, because collapsing them is what produces the two classic failures: a breastfeeding photo or a post-surgery record treated as pornography, and a bikini holiday photo treated as safe for a shared reel. A family library contains all three and the right handling differs for each.\n\nTHE THRESHOLD IS ASYMMETRIC ON PURPOSE. 0.3, not 0.5. A false positive quietly omits one photo from an automated album, which the user can override. A false negative puts sensitive content into a printed book, a shared reel, or a contact sheet uploaded to a frontier model -- and the last of those is irreversible the moment it leaves the device. Those costs are not symmetric, so the threshold should not be either.\n\nEXCLUSION IS NOT DELETION. A flagged photo stays in the library, stays searchable by its owner, and is only withheld from automated and shared output. The classifier decides what the system publishes on the user's behalf; it never decides what the user may keep.\n\nRuns on the embedding, so it costs nothing beyond the SigLIP pass that already happened -- which is the reason it can run on everything rather than on a sample, and coverage is what a safety gate needs most."
+  "notes": "PLACEHOLDER FOR THE SHAPE: no specific head has been selected. THREE CLASSES, NOT ONE FLAG. The head emits explicit / suggestive / medical-or-artistic rather than a single 'nsfw' bit, because collapsing them is what produces the two classic failures: a breastfeeding photo or a post-surgery record treated as pornography, and a bikini holiday photo treated as safe for a shared reel. A family library contains all three and the right handling differs for each.\n\nTHE THRESHOLD IS ASYMMETRIC ON PURPOSE. 0.3, not 0.5. A false positive quietly omits one photo from an automated album, which the user can override. A false negative puts sensitive content into a printed book, a shared reel, or a contact sheet uploaded to a frontier model -- and the last of those is irreversible the moment it leaves the device. Those costs are not symmetric, so the threshold should not be either.\n\nEXCLUSION IS NOT DELETION. A flagged photo stays in the library, stays searchable by its owner, and is only withheld from automated and shared output. The classifier decides what the system publishes on the user's behalf; it never decides what the user may keep.\n\nRuns on the embedding, so it costs nothing beyond the SigLIP pass that already happened -- which is the reason it can run on everything rather than on a sample, and coverage is what a safety gate needs most.\n\nBATCHING (issue #31): DEMOTED TO 1, UNVERIFIED. This entry declared supported=true, max_batch=256, dynamic_axes=true. weights.blake3 is null, so the ONNX graph it names has never been produced or hashed, let alone had its input shape read -- the claim was an assumption wearing the clothes of a measurement, which is the same defect issue #31 found in the YuNet entry. Restore it by running onnxruntime.InferenceSession(...).get_inputs()[0].shape against the pinned checkpoint and recording that in batching.verified_against. Declining to batch costs throughput and nothing else."
 }

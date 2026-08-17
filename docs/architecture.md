@@ -187,6 +187,33 @@ photos the expensive models have not reached; 0.5 fabricates a measurement.
 Coverage is reported separately, and scores measured differently refuse to be
 ranked against each other.
 
+**An uncalibrated measurement may rank; it may not eliminate** (issue #22).
+`DEFAULT_SHARPNESS_FLOOR = 0.08` was a hard gate against a scale that does not
+exist — ingest writes no sharpness and no Laplacian-to-Unit normalisation is
+implemented anywhere. Measured on the synthetic library, that same constant
+eliminates between 0.0% and 77.5% of the same 200 images depending only on which
+divisor the missing normalisation would have used. Calibrating it against
+synthetic blur was rejected: the library has no blurred variants at all, and the
+hard negatives that matter — a dim handheld shot of a first birthday, a long
+exposure, a shallow-depth-of-field portrait — cannot be drawn with PIL. So the
+default floor is `None`, sharpness keeps the heaviest fusion weight, and
+elimination is gated behind a `SharpnessFloor` that must name its normalisation
+and retain every hard negative. See `docs/sharpness-floor-decision.md`.
+
+**A capability claim about a graph must cite what established it** (issue #31).
+YuNet declared `max_batch: 8, dynamic_axes: true` against a checkpoint whose
+input is fixed at `[1,3,640,640]`. The runtime clamping to the real leading
+dimension is what let the wrong config keep passing review, so the config is now
+where it fails: `batching.verified_against` is required, and any claim beyond
+one-at-a-time without one is schema-invalid.
+
+**The padded band is config, not a runtime constant** (issue #33). Geometry was
+pinned and contents were not, so PR #25 filled it with black because nothing said
+otherwise. `preprocessing.pad_value` pins the value *and the space it applies
+in* — mmdetection pads after normalising, so its `pad_val=0` means the mean, not
+black — and is required for any letterbox config, with `null` reserved for "the
+sources disagree".
+
 **PaddleOCR runs detection only, never recognition.** Text *coverage* answers
 "is this a screenshot"; transcribing the words would capture bank balances and
 medical results to answer a question that does not need them. A privacy
@@ -205,16 +232,6 @@ CoreML agreeing at ~0.9135; SCRFD at 0.790975, exercising the two-anchor decoder
 That is the first time anything here has touched real imagery rather than
 fixtures.
 
-**Video produces moments.** `workers/video-analysis` decodes the 480p proxy that
-`workers/ingest` already writes and produces the `FeatureStream` that
-`plan_moments` consumes — photometry, sharpness, motion, sub-pixel shake,
-novelty, K-weighted BS.1770 loudness (cross-checked against FFmpeg's `ebur128`),
-and classical shot boundaries. Ten clips of the demo library went proxy →
-features → `plan_moments` → 15 schema-valid MomentRecords. Faces, audio events
-and transcription are still absent and are reported as absent rather than
-filled in; TransNetV2 is wired behind the load gate and refuses for want of
-weights.
-
 Open, and honest about it:
 
 - **story-engine and prompt-engine are partial.** `moments.py` and `reel.py` are
@@ -224,25 +241,18 @@ Open, and honest about it:
   producing a 32-page PDF that passes the validator — has not been met.
 - **No safety classifier is selected** (issue #21), so the release pipeline has
   no sensitive-content gate. That is a release blocker in its own right.
-- **`DEFAULT_SHARPNESS_FLOOR` is uncalibrated** (issue #22) against a scale that
-  does not exist yet, and it is a *hard* elimination gate — a wrong value
-  silently discards real photos.
-- **No transcript producer exists.** `workers/video-analysis` ships the
-  interface and a null backend that says so. The consequence is precise: the
-  no-mid-word guarantee in `moments.py` is not violated — nothing claims a cut
-  is speech-safe — but it is **vacuous**, because nothing is checked. A moment
-  planned today may cut through a sentence.
-- **The video feature constants are uncalibrated**, the same hazard as issue #22
-  and with the same teeth: `Policy` applies hard elimination gates to them. One
-  such defect was already found there by measurement — an integer-only shake
-  estimator made every smooth pan read as unusable shake, and nothing raised.
-- **`services/pipeline`'s story stage still reports `unavailable`**, correctly:
-  the producers now exist, but that runner does not invoke them or the
-  `generate_video_proxy` job.
+- **SCRFD's letterbox padding value is unresolved** (issue #33). Two upstream
+  references disagree by a full unit in tensor space and training used a stretch,
+  so there is no trained-with value to recover. Pinned as `null`, refused by the
+  release gate, and settled only by running both values against the published
+  benchmark — see `docs/preprocessing-padding-decision.md`.
+- **No checkpoint in the registry is pinned.** Every `weights.blake3` is null, so
+  every capability claim about a graph is inherited rather than measured. Since
+  issue #31 that is at least *visible*: `batching.verified_against` is required,
+  and eight of nine entries now say batch 1 because nothing has read their input
+  shape.
 - **Nothing has been tested on a large real library.** Every performance claim
-  in this repo is untested at scale. Video analysis measures 2.55x realtime on
-  480p over 44 seconds of synthetic footage, which extrapolates to ~78 hours for
-  a 200-hour library — an extrapolation, not a measurement.
+  in this repo is untested at scale.
 
 ---
 

@@ -26,7 +26,11 @@ from pathlib import Path
 MODELS_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(MODELS_ROOT.parent))
 
-from models.policy.load_gate import Candidate, decide_load as _decide_load  # noqa: E402
+from models.policy.load_gate import (  # noqa: E402
+    Candidate,
+    decide_load as _decide_load,
+    preprocessing_pinned,
+)
 
 REGISTRY = json.loads((MODELS_ROOT / "registry.json").read_text(encoding="utf-8"))
 POLICY = REGISTRY["load_policy"]
@@ -507,3 +511,92 @@ class TestRegistryAgainstPolicy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPreprocessingMustBePinned(unittest.TestCase):
+    """Issue #33: a config may decline to pin the padded band's value, and a
+    release must not load it.
+
+    `pad_value: null` is an honest state, not a broken one -- SCRFD's two
+    upstream references disagree by a full unit in tensor space, and picking one
+    by preference is guessing. So the entry stays valid, says so out loud, and
+    the gate refuses it where it matters.
+    """
+
+    def test_release_refuses_an_unpinned_preprocessing_value(self):
+        self.assertEqual(
+            "UNLOADABLE_REASON_CONFIG_UNPINNED",
+            decide_load(candidate(preprocessing_pinned=False), "release"),
+        )
+
+    def test_development_permits_it_because_that_is_where_it_gets_measured(self):
+        self.assertIsNone(decide_load(candidate(preprocessing_pinned=False), "development"))
+
+    def test_pinning_it_removes_the_refusal(self):
+        self.assertIsNone(decide_load(candidate(preprocessing_pinned=True), "release"))
+
+    def test_weights_problems_are_still_reported_first(self):
+        """Precedence: an unpinned pad value must not mask a missing file, or a
+        user with no weights downloaded gets told about padding."""
+        self.assertEqual(
+            "UNLOADABLE_REASON_WEIGHTS_MISSING",
+            decide_load(
+                candidate(preprocessing_pinned=False, weights_present=False), "release"
+            ),
+        )
+
+
+class TestPreprocessingPinnedIsComputedFromTheConfig(unittest.TestCase):
+    """The `Candidate` field defaults to True, i.e. fail-open, so the thing that
+    actually matters is that the real loader computes it. These test the
+    computation; `workers/ml-runtime` passes it in `catalog.py::_inspect`."""
+
+    def test_a_letterbox_config_with_a_null_pad_value_is_unpinned(self):
+        self.assertFalse(
+            preprocessing_pinned({"preprocessing": {"resize": "letterbox", "pad_value": None}})
+        )
+
+    def test_a_letterbox_config_with_a_pad_value_is_pinned(self):
+        self.assertTrue(
+            preprocessing_pinned(
+                {
+                    "preprocessing": {
+                        "resize": "letterbox",
+                        "pad_value": {"space": "pixel", "values": [0], "source": "x"},
+                    }
+                }
+            )
+        )
+
+    def test_a_config_that_does_not_pad_has_nothing_to_pin(self):
+        for resize in ("stretch", "center_crop", "none", "shortest_side", "longest_side"):
+            with self.subTest(resize=resize):
+                self.assertTrue(preprocessing_pinned({"preprocessing": {"resize": resize}}))
+
+    def test_a_config_with_no_preprocessing_block_is_not_pinned(self):
+        """Absence is not permission. A config the loader could not parse a
+        preprocessing block out of has pinned nothing at all."""
+        self.assertFalse(preprocessing_pinned({}))
+
+    def test_the_shipped_configs_report_what_they_say(self):
+        for path in sorted((MODELS_ROOT / "configs").glob("*.json")):
+            config = json.loads(path.read_text(encoding="utf-8"))
+            expected = not (
+                config["preprocessing"].get("resize") == "letterbox"
+                and config["preprocessing"].get("pad_value") is None
+            )
+            with self.subTest(config=path.name):
+                self.assertEqual(expected, preprocessing_pinned(config))
+
+    def test_scrfd_is_the_one_that_is_unpinned(self):
+        """Named, so that resolving issue #33 for SCRFD has to update a test
+        rather than quietly flipping a boolean nobody was watching."""
+        scrfd = json.loads(
+            (MODELS_ROOT / "configs" / "scrfd-10g-bnkps.json").read_text(encoding="utf-8")
+        )
+        self.assertIsNone(scrfd["preprocessing"]["pad_value"])
+        self.assertFalse(preprocessing_pinned(scrfd))
+        self.assertEqual(
+            "UNLOADABLE_REASON_CONFIG_UNPINNED",
+            decide_load(candidate(preprocessing_pinned=False), "release"),
+        )

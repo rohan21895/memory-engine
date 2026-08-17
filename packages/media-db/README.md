@@ -21,6 +21,8 @@ A bug in the writer cannot get past these, which is the point.
 
 **The face gate is the default.** `list_media(person_id=...)` returns only faces eligible for automated output. `include_uncertain=True` widens it to runner-up candidates for review tooling — the active-learning loop is built precisely on the matches that failed the gate. Nothing reached that way is ever eligible.
 
+**Proxy lookup is indexed, and it is the only lookup the inference path may use.** `resolve_proxy(proxy_id)` reads `media_proxy`, a table keyed `(proxy_id, media_id)` and written by the same `put_media` transaction that writes the record. Before migration 0002 it was `record_json LIKE '%' || ? || '%' LIMIT 50` — a full scan of every record in the library on the hot path of every inference, *and* wrong above fifty incidental matches, because the id appears in other records' JSON (a `dedupe.group_id`, a `span_id`, a proxy path) and the limit then truncated the owning record out of the candidate set. It returned None for a proxy that exists, which reads downstream as "no such proxy". The key is composite rather than `proxy_id` alone because proxies are content-addressed and two records can legitimately share one; keyed on the id alone, deleting one owner would cascade away a proxy the other still lists. `media_id_for_proxy` is deliberately a separate method — the inference path must not have it, since a media_id is one `resolve_path` call away from an original.
+
 **Undated media is excluded from chronological queries.** `chronological=True` both orders by capture time and drops items whose precision is `unknown`. An undated file has no position on a timeline, and sorting it to the epoch opens every album with it.
 
 ## Vector index
@@ -51,6 +53,7 @@ with Database.open("library.db") as db:          # migrates on open
     db.best_moments(media_id=..., limit=40)       # eliminated moments never appear
     db.review_queue()                             # nearest the decision boundary first
     db.resolve_path(media_id)                     # content hash -> path, for OTIO export
+    db.resolve_proxy(proxy_id)                    # THE inference path's only lookup; never an original
     db.span_members(span_id)                      # chaptered files, in playback order
 ```
 

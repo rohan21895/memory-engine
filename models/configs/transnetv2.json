@@ -77,9 +77,10 @@
     }
   ],
   "batching": {
-    "supported": true,
-    "max_batch": 4,
-    "dynamic_axes": true
+    "supported": false,
+    "max_batch": 1,
+    "dynamic_axes": false,
+    "verified_against": null
   },
   "license": {
     "code_license": "MIT",
@@ -98,5 +99,5 @@
     "promoted_at": null
   },
   "eval": null,
-  "notes": "Windows overlap by 25 frames on each side; only the centre 50 predictions of each 100-frame window are kept, because the model is unreliable at window edges. Raw pixel values in [0,255] with no normalisation -- this model does its own scaling internally, and applying a mean/std here silently degrades it.\n\nNO ONNX AT THE DECLARED SOURCE (checked 2026-08-17 via the GitHub API). soCzech/TransNetV2 ships a TensorFlow SavedModel under inference/transnetv2-weights/ (git-LFS), a PyTorch conversion SCRIPT under inference-pytorch/ with no checkpoint beside it, and no GitHub releases at all. There is nothing named transnetv2.onnx to fetch, so scripts/models/fetch_weights.py reports this entry UNAVAILABLE and source_url stays a provenance link. Getting this file means running an export (tf2onnx over the SavedModel, or the PyTorch conversion then torch.onnx) and pinning OUR export -- at which point the artifact is ours and its digest is the only provenance it will ever have."
+  "notes": "Windows overlap by 25 frames on each side; only the centre 50 predictions of each 100-frame window are kept, because the model is unreliable at window edges. Raw pixel values in [0,255] with no normalisation -- this model does its own scaling internally, and applying a mean/std here silently degrades it.\n\nNO ONNX AT THE DECLARED SOURCE (checked 2026-08-17 via the GitHub API). soCzech/TransNetV2 ships a TensorFlow SavedModel under inference/transnetv2-weights/ (git-LFS), a PyTorch conversion SCRIPT under inference-pytorch/ with no checkpoint beside it, and no GitHub releases at all. There is nothing named transnetv2.onnx to fetch, so scripts/models/fetch_weights.py reports this entry UNAVAILABLE and source_url stays a provenance link. Getting this file means running an export (tf2onnx over the SavedModel, or the PyTorch conversion then torch.onnx) and pinning OUR export -- at which point the artifact is ours and its digest is the only provenance it will ever have.\n\nBATCHING (issue #31): DEMOTED TO 1, UNVERIFIED. This entry declared supported=true, max_batch=4, dynamic_axes=true. weights.blake3 is null, so the ONNX graph it names has never been produced or hashed, let alone had its input shape read -- the claim was an assumption wearing the clothes of a measurement, which is the same defect issue #31 found in the YuNet entry. Restore it by running onnxruntime.InferenceSession(...).get_inputs()[0].shape against the pinned checkpoint and recording that in batching.verified_against. Declining to batch costs throughput and nothing else."
 }

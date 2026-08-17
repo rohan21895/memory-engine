@@ -1,0 +1,92 @@
+{
+  "fixture_version": "v0",
+  "model_id": "yunet-2023mar",
+  "description": "Letterbox preprocessing WITH A NON-EMPTY PADDING BAND, issue #33. The existing preprocess fixture feeds a square image, so it has no padding at all and pins nothing about what padding contains. A 64x36 source into 64x64 has 28 padded rows -- 43.75% of the tensor -- and the value in them changes detections near the frame edge without changing anything that raises.",
+  "input": {
+    "generator": "models/reference/preprocess.py::synthetic_image",
+    "width": 64,
+    "height": 36,
+    "seed": 11,
+    "note": "16:9, the shape a 480p video proxy actually is. Already at its scaled size, so resampling is the identity and padding is the only thing under test -- see the module docstring for why resampling is not pinned."
+  },
+  "applied": {
+    "resize": "letterbox",
+    "target": {
+      "width": 64,
+      "height": 64
+    },
+    "pad_value": {
+      "space": "pixel",
+      "values": [
+        0
+      ],
+      "source": "opencv/opencv modules/objdetect/src/face_detect.cpp, FaceDetectorYNImpl::padWithDivisor: copyMakeBorder(..., BORDER_CONSTANT, 0) -- the runtime every published YuNet number is measured through. Agreed by the training repository: ShiqiYu/libfacedetection.train yunet_train/tasks/face/transforms.py::build_eval_transforms uses Pad(size=(image_size,image_size), pad_value=0) followed by Normalize(mean=0, std=1), and the size_divisor variant uses pad_value=0 too. Because this config has scale 1 with empty mean and std, pixel 0 and tensor 0.0 coincide, so the two spaces agree here as well."
+    },
+    "color_order": "bgr",
+    "layout": "nchw",
+    "scale": 1.0,
+    "mean": [],
+    "std": [],
+    "order": "(pixel * scale - mean) / std, band included when space is 'pixel'"
+  },
+  "expected": {
+    "geometry": {
+      "ideal_scale": 1.0,
+      "scaled_width": 64,
+      "scaled_height": 36,
+      "pad_left": 0,
+      "pad_top": 14,
+      "pad_right": 0,
+      "pad_bottom": 14,
+      "effective_scale_x": 1.0,
+      "effective_scale_y": 1.0,
+      "padding_symmetric": true
+    },
+    "band_in_tensor_units": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "tensor": {
+      "shape": [
+        1,
+        3,
+        64,
+        64
+      ],
+      "count": 12288,
+      "mean": 73.895833333,
+      "min": 0.0,
+      "max": 255.0,
+      "first_values": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "sampled": {
+        "0": 0.0,
+        "1536": 83.0,
+        "3072": 203.0,
+        "4608": 0.0,
+        "6144": 220.0,
+        "7680": 0.0,
+        "9216": 17.0,
+        "10752": 89.0
+      }
+    }
+  },
+  "counter_cases": {
+    "note": "The same image and the same geometry with the two other padding values the runtime could plausibly have invented. Every number below is a valid tensor; nothing here would raise. This block is what makes the fixture a test rather than a restatement of the code.",
+    "yolo_114": {
+      "mean": 123.770833333,
+      "min": 0.0
+    },
+    "mean_grey_127_5": {
+      "mean": 129.677083333,
+      "min": 0.0
+    }
+  }
+}
