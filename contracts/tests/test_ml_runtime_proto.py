@@ -472,7 +472,15 @@ class TestGeneratedStubsAreFresh(unittest.TestCase):
 
         stamp = CONTRACTS / "proto" / "generated" / "python" / "PROTO_DIGEST"
         self.assertTrue(stamp.is_file(), "generated stubs are missing their digest stamp")
-        expected = hashlib.sha256(PROTO_PATH.read_bytes()).hexdigest()
+        # One digest over every proto, matching generate.py. A per-file digest
+        # would let a second proto be edited without this noticing.
+        from contracts.proto.generate import PROTOS  # type: ignore
+
+        digest = hashlib.sha256()
+        for name in PROTOS:
+            digest.update(name.encode("utf-8"))
+            digest.update((CONTRACTS / "proto" / name).read_bytes())
+        expected = digest.hexdigest()
         self.assertEqual(
             expected,
             stamp.read_text(encoding="utf-8").strip(),

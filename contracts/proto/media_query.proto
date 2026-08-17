@@ -1,0 +1,346 @@
+syntax = "proto3";
+
+package memory_engine.media_query.v1;
+
+// The read interface between media-db (Python, Claude's territory) and every
+// non-Python consumer -- principally the Tauri desktop shell, which is Rust.
+//
+// WHY THIS EXISTS
+//
+// Codex hit this building the library view (issue #15): media-db exposes a
+// Python API, the shell is Rust, and AGENTS.md forbids reaching into the
+// SQLite file directly. They correctly refused to invent an IPC contract or
+// shell out to Python, and asked rather than guessing. This is the answer.
+//
+// WHY NOT LET THE SHELL READ THE SQLITE FILE
+//
+// It is right there, it is fast, and every safety rule in this system lives in
+// the query layer rather than in the schema:
+//
+//   * `resolve_proxy` is the ONLY lookup the inference path may use, and a
+//     media_id passed to it resolves to nothing. Direct SQL has no such notion.
+//   * Face rows carry `eligible_for_automated_output`, and precision-over-recall
+//     means an uncertain match must never reach automated output. A SELECT does
+//     not know that.
+//   * Sensitive media are excluded from listings by default. A raw table scan
+//     includes them.
+//
+// A second reader would reimplement those rules or, far more likely, omit them
+// -- and every omission fails open, showing MORE than it should. That is the
+// same shape as the load gate that permitted unverified weights and the safety
+// check that passes when its model is missing. So there is one reader, and
+// everyone else asks it.
+//
+// LOOPBACK ONLY, READ ONLY
+//
+// This service never listens on a routable interface and has no mutating RPC.
+// Ingest and analysis write through the Python API in-process; nothing that
+// crosses this boundary can change the library. A read-only surface is also
+// what makes it safe for the shell to hold an open connection for its lifetime.
+//
+// THE ONE THING IT DELIBERATELY WILL NOT DO
+//
+// There is no RPC returning an original file's path or bytes. `resolve_path`
+// exists in the Python API for the renderer, which runs in-process; it is not
+// exposed here. The desktop shell displays PROXIES. A shell that could ask for
+// originals would be one bug away from putting a 6000px RAW through an IPC
+// channel, and one design decision away from a remote reader doing the same.
+
+// ---------------------------------------------------------------- service ---
+
+service MediaQuery {
+  // Library browsing, newest first by default. The shell's main grid.
+  rpc ListMedia(ListMediaRequest) returns (ListMediaResponse);
+
+  // Full-text search over the FTS5 index.
+  rpc SearchMedia(SearchMediaRequest) returns (ListMediaResponse);
+
+  // One record, with its proxies and the people confirmed in it.
+  rpc GetMedia(GetMediaRequest) returns (GetMediaResponse);
+
+  // Proxy bytes, for display. THE ONLY WAY TO GET PIXELS ACROSS THIS BOUNDARY.
+  rpc GetProxyBytes(GetProxyBytesRequest) returns (GetProxyBytesResponse);
+
+  // People and their confirmed faces, for the person filter and the review
+  // queue. Faces below the automated-output threshold are returned ONLY to the
+  // review queue, never to a listing.
+  rpc ListPeople(ListPeopleRequest) returns (ListPeopleResponse);
+  rpc ReviewQueue(ReviewQueueRequest) returns (ReviewQueueResponse);
+
+  // Scan progress for the shell's progress UI.
+  rpc LibraryStats(LibraryStatsRequest) returns (LibraryStatsResponse);
+}
+
+// ------------------------------------------------------------------ paging ---
+
+// Opaque cursor. Deliberately not an offset: a library is being written to
+// while it is browsed, and OFFSET-based paging silently skips or repeats rows
+// when a scan inserts ahead of the cursor. The server encodes a stable sort key
+// in here; a client that tries to parse or construct one is doing something
+// this contract does not support.
+message Cursor {
+  string token = 1;
+}
+
+message Page {
+  Cursor next = 1;
+
+  // True when `next` will return more. Distinct from an empty next token,
+  // because "no more results" and "the server declined to page further" are
+  // different answers and a client showing an infinite spinner cannot tell.
+  bool has_more = 2;
+}
+
+// ------------------------------------------------------------------ listing ---
+
+message ListMediaRequest {
+  int32 limit = 1;
+  Cursor cursor = 2;
+
+  // Filters. All are ANDed. Absent means unfiltered.
+  repeated string person_ids = 3;
+  optional TimeFilter captured_between = 4;
+  repeated string media_kinds = 5;
+
+  // Include media the safety classifier flagged. Default false, and the shell
+  // should surface this as a deliberate user action rather than a saved
+  // preference. Note that "flagged" and "not yet classified" are different: an
+  // unclassified item is NOT sensitive and is listed normally, because a scan
+  // in progress must not look like an empty library.
+  bool include_sensitive = 6;
+
+  // Include items the ranking engine rejected as junk (black frames, lens cap,
+  // pocket shots). Default false. They stay in the library -- exclusion is not
+  // deletion -- but they are not what somebody opening the app wants to see.
+  bool include_rejected = 7;
+
+  SortOrder order = 8;
+}
+
+enum SortOrder {
+  // Capture time descending. The default because a library is a timeline.
+  SORT_ORDER_UNSPECIFIED = 0;
+  SORT_ORDER_CAPTURED_DESC = 1;
+  SORT_ORDER_CAPTURED_ASC = 2;
+
+  // Fused quality descending. Note the ranking engine refuses to compare scores
+  // measured differently, so a library mid-scan will not order stably under
+  // this -- the server returns items grouped by measurement completeness rather
+  // than interleaving them.
+  SORT_ORDER_QUALITY_DESC = 3;
+  SORT_ORDER_ADDED_DESC = 4;
+}
+
+message TimeFilter {
+  // Unix seconds, half-open [start, end), matching TimeRange elsewhere.
+  int64 start_unix = 1;
+  int64 end_unix = 2;
+
+  // Include items whose capture time is unknown or low-confidence. A scan or a
+  // WhatsApp forward has no EXIF date, and silently dropping those from every
+  // date-filtered view makes a chunk of the library unreachable.
+  bool include_undated = 3;
+}
+
+message ListMediaResponse {
+  repeated MediaSummary items = 1;
+  Page page = 2;
+
+  // Total matching the filter, or -1 when the server declined to count.
+  // Counting a large filtered set is expensive; -1 says "unknown", which a
+  // client can render honestly, whereas 0 would be a lie.
+  int64 total = 3;
+}
+
+// Everything the grid needs, and nothing it does not. Deliberately NOT the full
+// MediaRecord: a grid of 10,000 thumbnails does not need embeddings, model runs
+// or EXIF, and shipping them across an IPC boundary per scroll is how a library
+// view becomes slow enough that somebody caches it and then serves stale rows.
+message MediaSummary {
+  string media_id = 1;
+  string kind = 2;
+
+  // Best proxy for a grid cell. Empty when proxies have not been generated yet,
+  // which the shell should render as a placeholder rather than a broken image.
+  string thumbnail_proxy_id = 3;
+
+  int32 oriented_width_px = 4;
+  int32 oriented_height_px = 5;
+
+  // Unix seconds, and the precision of that claim. A day-precision date must
+  // not be rendered as a time -- "14:32" on a scan the user knows only the year
+  // of is a fabrication the UI performs, not the data.
+  optional int64 captured_unix = 6;
+  string capture_precision = 7;
+
+  optional float quality = 8;
+  bool quality_is_comparable = 9;
+
+  bool is_favorite = 10;
+  bool is_rejected = 11;
+
+  // True only when the classifier RAN and flagged it. An unclassified item is
+  // false here and carries `safety_unknown`, because a UI that treats those the
+  // same either hides a scan-in-progress library or shows what it should not.
+  bool is_sensitive = 12;
+  bool safety_unknown = 13;
+
+  // Confirmed people only. Uncertain matches are excluded by
+  // precision-over-recall: a wrong name on a face is a catastrophic failure in
+  // a family album, and a face chip in a grid is exactly where a user would
+  // believe it.
+  repeated string person_ids = 14;
+
+  optional string span_id = 15;
+  optional int64 duration_ms = 16;
+}
+
+// ------------------------------------------------------------------- search ---
+
+message SearchMediaRequest {
+  // Passed to FTS5. The server escapes it: a raw query is user input, and FTS5
+  // has its own syntax that can error or match unexpectedly on a bare
+  // apostrophe.
+  string query = 1;
+  int32 limit = 2;
+  Cursor cursor = 3;
+  bool include_sensitive = 4;
+  bool include_rejected = 5;
+}
+
+// -------------------------------------------------------------------- detail ---
+
+message GetMediaRequest {
+  string media_id = 1;
+}
+
+message GetMediaResponse {
+  MediaSummary summary = 1;
+  repeated ProxyRef proxies = 2;
+  repeated FaceRef faces = 3;
+
+  // The record as contract JSON, for a detail panel that wants everything.
+  // Serialised rather than typed here so this proto does not have to track
+  // every MediaRecord change -- the schema is the source of truth and the
+  // generated bindings already parse it.
+  string media_record_json = 4;
+}
+
+message ProxyRef {
+  string proxy_id = 1;
+  string kind = 2;
+  int32 width_px = 3;
+  int32 height_px = 4;
+  int64 byte_size = 5;
+}
+
+message FaceRef {
+  string face_id = 1;
+
+  // Empty when the face is clustered but not identified, or when the match is
+  // below the automated-output threshold. The shell must render an unnamed
+  // face rather than guessing from the cluster.
+  string person_id = 2;
+
+  NormalizedBox box = 3;
+  float detection_score = 4;
+
+  // False when this face may not drive automated output. A shell showing it as
+  // a confirmed person would be putting a name on a face the system explicitly
+  // declined to name.
+  bool eligible_for_automated_output = 5;
+}
+
+message NormalizedBox {
+  float x = 1;
+  float y = 2;
+  float w = 3;
+  float h = 4;
+}
+
+// --------------------------------------------------------------------- bytes ---
+
+message GetProxyBytesRequest {
+  // A PROXY id. A media_id passed here resolves to nothing and returns
+  // NOT_FOUND -- the server calls media-db's `resolve_proxy`, which searches
+  // the proxy table only. That is the same guarantee the inference path
+  // depends on, enforced the same way, rather than a second implementation of
+  // it that could drift.
+  string proxy_id = 1;
+}
+
+message GetProxyBytesResponse {
+  bytes data = 1;
+  string media_type = 2;
+
+  // Content digest of the returned bytes, so a client cache can be validated
+  // rather than trusted. A proxy can be regenerated -- a better decoder, a
+  // corrected orientation -- and a cached thumbnail of the old one is wrong in
+  // a way nobody would notice.
+  string blake3 = 3;
+}
+
+// -------------------------------------------------------------------- people ---
+
+message ListPeopleRequest {
+  bool include_unnamed_clusters = 1;
+}
+
+message ListPeopleResponse {
+  repeated Person people = 1;
+}
+
+message Person {
+  string person_id = 1;
+  string display_name = 2;
+  int64 confirmed_face_count = 3;
+  string cover_proxy_id = 4;
+
+  // True when this person is a confirmed minor. The shell must treat these
+  // differently -- no sharing affordance, no export without an explicit consent
+  // scope -- and the contract requires a consent record before a minor's face
+  // is labelled at all.
+  bool is_minor = 5;
+}
+
+message ReviewQueueRequest {
+  int32 limit = 1;
+}
+
+// Uncertain face matches, ordered most-informative first. This is the ONLY RPC
+// that returns faces below the automated-output threshold, and it exists so ten
+// taps of labelling can fix a thousand photos. Everything else in this service
+// hides them.
+message ReviewQueueResponse {
+  repeated ReviewItem items = 1;
+}
+
+message ReviewItem {
+  string face_id = 1;
+  string media_id = 2;
+  string proxy_id = 3;
+  NormalizedBox box = 4;
+
+  // The candidate the system would pick if it were allowed to, and how sure it
+  // is. Presented as a question, never as an answer.
+  string candidate_person_id = 5;
+  float similarity = 6;
+}
+
+// --------------------------------------------------------------------- stats ---
+
+message LibraryStatsRequest {}
+
+message LibraryStatsResponse {
+  int64 media_count = 1;
+  int64 proxy_count = 2;
+  int64 person_count = 3;
+  int64 review_queue_depth = 4;
+
+  // Analysis coverage, so the shell can say "still scanning" honestly instead
+  // of showing a partial library as though it were complete. A user who thinks
+  // their library is fully imported and sees a gap will conclude photos were
+  // lost.
+  int64 media_awaiting_analysis = 5;
+  int64 media_awaiting_proxies = 6;
+}
