@@ -292,6 +292,97 @@ class TestPlaceholdersAreUnloadable(unittest.TestCase):
                     set(), placeholders & set(spec["steps"]),
                     f"{pipeline} contains a placeholder",
                 )
+class TestDeclaredOutputsMatchTheAnchorGrid(unittest.TestCase):
+    """Output row counts must be arithmetically consistent with the anchor grid.
+
+    The published SCRFD export names its outputs 448/451/454... -- numeric tensor
+    ids carrying no meaning -- so a wrong declaration cannot be caught by reading
+    it. What CAN be checked is the arithmetic: at 640x640, stride 8 gives an
+    80x80 grid, and a [12800, 4] box output means two anchors per location.
+
+    That is the same anchor count derived earlier from InsightFace's scrfd.py,
+    confirmed here from the opposite direction by the real graph. Encoding it
+    means a future re-pin to a different export cannot silently change the
+    anchor multiplicity, which would misalign every prediction past the first
+    row while still producing plausible boxes.
+    """
+
+    def _anchor_detectors(self):
+        found = []
+        for name, config in configs():
+            pre = config["preprocessing"]
+            size = pre.get("input_size")
+            outputs = [o for o in config["outputs"] if o.get("stride")]
+            if size and outputs:
+                found.append((name, config, size, outputs))
+        return found
+
+    def test_there_is_a_multi_level_detector_to_check(self):
+        self.assertTrue(self._anchor_detectors(), "this guard has nothing to guard")
+
+    def test_every_strided_output_implies_a_whole_number_of_anchors(self):
+        import sys
+        sys.path.insert(0, str(MODELS_ROOT))
+        from reference.postprocess import num_anchors_for
+
+        for name, config, size, outputs in self._anchor_detectors():
+            expected = num_anchors_for(len(config["outputs"]))
+            for spec in outputs:
+                with self.subTest(config=name, output=spec["name"]):
+                    stride = spec["stride"]
+                    rows = spec["shape"][0]
+                    self.assertGreater(rows, 0, "a strided output needs a concrete row count")
+                    locations = (size["width"] // stride) * (size["height"] // stride)
+                    self.assertEqual(
+                        0, rows % locations,
+                        f"{rows} rows is not a whole multiple of {locations} grid locations",
+                    )
+                    self.assertEqual(
+                        expected, rows // locations,
+                        f"{spec['name']} implies {rows // locations} anchors per location "
+                        f"but the {len(config['outputs'])}-output variant uses {expected}",
+                    )
+
+    def test_the_three_output_kinds_are_present_at_every_stride(self):
+        """A detector missing its keypoint head at one stride would decode faces
+        with landmarks at two scales and without at the third -- and ArcFace
+        alignment would silently skip whichever faces landed on that level."""
+        for name, config, _size, outputs in self._anchor_detectors():
+            by_stride = {}
+            for spec in outputs:
+                by_stride.setdefault(spec["stride"], set()).add(spec["meaning"])
+            with self.subTest(config=name):
+                kinds = list(by_stride.values())
+                self.assertTrue(kinds)
+                self.assertEqual(
+                    1, len({frozenset(k) for k in kinds}),
+                    f"strides disagree about which outputs exist: {by_stride}",
+                )
+
+
+class TestBatchingDescribesTheCheckpoint(unittest.TestCase):
+    """`batching` must describe the graph, not the wish.
+
+    SCRFD declared supported/max_batch 8/dynamic_axes true against a checkpoint
+    whose batch dimension is fixed at 1 (issue #36). A host trusting that either
+    fails at session bind or, worse, processes only the first image of each
+    batch and reports the rest as having no faces.
+    """
+
+    def test_a_fixed_batch_checkpoint_does_not_claim_dynamic_axes(self):
+        for name, config in configs():
+            batching = config["batching"]
+            with self.subTest(config=name):
+                if not batching["supported"]:
+                    self.assertEqual(
+                        1, batching["max_batch"],
+                        "a model that does not support batching cannot have a max_batch above 1",
+                    )
+                    self.assertFalse(
+                        batching["dynamic_axes"],
+                        "dynamic axes are what make batching possible; claiming them while "
+                        "declaring batching unsupported is a contradiction",
+                    )
 
 
 class TestLicenceHonesty(unittest.TestCase):
