@@ -57,10 +57,81 @@ describe("reframe keyframe evaluation", () => {
     expect(cropAt(definition, keyed, 109).x).toBeGreaterThan(0.36);
   });
 
-  it("refuses `smooth`, which the contract never defines, instead of picking a curve", () => {
-    const definition = track("smooth");
-    const keyed = keyframesAt(definition, NTSC_30);
-    expect(() => cropAt(definition, keyed, 105)).toThrow(/contracts#51/);
+  describe("`smooth` is the clamped uniform Catmull-Rom the contract states (contracts#51)", () => {
+    /** The formula from ReframeKeyframe.interpolation's $comment, written independently. */
+    function expected(a: number, b: number, c: number, d: number, u: number): number {
+      return (
+        0.5 *
+        (2 * b +
+          (-a + c) * u +
+          (2 * a - 5 * b + 4 * c - d) * u ** 2 +
+          (-a + 3 * b - 3 * c + d) * u ** 3)
+      );
+    }
+
+    it("is an ease on a two-keyframe track, and is NOT a lerp", () => {
+      // With both endpoints clamped, A = B and D = C, and the cubic collapses to
+      //   B + (C - B) * (0.5u + 1.5u^2 - u^3)
+      // which the schema states explicitly. Half the segment slope at each end is the
+      // whole point of clamping, and calling it a straight line would be a plausible
+      // description of a curve that is measurably not one.
+      const definition = track("smooth");
+      const keyed = keyframesAt(definition, NTSC_30);
+      const closedForm = (u: number): number => 0.4 * (0.5 * u + 1.5 * u ** 2 - u ** 3);
+      for (const frame of [100, 101, 103, 105, 107, 109, 110]) {
+        const u = (frame - 100) / 10;
+        expect(cropAt(definition, keyed, frame).x).toBeCloseTo(closedForm(u), 12);
+      }
+      // Through both keyframes, through the midpoint at the midpoint, and slower than a
+      // lerp at the ends.
+      expect(cropAt(definition, keyed, 100).x).toBeCloseTo(0, 12);
+      expect(cropAt(definition, keyed, 105).x).toBeCloseTo(0.2, 12);
+      expect(cropAt(definition, keyed, 110).x).toBeCloseTo(0.4, 12);
+      expect(cropAt(definition, keyed, 101).x).toBeLessThan(0.04);
+      expect(cropAt(definition, keyed, 109).x).toBeGreaterThan(0.36);
+    });
+
+    it("stays inside the two keyframes it joins and never goes backwards", () => {
+      const definition = track("smooth");
+      const keyed = keyframesAt(definition, NTSC_30);
+      const path = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110].map(
+        (frame) => cropAt(definition, keyed, frame).x,
+      );
+      path.forEach((value, index) => {
+        expect(value).toBeGreaterThanOrEqual(index === 0 ? 0 : path[index - 1]!);
+        expect(value).toBeLessThanOrEqual(0.4);
+      });
+    });
+
+    it("matches the stated formula frame for frame with an interior keyframe", () => {
+      const definition = track("smooth");
+      definition.keyframes[0]!.interpolation = "smooth";
+      definition.keyframes[1]!.interpolation = "smooth";
+      definition.keyframes.push({
+        time: t(120),
+        crop: { x: 0.5, y: 0, w: 0.5, h: 1, rotation_deg: 0 },
+        interpolation: "hold",
+        bezier_control: null,
+        confidence: 1,
+      });
+      const keyed = keyframesAt(definition, NTSC_30);
+      // Second interval: A = 0 (the first keyframe), B = 0.4, C = 0.5, D = 0.5 (clamped).
+      for (const frame of [111, 113, 115, 118]) {
+        const u = (frame - 110) / 10;
+        expect(cropAt(definition, keyed, frame).x).toBeCloseTo(expected(0, 0.4, 0.5, 0.5, u), 12);
+      }
+      // It passes exactly through its keyframes, which is what makes a spline usable as a
+      // plan: the planner's stated positions are the ones rendered.
+      expect(cropAt(definition, keyed, 110).x).toBeCloseTo(0.4, 12);
+      expect(cropAt(definition, keyed, 120).x).toBeCloseTo(0.5, 12);
+    });
+
+    it("carries a constant width and height through unchanged", () => {
+      const definition = track("smooth");
+      const keyed = keyframesAt(definition, NTSC_30);
+      expect(cropAt(definition, keyed, 105).w).toBe(0.5);
+      expect(cropAt(definition, keyed, 105).h).toBe(1);
+    });
   });
 
   it("refuses a frame the track does not cover rather than holding the nearest keyframe", () => {

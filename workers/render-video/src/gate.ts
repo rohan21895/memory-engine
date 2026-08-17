@@ -48,23 +48,38 @@ export interface UnactedDeclaration {
   detail: string;
 }
 
+/**
+ * A declaration the CONTRACT now pins completely and this worker has not built yet. It is
+ * kept apart from `gaps` deliberately: a contract gap is a question for the planner side,
+ * an unimplemented declaration is a question for this worker, and reporting the second as
+ * the first is how a closed issue looks open for ever.
+ */
+export interface UnimplementedDeclaration {
+  field: string;
+  declared: string;
+  detail: string;
+}
+
 export interface GateReport {
   gaps: ContractGap[];
   unacted: UnactedDeclaration[];
+  unimplemented: UnimplementedDeclaration[];
 }
 
 export const GAP_ISSUES = Object.freeze({
   colorOps: "contracts#49",
-  timeEffect: "contracts#50",
-  smoothInterpolation: "contracts#51",
   transition: "contracts#52",
   ambientDsp: "contracts#53",
   ducking: "contracts#54",
   spanAssembly: "contracts#55",
   encodeProfile: "contracts#56",
-  musicLoop: "contracts#57",
   colorPipeline: "contracts#58",
-  musicPlacement: "contracts#59",
+  /**
+   * contracts#51 pinned the interpolation curve and nothing else about crop geometry. A
+   * rotated crop and a crop that changes size still name no resampling convention, and
+   * neither has an issue of its own yet.
+   */
+  cropGeometry: "contracts/edl: crop resampling (unfiled)",
 });
 
 /** Video checks whose failure means the picture or the timing would be wrong. */
@@ -199,17 +214,6 @@ function gapsFromClip(clip: Clip, audioPlan: AudioPlan | null | undefined, out: 
     });
   }
 
-  if (clip.time_effect) {
-    out.push({
-      field: `clips.${clip.clip_id}.time_effect`,
-      declared: clip.time_effect.kind,
-      detail:
-        "A speed change does not say whether source_range or timeline_range is authoritative. " +
-        "Guessing moves every later cut by the difference and reports nothing.",
-      issue: GAP_ISSUES.timeEffect,
-    });
-  }
-
   const ambient = audioPlan?.ambient;
   const clipGain = clip.audio?.gain_db ?? 0;
   if (ambient && ambient.enabled !== false && clipGain !== 0) {
@@ -303,22 +307,15 @@ function gapsFromReframe(edl: EDL, out: ContractGap[]): void {
     track.keyframes.forEach((keyframe, index) => {
       const interpolation = keyframe.interpolation ?? "smooth";
       const isLast = index === track.keyframes.length - 1;
-      if (interpolation === "smooth" && !isLast) {
-        out.push({
-          field: `reframe_tracks.${id}.keyframes[${index}].interpolation`,
-          declared: "smooth",
-          detail:
-            "`smooth` names no curve. Smoothstep, cosine and Catmull-Rom put the crop in " +
-            "different places on a moving subject, and the planner emits nothing else.",
-          issue: GAP_ISSUES.smoothInterpolation,
-        });
-      }
+      // `smooth` is a clamped uniform Catmull-Rom spline, stated as a formula in
+      // ReframeKeyframe.interpolation's $comment and implemented in reframe.ts
+      // (contracts#51). `bezier` still needs its control points to name a curve.
       if (interpolation === "bezier" && !isLast && (keyframe.bezier_control ?? null) === null) {
         out.push({
           field: `reframe_tracks.${id}.keyframes[${index}].bezier_control`,
           declared: "null",
           detail: "bezier interpolation without control points has no curve.",
-          issue: GAP_ISSUES.smoothInterpolation,
+          issue: GAP_ISSUES.cropGeometry,
         });
       }
       if ((keyframe.crop.rotation_deg ?? 0) !== 0) {
@@ -326,7 +323,7 @@ function gapsFromReframe(edl: EDL, out: ContractGap[]): void {
           field: `reframe_tracks.${id}.keyframes[${index}].crop.rotation_deg`,
           declared: String(keyframe.crop.rotation_deg),
           detail: "A rotated crop has no pinned resampling convention.",
-          issue: GAP_ISSUES.smoothInterpolation,
+          issue: GAP_ISSUES.cropGeometry,
         });
       }
       if (keyframe.crop.w !== first.crop.w || keyframe.crop.h !== first.crop.h) {
@@ -336,7 +333,7 @@ function gapsFromReframe(edl: EDL, out: ContractGap[]): void {
           detail:
             "A crop window that changes size is a zoom, and the contract pins neither the " +
             "resampling nor the per-frame rounding of a moving crop size.",
-          issue: GAP_ISSUES.smoothInterpolation,
+          issue: GAP_ISSUES.cropGeometry,
         });
       }
     });
@@ -402,18 +399,11 @@ function gapsFromAudioPlan(edl: EDL, out: ContractGap[]): void {
     }
   }
 
-  for (const cue of plan.music ?? []) {
-    if (cue.loop === true) {
-      out.push({
-        field: `audio_plan.music.${cue.cue_id}.loop`,
-        declared: "true",
-        detail:
-          "The loop join is undefined — butt or crossfade, restart point, truncation — and a " +
-          "bed that restarts off the grid desynchronises every beat-locked cut after it.",
-        issue: GAP_ISSUES.musicLoop,
-      });
-    }
-  }
+  // A MusicCue no longer places anything (contracts#59): every position, gain and fade it
+  // used to duplicate now exists exactly once, on an audio-track clip. A bed that repeats
+  // is several clips the cue claims, so there is no loop flag left to refuse either
+  // (contracts#57). program.ts checks that every cue resolves to clips and every
+  // music-role clip is claimed.
 }
 
 function gapsFromColorPipeline(edl: EDL, out: ContractGap[]): void {
@@ -501,6 +491,40 @@ function unactedDeclarations(edl: EDL): UnactedDeclaration[] {
   return unacted;
 }
 
+/**
+ * Declarations the contract pins and this worker cannot yet execute.
+ *
+ * `time_effect` is the whole list. contracts#50 settled the authority question — a
+ * retimed clip reads source_range.duration frames of media and holds
+ * source_range.duration / time_scalar timeline frames, and output frame k draws source
+ * frame start + floor(k * time_scalar) — so program.ts now lays a retimed clip out on the
+ * correct extent and validates it. What is missing is the picture: emitting the frames at
+ * that sampling needs a filter chain that neither duplicates nor drops a frame of its own
+ * accord, which is the one thing the transition and concat design here is built to
+ * prevent. Refusing until that is built and measured is the safe direction; the number
+ * this would get wrong is which frame, and a wrong frame looks exactly like a right one.
+ */
+function unimplementedDeclarations(edl: EDL): UnimplementedDeclaration[] {
+  const unimplemented: UnimplementedDeclaration[] = [];
+  for (const track of edl.tracks) {
+    for (const item of track.items) {
+      if (!isClip(item) || !item.time_effect) continue;
+      const effect = item.time_effect;
+      unimplemented.push({
+        field: `clips.${item.clip_id}.time_effect`,
+        declared:
+          effect.kind === "linear_speed"
+            ? `linear_speed ${effect.time_scalar}x`
+            : `freeze_frame holding ${effect.hold_duration?.value ?? "?"} frames`,
+        detail:
+          "The contract pins the extent and the frame sampling (contracts#50); this worker " +
+          "lays the clip out and checks it, and does not yet emit the retimed picture.",
+      });
+    }
+  }
+  return unimplemented;
+}
+
 export function collectGaps(edl: EDL): GateReport {
   const gaps: ContractGap[] = [];
 
@@ -540,7 +564,11 @@ export function collectGaps(edl: EDL): GateReport {
   gapsFromAudioPlan(edl, gaps);
   gapsFromColorPipeline(edl, gaps);
 
-  return { gaps, unacted: unactedDeclarations(edl) };
+  return {
+    gaps,
+    unacted: unactedDeclarations(edl),
+    unimplemented: unimplementedDeclarations(edl),
+  };
 }
 
 export function formatGaps(gaps: readonly ContractGap[]): string {
@@ -563,6 +591,17 @@ export function assertRenderable(edl: EDL): GateReport {
       `The video renderer refused the EDL because ${report.gaps.length} declaration(s) are not ` +
         `pinned by the contract. Rendering them would mean the renderer decided them.\n` +
         `${formatGaps(report.gaps)}`,
+    );
+  }
+  if (report.unimplemented.length > 0) {
+    throw new RenderVideoError(
+      "validation_failed",
+      `The video renderer refused the EDL because ${report.unimplemented.length} declaration(s) ` +
+        "are pinned by the contract and not implemented by this worker. This is a worker gap, " +
+        "not a contract gap — nothing here is waiting on the planner side.\n" +
+        report.unimplemented
+          .map((entry) => `  - ${entry.field}: declared ${entry.declared}. ${entry.detail}`)
+          .join("\n"),
     );
   }
   return report;

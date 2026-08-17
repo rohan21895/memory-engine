@@ -113,6 +113,51 @@ function mediaRefFor(edl: EDL, mediaRefId: string): MediaRef {
   return ref;
 }
 
+/**
+ * How many timeline frames a clip occupies, derived from source_range and any time effect
+ * exactly as contracts#50 settled it: source_range is the media read, the timeline extent
+ * is derived from it, and `timeline_range` is checked against the result rather than
+ * believed. A retime that does not divide into whole frames is refused — rounding here is
+ * how a downbeat moves by half a frame per retimed clip, which is invisible until six of
+ * them have accumulated.
+ */
+function timelineExtent(edl: EDL, clip: Clip, mediaFrames: number, source: FrameRange): number {
+  const effect = clip.time_effect;
+  if (!effect) return mediaFrames;
+
+  if (effect.kind === "linear_speed") {
+    const scalar = effect.time_scalar;
+    if (typeof scalar !== "number" || !(scalar > 0)) {
+      fail(`clip ${clip.clip_id} declares a linear_speed effect with no usable time_scalar.`);
+    }
+    const extent = mediaFrames / scalar;
+    if (!Number.isInteger(extent)) {
+      fail(
+        `clip ${clip.clip_id} reads ${mediaFrames} source frames at ${scalar}x, which is ` +
+          `${extent} timeline frames rather than a whole number.`,
+      );
+    }
+    return extent;
+  }
+
+  const freezeAt = effect.freeze_at;
+  const hold = effect.hold_duration;
+  if (!freezeAt) fail(`clip ${clip.clip_id} is a freeze_frame with no freeze_at.`);
+  if (!hold) fail(`clip ${clip.clip_id} is a freeze_frame with no hold_duration, so it has no extent.`);
+  if (frames(freezeAt, edl.rate, `clip ${clip.clip_id} freeze_at`) !== source.start) {
+    fail(
+      `clip ${clip.clip_id} freezes a frame other than the one it reads; freeze_at must equal ` +
+        "source_range.start_time.",
+    );
+  }
+  if (mediaFrames !== 1) {
+    fail(`clip ${clip.clip_id} is a freeze_frame reading ${mediaFrames} source frames; it reads one.`);
+  }
+  const extent = frames(hold, edl.rate, `clip ${clip.clip_id} hold_duration`);
+  if (extent <= 0) fail(`clip ${clip.clip_id} holds a frozen frame for ${extent} frames.`);
+  return extent;
+}
+
 /** Lay a track out, giving every clip and gap its integer timeline extent. */
 function layoutTrack(edl: EDL, track: Track): { placements: ClipPlacement[]; end: number } {
   const placements: ClipPlacement[] = [];
@@ -144,7 +189,7 @@ function layoutTrack(edl: EDL, track: Track): { placements: ClipPlacement[]; end
           `${mediaRef.media_ref_id} only offers [${available.start}, ${available.end}).`,
       );
     }
-    const length = rangeLength(source);
+    const length = timelineExtent(edl, clip, rangeLength(source), source);
     const timeline: FrameRange = { start: cursor, end: cursor + length };
 
     if (clip.timeline_range) {
@@ -319,10 +364,15 @@ function buildVideoProgram(edl: EDL, track: Track, placements: readonly ClipPlac
     const outgoingBinding = outgoing.get(clipIndex);
     const trimFront = incomingBinding?.outOffset ?? 0;
     const trimBack = outgoingBinding?.inOffset ?? 0;
-    const length = rangeLength(placement.source) - trimFront - trimBack;
+    // Timeline frames, not source frames: on a retimed clip the two differ, and a
+    // transition consumes timeline. (A transition on a retimed clip is refused before
+    // here — the handle would have to be converted into media too — but the length this
+    // segment shows is a timeline length either way.)
+    const extent = rangeLength(placement.timeline);
+    const length = extent - trimFront - trimBack;
     if (length <= 0) {
       fail(
-        `clip ${placement.clip.clip_id} is ${rangeLength(placement.source)} frames long and its ` +
+        `clip ${placement.clip.clip_id} is ${extent} frames long and its ` +
           `transitions consume ${trimFront + trimBack} of them, leaving nothing to show.`,
       );
     }
@@ -363,6 +413,12 @@ function buildAudioProgram(
   for (const placement of videoPlacements) {
     const audio = placement.clip.audio;
     if (!audio || audio.muted === true) continue;
+    // contracts#50: `audio_handling: mute` suppresses the clip's bed entirely, whatever
+    // gain the AmbientPlan would otherwise give it. Pitch-shifted ambient sounds broken,
+    // and the plan saying "mute" outranks the plan saying "-6 dB".
+    if ((placement.clip.time_effect?.audio_handling ?? "mute") === "mute" && placement.clip.time_effect) {
+      continue;
+    }
     if (!plan) {
       fail(
         `clip ${placement.clip.clip_id} declares audio but the EDL has no audio_plan, so there ` +
@@ -422,40 +478,51 @@ function buildAudioProgram(
 }
 
 /**
- * A MusicCue and an audio-track clip can describe the same bed (contracts#59). Track
- * placement wins, because it is the OTIO-native structure, and every cue must have exactly
- * one clip that agrees with it in every field — otherwise the bed is either doubled or
- * silently one of two different things.
+ * The bed is placed once, on a track, and the cue names that placement (contracts#59).
+ * This used to be a field-by-field reconciliation of two copies of the same bed; the
+ * contract now has only one copy, so all that is left is resolution — and the one thing
+ * resolution has to guarantee, which is that no music plays without a licence attached to
+ * it and no clip is licensed twice.
  */
 function reconcileMusicCues(edl: EDL, audioPlacements: readonly ClipPlacement[]): void {
+  const musicClips = new Map<string, ClipPlacement>();
+  for (const placement of audioPlacements) {
+    if ((placement.track.role ?? "primary") !== "music") continue;
+    musicClips.set(placement.clip.clip_id, placement);
+  }
+
+  const claimedBy = new Map<string, string>();
   for (const cue of edl.audio_plan?.music ?? []) {
-    const cueSource = frameRange(cue.source_range, edl.rate, `cue ${cue.cue_id} source_range`);
-    const cueTimeline = frameRange(cue.timeline_range, edl.rate, `cue ${cue.cue_id} timeline_range`);
-    const matches = audioPlacements.filter(
-      (placement) =>
-        placement.mediaRef.media_ref_id === cue.media_ref_id &&
-        placement.source.start === cueSource.start &&
-        placement.source.end === cueSource.end &&
-        placement.timeline.start === cueTimeline.start &&
-        placement.timeline.end === cueTimeline.end,
-    );
-    if (matches.length !== 1) {
-      fail(
-        `music cue ${cue.cue_id} matches ${matches.length} audio-track clips. A cue and a clip ` +
-          "describe the same bed; zero matches means the cue is a second, unplaced copy and two " +
-          "matches means the bed plays twice.",
-      );
+    if (cue.clip_ids.length === 0) {
+      fail(`music cue ${cue.cue_id} places itself on no clips, so the bed it licenses never plays.`);
     }
-    const clip = matches[0]!.clip;
-    const clipGain = clip.audio?.gain_db ?? 0;
-    const clipFadeIn = clip.audio?.fade_in ? frames(clip.audio.fade_in, edl.rate, "fade_in") : 0;
-    const clipFadeOut = clip.audio?.fade_out ? frames(clip.audio.fade_out, edl.rate, "fade_out") : 0;
-    const cueFadeIn = cue.fade_in ? frames(cue.fade_in, edl.rate, "cue fade_in") : 0;
-    const cueFadeOut = cue.fade_out ? frames(cue.fade_out, edl.rate, "cue fade_out") : 0;
-    if ((cue.gain_db ?? 0) !== clipGain || cueFadeIn !== clipFadeIn || cueFadeOut !== clipFadeOut) {
+    for (const clipId of cue.clip_ids) {
+      const placement = musicClips.get(clipId);
+      if (!placement) {
+        fail(
+          `music cue ${cue.cue_id} names clip ${clipId}, which is not a clip on a music-role ` +
+            "audio track. A cue is a licence attached to a placement, not a placement.",
+        );
+      }
+      const already = claimedBy.get(clipId);
+      if (already) {
+        fail(`clip ${clipId} is claimed by music cues ${already} and ${cue.cue_id}.`);
+      }
+      claimedBy.set(clipId, cue.cue_id);
+      if (placement.mediaRef.media_ref_id !== cue.media_ref_id) {
+        fail(
+          `music cue ${cue.cue_id} licenses ${cue.media_ref_id} but clip ${clipId} plays ` +
+            `${placement.mediaRef.media_ref_id}.`,
+        );
+      }
+    }
+  }
+
+  for (const clipId of musicClips.keys()) {
+    if (!claimedBy.has(clipId)) {
       fail(
-        `music cue ${cue.cue_id} and clip ${clip.clip_id} place the same bed with different gain ` +
-          "or fades. The renderer will not pick one.",
+        `music clip ${clipId} is on a music-role track and no cue claims it, so it would play ` +
+          "with no licence attached.",
       );
     }
   }

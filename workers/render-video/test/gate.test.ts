@@ -60,15 +60,31 @@ describe("the gate refuses what the contract does not pin", () => {
     expect(() => assertRenderable(edl)).toThrow(/transfer function/);
   });
 
-  it("refuses a speed change, because the timeline semantics are ambiguous", () => {
+  it("accepts `smooth`, because contracts#51 pinned it to a curve", () => {
     const edl = simpleEdl();
-    (edl.tracks[0]!.items[0] as Clip).time_effect = {
+    for (const keyframe of edl.reframe_tracks![0]!.keyframes) keyframe.interpolation = "smooth";
+    const report = collectGaps(edl);
+    expect(report.gaps).toEqual([]);
+    expect(() => assertRenderable(edl)).not.toThrow();
+  });
+
+  it("reports a speed change as unimplemented by this worker, not as a contract gap", () => {
+    const edl = simpleEdl();
+    // 60 timeline frames at 0.5x reads 30 frames of media, per contracts#50.
+    const clip = edl.tracks[0]!.items[0] as Clip;
+    clip.source_range = range(SOURCE_ORIGIN, 30);
+    clip.time_effect = {
       kind: "linear_speed",
       time_scalar: 0.5,
       freeze_at: null,
+      hold_duration: null,
       audio_handling: "mute",
     };
-    expect(collectGaps(edl).gaps[0]).toMatchObject({ issue: "contracts#50" });
+    const report = collectGaps(edl);
+    expect(report.gaps).toEqual([]);
+    expect(report.unimplemented).toHaveLength(1);
+    expect(report.unimplemented[0]).toMatchObject({ declared: "linear_speed 0.5x" });
+    expect(() => assertRenderable(edl)).toThrow(/worker gap, not a contract gap/);
   });
 
   it("reports every gap at once rather than the first", () => {
@@ -76,15 +92,17 @@ describe("the gate refuses what the contract does not pin", () => {
     (edl.tracks[0]!.items[0] as Clip).color_ops = [
       { op: "exposure", amount: 0.12, lut_id: null, reference_clip_id: null },
     ];
-    (edl.tracks[0]!.items[1] as Clip).time_effect = {
-      kind: "freeze_frame",
-      time_scalar: null,
-      freeze_at: t(SOURCE_ORIGIN + 100),
-      audio_handling: "mute",
+    edl.reframe_tracks![0]!.keyframes[0]!.interpolation = "bezier";
+    edl.reframe_tracks![0]!.keyframes[1]!.crop = {
+      ...edl.reframe_tracks![0]!.keyframes[1]!.crop,
+      rotation_deg: 3,
     };
-    edl.reframe_tracks![0]!.keyframes[0]!.interpolation = "smooth";
     const { gaps } = collectGaps(edl);
-    expect(gaps.map((gap) => gap.issue).sort()).toEqual(["contracts#49", "contracts#50", "contracts#51"]);
+    expect(gaps.map((gap) => gap.issue).sort()).toEqual([
+      "contracts#49",
+      "contracts/edl: crop resampling (unfiled)",
+      "contracts/edl: crop resampling (unfiled)",
+    ]);
   });
 
   it("records planner provenance as not acted upon instead of ignoring it quietly", () => {
@@ -250,13 +268,17 @@ describe("the golden fixture", () => {
     expect(issues).toEqual(
       new Set([
         "contracts#49", // exposure and match_to_reference on clip-07
-        "contracts#50", // linear_speed on clip-05
-        "contracts#51", // every reframe keyframe is `smooth`
         "contracts#52", // ease_in_out, and ambient beds across the dissolve
         "contracts#53", // noise_suppression moderate, high_pass 120 Hz, two gains per bed
         "contracts#54", // ducking attack 60 ms / release 320 ms
       ]),
     );
+    // #51 closed: every reframe keyframe in the fixture is `smooth`, and `smooth` is now a
+    // stated curve. #50 closed: the retime on clip-05 is pinned, and what is left is this
+    // worker's, not the contract's.
+    expect(collectGaps(edl).unimplemented.map((entry) => entry.field)).toEqual([
+      "clips.clip-05.time_effect",
+    ]);
 
     expect(unacted.map((entry) => entry.field)).toContain("audio_plan.ambient.preserve_speech");
     expect(unacted.map((entry) => entry.field)).toContain("beat_grid");
@@ -270,11 +292,26 @@ describe("the golden fixture", () => {
     const rate = edl.rate;
     const video = edl.tracks.find((track) => track.kind === "video")!;
     const clips = video.items.filter((item): item is Clip => item.item_type === "clip");
-    const total = clips.reduce((sum, item) => sum + item.source_range.duration.value, 0);
-    expect(total).toBe(899);
+
+    // The timeline extent is DERIVED from source_range and any time effect (contracts#50).
+    // Summing source durations instead gives 843 — the 56 frames of media that clip-05
+    // stretches over 112 — which is the arithmetic this rule exists to stop anyone doing.
+    const extents = clips.map((item) =>
+      item.time_effect?.kind === "linear_speed"
+        ? item.source_range.duration.value / item.time_effect.time_scalar!
+        : item.source_range.duration.value,
+    );
+    expect(extents.reduce((sum, value) => sum + value, 0)).toBe(899);
+    expect(clips.reduce((sum, item) => sum + item.source_range.duration.value, 0)).toBe(843);
     expect(rate).toBe(60_000 / 1001);
     const last = clips[clips.length - 1]!;
     expect(last.timeline_range!.start_time.value + last.timeline_range!.duration.value).toBe(899);
+
+    // Every declared timeline_range agrees with the derived extent, which is what makes
+    // the six beat-locked downbeats land where beat_lock says they do.
+    clips.forEach((item, index) => {
+      expect(item.timeline_range!.duration.value).toBe(extents[index]);
+    });
   });
 });
 

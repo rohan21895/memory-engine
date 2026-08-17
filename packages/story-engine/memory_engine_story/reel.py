@@ -2002,13 +2002,17 @@ def _music_items(
     """The music cue as timeline items: one clip per pass over the track.
 
     A track shorter than the reel is the ordinary case -- a 15-second cut over
-    a 3-second sting -- and `MusicCue.loop` is how the plan says so. The loop
-    still has to be REALISED on the track, though: one clip whose source_range
-    spans the whole reel would read past the end of the file, and a renderer
-    that "just knows" to wrap around would be making the decision instead of
-    executing it (AGENTS.md rule 3). So each pass is its own clip over the
-    material that exists, the last one cut short, and the timeline tiles
-    exactly once with no frame of silence.
+    a 3-second sting -- and the loop is REALISED on the track rather than
+    declared: one clip whose source_range spans the whole reel would read past
+    the end of the file, and a renderer that "just knows" to wrap around would
+    be making the decision instead of executing it (AGENTS.md rule 3). So each
+    pass is its own clip over the material that exists, the last one cut short,
+    and the timeline tiles exactly once with no frame of silence.
+
+    This is why `MusicCue` has no `loop` boolean (contracts#57): every join is
+    an ordinary cut between two ordinary clips, so its restart point and its
+    truncation are both visible in the plan and neither is the renderer's to
+    invent.
 
     The first clip keeps the unsuffixed id, so the ordinary single-pass cue is
     emitted exactly as it was before looping was expressible.
@@ -2099,24 +2103,26 @@ def _audio_plan(
                 f"music cue loops: {available:g} frames of track under a "
                 f"{total_frames}-frame reel"
             )
-        # The cue reads what the track HAS, never the length of the reel. A
+        # Each pass reads what the track HAS, never the length of the reel. A
         # source_range of `total_frames` over a shorter track claims frames the
         # file does not contain, which `source_range_within_available` then
         # fails at severity error -- the planner deliberately planning a loop
         # and then declaring its own plan unrenderable, with an error message
         # about source ranges rather than about looping.
         #
-        # Whole frames only, and the SAME number the track items below read: a
-        # fractional last frame is a frame the decoder does not have, and a cue
-        # that declared 200.5 while its clips read 200 would put the two halves
-        # of one decision half a frame apart.
+        # Whole frames only: a fractional last frame is a frame the decoder does
+        # not have.
         pass_frames = max(1, int(math.floor(available)))
-        cue_frames = min(pass_frames, total_frames)
+        repeats = _music_items(request, total_frames, pass_frames)
+        # contracts#59: the cue does NOT place the music. Every position, gain
+        # and fade lives on the clips above, once, where OTIO can carry it; the
+        # cue names those clips and says what may legally be done with them. A
+        # cue that also carried a range and a gain meant the same bed was
+        # described twice, and a renderer reading both played it 6 dB hot.
         cue = {
             "cue_id": music.cue_id,
             "media_ref_id": music.media.media_ref_id,
-            "source_range": _range(music.source_start, cue_frames, rate),
-            "timeline_range": _range(0, total_frames, rate),
+            "clip_ids": [item["clip_id"] for item in repeats],
             "license": {
                 "provider": music.license.provider,
                 "license_id": music.license.license_id,
@@ -2126,15 +2132,8 @@ def _audio_plan(
                 "license_type": music.license.license_type,
                 "cleared_for": list(music.license.cleared_for),
             },
-            "gain_db": music.gain_db,
-            "fade_in": None if music.fade_in is None else _rational(music.fade_in, rate),
-            "fade_out": (
-                None if music.fade_out is None else _rational(music.fade_out, rate)
-            ),
-            "loop": loop,
         }
         music_cues.append(cue)
-        repeats = _music_items(request, total_frames, pass_frames)
         if len(repeats) > 1:
             notes.append(
                 f"the music track is laid down {len(repeats)} times to cover "

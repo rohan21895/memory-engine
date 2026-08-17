@@ -80,8 +80,26 @@ export function framesToSeconds(frameCount: number, rate: number): number {
   return frameCount / rate;
 }
 
-/** Frames to whole audio samples, rounded once, from an absolute frame index. */
+/**
+ * Frames to whole audio samples, rounded once, from an absolute frame index — the
+ * conversion common.schema.json's RationalTime $comment now states for every consumer of
+ * this contract (contracts#60), so two of them cannot mix the same plan differently.
+ *
+ * The contract says half away from zero; `Math.round` is half toward +Infinity. Every
+ * position this is called with is a non-negative frame index, where the two agree. A
+ * negative index would be a timeline position before zero, which layoutTrack refuses long
+ * before here — this note exists so that if that ever changes, the difference is a
+ * decision rather than a discovery.
+ */
 export function framesToSamples(frameCount: number, rate: number, sampleRate: number): number {
+  if (frameCount < 0) {
+    throw new RenderVideoError(
+      "validation_failed",
+      `frames-to-samples was given a negative frame index (${frameCount}); the rounding rule ` +
+        "in the contract is half away from zero and this implementation is only equivalent " +
+        "for non-negative positions.",
+    );
+  }
   return Math.round((frameCount * sampleRate) / rate);
 }
 

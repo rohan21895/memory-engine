@@ -132,6 +132,31 @@ describe("the picture the plan asked for", () => {
     expect(panning.filterGraph).toMatch(/crop=w=203:h=360:x='if\(lt\(n,/);
   }, 240_000);
 
+  it("renders a `smooth` reframe track, which is what the planner emits (contracts#51)", async () => {
+    const work = await workspace("smooth");
+    // The reel planner emits `smooth` on every keyframe but the last, so until #51 pinned
+    // the curve this worker could render no reel at all. Rendered here rather than only
+    // unit-tested: the curve has to survive being turned into an ffmpeg expression.
+    const smooth = reframeTrack("rf-1", SOURCE_ORIGIN, SOURCE_ORIGIN + 60);
+    smooth.keyframes[0]!.interpolation = "smooth";
+    smooth.keyframes[1]!.interpolation = "smooth";
+    smooth.keyframes[1]!.crop.x = 0.32;
+
+    const first = await render(videoOnlyEdl(smooth), { prefix: "smooth-a" });
+    const second = await render(videoOnlyEdl(smooth), { prefix: "smooth-b" });
+    expect(first.id).toBe(second.id);
+    expect(first.verification.frameCount).toBe(110);
+
+    // The eased path is a different picture from the linear one between the same
+    // keyframes -- if it were not, the curve would not be worth specifying.
+    const linear = reframeTrack("rf-1", SOURCE_ORIGIN, SOURCE_ORIGIN + 60);
+    linear.keyframes[1]!.crop.x = 0.32;
+    const straight = await render(videoOnlyEdl(linear), { prefix: "smooth-linear" });
+    expect(await decodedFrameDigest(TOOLS, first.path, work)).not.toBe(
+      await decodedFrameDigest(TOOLS, straight.path, work),
+    );
+  }, 300_000);
+
   it("keeps a transition inside the timeline it was planned into", async () => {
     const withCut = makeEdl({
       mediaRefs: [videoRef(source.videoMediaId)],
@@ -304,10 +329,11 @@ describe("the audio plan", () => {
     return {
       music: [
         {
+          // contracts#59: the cue licenses the clip that places the bed. It carries no
+          // range, gain or fade of its own, so there is no second copy to disagree with.
           cue_id: "cue-01",
           media_ref_id: "src-music",
-          source_range: range(0, 100),
-          timeline_range: range(0, 100),
+          clip_ids: ["music-01"],
           license: {
             provider: "catalog_partner",
             license_id: "TEST-1",
@@ -317,10 +343,6 @@ describe("the audio plan", () => {
             license_type: "royalty_free",
             cleared_for: ["private_playback", "social_share"],
           },
-          gain_db: 0,
-          fade_in: t(6),
-          fade_out: t(6),
-          loop: false,
         },
       ],
       ambient: {
@@ -419,16 +441,24 @@ describe("the audio plan", () => {
   it("records the fade curve and the duck edge as stated interpretations, not as silence", async () => {
     const result = await render(audioEdl(false), { audio: true, sources: audioSources(), prefix: "audio-notes" });
     const fields = result.interpretations.map((entry) => entry.field);
-    expect(fields).toContain("ClipAudio.fade_in / fade_out, MusicCue.fade_in / fade_out");
+    expect(fields).toContain("ClipAudio.fade_in / fade_out");
     expect(fields).toContain("audio_plan.ducking[].ranges");
     expect(result.unacted.map((entry) => entry.field)).toContain("audio_plan.ambient.preserve_speech");
   }, 240_000);
 
-  it("refuses a music cue that disagrees with the clip placing the same bed", async () => {
+  it("refuses a music cue that names a clip which does not place it", async () => {
     const edl = audioEdl(false);
-    edl.audio_plan!.music![0]!.gain_db = -3;
+    edl.audio_plan!.music![0]!.clip_ids = ["not-a-clip"];
     await expect(render(edl, { audio: true, sources: audioSources(), prefix: "audio-cue" })).rejects.toThrow(
-      /different gain or fades/,
+      /not a clip on a music-role/,
+    );
+  }, 60_000);
+
+  it("refuses a bed on a music track that no cue licenses", async () => {
+    const edl = audioEdl(false);
+    edl.audio_plan!.music = [];
+    await expect(render(edl, { audio: true, sources: audioSources(), prefix: "audio-unlicensed" })).rejects.toThrow(
+      /no licence attached/,
     );
   }, 60_000);
 

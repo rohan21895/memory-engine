@@ -90,8 +90,9 @@ function cropChain(
     "reframe_tracks[].keyframes[].crop",
     "Normalised crop coordinates are resolved to whole pixels with round-half-up, then bounds " +
       "checked against the source frame; a crop that rounds outside the frame is a hard failure " +
-      "rather than a clamp.",
-    "contracts#51",
+      "rather than a clamp. Now stated by the contract rather than chosen here — see the " +
+      "NormalizedBox $comment in common.schema.json.",
+    "contracts#60 (closed)",
   );
   const x = frameSeriesExpression(plan.x);
   const y = frameSeriesExpression(plan.y);
@@ -244,10 +245,11 @@ function audioContributionChain(
 
   if (contribution.fadeInFrames > 0 || contribution.fadeOutFrames > 0) {
     builder.note(
-      "ClipAudio.fade_in / fade_out, MusicCue.fade_in / fade_out",
+      "ClipAudio.fade_in / fade_out",
       "A fade is executed as a linear ramp in amplitude over the declared frame count — " +
-        "ffmpeg's `tri` curve. The contract gives a duration and no curve.",
-      "contracts#60",
+        "ffmpeg's `tri` curve — which is what the field descriptions now state, rather than " +
+        "the equal-power curve a mixer might otherwise reach for.",
+      "contracts#60 (closed)",
     );
   }
   if (contribution.fadeInFrames > 0) {

@@ -494,17 +494,6 @@ def check_edl(edl: dict) -> list[str]:
                     f"{source_end}) escapes available_range [{low}, {high})"
                 )
 
-            timeline = clip.get("timeline_range")
-            if timeline is not None:
-                if timeline["start_time"]["value"] != position:
-                    problems.append(
-                        f"{clip['clip_id']} starts at {timeline['start_time']['value']} "
-                        f"but the track has reached {position}"
-                    )
-                position += timeline["duration"]["value"]
-            else:
-                position += source["duration"]["value"]
-
             if clip.get("reframe_track_id"):
                 known = {t["reframe_track_id"] for t in edl.get("reframe_tracks", [])}
                 if clip["reframe_track_id"] not in known:
@@ -513,12 +502,70 @@ def check_edl(edl: dict) -> list[str]:
                         f"{clip['reframe_track_id']!r}"
                     )
 
+            # contracts#50: source_range is the media read; the timeline extent is
+            # DERIVED from it and any time effect. Nothing else may set it, and a
+            # timeline_range that disagrees is the drift this rule exists to stop.
+            extent = source["duration"]["value"]
             effect = clip.get("time_effect")
             if effect:
-                if effect["kind"] == "linear_speed" and not effect.get("time_scalar"):
-                    problems.append(f"{clip['clip_id']} has a linear_speed effect with no scalar")
-                if effect["kind"] == "freeze_frame" and effect.get("freeze_at") is None:
-                    problems.append(f"{clip['clip_id']} has a freeze_frame with no freeze_at")
+                if effect["kind"] == "linear_speed":
+                    scalar = effect.get("time_scalar")
+                    if not scalar:
+                        problems.append(
+                            f"{clip['clip_id']} has a linear_speed effect with no scalar"
+                        )
+                    else:
+                        if effect.get("hold_duration") is not None:
+                            problems.append(
+                                f"{clip['clip_id']} is a linear_speed clip carrying a "
+                                "hold_duration, which belongs to freeze_frame"
+                            )
+                        exact = extent / scalar
+                        if exact != int(exact):
+                            problems.append(
+                                f"{clip['clip_id']} reads {extent} frames at {scalar}x, which "
+                                f"is {exact} timeline frames rather than a whole number"
+                            )
+                        extent = exact
+                elif effect["kind"] == "freeze_frame":
+                    if effect.get("freeze_at") is None:
+                        problems.append(f"{clip['clip_id']} has a freeze_frame with no freeze_at")
+                    elif effect["freeze_at"]["value"] != source["start_time"]["value"]:
+                        problems.append(
+                            f"{clip['clip_id']} freezes at {effect['freeze_at']['value']} but "
+                            f"reads from {source['start_time']['value']}; the frozen frame must "
+                            "be the frame the clip reads"
+                        )
+                    if source["duration"]["value"] != 1:
+                        problems.append(
+                            f"{clip['clip_id']} is a freeze_frame reading "
+                            f"{source['duration']['value']} source frames; it reads exactly one"
+                        )
+                    if effect.get("hold_duration") is None:
+                        problems.append(
+                            f"{clip['clip_id']} is a freeze_frame with no hold_duration, so its "
+                            "timeline extent is undefined"
+                        )
+                    else:
+                        if effect.get("time_scalar") is not None:
+                            problems.append(
+                                f"{clip['clip_id']} is a freeze_frame carrying a time_scalar"
+                            )
+                        extent = effect["hold_duration"]["value"]
+
+            timeline = clip.get("timeline_range")
+            if timeline is not None:
+                if timeline["start_time"]["value"] != position:
+                    problems.append(
+                        f"{clip['clip_id']} starts at {timeline['start_time']['value']} "
+                        f"but the track has reached {position}"
+                    )
+                if timeline["duration"]["value"] != extent:
+                    problems.append(
+                        f"{clip['clip_id']} declares a {timeline['duration']['value']}-frame "
+                        f"timeline extent; source_range and its time effect derive {extent}"
+                    )
+            position += extent
 
     grid = edl.get("beat_grid")
     if grid:
@@ -589,6 +636,44 @@ def check_edl(edl: dict) -> list[str]:
         cue_ids = {cue["cue_id"] for cue in plan.get("music", [])}
         if grid and grid["source_cue_id"] not in cue_ids:
             problems.append("beat grid references a music cue that is not in the audio plan")
+
+        # contracts#59: the bed is placed on a track, once. The cue licenses that
+        # placement and does not repeat it, so a renderer can never double it.
+        music_clips = {
+            item["clip_id"]: item
+            for track in edl["tracks"]
+            if track["kind"] == "audio" and track.get("role") == "music"
+            for item in track["items"]
+            if item["item_type"] == "clip"
+        }
+        claimed: dict[str, str] = {}
+        for cue in plan.get("music", []):
+            for clip_id in cue["clip_ids"]:
+                if clip_id not in music_clips:
+                    problems.append(
+                        f"cue {cue['cue_id']} places itself on {clip_id!r}, which is not a clip "
+                        "on a music-role audio track"
+                    )
+                    continue
+                if clip_id in claimed:
+                    problems.append(
+                        f"clip {clip_id} is claimed by cues {claimed[clip_id]} and "
+                        f"{cue['cue_id']}; a bed with two licences plays once and is licensed "
+                        "twice"
+                    )
+                claimed[clip_id] = cue["cue_id"]
+                if music_clips[clip_id]["media_ref_id"] != cue["media_ref_id"]:
+                    problems.append(
+                        f"cue {cue['cue_id']} licenses {cue['media_ref_id']} but clip {clip_id} "
+                        f"plays {music_clips[clip_id]['media_ref_id']}"
+                    )
+        for clip_id in music_clips:
+            if clip_id not in claimed:
+                problems.append(
+                    f"music clip {clip_id} is placed on a music track and no cue claims it, so "
+                    "it plays with no licence attached"
+                )
+
         for cue in plan.get("music", []):
             cleared = set(cue["license"]["cleared_for"])
             destination = edl["target"]["destination"]
@@ -1033,6 +1118,64 @@ class TestSemanticInvariants(unittest.TestCase):
         problems = check_edl(edl)
         self.assertTrue(any("tolerance" in problem for problem in problems), problems)
 
+    def _retimed_clip(self, edl: dict) -> dict:
+        for track in edl["tracks"]:
+            for clip in track["items"]:
+                if clip["item_type"] == "clip" and clip.get("time_effect"):
+                    return clip
+        self.fail("the golden EDL no longer exercises a time effect")
+
+    def test_time_effect_invariant_rejects_the_other_reading(self):
+        """contracts#50. Reading source_range as the TIMELINE extent -- the other
+        candidate reading -- makes the clip read 112 frames instead of 56, and
+        every cut after it lands 112 frames late with nothing to say so."""
+        edl = _fixture(_entries("valid", "edl")[0])
+        self.assertEqual([], check_edl(edl))
+
+        clip = self._retimed_clip(edl)
+        timeline = clip["timeline_range"]["duration"]["value"]
+        clip["source_range"]["duration"]["value"] = timeline
+        problems = check_edl(edl)
+        self.assertTrue(any("timeline extent" in problem for problem in problems), problems)
+
+    def test_a_speed_that_does_not_divide_into_whole_frames_is_rejected(self):
+        edl = _fixture(_entries("valid", "edl")[0])
+        clip = self._retimed_clip(edl)
+        clip["time_effect"]["time_scalar"] = 0.75
+        problems = check_edl(edl)
+        self.assertTrue(any("whole number" in problem for problem in problems), problems)
+
+    def test_a_freeze_frame_without_a_hold_has_no_extent(self):
+        edl = _fixture(_entries("valid", "edl")[0])
+        clip = self._retimed_clip(edl)
+        start = clip["source_range"]["start_time"]
+        clip["time_effect"] = {
+            "kind": "freeze_frame",
+            "time_scalar": None,
+            "freeze_at": dict(start),
+            "hold_duration": None,
+            "audio_handling": "mute",
+        }
+        clip["source_range"]["duration"]["value"] = 1
+        problems = check_edl(edl)
+        self.assertTrue(any("hold_duration" in problem for problem in problems), problems)
+
+    def test_music_placement_invariant_rejects_an_unclaimed_bed(self):
+        """contracts#59. A music clip no cue claims is a bed playing with no
+        licence -- which is the failure the cue exists to make impossible."""
+        edl = _fixture(_entries("valid", "edl")[0])
+        self.assertEqual([], check_edl(edl))
+
+        edl["audio_plan"]["music"][0]["clip_ids"] = []
+        problems = check_edl(edl)
+        self.assertTrue(any("no licence attached" in problem for problem in problems), problems)
+
+    def test_music_placement_invariant_rejects_a_cue_that_places_nothing(self):
+        edl = _fixture(_entries("valid", "edl")[0])
+        edl["audio_plan"]["music"][0]["clip_ids"] = ["not-a-clip"]
+        problems = check_edl(edl)
+        self.assertTrue(any("music-role audio track" in problem for problem in problems), problems)
+
     def test_dpi_floor_invariant_rejects_an_under_resolved_placement(self):
         spec = _fixture(_entries("valid", "album-spec")[0])
         self.assertEqual([], check_album_spec(spec))
@@ -1348,6 +1491,144 @@ class TestSpanIdentityIsComputable(unittest.TestCase):
             blake3((a + b).encode("ascii")).hexdigest(),
             blake3((b + a).encode("ascii")).hexdigest(),
         )
+
+
+#: Paths removed from an EDL before `edl_id` is computed. Stated in the schema's
+#: $comment on edl_id; repeated here because this is what enforces it.
+EDL_ID_EXCLUDED = (
+    "edl_id",
+    "determinism.generated_at",
+    "validation.validated_at",
+    "tracks[].items[].timeline_range",
+    "variant.sibling_edl_ids",
+)
+
+
+def _digest_view(edl: dict) -> dict:
+    view = {key: value for key, value in edl.items() if key != "edl_id"}
+    view["determinism"] = {
+        key: value for key, value in view["determinism"].items() if key != "generated_at"
+    }
+    if view.get("validation") is not None:
+        view["validation"] = {
+            key: value for key, value in view["validation"].items() if key != "validated_at"
+        }
+    if view.get("variant") is not None:
+        view["variant"] = {
+            key: value for key, value in view["variant"].items() if key != "sibling_edl_ids"
+        }
+    view["tracks"] = [
+        {
+            **track,
+            "items": [
+                {key: value for key, value in item.items() if key != "timeline_range"}
+                for item in track["items"]
+            ],
+        }
+        for track in view["tracks"]
+    ]
+    return view
+
+
+def _canonical_json(value) -> bytes:
+    """RFC 8785 canonical JSON, for the value shapes this contract permits.
+
+    Deliberately independent of the planner's implementation: a guard that
+    imported the producer's canonicaliser would agree with the producer by
+    construction, which is exactly the property that must not be assumed.
+    """
+    out: list[str] = []
+
+    def emit(node) -> None:
+        if node is None:
+            out.append("null")
+        elif node is True:
+            out.append("true")
+        elif node is False:
+            out.append("false")
+        elif isinstance(node, str):
+            out.append(json.dumps(node, ensure_ascii=False))
+        elif isinstance(node, int):
+            out.append(str(node))
+        elif isinstance(node, float):
+            # ECMAScript Number::toString: an integral double prints without a
+            # fractional part, so 120.0 is `120` and not `120.0`.
+            out.append(str(int(node)) if node.is_integer() else repr(node))
+        elif isinstance(node, dict):
+            out.append("{")
+            for index, key in enumerate(sorted(node, key=lambda k: k.encode("utf-16-be"))):
+                if index:
+                    out.append(",")
+                out.append(json.dumps(key, ensure_ascii=False))
+                out.append(":")
+                emit(node[key])
+            out.append("}")
+        elif isinstance(node, list):
+            out.append("[")
+            for index, item in enumerate(node):
+                if index:
+                    out.append(",")
+                emit(item)
+            out.append("]")
+        else:
+            raise TypeError(f"not JSON-serialisable: {type(node).__name__}")
+
+    emit(value)
+    return "".join(out).encode("utf-8")
+
+
+class TestEdlIdentityIsComputable(unittest.TestCase):
+    """`edl_id` must RECOMPUTE from the plan, not be asserted alongside it.
+
+    The same failure as issue #26's invented span_id, one schema over: the
+    golden EDL shipped an edl_id that matched no implementation of the rule its
+    own description states, and nothing checked. An id that does not recompute
+    cannot be a render-cache key, cannot be the input a JobSpec names, and
+    cannot tell two plans apart -- it is decoration.
+    """
+
+    def _edls(self):
+        return [(entry["path"], _fixture(entry)) for entry in _entries("valid", "edl")]
+
+    def test_there_is_an_edl_to_check(self):
+        self.assertTrue(self._edls(), "this guard has nothing to guard")
+
+    def test_every_edl_id_recomputes_from_its_plan(self):
+        try:
+            from blake3 import blake3
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        for path, edl in self._edls():
+            with self.subTest(fixture=path):
+                self.assertEqual(
+                    blake3(_canonical_json(_digest_view(edl))).hexdigest(),
+                    edl["edl_id"],
+                    "edl_id does not recompute under the canonicalisation the schema states",
+                )
+
+    def test_the_excluded_paths_really_are_excluded(self):
+        """Changing an excluded field must not move the id, or the id is not a
+        cache key. Changing anything else must move it, or it is not an id."""
+        try:
+            from blake3 import blake3
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        _, edl = self._edls()[0]
+        digest = lambda doc: blake3(_canonical_json(_digest_view(doc))).hexdigest()  # noqa: E731
+        before = digest(edl)
+
+        edl["determinism"]["generated_at"] = "2031-01-01T00:00:00+00:00"
+        edl["validation"]["validated_at"] = "2031-01-01T00:00:00+00:00"
+        for track in edl["tracks"]:
+            for item in track["items"]:
+                if item["item_type"] == "clip":
+                    item["timeline_range"] = None
+        self.assertEqual(before, digest(edl), f"an excluded path moved the id ({EDL_ID_EXCLUDED})")
+
+        edl["tracks"][0]["items"][0]["source_range"]["duration"]["value"] += 1
+        self.assertNotEqual(before, digest(edl), "a source range change did not move the id")
 
 
 class TestScanIdentity(unittest.TestCase):

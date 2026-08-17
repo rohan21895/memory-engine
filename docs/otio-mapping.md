@@ -46,6 +46,14 @@ See the `$comment` header in `contracts/schemas/edl.schema.json` for the complet
 
 **`timeline_range` is derived and is not exported.** It is the running sum of preceding durations minus transition overlaps. OTIO recomputes it from structure. We carry it in the EDL only so a validator can catch a planner that emitted an internally inconsistent timeline, and it is excluded from both the OTIO export and the `determinism.inputs_digest`.
 
+**A speed change does not change `source_range` (contracts#50).** This is the one place OTIO gives no answer and every adapter has to pick: OTIO's own duration arithmetic (`Item.duration()`, `Track.range_of_child_at_index`) is the sum of `source_range.duration` and ignores effects entirely. Our contract settles it on the media side — `source_range` is always the media read, and the timeline extent is derived as `source_range.duration / time_scalar` for `linear_speed` and `hold_duration` for `freeze_frame`.
+
+So on export we write the media range and the warp, which is what an NLE's own retime looks like; on import we recompute `timeline_range` from the same rule rather than trusting the file. The consequence to know about: **an importer that lays clips out by `source_range.duration` alone will place everything after a retimed clip early** — by exactly the media-versus-timeline difference, 56 frames on the golden fixture's `clip-05`. That is a visible, immediate error rather than a subtle one; the alternative reading (source_range meaning timeline extent under an effect) fails silently instead, by making one field mean media on one clip and timeline on the next. A round-trip test must therefore include a retimed clip, and it must assert the *timeline* extent, not just the fields.
+
+**`smooth` reframe interpolation is a stated curve (contracts#51).** Reframe keyframe tracks have no OTIO equivalent and round-trip through `metadata.memory_engine.reframe_tracks`, so an importer has to reproduce the curve, not just the values. `smooth` is a **uniform Catmull-Rom spline through the keyframe values with the endpoints clamped** (`P[-1] = P[0]`, `P[n] = P[n-1]`), evaluated per component against integer source frame numbers; the exact polynomial is in the `ReframeKeyframe.interpolation` `$comment`. Uniform rather than centripetal so the arithmetic is +, - and * only and is bit-identical across platforms. Note that clamping makes the ends an ease rather than a straight line: a two-keyframe track is `B + (C-B)(0.5u + 1.5u² - u³)`, not a lerp. An importer that substitutes smoothstep or a cosine ease will put the crop measurably elsewhere on a moving subject while every keyframe still matches.
+
+**`audio_plan.music` carries no placement (contracts#59).** A `MusicCue` is licence and provenance attached to the audio-track clips that place the bed, named by `clip_ids`. The placement itself — source range, timeline range, gain, fades — lives on those clips and exports as an ordinary OTIO `Clip` on a `Track` with `kind: "Audio"`, so it survives into Resolve as music rather than as metadata. There is no `loop` flag: a bed that repeats is several clips, and each join is an ordinary cut. On import, the cues are rebuilt from the metadata namespace and re-bound to the clips by id; a cue whose `clip_ids` do not resolve is a failed import, not a silent drop.
+
 **Markers are emitted twice on purpose.** Downbeats and story beats live authoritatively in `metadata.memory_engine.beat_grid` / `.story_arc`. They are *also* emitted as OTIO `Marker`s so that an editor opening the timeline in Resolve can see where the music lands and what each act is doing. On import, markers whose `metadata.memory_engine.generated` is `true` are discarded and the structures are rebuilt from the metadata — otherwise a round trip would duplicate them.
 
 ## Exporter algorithm
@@ -113,10 +121,20 @@ export_clip(clip, edl) -> otio.schema.Clip:
                      media_reference=media_reference)
     otio_clip.enabled = clip.enabled
 
+    # source_range above is the MEDIA the clip reads, unchanged by the effect
+    # (contracts#50). The timeline extent OTIO will compute from it is wrong for a
+    # retimed clip; that is OTIO's own gap, and the memory_engine metadata carries
+    # the extent so our importer never has to infer it.
     if clip.time_effect?.kind == "linear_speed":
         otio_clip.effects.append(LinearTimeWarp(time_scalar=clip.time_effect.time_scalar))
+        otio_clip.metadata["memory_engine"]["timeline_extent"] = \
+            clip.source_range.duration.value / clip.time_effect.time_scalar
     elif clip.time_effect?.kind == "freeze_frame":
         otio_clip.effects.append(FreezeFrame())
+        # freeze_at == source_range.start_time and source_range.duration == 1 frame,
+        # so the only thing OTIO cannot carry is how long the frame is held.
+        otio_clip.metadata["memory_engine"]["hold_duration"] = \
+            to_rational(clip.time_effect.hold_duration)
 
     for op in clip.color_ops:
         effect = Effect(effect_name="memory_engine.color")

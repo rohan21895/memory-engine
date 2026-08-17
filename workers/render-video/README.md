@@ -28,27 +28,35 @@ result and are printed by the CLI. Nothing is skipped quietly.
 
 | Bucket | Meaning |
 |---|---|
-| **refused** | The render fails, listing *every* offender at once with the issue that has to close. |
+| **refused (contract gap)** | The render fails, listing *every* offender at once with the issue that has to close. A question for the planner side. |
+| **refused (not implemented here)** | The contract pins it completely and this worker has not built it yet. A question for this worker, and reported separately so a closed issue does not look open. |
 | **not acted upon** | Planner provenance the renderer has no business executing (`story_arc`, `subject_lock`, `smoothing`, `markers`, `variant`). Recorded, never executed. |
-| **interpreted** | Executed under a stated convention because the contract pins the quantity but not the last detail of its realisation. See [#60](https://github.com/rohan21895/memory-engine/issues/60). |
+| **interpreted** | Executed under a stated convention. Since [#60](https://github.com/rohan21895/memory-engine/issues/60) closed, the conventions are stated by the contract rather than chosen here; they stay in the report so the realisation is on the record with the render. |
 
 ### What is refused today
 
 | Declaration | Why | Issue |
 |---|---|---|
 | any `ColorOp` | `amount` is normalised to [-1,1] with no transfer function; `match_to_reference` is a planner computation | [#49](https://github.com/rohan21895/memory-engine/issues/49) |
-| any `time_effect` | the contract does not say whether `source_range` or `timeline_range` is authoritative under a speed change, and the golden fixture and the field description disagree | [#50](https://github.com/rohan21895/memory-engine/issues/50) |
-| `interpolation: "smooth"` | names no curve — and it is the only mode the reel planner emits | [#51](https://github.com/rohan21895/memory-engine/issues/51) |
 | `easing` other than `linear`; `wipe`/`push`/`blur_dissolve`/`match_cut`/`custom`; a transition with ambient audio under it | no curve, no parameter set, and no statement of what the beds do across the blend | [#52](https://github.com/rohan21895/memory-engine/issues/52) |
 | `noise_suppression` other than `none`; any `high_pass_hz`; a clip carrying both an ambient gain and a non-zero `ClipAudio.gain_db` | DSP specified by process rather than by outcome, and no gain composition rule | [#53](https://github.com/rohan21895/memory-engine/issues/53) |
 | ducking with non-zero `attack_ms`/`release_ms`, or any trigger but `explicit_ranges` | no envelope shape; detection triggers are not reproducible | [#54](https://github.com/rohan21895/memory-engine/issues/54) |
-| `loop: true` on a `MusicCue` | the loop join is undefined | [#57](https://github.com/rohan21895/memory-engine/issues/57) |
 | any HLG or PQ source, or `working_space` ≠ `output_transform` | `ColorPipeline` names no tone-mapping operator | [#58](https://github.com/rohan21895/memory-engine/issues/58) |
 | a non-zero `global_start_time` | no timecode track or drop-frame convention is specified for the delivered file | [#56](https://github.com/rohan21895/memory-engine/issues/56) |
+| a rotated crop, or a crop window that changes size | neither has a pinned resampling convention; [#51](https://github.com/rohan21895/memory-engine/issues/51) settled the interpolation curve and nothing else about crop geometry | unfiled |
 
-`contracts/fixtures/edl/valid/reel-beat-locked-vertical-reframe.json` is refused today, on
-six of those grounds at once. `test/gate.test.ts` asserts the exact set, so the day the
-issues close the test is the checklist.
+### What is refused because this worker has not built it
+
+| Declaration | State |
+|---|---|
+| any `time_effect` | [#50](https://github.com/rohan21895/memory-engine/issues/50) closed: `source_range` is the media read, the timeline extent is `source_range.duration / time_scalar` (or `hold_duration` for a freeze), and output frame *k* draws source frame `start + floor(k * time_scalar)`. `program.ts` lays a retimed clip out on that extent and validates it; emitting the retimed picture needs a filter chain that neither duplicates nor drops a frame of its own accord, and that is not built. The number this would get wrong is *which frame*. |
+
+`contracts/fixtures/edl/valid/reel-beat-locked-vertical-reframe.json` is refused today on
+four contract grounds (#49, #52, #53, #54) plus the unimplemented retime on `clip-05`.
+`test/gate.test.ts` asserts the exact set, so the day the issues close the test is the
+checklist. It was six contract grounds until #50, #51, #57 and #60 closed: `smooth` is now
+a stated curve and is rendered, the music cue no longer places a second copy of the bed,
+and the retime is arithmetic this worker performs even though it does not yet draw it.
 
 ### Not in the EDL at all
 
