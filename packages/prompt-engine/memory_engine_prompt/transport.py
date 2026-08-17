@@ -413,20 +413,44 @@ def _rfc3339(moment: datetime) -> str:
 class ContactSheet:
     """The composed, low-resolution grid plus the manifest of what is on it.
 
-    NOTE ON PROVENANCE: `packages/prompt-engine/memory_engine_prompt/contact_sheet.py`
-    does not exist in this tree, and no branch in this repository contains it.
-    This type is therefore designed against the shape `structured.py` requires
-    on the far side -- an ordered list of candidate ids that must equal
-    `Request.allowed_ids` -- plus the two things any image payload needs
-    (bytes, media type). When the composer lands, it should either return this
-    type or one with `image_bytes` / `media_type` / `tile_ids` / `context`, and
-    `from_mapping` is here so a composer that emits a plain manifest dict can be
-    adapted without either side importing the other.
+    `tile_ids` are THE IDENTIFIERS THE MODEL IS ASKED TO USE -- whatever string
+    it will type back. They are not necessarily media ids, and the distinction
+    is the whole reconciliation described below.
 
-    `tile_ids` is ORDERED and the order is load-bearing: it is the reading order
+    The tuple is ORDERED and the order is load-bearing: it is the reading order
     of the grid, it is the order the ids are listed to the model, and it is part
     of the cache key. Two sheets with the same photos in a different arrangement
     are two different questions.
+
+    NOTE ON PROVENANCE, AND AN OPEN RECONCILIATION
+    When this module was written, `contact_sheet.py` did not exist in this tree
+    or on any branch, so this type was designed against the only shape the far
+    side constrains: an ordered id list equal to `Request.allowed_ids`, plus the
+    two things any image payload needs. A composer then landed in parallel on
+    `feat/contact-sheet`, and it makes a DIFFERENT and better choice that the
+    two branches must reconcile before either is merged:
+
+      * That composer draws a positional LABEL ("B4") on every tile and states
+        that "the labels are the model's entire vocabulary"; its `SheetManifest`
+        maps label -> media_id and is explicitly "never sent anywhere".
+      * This module, in the absence of that decision, lists the caller's ids in
+        the prompt -- so under a naive wiring the media ids would leave the
+        device, and the model would have to infer which tile is which from
+        reading order rather than from a glyph it can actually see.
+
+    Labels win on both counts: strictly less leaves the device, and the model
+    maps tile to identifier by looking rather than by counting. The change is
+    small and belongs at the seam, not inside either module:
+
+      1. Build `structured.Request(allowed_ids=<the sheet's labels>)`, and pass
+         those same labels as `tile_ids` here. Nothing in this file changes --
+         it has no opinion about what an id means, only that both sides agree.
+      2. After `structured.parse_reply`, map the returned labels back to media
+         ids through the composer's manifest, which never left the machine.
+
+    `from_mapping` exists so a composer emitting a plain manifest dict can be
+    adapted at that seam without either module importing the other -- the
+    import edge the package `__init__` deliberately refuses to create.
     """
 
     image_bytes: bytes
