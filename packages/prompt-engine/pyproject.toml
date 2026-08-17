@@ -2,7 +2,12 @@
 name = "memory-engine-prompt"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = []
+# structured.py is stdlib-only and stays that way. contact_sheet.py needs
+# Pillow to composite and blake3 for the digest the consent ledger records --
+# both are imported inside the functions that use them, so importing the parser
+# still costs nothing, but they are real requirements of this package and are
+# declared rather than assumed present.
+dependencies = ["pillow>=10.0", "blake3>=0.4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
