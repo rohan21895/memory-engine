@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { friendlyFolderName, monthLabel, scanPercent } from "./format";
+import { captureLabel, durationLabel, friendlyFolderName, monthLabel, scanPercent } from "./format";
 
 describe("friendlyFolderName", () => {
   it("handles Windows and POSIX paths", () => {
@@ -11,7 +11,24 @@ describe("friendlyFolderName", () => {
 describe("monthLabel", () => {
   it("does not invent a date", () => {
     expect(monthLabel(null)).toBe("Date unknown");
-    expect(monthLabel("not-a-date")).toBe("Date unknown");
+    expect(monthLabel(Number.NaN)).toBe("Date unknown");
+    expect(monthLabel(1_700_000_000, "unknown")).toBe("Date unknown");
+  });
+});
+
+describe("captureLabel", () => {
+  it("never fabricates time below the asserted precision", () => {
+    const day = captureLabel(1_700_000_000, "day");
+    const year = captureLabel(1_700_000_000, "year");
+    expect(day).not.toMatch(/\d:\d/);
+    expect(year).toMatch(/^\d{4}$/);
+  });
+});
+
+describe("durationLabel", () => {
+  it("formats video durations without fake precision", () => {
+    expect(durationLabel(65_100)).toBe("1:05");
+    expect(durationLabel(null)).toBeNull();
   });
 });
 
