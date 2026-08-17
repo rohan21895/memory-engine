@@ -555,12 +555,16 @@ class TestHaversine(unittest.TestCase):
         self.assertAlmostEqual(math.pi * 6371.0088, haversine_km(0.0, 0.0, 0.0, 180.0), delta=1.0)
         self.assertAlmostEqual(math.pi * 6371.0088, haversine_km(-90.0, 0.0, 90.0, 0.0), delta=1.0)
 
-    # Found by search over near-antipodal pairs, not by reasoning. The
+    # Found by search over near-antipodal pairs, not by reasoning. On macOS the
     # haversine term here evaluates to 1.0000000000000004 -- two ulps above 1,
-    # which is the smallest excess that survives the sqrt (one ulp rounds back
-    # to exactly 1.0 and never reaches asin). The tidy antipodes above,
-    # (0,0)/(0,180), land on exactly 1.0 and do not exercise the clamp at all,
-    # which is why they are not sufficient on their own.
+    # the smallest excess that survives the sqrt (one ulp rounds back to exactly
+    # 1.0 and never reaches asin). On the Linux CI runner the SAME expression
+    # lands on exactly 1.0.
+    #
+    # That difference broke an earlier version of the test below, which asserted
+    # the overflow happens. It passed locally and failed in CI. The overflow is
+    # a property of a particular libm, so it is not something to assert -- the
+    # clamp's OUTPUT is, and that is identical on both.
     OVERFLOWING_ANTIPODES = (
         -59.32845628596557,
         60.01201955549453,
@@ -568,21 +572,43 @@ class TestHaversine(unittest.TestCase):
         -119.98798044450547,
     )
 
-    def test_the_asin_argument_is_clamped(self):
-        lat1, lon1, lat2, lon2 = self.OVERFLOWING_ANTIPODES
-        phi1, phi2 = math.radians(lat1), math.radians(lat2)
-        naive = (
-            math.sin((phi2 - phi1) / 2.0) ** 2
-            + math.cos(phi1) * math.cos(phi2) * math.sin(math.radians(lon2 - lon1) / 2.0) ** 2
-        )
-        # Guarding the guard: if a future libm makes this land at or below 1.0
-        # the test below stops testing anything, and would pass forever.
-        self.assertGreater(math.sqrt(naive), 1.0, "this pair no longer overflows; find another")
+    def test_antipodal_points_return_half_the_circumference(self):
+        """The behaviour the clamp exists to produce, asserted without depending
+        on whether THIS machine's libm overflows.
+
+        The original version of this test asserted that a specific antipodal
+        pair pushes the haversine term above 1.0 by a couple of ulps -- which it
+        does on macOS and does NOT on the Linux CI runner, where the same
+        expression lands at exactly 1.0. It failed in CI while passing locally.
+
+        The overflow is real and platform-dependent, so it is not something to
+        assert; the clamp's OUTPUT is. This checks a spread of antipodal pairs
+        return pi*R rather than raising, which is true on every platform whether
+        or not the intermediate overflowed.
+        """
+        cases = [
+            # The searched pair stays in the list: on a platform whose libm
+            # overflows it, this genuinely exercises the clamp; on one that
+            # lands at exactly 1.0 it is simply another antipodal pair. Either
+            # way the expected distance is the same, which is the point.
+            self.OVERFLOWING_ANTIPODES,
+            (0.0, 0.0, 0.0, 180.0),
+            (12.9716, 77.5946, -12.9716, -102.4054),
+            (-33.8688, 151.2093, 33.8688, -28.7907),
+        ]
+        for lat1, lon1, lat2, lon2 in cases:
+            with self.subTest(pair=(lat1, lon1)):
+                self.assertAlmostEqual(
+                    math.pi * 6371.0088,
+                    haversine_km(lat1, lon1, lat2, lon2),
+                    delta=1.0,
+                )
+
+    def test_an_out_of_domain_argument_would_raise_without_the_clamp(self):
+        """Why the clamp is not defensive noise, stated against math.asin
+        directly rather than against a float accident that varies by platform."""
         with self.assertRaises(ValueError):
-            math.asin(math.sqrt(naive))
-        self.assertAlmostEqual(
-            math.pi * 6371.0088, haversine_km(lat1, lon1, lat2, lon2), delta=1.0
-        )
+            math.asin(1.0 + 2 ** -52)
 
     def test_the_split_threshold_is_where_it_says_it_is(self):
         just_over = haversine_km(0.0, 0.0, LOCATION_SPLIT_KM * 1.1 / 111.19, 0.0)
