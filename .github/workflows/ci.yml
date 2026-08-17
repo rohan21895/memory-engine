@@ -104,6 +104,19 @@ jobs:
       - uses: actions/checkout@v7
       - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all-features
 
+  shadow-files:
+    name: Shadow Files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      # Cheap, and it caught a phantom migration that read as a broken
+      # migration set rather than as a stray file. Runs on its own so the
+      # failure names itself.
+      - run: node scripts/ci/check-no-shadow-files.mjs
+
   codegen-freshness:
     name: Codegen Freshness
     runs-on: ubuntu-latest
