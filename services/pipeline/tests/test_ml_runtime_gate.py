@@ -183,7 +183,7 @@ class MissingModelHost(unittest.TestCase):
 
         self.assertEqual(StageStatus.COMPLETED, _stage(recovered, "analysis").status)
         self.assertEqual(
-            StageStatus.SKIPPED, _stage(recovered, "ingest").status,
+            StageStatus.COMPLETED, _stage(recovered, "ingest").status,
             "recovery must not re-read the source folder",
         )
         with sqlite3.connect(self.workdir / "library.db") as connection:

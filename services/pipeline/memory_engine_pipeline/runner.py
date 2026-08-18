@@ -92,10 +92,11 @@ class RunReport:
 
     @property
     def ok(self) -> bool:
-        """True only when nothing was blocked, unavailable or failed.
+        """True only when every requested stage completed or was verified reused.
 
-        SKIPPED counts as fine -- "already done" is a successful outcome for an
-        idempotent runner and is the normal result of a second run.
+        A skipped stage has no result. Cached work is reported as COMPLETED
+        after its durable state or artifact is verified, so absence can never
+        inherit success merely from sharing an enum with a cache hit.
         """
         return all(result.status.is_success for result in self.results)
 
@@ -289,14 +290,14 @@ def format_report(report: RunReport) -> str:
         lines.append("  produced  nothing: no stage that ran writes a finished artifact")
     lines.append("")
     if report.ok:
-        lines.append("  every stage that was asked for either did its work or had none to do.")
+        lines.append("  every stage that was asked for completed or reused a verified result.")
     else:
         stalled = [
             result for result in report.results if not result.status.is_success
         ]
         lines.append(
-            f"  {len(stalled)} stage(s) did not finish. Nothing downstream of them ran, "
-            "and nothing they would have produced exists."
+            f"  {len(stalled)} stage(s) did not produce a successful result. "
+            "The requested run is incomplete."
         )
     lines.append(rule)
     return "\n".join(lines)

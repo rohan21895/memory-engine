@@ -163,7 +163,7 @@ def run(ctx: StageContext) -> StageResult:
     if job["state"]["status"] == "completed":
         return StageResult(
             stage=STAGE,
-            status=StageStatus.SKIPPED,
+            status=StageStatus.COMPLETED,
             detail="the library and its scores are unchanged since the last ranking pass",
             job_id=job["job_id"],
             counts={"media": len(records), "scored": len(fused)},

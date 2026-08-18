@@ -76,7 +76,7 @@ def run(ctx: StageContext) -> StageResult:
     if not records:
         return StageResult(
             stage=STAGE,
-            status=StageStatus.SKIPPED,
+            status=StageStatus.COMPLETED,
             detail="no face was detected anywhere in this library",
             counts={"faces": 0},
         )
@@ -202,7 +202,7 @@ def run(ctx: StageContext) -> StageResult:
         # kind of churn that makes "what changed?" unanswerable.
         return StageResult(
             stage=STAGE,
-            status=StageStatus.SKIPPED,
+            status=StageStatus.COMPLETED,
             detail="this face set was already clustered and assigned",
             job_id=job["job_id"],
             counts={"faces": len(records), "embedded": len(embeddings)},

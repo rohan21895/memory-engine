@@ -208,7 +208,7 @@ def run(ctx: StageContext) -> StageResult:
         )
         return StageResult(
             stage=STAGE,
-            status=StageStatus.SKIPPED,
+            status=StageStatus.COMPLETED,
             detail="source folder unchanged; no file was read",
             job_id=full_job["job_id"],
             counts={"files": len(current.entries), **delta.summary()},
@@ -234,7 +234,7 @@ def run(ctx: StageContext) -> StageResult:
         write_json_atomically(_inventory_path(ctx), current.to_json())
         return StageResult(
             stage=STAGE,
-            status=StageStatus.SKIPPED,
+            status=StageStatus.COMPLETED,
             detail=(
                 f"{len(delta.removed)} file(s) are gone from disk and nothing was "
                 "added; their records are kept"
@@ -259,7 +259,7 @@ def run(ctx: StageContext) -> StageResult:
         write_json_atomically(_inventory_path(ctx), current.to_json())
         return StageResult(
             stage=STAGE,
-            status=StageStatus.SKIPPED,
+            status=StageStatus.COMPLETED,
             detail=f"the {len(paths)} changed files were already ingested",
             job_id=job["job_id"],
             counts={"files": len(current.entries), **delta.summary()},

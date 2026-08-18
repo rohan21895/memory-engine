@@ -255,7 +255,7 @@ def run(ctx: StageContext) -> StageResult:
         spec = json.loads(output_path.read_text(encoding="utf-8"))
         return StageResult(
             stage=STAGE,
-            status=StageStatus.SKIPPED,
+            status=StageStatus.COMPLETED,
             detail="the same album was already planned and validated",
             job_id=job["job_id"],
             counts={"pages": len(spec["pages"]), "selected": len(selection.selected)},
