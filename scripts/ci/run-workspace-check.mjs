@@ -10,6 +10,22 @@ if (!new Set(["lint", "test"]).has(check)) {
 
 let checksRun = 0;
 
+// Tests that exercise deliberately uninstalled, non-redistributable artifacts
+// are outside the required checkout-only suite. They are removed explicitly
+// and reported as NOT RUN; every other unittest skip is a hard failure.
+const optionalPythonTests = new Map();
+const fetchedYuNet = path.join(
+  repositoryRoot,
+  "models",
+  "weights",
+  "face_detection_yunet_2023mar.onnx",
+);
+if (!existsSync(fetchedYuNet)) {
+  optionalPythonTests.set(path.join(repositoryRoot, "models"), [
+    "test_fetch_weights.PayloadShapeChecks.test_the_real_fetched_yunet_passes_if_it_is_here",
+  ]);
+}
+
 for (const manifest of findFilesNamed("package.json")) {
   if (manifest === path.join(repositoryRoot, "package.json")) {
     continue;
@@ -45,7 +61,24 @@ for (const pyproject of findFilesNamed("pyproject.toml")) {
   } else {
     const testsDirectory = path.join(projectDirectory, "tests");
     if (existsSync(testsDirectory)) {
-      run("python3", ["-m", "unittest", "discover", "-s", testsDirectory]);
+      const requiredSuite = path.join(testsDirectory, "run_required_suite.py");
+      if (existsSync(requiredSuite)) {
+        // A component with load-bearing optional dependencies owns the rule for
+        // what constitutes a complete run. Plain unittest discovery exits zero
+        // when whole integration classes skip, which is not a passing signal.
+        run("python3", [requiredSuite]);
+      } else {
+        const requiredRunner = path.join(
+          repositoryRoot,
+          "scripts",
+          "ci",
+          "run-required-unittest.py",
+        );
+        const exclusions = (optionalPythonTests.get(projectDirectory) ?? []).flatMap(
+          (testId) => ["--exclude", testId],
+        );
+        run("python3", [requiredRunner, testsDirectory, ...exclusions]);
+      }
       checksRun += 1;
     }
   }

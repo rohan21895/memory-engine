@@ -68,10 +68,12 @@ jobs:
       # one -- so CI has to carry them.
       - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "pillow>=10.0" "numpy>=1.26" ./workers/ml-runtime
       - run: npm ci --ignore-scripts
+      # Pipeline integration tests execute these exact artifacts. `cargo test`
+      # only creates a debug worker and vitest does not emit render-video/dist,
+      # so a fresh runner otherwise skips most of the pipeline while green.
+      - run: cargo build --release --manifest-path workers/ingest/Cargo.toml --all-features
+      - run: npm run build --workspace @memory-engine/render-video
       - run: npm test
-      # Unlike unittest's default runner, this exits non-zero if any required
-      # ml-runtime module or test is skipped.
-      - run: python3 workers/ml-runtime/tests/run_required_suite.py
       # CLAUDE.md hard rule 7: "Model swaps are gated by the eval harness in
       # CI." Until this step existed the harness was a library nothing but its
       # own test file imported, so the rule was not true. Every committed
@@ -148,11 +150,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -m pip install --upgrade pip
-      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4"
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "protobuf>=5.28.1,<6"
       # Golden tests: schemas are well formed, every fixture behaves as the
       # manifest declares, cross-field invariants hold, and the committed
       # bindings both parse and round-trip the fixtures.
-      - run: python3 -m unittest discover -s contracts/tests -v
+      - run: python3 scripts/ci/run-required-unittest.py contracts/tests
 
   demo-scripts:
     name: Demo Scripts
@@ -170,7 +172,7 @@ jobs:
       # which did not run can never read as a pass. No ffmpeg here on purpose --
       # the generator's --no-video path is exercised instead, and it is required
       # to declare itself incomplete rather than exit 0.
-      - run: python3 -m unittest discover -s scripts/demo/tests -v
+      - run: python3 scripts/ci/run-required-unittest.py scripts/demo/tests
 
   egress-test:
     name: Egress Test
