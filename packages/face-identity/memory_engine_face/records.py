@@ -18,13 +18,19 @@ that ships.
 
     THIS IS THE PART THAT WAS MISSING AND IT IS NOT AN IDENTITY FEATURE.
 
-    services/pipeline currently plans albums with an empty face set, so
-    `validator.face_in_trim_zone` passes vacuously: `face_count: 0` on every
-    placement, no face can be in the trim zone, and the gate that CLAUDE.md rule
-    5 rests on cannot fail because there is nothing to gate. album.py says so in
-    a comment and calls it "honest ... and is NOT the same as 'checked and
-    safe'". It is honest and it is also a print defect waiting for its first
-    real library.
+    services/pipeline used to plan albums with an empty face set, so
+    `validator.face_in_trim_zone` passed vacuously: `face_count: 0` on every
+    placement, no face could be in the trim zone, and the gate that CLAUDE.md
+    rule 5 rests on could not fail because there was nothing to gate. album.py
+    said so in a comment and called it "honest ... and is NOT the same as
+    'checked and safe'". It was honest and it was also a print defect waiting
+    for its first real library.
+
+    It is wired now: `services/pipeline/stages/album.py` builds every Photo
+    from the stored FaceRecords through this function, and refuses to plan a
+    book when a photo's `face_count` disagrees with the rectangles the library
+    holds for it. `detected_face_from_record` below is the adapter that gets a
+    caller from a stored record back to the object this function takes.
 
     The fix does not need identity at all. Face SAFETY is about where a face is
     on the page; face IDENTITY is about whose it is. A guillotine does not care
@@ -65,6 +71,7 @@ __all__ = [
     "NormalizedBox",
     "RecordError",
     "SUBJECT_DETECTION_FLOOR",
+    "detected_face_from_record",
     "face_boxes_for_layout",
     "face_context_from_record",
     "to_face_record",
@@ -364,6 +371,66 @@ def face_context_from_record(record: Mapping[str, Any]) -> dict[str, Any]:
             else None
         ),
     }
+
+
+def detected_face_from_record(record: Mapping[str, Any]) -> DetectedFace:
+    """Rebuild the detection half of a FaceRecord that has been stored.
+
+    The inverse of the `detection` block `to_face_record` writes, and nothing
+    else: no identity, no cluster, no eligibility. It exists so that a caller
+    holding FaceRecords out of a database can reach `face_boxes_for_layout`
+    without writing its own record-to-object mapping -- which is the mapping
+    that decides which rectangle the print validator protects, and therefore
+    exactly the one that must not exist in two places drifting apart.
+
+    Raises rather than defaulting when a required field is absent. A face whose
+    stored box cannot be read is not a face at (0,0) of zero size; it is a
+    record this function cannot honestly interpret, and inventing a box for it
+    would produce a face-safety report about a rectangle nobody detected.
+    """
+    detection = record.get("detection")
+    if not isinstance(detection, Mapping):
+        raise RecordError(
+            f"{record.get('face_id')!r}: the record has no detection block, so there "
+            "is no box to protect"
+        )
+    bbox = detection.get("bbox")
+    if not isinstance(bbox, Mapping):
+        raise RecordError(f"{record.get('face_id')!r}: detection has no bbox")
+    detector = detection.get("detector")
+    if not isinstance(detector, Mapping):
+        raise RecordError(
+            f"{record.get('face_id')!r}: detection names no detector, so the box "
+            "cannot be attributed to a model or a version"
+        )
+    return DetectedFace(
+        face_id=record["face_id"],
+        media_id=record["media_id"],
+        detection=Detection(
+            bbox=NormalizedBox(
+                x=bbox["x"], y=bbox["y"], w=bbox["w"], h=bbox["h"]
+            ),
+            detection_score=detection["detection_score"],
+            detector=ModelRef(
+                model_id=detector["model_id"],
+                version=detector["version"],
+                weights_blake3=detector.get("weights_blake3"),
+                runtime=detector.get("runtime"),
+                precision=detector.get("precision"),
+                config_blake3=detector.get("config_blake3"),
+            ),
+            detected_on=detection.get("detected_on", "thumbnail_512"),
+            face_area_ratio=detection.get("face_area_ratio"),
+        ),
+        embedding_ref=record.get("embedding"),
+        landmarks=record.get("landmarks"),
+        attributes=record.get("attributes"),
+        track=record.get("track"),
+        frame_time=record.get("frame_time"),
+        excluded_from_sharing=bool(
+            (record.get("sensitive") or {}).get("excluded_from_sharing", False)
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

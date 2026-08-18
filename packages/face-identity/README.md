@@ -16,6 +16,44 @@ no call site that can set it. Album, film and reel code takes an
 Everything uncertain becomes a `ReviewItem`; answering one changes the evidence
 and the next assignment pass re-derives the conclusions.
 
+## Where this runs
+
+Wired into `services/pipeline` (branch `feat/wire-face-identity`):
+
+```
+analysis stage   SCRFD detects           -> a FaceRecord per face, no embedding
+                 ArcFace embeds          -> the host warps each face onto the
+                                            insightface_5 template; the record
+                                            gains a VectorRef
+faces stage      cluster_faces           -> person hypotheses
+                 assign_identities       -> assignments (all unassigned today)
+                 build_review_queue      -> outputs/faces/review-queue.json
+album stage      face_boxes_for_layout   -> the rectangles the print validator's
+                                            trim-zone and gutter checks protect
+```
+
+Measured on the 46-file synthetic demo library (`scripts/demo/make_library.py`,
+41 analysable stills after 5 quarantines) over the real gRPC contract with the
+fake model host: **33 faces detected, 33 embedded, 33 clusters, 0 eligible for
+automated output, 33 awaiting review**, every one of them queued as
+`new_cluster`. Zero eligible is the correct number and is asserted as such —
+see below.
+
+The counts come from a fake host, and that is not a shortcut that could be
+avoided: run the same library through **real** SCRFD weights and it finds *zero*
+faces, because the library's "faces" are drawn cartoons and its own docstring
+says they prove nothing about detection. What real weights do verify is the half
+that does not need a real face — ArcFace loads, aligns through the
+`insightface_5` template, and returns a 512-d vector `FaceEmbedding` accepts, and
+the same face warped from a differently-ordered five points comes back as a
+different vector (cosine 0.9519 against itself). That difference is the failure
+mode the scheme checks exist for, and it is invisible to everything downstream.
+
+The alignment pairing is refused at configuration time: the analysis stage reads
+both model configs and fails the run when the detector's `landmark_scheme` is
+not the one the embedder's template was built for, rather than embedding a
+library's worth of faces off a plausible warp.
+
 ## What is NOT claimed
 
 **No face-recognition precision number appears anywhere in this package,

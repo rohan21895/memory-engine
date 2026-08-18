@@ -49,7 +49,7 @@ from typing import Any, Callable
 from .events import ProgressReporter, utc_now
 from .ids import digest_of, source_locator_digest
 from .jobstore import JobStore
-from .stages import album, analysis, ingest, ranking, render, story
+from .stages import album, analysis, faces, ingest, ranking, render, story
 from .stages.base import (
     Settings,
     StageContext,
@@ -67,6 +67,9 @@ Stage = tuple[str, Callable[[StageContext], StageResult]]
 STAGE_ORDER: tuple[Stage, ...] = (
     (ingest.STAGE, ingest.run),
     (analysis.STAGE, analysis.run),
+    # Faces before ranking and album: clustering is a whole-library pass, and
+    # the album's face-safe layout reads the rectangles it stores.
+    (faces.STAGE, faces.run),
     (ranking.STAGE, ranking.run),
     (album.STAGE, album.run),
     (render.STAGE, render.run),

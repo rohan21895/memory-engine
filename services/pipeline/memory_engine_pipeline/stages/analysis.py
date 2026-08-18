@@ -48,6 +48,33 @@ ONE ITEM'S FAILURE IS NOT THE BATCH'S
 A corrupt proxy in a batch of 32 marks that one record's step `failed` with the
 host's error code and leaves the other 31 done, which is the difference between
 a scan that reports one bad file and one that fails wholesale.
+
+FACES: DETECT, THEN ALIGN AND EMBED, AS TWO STEPS
+
+`face_detection` writes a FaceRecord per detected face -- box, landmarks,
+detector pin, minor-safety envelope -- with a null embedding and an unassigned
+identity, which is exactly true at that moment. `face_embedding` then asks the
+host to warp each face onto ArcFace's canonical five-point template and embed
+it, and rewrites the record with a VectorRef.
+
+They are separate steps because they fail separately and resume separately: a
+detector that runs and an embedder that is missing must leave the library with
+face BOXES (which the print validator's trim-zone check needs, and which have
+nothing to do with identity) and no embeddings, rather than with neither.
+
+THE ALIGNMENT PAIRING IS CHECKED BEFORE ANY FACE IS EMBEDDED
+
+`models/configs/arcface-buffalo-l.json`: "ALIGNMENT IS NOT OPTIONAL ... Feeding
+an unaligned crop does not fail -- it returns a confidently wrong embedding,
+which then clusters wrongly and puts the wrong person in an album." Feeding a
+crop warped from the wrong five points fails identically and is worse, because
+the warp succeeds and looks right.
+
+So this stage reads BOTH model configs and refuses the run outright when the
+detector's `landmark_scheme` is not the one the embedder's template was built
+for. Not per face, not as a warning: a mismatched pairing is a configuration
+error, every face in the library would be affected, and the remedy is to change
+a model rather than to skip a photo.
 """
 
 from __future__ import annotations
@@ -55,8 +82,9 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
-from .. import classical, mlruntime
+from .. import classical, mlruntime, modelconfigs
 from ..events import utc_now
+from ..ids import face_identity
 from ..jobstore import build_job
 from .base import StageContext, StageResult, StageStatus, blocked_by
 
@@ -66,7 +94,8 @@ JOB_TYPE = "analyze_image"
 CLASSICAL_STEP = "classical_quality"
 EMBEDDING_STEP = "image_embedding"
 FACE_STEP = "face_detection"
-MODEL_STEPS = (EMBEDDING_STEP, FACE_STEP)
+FACE_EMBEDDING_STEP = "face_embedding"
+MODEL_STEPS = (EMBEDDING_STEP, FACE_STEP, FACE_EMBEDDING_STEP)
 ALL_STEPS = (CLASSICAL_STEP, *MODEL_STEPS)
 
 # Embedding spaces, keyed by the model that defines them. A SigLIP 2 upgrade
@@ -232,6 +261,13 @@ def run(ctx: StageContext) -> StageResult:
             ),
         )
 
+    try:
+        face_stack = _face_stack(ctx)
+    except modelconfigs.ModelConfigError as error:
+        return StageResult(
+            stage=STAGE, status=StageStatus.FAILED, detail=str(error)
+        )
+
     params = {
         "pipeline": "photo_analysis",
         "steps": list(ALL_STEPS),
@@ -243,6 +279,9 @@ def run(ctx: StageContext) -> StageResult:
         "embedding_space": space[0],
         "face_model": settings.face_model,
         "face_score_floor": settings.face_score_floor,
+        "face_embedding_model": settings.face_embedding_model,
+        "face_embedding_space": face_stack.space,
+        "landmark_scheme": face_stack.landmark_scheme,
         "batch": settings.infer_batch,
         "library_digest": library_digest,
     }
@@ -253,6 +292,14 @@ def run(ctx: StageContext) -> StageResult:
         priority=400,
     )
     job = ctx.jobs.get(job["job_id"]) or ctx.jobs.ensure(job)
+
+    if settings.reanalyze_faces:
+        reset = _reset_face_steps(ctx)
+        ctx.reporter.event(
+            STAGE,
+            "note",
+            f"--reanalyze-faces cleared the face steps on {reset} record(s)",
+        )
 
     outstanding = _count_pending(ctx, steps=ALL_STEPS)
     if job["state"]["status"] == "completed" and outstanding == 0:
@@ -274,10 +321,17 @@ def run(ctx: StageContext) -> StageResult:
     #    fields exist at all.
     classical_counts = _run_classical(ctx, job, total=outstanding)
 
-    # 2. The gate.
+    # 2. The gate. The face embedder is required alongside the others: a host
+    #    that can detect faces but not embed them produces a library whose
+    #    every face is unidentifiable, and reporting that as a completed
+    #    analysis is the "confident, empty result" this file exists to prevent.
     status = mlruntime.probe(
         endpoint=settings.ml_runtime_endpoint,
-        required_models=[settings.embedding_model, settings.face_model],
+        required_models=[
+            settings.embedding_model,
+            settings.face_model,
+            settings.face_embedding_model,
+        ],
         timeout_s=settings.ml_runtime_timeout_s,
     )
     if not status.available:
@@ -314,7 +368,7 @@ def run(ctx: StageContext) -> StageResult:
 
     # 3. The model steps.
     try:
-        model_counts = _run_models(ctx, job, space=space)
+        model_counts = _run_models(ctx, job, space=space, face_stack=face_stack)
     except mlruntime.MlRuntimeError as error:
         ctx.jobs.fail(
             job,
@@ -365,6 +419,97 @@ def run(ctx: StageContext) -> StageResult:
     return StageResult(
         stage=STAGE, status=StageStatus.COMPLETED, detail="analysis complete",
         job_id=job["job_id"], counts=counts,
+    )
+
+
+def _reset_face_steps(ctx: StageContext) -> int:
+    """Un-mark the face steps everywhere, so the next pass redoes them.
+
+    Only the two face steps. Classical quality and the image embedding are
+    expensive and unaffected by a detector change, and clearing them would turn
+    "re-detect the faces" into "re-analyse the library", which is a different
+    and much longer operation than the one the operator asked for.
+    """
+    reset = 0
+    for row in ctx.database.connection.execute(
+        "SELECT media_id FROM media ORDER BY media_id"
+    ).fetchall():
+        record = ctx.database.get_media(row[0])
+        if record is None:  # pragma: no cover - a row cannot vanish mid-query
+            continue
+        stages = (record.get("processing") or {}).get("stages") or {}
+        if not any(step in stages for step in (FACE_STEP, FACE_EMBEDDING_STEP)):
+            continue
+        for step in (FACE_STEP, FACE_EMBEDDING_STEP):
+            stages.pop(step, None)
+        _roll_up(record, required=ALL_STEPS)
+        record["updated_at"] = utc_now()
+        ctx.database.put_media(record)
+        reset += 1
+    return reset
+
+
+# -------------------------------------------------------------- face stack --
+
+
+class FaceStack:
+    """The detector/embedder pairing, checked once, carried to the call sites.
+
+    Constructed only when the two agree on a landmark ordering. There is no way
+    to hold one of these with a mismatched pairing, which is the same trick
+    `AutomatedFaceSet` uses in packages/face-identity: the unsafe state is
+    unrepresentable rather than merely discouraged.
+    """
+
+    __slots__ = ("detector_id", "embedder_id", "landmark_scheme", "space", "dimensions")
+
+    def __init__(
+        self,
+        *,
+        detector_id: str,
+        embedder_id: str,
+        landmark_scheme: str,
+        space: str,
+        dimensions: int,
+    ) -> None:
+        self.detector_id = detector_id
+        self.embedder_id = embedder_id
+        self.landmark_scheme = landmark_scheme
+        self.space = space
+        self.dimensions = dimensions
+
+
+def _face_stack(ctx: StageContext) -> FaceStack:
+    """Read both configs and refuse a pairing that cannot produce a real embedding."""
+    settings = ctx.settings
+    detector = modelconfigs.read_model_config(ctx.repo_root, settings.face_model)
+    embedder = modelconfigs.read_model_config(ctx.repo_root, settings.face_embedding_model)
+
+    detector_scheme = modelconfigs.detector_landmark_scheme(detector)
+    embedder_scheme = modelconfigs.embedder_alignment_scheme(embedder)
+    if detector_scheme is None:
+        raise modelconfigs.ModelConfigError(
+            f"{settings.face_model} declares no landmark scheme, so it produces no "
+            f"keypoints to align with. {settings.face_embedding_model} cannot embed "
+            "faces without them, and an unaligned crop returns a confidently wrong "
+            "embedding rather than an error"
+        )
+    if detector_scheme != embedder_scheme:
+        raise modelconfigs.ModelConfigError(
+            f"{settings.face_model} emits {detector_scheme} landmarks and "
+            f"{settings.face_embedding_model} aligns with an {embedder_scheme} "
+            "template. Both are five points and they are NOT interchangeable: the "
+            "warp would succeed and every embedding would be wrong, with nothing "
+            "downstream able to detect it (face-record.schema.json). Pair the "
+            "embedder with a detector that emits its scheme"
+        )
+    space, dimensions = modelconfigs.embedder_vector_space(embedder)
+    return FaceStack(
+        detector_id=settings.face_model,
+        embedder_id=settings.face_embedding_model,
+        landmark_scheme=detector_scheme,
+        space=space,
+        dimensions=dimensions,
     )
 
 
@@ -479,12 +624,24 @@ def _batches(
 
 
 def _run_models(
-    ctx: StageContext, job: dict[str, Any], *, space: tuple[str, int]
+    ctx: StageContext,
+    job: dict[str, Any],
+    *,
+    space: tuple[str, int],
+    face_stack: FaceStack,
 ) -> dict[str, Any]:
     settings = ctx.settings
     space_name, dimensions = space
-    counts = {"embedded": 0, "embedding_failed": 0, "faces_scanned": 0,
-              "faces_failed": 0, "faces_found": 0}
+    counts: dict[str, Any] = {
+        "embedded": 0,
+        "embedding_failed": 0,
+        "faces_scanned": 0,
+        "faces_failed": 0,
+        "faces_found": 0,
+        "faces_embedded": 0,
+        "faces_embedding_failed": 0,
+        "faces_without_landmarks": 0,
+    }
 
     with mlruntime.MlRuntimeClient(settings.ml_runtime_endpoint) as client:
         total = _count_pending(ctx, steps=[EMBEDDING_STEP])
@@ -603,17 +760,29 @@ def _run_models(
                         for detection in outcome.detections.get(media_id, ())
                         if detection.score >= settings.face_score_floor
                     ]
+                    written = _write_detected_faces(
+                        ctx,
+                        record,
+                        detections,
+                        pin=outcome.pin,
+                        face_stack=face_stack,
+                    )
                     record["faces"] = {
-                        # No FaceRecords and therefore no face_ids: identity
-                        # needs an embedding and a minor-safety envelope, and
-                        # `cluster_faces` is not wired. Reporting a count with
-                        # an empty id list is the honest shape -- the album
-                        # stage uses the count for people/scenery balance and
-                        # never claims to know WHO is in the frame.
-                        "face_count": len(detections),
-                        "face_ids": [],
+                        # A count AND the ids now. The empty `face_ids` this
+                        # field used to carry was honest at the time (nothing
+                        # wrote FaceRecords) and it is what made album-engine's
+                        # face-safe layout pass vacuously: no rectangles, no
+                        # face can be in the trim zone, and the gate CLAUDE.md
+                        # rule 5 rests on could not fail.
+                        #
+                        # `confirmed_person_ids` stays empty and is not the same
+                        # kind of empty: nobody is eligible for automated output
+                        # until a calibration exists. The faces stage rewrites
+                        # it from the assignments rather than leaving it to rot.
+                        "face_count": len(written),
+                        "face_ids": [face["face_id"] for face in written],
                         "confirmed_person_ids": [],
-                        "pending_review_count": len(detections),
+                        "pending_review_count": len(written),
                         "largest_face_area_ratio": (
                             round(max(d.area_ratio for d in detections), 6)
                             if detections else None
@@ -627,7 +796,7 @@ def _run_models(
                     )
                     _mark(record, FACE_STEP, "done", job_id=job["job_id"])
                     counts["faces_scanned"] += 1
-                    counts["faces_found"] += len(detections)
+                    counts["faces_found"] += len(written)
                 record["updated_at"] = utc_now()
                 _roll_up(record, required=ALL_STEPS)
                 ctx.database.put_media(record)
@@ -649,7 +818,347 @@ def _run_models(
                 message="face detection",
             )
 
+        _run_face_embedding(ctx, job, client=client, face_stack=face_stack, counts=counts)
+
     return counts
+
+
+# ------------------------------------------------------------------- faces --
+
+
+def _write_detected_faces(
+    ctx: StageContext,
+    record: dict[str, Any],
+    detections: Sequence[mlruntime.Detection],
+    *,
+    pin: Mapping[str, str],
+    face_stack: FaceStack,
+) -> list[dict[str, Any]]:
+    """One FaceRecord per detection, with no embedding and no identity yet.
+
+    Written before anything is embedded because a face BOX is useful on its
+    own: it is what the print validator's trim-zone and gutter checks protect,
+    and `records.face_boxes_for_layout` takes no assignment argument precisely
+    so that safety never waits on identity.
+
+    Faces that disappear between two runs of a changed detector are DELETED
+    rather than left behind. `face_id` includes the detector's id and version,
+    so an upgrade produces new ids for the same faces; keeping the old rows
+    would leave the MediaRecord's `face_count` disagreeing with the number of
+    stored rectangles, which is exactly the contradiction the album stage now
+    refuses to plan through.
+    """
+    from memory_engine_face.identity import FaceContext  # noqa: PLC0415
+    from memory_engine_face.records import (  # noqa: PLC0415
+        Detection,
+        DetectedFace,
+        ModelRef,
+        NormalizedBox,
+    )
+
+    from .. import faceidentity  # noqa: PLC0415
+
+    media_id = record["media_id"]
+    now = utc_now()
+    detector = ModelRef(
+        model_id=pin.get("model_id") or face_stack.detector_id,
+        version=pin.get("version") or "0",
+        weights_blake3=pin.get("weights_blake3") or None,
+        config_blake3=pin.get("config_blake3") or None,
+    )
+
+    stored_before = {
+        stored["face_id"]: stored for stored in ctx.database.faces_for_media(media_id)
+    }
+
+    faces: list[DetectedFace] = []
+    seen: set[str] = set()
+    for detection in detections:
+        face_id = face_identity(
+            media_id=media_id,
+            bbox=(detection.x, detection.y, detection.w, detection.h),
+            detector_model_id=detector.model_id,
+            detector_version=detector.version,
+        )
+        if face_id in seen:
+            # Two detections whose boxes round to the same 1e-4 grid are ONE
+            # face_id, and a face_id is one row. Counting both would put the
+            # same id in `face_ids` twice and leave `face_count` permanently
+            # above the number of rectangles the library holds -- which the
+            # album stage reads as missing face evidence and refuses to plan
+            # through, forever, with a remediation that cannot help. Measured:
+            # a detector returning one box twice produced face_count=2 against
+            # 1 stored row and a book that could never be built.
+            continue
+        seen.add(face_id)
+        landmarks = _landmarks_block(detection, face_stack)
+        faces.append(
+            DetectedFace(
+                face_id=face_id,
+                media_id=media_id,
+                detection=Detection(
+                    bbox=NormalizedBox(
+                        x=detection.x, y=detection.y, w=detection.w, h=detection.h
+                    ),
+                    detection_score=min(1.0, max(0.0, detection.score)),
+                    detector=detector,
+                    detected_on="thumbnail_512",
+                    # Never None: media-db's `face` table declares
+                    # face_area_ratio NOT NULL, and it is the schema's "single
+                    # best predictor of whether an embedding will be
+                    # trustworthy".
+                    face_area_ratio=min(1.0, max(0.0, detection.area_ratio)),
+                ),
+                landmarks=landmarks,
+            )
+        )
+
+    assignments = {
+        assignment.face_id: assignment
+        for assignment in faceidentity.assign(
+            [
+                FaceContext(
+                    face_id=face.face_id,
+                    minor_status=faceidentity.assignable_minor_status(
+                        (stored_before.get(face.face_id) or {}).get("sensitive")
+                    ),
+                )
+                for face in faces
+            ],
+            now=now,
+        )
+    }
+
+    written: list[dict[str, Any]] = []
+    for face in faces:
+        previous = stored_before.get(face.face_id)
+        # A re-detection with the same detector rewrites the SAME face_id, so
+        # anything a human answered about it has to survive the rewrite:
+        # `created_at` is when this face was first seen, not when it was last
+        # re-derived, and the minor-safety envelope is the answer itself.
+        face_record = faceidentity.restore_sensitive(
+            faceidentity.record_for(
+                face,
+                assignments[face.face_id],
+                created_at=(previous or {}).get("created_at") or now,
+                updated_at=now,
+            ),
+            (previous or {}).get("sensitive"),
+        )
+        ctx.database.put_face(face_record)
+        written.append(dict(face_record))
+
+    _forget_stale_faces(ctx, media_id, keep={face.face_id for face in faces})
+    return written
+
+
+def _landmarks_block(
+    detection: mlruntime.Detection, face_stack: FaceStack
+) -> dict[str, Any] | None:
+    """The contract Landmarks block, or None when there is nothing alignable.
+
+    A detection whose keypoints fell outside the frame comes back with none at
+    all (the host drops them and sets `landmarks_out_of_range`), and the schema
+    requires at least five points, so the honest record has `landmarks: null`
+    and the face is simply never embedded.
+
+    A detection that carries points under a scheme the pipeline did not
+    negotiate is a different thing entirely: the host and its config disagree,
+    which means the pin does not describe what ran. That raises.
+    """
+    if not detection.landmarks:
+        return None
+    if detection.landmark_scheme != face_stack.landmark_scheme:
+        raise mlruntime.MlRuntimeError(
+            f"{face_stack.detector_id} returned {detection.landmark_scheme!r} "
+            f"landmarks but its config declares {face_stack.landmark_scheme!r}. The "
+            "host and the registry disagree about what ran, so no landmark from this "
+            "run can be trusted onto an alignment template"
+        )
+    return {
+        "scheme": detection.landmark_scheme,
+        "points": [{"x": point.x, "y": point.y} for point in detection.landmarks],
+        "score": None,
+    }
+
+
+def _forget_stale_faces(ctx: StageContext, media_id: str, *, keep: set[str]) -> None:
+    for stored in ctx.database.faces_for_media(media_id):
+        face_id = stored["face_id"]
+        if face_id in keep:
+            continue
+        ctx.database.delete_face(face_id)
+        ctx.database.vectors.delete("face", face_id)
+
+
+def _run_face_embedding(
+    ctx: StageContext,
+    job: dict[str, Any],
+    *,
+    client: mlruntime.MlRuntimeClient,
+    face_stack: FaceStack,
+    counts: dict[str, Any],
+) -> None:
+    """Align and embed every stored face, one gRPC item per face.
+
+    The host does the warp -- it holds the template, and ml_runtime.proto is
+    explicit that converting normalised landmarks to pixels "is deliberately
+    not the caller's job: a caller that gets it wrong produces an embedding
+    that is confidently wrong rather than absent". This function's whole
+    responsibility is to hand over the right five points with the right label
+    on them, and to record what came back.
+
+    A face with no embedding stays a face. `records.face_boxes_for_layout`
+    still returns its rectangle, `assign_identities` gives it a `no_embedding`
+    review reason, and it counts toward "how many people are in this photo".
+    """
+    settings = ctx.settings
+    total = _count_pending(ctx, steps=[FACE_EMBEDDING_STEP])
+    seen = 0
+    for batch in _batches(
+        _pending(ctx, steps=[FACE_EMBEDDING_STEP]), settings.infer_batch
+    ):
+        # Crops are gathered across the WHOLE batch of photos before anything
+        # is sent. A per-photo request would be one gRPC round trip per photo
+        # -- 300,000 of them on a real library, most carrying one or two faces
+        # -- which is the shape the batching in this file exists to avoid.
+        crops: list[mlruntime.FaceCrop] = []
+        stored_by_face: dict[str, dict[str, Any]] = {}
+        for media_id, record in batch:
+            proxy = _thumbnail(record)
+            assert proxy is not None  # _analysable already guaranteed it
+            batch_crops, stored, skipped = _crops_for(
+                ctx, media_id=media_id, proxy_id=proxy["proxy_id"]
+            )
+            crops.extend(batch_crops)
+            stored_by_face.update(stored)
+            counts["faces_without_landmarks"] += skipped
+
+        # A transport or contract failure is the whole request's, not one
+        # record's, and must not be recorded as "these photos have no faces".
+        # It propagates out of the stage, which marks nothing.
+        counts["faces_embedded"] += _embed_crops(
+            ctx,
+            client=client,
+            job=job,
+            crops=crops,
+            stored_by_face=stored_by_face,
+            face_stack=face_stack,
+        )
+
+        for media_id, record in batch:
+            _mark(record, FACE_EMBEDDING_STEP, "done", job_id=job["job_id"])
+            record["updated_at"] = utc_now()
+            _roll_up(record, required=ALL_STEPS)
+            ctx.database.put_media(record)
+            seen += 1
+        ctx.jobs.checkpoint(
+            job,
+            cursor={"step": FACE_EMBEDDING_STEP, "last_media_id": batch[-1][0],
+                    "done": counts["faces_embedded"]},
+            units_done=float(seen),
+            units_total=float(total) if total else None,
+            unit="images",
+            message="face embedding",
+        )
+        ctx.reporter.progress(
+            STAGE,
+            units_done=float(seen),
+            units_total=float(total) if total else None,
+            unit="images",
+            message="face embedding",
+        )
+
+
+def _crops_for(
+    ctx: StageContext, *, media_id: str, proxy_id: str
+) -> tuple[list[mlruntime.FaceCrop], dict[str, dict[str, Any]], int]:
+    """One photo's alignable faces. Returns (crops, records by id, skipped).
+
+    A stored face with no landmarks is skipped, not failed. The host dropped
+    its keypoints because they fell outside the frame, there is nothing to warp
+    onto the template, and an unaligned crop would come back as a confident
+    wrong vector rather than as an error.
+    """
+    crops: list[mlruntime.FaceCrop] = []
+    stored_by_face: dict[str, dict[str, Any]] = {}
+    skipped = 0
+    for record in ctx.database.faces_for_media(media_id):
+        stored_by_face[record["face_id"]] = record
+        landmarks = record.get("landmarks") or {}
+        points = landmarks.get("points") or []
+        if not points:
+            skipped += 1
+            continue
+        crops.append(
+            mlruntime.FaceCrop(
+                item_id=record["face_id"],
+                proxy_id=proxy_id,
+                landmarks=tuple((point["x"], point["y"]) for point in points),
+                landmark_scheme=landmarks["scheme"],
+            )
+        )
+    return crops, stored_by_face, skipped
+
+
+def _embed_crops(
+    ctx: StageContext,
+    *,
+    client: mlruntime.MlRuntimeClient,
+    job: dict[str, Any],
+    crops: Sequence[mlruntime.FaceCrop],
+    stored_by_face: Mapping[str, dict[str, Any]],
+    face_stack: FaceStack,
+) -> int:
+    """Send the crops in host-sized chunks and store what comes back."""
+    embedded = 0
+    for start in range(0, len(crops), ctx.settings.infer_batch):
+        chunk = list(crops[start : start + ctx.settings.infer_batch])
+        outcome = client.infer_faces(
+            model_id=face_stack.embedder_id,
+            request_id=f"{job['job_id']}:{FACE_EMBEDDING_STEP}:{chunk[0].item_id}",
+            crops=chunk,
+            required_landmark_scheme=face_stack.landmark_scheme,
+        )
+        failures = {failure.item_id: failure for failure in outcome.failures}
+        for crop in chunk:
+            record = stored_by_face[crop.item_id]
+            failure = failures.get(crop.item_id)
+            if failure is not None:
+                # The host declined this face -- too small, unreadable crop,
+                # an alignment it refused. That is a real and expected answer
+                # and it is NOT zero: the record keeps `embedding: null`, which
+                # sends the face to review rather than into a cluster.
+                ctx.reporter.event(
+                    STAGE,
+                    "note",
+                    f"face {crop.item_id[:12]} was not embedded: "
+                    f"{failure.message or failure.code}",
+                )
+                continue
+            values = outcome.tensors.get(crop.item_id)
+            if values is None or len(values) != face_stack.dimensions:
+                raise mlruntime.MlRuntimeError(
+                    f"{face_stack.embedder_id} returned "
+                    f"{0 if values is None else len(values)} dimensions for space "
+                    f"{face_stack.space}, which is defined as "
+                    f"{face_stack.dimensions}. Storing it would put a vector in a "
+                    "space it was not produced in, and every distance computed from "
+                    "it afterwards is a plausible number with no meaning"
+                )
+            ctx.database.vectors.put("face", crop.item_id, face_stack.space, values)
+            record["embedding"] = {
+                "space": face_stack.space,
+                "dimensions": face_stack.dimensions,
+                "storage": "index",
+                "index_key": crop.item_id,
+                "quantization": "float32",
+                "normalized": _is_normalised(values),
+            }
+            record["updated_at"] = utc_now()
+            ctx.database.put_face(record)
+            embedded += 1
+    return embedded
 
 
 def _is_normalised(values: Sequence[float]) -> bool:

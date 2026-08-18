@@ -38,16 +38,27 @@ from typing import Any
 import blake3 as _blake3
 
 __all__ = [
+    "BBOX_QUANTUM",
     "blake3_hex",
     "canonical_json",
     "canonical_source_roots",
     "digest_of",
+    "face_identity",
     "job_identity",
     "params_digest",
     "source_locator_digest",
 ]
 
 _UNIT_SEPARATOR = "\x1f"
+
+# Normalised box coordinates are rounded to this many parts of the frame before
+# they enter a face_id. 1e-4 of a 6000px frame is 0.6px -- finer than any
+# detector's own precision, and coarse enough that the last-bit differences
+# between two execution providers (CoreML and CPU do not agree at fp32's last
+# digit) cannot turn one face into two. Without the quantum, re-running the
+# same detector on the same photo on a different provider silently doubles
+# every face in the library.
+BBOX_QUANTUM = 10_000
 
 
 def canonical_json(value: Any) -> bytes:
@@ -102,6 +113,54 @@ def source_locator_digest(paths: Iterable[str | os.PathLike[str]]) -> str:
         # in the same way and the mismatch check still holds.
         hasher.update(normalised.rstrip(os.sep).encode("utf-8"))
     return hasher.hexdigest()
+
+
+def face_identity(
+    *,
+    media_id: str,
+    bbox: Sequence[float],
+    detector_model_id: str,
+    detector_version: str,
+    frame_time: Mapping[str, Any] | None = None,
+) -> str:
+    """The face_id the FaceRecord contract specifies, computed.
+
+    face-record.schema.json: "BLAKE3 over (media_id, frame_time, quantised
+    bbox, detector model_id+version). Content-addressed, so re-running the same
+    detector on the same frame produces the same id and re-detection is
+    idempotent. Changing detector version deliberately produces new ids rather
+    than silently mutating old ones."
+
+    Every element of that tuple is load-bearing:
+
+      * media_id -- two photos may contain the same face in the same place.
+      * frame_time -- one video contains the same person at 1s and at 4s, in
+        very nearly the same box. Serialised as value/rate rather than as
+        seconds because RationalTime exists precisely so 30000/1001 is not
+        rounded, and rounding it here would collide two adjacent frames.
+      * quantised bbox -- see BBOX_QUANTUM.
+      * detector id AND version -- a detector upgrade moves boxes by a pixel or
+        two. Keeping the old ids would attach v2's box to v1's embedding, which
+        is arithmetic on two different faces with nothing to reveal it.
+    """
+    if len(bbox) != 4:
+        raise ValueError(f"bbox must be (x, y, w, h), got {list(bbox)!r}")
+    quantised = ",".join(str(round(float(value) * BBOX_QUANTUM)) for value in bbox)
+    if frame_time is None:
+        time_part = ""
+    else:
+        time_part = f"{frame_time['value']!r}/{frame_time['rate']!r}"
+    joined = _UNIT_SEPARATOR.join(
+        [
+            "face:v1",
+            media_id,
+            time_part,
+            quantised,
+            detector_model_id,
+            detector_version,
+        ]
+    )
+    return blake3_hex(joined.encode("utf-8"))
 
 
 def job_identity(

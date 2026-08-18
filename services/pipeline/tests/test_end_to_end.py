@@ -52,7 +52,7 @@ class EndToEnd(unittest.TestCase):
             cls.report = run_pipeline(
                 [cls.root],
                 cls.workdir,
-                stages=["ingest", "analysis", "ranking", "album"],
+                stages=["ingest", "analysis", "faces", "ranking", "album"],
                 settings=Settings(
                     ml_runtime_endpoint=host.endpoint,
                     render_print=False,
@@ -69,7 +69,7 @@ class EndToEnd(unittest.TestCase):
     def test_the_spine_completes(self):
         self.assertTrue(self.report.ok, [r.to_dict() for r in self.report.results])
         self.assertEqual(0, self.report.exit_code)
-        for name in ("ingest", "analysis", "ranking", "album"):
+        for name in ("ingest", "analysis", "faces", "ranking", "album"):
             self.assertEqual(
                 StageStatus.COMPLETED, _stage(self.report, name).status,
                 _stage(self.report, name).detail,
@@ -144,7 +144,8 @@ class EndToEnd(unittest.TestCase):
             ]
         self.assertGreaterEqual(len(jobs), 3)
         types = {job["job_type"] for job in jobs}
-        self.assertEqual({"scan_source", "analyze_image", "dedupe_cluster", "plan_album"},
+        self.assertEqual({"scan_source", "analyze_image", "cluster_faces", "dedupe_cluster",
+                          "plan_album"},
                          types)
         for job in jobs:
             self.assertEqual("completed", job["state"]["status"], job["job_type"])
@@ -186,7 +187,7 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(manifest["ok"])
         self.assertEqual(0, manifest["exit_code"])
         self.assertEqual(
-            ["ingest", "analysis", "ranking", "album"],
+            ["ingest", "analysis", "faces", "ranking", "album"],
             [stage["stage"] for stage in manifest["stages"]],
         )
 
