@@ -53,6 +53,7 @@ from memory_engine_face.records import (  # noqa: E402
     ModelRef,
     NormalizedBox,
     RecordError,
+    detected_face_from_record,
     face_boxes_for_layout,
     face_context_from_record,
     to_face_record,
@@ -461,6 +462,78 @@ class ReadBackTests(unittest.TestCase):
         self.assertEqual(context["yaw_deg"], -50.0)
         self.assertEqual(context["quality"], 0.42)
         self.assertFalse(context["cluster_is_noise"])
+
+
+class TestDetectionRoundTrip(unittest.TestCase):
+    """`detected_face_from_record` is the path album layout takes.
+
+    A caller holding stored FaceRecords -- services/pipeline, apps/desktop --
+    has to get back to a `DetectedFace` before `face_boxes_for_layout` will
+    give it the rectangles the print validator protects. Writing that mapping
+    at the call site is how the box the trim check sees drifts from the box the
+    detector found, so it lives here and is tested here.
+    """
+
+    def test_a_written_record_reads_back_to_the_same_boxes(self) -> None:
+        original = detected(
+            landmarks={
+                "scheme": "insightface_5",
+                "points": [{"x": 0.41 + i / 100, "y": 0.32} for i in range(5)],
+                "score": None,
+            }
+        )
+        record = to_face_record(original, eligible(), created_at=NOW)
+        restored = detected_face_from_record(record)
+
+        self.assertEqual(original.face_id, restored.face_id)
+        self.assertEqual(original.media_id, restored.media_id)
+        self.assertEqual(original.detection.bbox, restored.detection.bbox)
+        self.assertEqual(
+            original.detection.detection_score, restored.detection.detection_score
+        )
+        self.assertEqual(
+            original.detection.face_area_ratio, restored.detection.face_area_ratio
+        )
+        self.assertEqual(
+            original.detection.detector.model_id, restored.detection.detector.model_id
+        )
+        self.assertEqual(
+            original.detection.detector.version, restored.detection.detector.version
+        )
+        self.assertEqual(original.landmarks, restored.landmarks)
+
+        self.assertEqual(
+            face_boxes_for_layout([original]), face_boxes_for_layout([restored])
+        )
+
+    def test_identity_does_not_survive_the_round_trip(self) -> None:
+        """Deliberate. A DetectedFace has no identity fields to carry one in.
+
+        The rebuilt object is what feeds face SAFETY, and safety must not be
+        able to see whose face it is -- that is the separation that keeps a
+        child whose parent has not consented to labelling from being excluded
+        from the trim-zone check and cut in half by the guillotine.
+        """
+        record = to_face_record(detected(), eligible(), created_at=NOW)
+        restored = detected_face_from_record(record)
+        self.assertFalse(hasattr(restored, "person_id"))
+        self.assertFalse(hasattr(restored, "eligible_for_automated_output"))
+        boxes = face_boxes_for_layout([restored])
+        self.assertEqual(1, len(boxes))
+        self.assertEqual(record["face_id"], boxes[0].face_id)
+
+    def test_a_record_with_no_detection_block_raises_rather_than_inventing_a_box(
+        self,
+    ) -> None:
+        record = to_face_record(detected(), eligible(), created_at=NOW)
+        for missing in ("detection", "bbox", "detector"):
+            broken = json.loads(json.dumps(record))
+            if missing == "detection":
+                broken["detection"] = None
+            else:
+                broken["detection"][missing] = None
+            with self.assertRaises(RecordError):
+                detected_face_from_record(broken)
 
 
 if __name__ == "__main__":  # pragma: no cover

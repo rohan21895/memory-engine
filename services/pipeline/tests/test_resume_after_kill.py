@@ -303,16 +303,28 @@ class KilledDuringAnalysis(unittest.TestCase):
         for media_id, record in self._states():
             stages = record["processing"]["stages"]
             self.assertEqual("analyzed", record["processing"]["state"])
-            for step in ("classical_quality", "image_embedding", "face_detection"):
+            for step in ("classical_quality", "image_embedding", "face_detection",
+                         "face_embedding"):
                 self.assertEqual(
                     1, stages[step]["attempts"],
                     f"{step} ran twice on {media_id[:8]} across the interruption",
                 )
 
-        # Every photo needed both model steps -- the crash was before any of
-        # them -- so the host saw twelve items per model and not one more.
+        # Every photo needed all three model steps -- the crash was before any
+        # of them -- so the host saw twelve items for the embedder and twelve
+        # for the detector, and not one more. The face embedder is counted in
+        # FACES rather than photos, so it gets its own assertion.
+        per_model: dict[str, int] = {}
+        for model, count in calls:
+            per_model[model] = per_model.get(model, 0) + count
+        self.assertEqual(PHOTOS, per_model["siglip2-so400m-384"], f"calls were {calls}")
+        self.assertEqual(PHOTOS, per_model["scrfd-10g-bnkps"], f"calls were {calls}")
+        faces = sum(
+            len(record["faces"]["face_ids"]) for _media_id, record in self._states()
+        )
         self.assertEqual(
-            [PHOTOS, PHOTOS], [count for _model, count in calls], f"calls were {calls}"
+            faces, per_model["arcface-buffalo-l"],
+            "every detected face is embedded exactly once across the interruption",
         )
 
     def test_a_job_left_running_by_a_kill_is_reclaimed_not_abandoned(self):

@@ -2851,10 +2851,21 @@ def _validate(
         )
 
     # reframe_aspect_matches_target / reframe_keyframes_ordered
+    #
+    # BOTH ARE EMITTED EVEN WHEN THERE IS NO REFRAME TRACK, and that is not
+    # bookkeeping. `EdlValidation.checks` is the only place a consumer can tell
+    # "the validator looked and found nothing wrong" apart from "the validator
+    # never looked", and `workers/render-video` requires a PASSING finding for
+    # both before it will render anything. Emitting them only when a crop
+    # exists made every plan whose source aspect already equals its target --
+    # the ordinary 16:9 master, and any reel with reframing turned off --
+    # unrenderable, with the renderer reporting a missing check rather than the
+    # absent crop that actually explains it. Vacuously true is still true; not
+    # stated is not.
     reframe_tracks = edl["reframe_tracks"]
+    aspect_failures: list[str] = []
+    order_failures: list[str] = []
     if reframe_tracks:
-        aspect_failures: list[str] = []
-        order_failures: list[str] = []
         source_aspect_by_ref = {
             m.media_ref_id: m.aspect_ratio for m in request.media
         }
@@ -2899,26 +2910,35 @@ def _validate(
                         f"follows {previous}"
                     )
                 previous = time
-        checks.append(
-            _check(
-                "reframe_aspect_matches_target",
-                not aspect_failures,
-                "error",
+    checks.append(
+        _check(
+            "reframe_aspect_matches_target",
+            not aspect_failures,
+            "error",
+            (
                 f"{len(reframe_tracks)} tracks match the target aspect"
-                if not aspect_failures
-                else "; ".join(sorted(set(aspect_failures))),
+                if reframe_tracks
+                else "no reframe track is planned, so there is no crop whose "
+                "aspect could disagree with the target"
             )
+            if not aspect_failures
+            else "; ".join(sorted(set(aspect_failures))),
         )
-        checks.append(
-            _check(
-                "reframe_keyframes_ordered",
-                not order_failures,
-                "error",
+    )
+    checks.append(
+        _check(
+            "reframe_keyframes_ordered",
+            not order_failures,
+            "error",
+            (
                 f"{len(reframe_tracks)} tracks, keyframes strictly increasing"
-                if not order_failures
-                else "; ".join(order_failures),
+                if reframe_tracks
+                else "no reframe track is planned, so there are no keyframes to order"
             )
+            if not order_failures
+            else "; ".join(order_failures),
         )
+    )
 
     # duration_within_max
     if request.target.max_duration is not None:

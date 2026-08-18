@@ -45,6 +45,17 @@ from memory_engine_album.validator import (  # noqa: E402
     validate_album,
     validate_album_spec,
 )
+from memory_engine_album.layout import (  # noqa: E402
+    FULL_BLEED,
+    Face,
+    NormBox,
+    Photo,
+    full_bleed_frame,
+    layout_page,
+    page_geometry,
+    place,
+    placement_is_print_safe,
+)
 from memory_engine_album.validator import _Ctx, _worst  # noqa: E402
 
 PROFILE_DIR = PACKAGE_ROOT / "vendor_profiles"
@@ -207,6 +218,142 @@ def summary(report, check_id):
 
 
 # --------------------------------------------------------------------------
+
+
+class TestTheGateFiresOnARealLayout(unittest.TestCase):
+    """The face gate, end to end, on pages this engine actually produced.
+
+    Every other test in this file hands the validator a hand-written
+    `face_safety` block. That is the right way to test the validator's own
+    logic, and it leaves one thing unproven: whether a face that is genuinely
+    in the trim zone of a genuinely laid-out page ever reaches the validator as
+    a failure. Until `services/pipeline` began storing face rectangles, it
+    could not -- every album was planned with `faces=()`, so `face_count` was 0
+    on every placement, no face could be in the trim zone, and this gate passed
+    on every book ever produced without once being exercised.
+
+    A gate that has never been observed failing is not known to work. These two
+    tests observe it.
+    """
+
+    CORNERS = (
+        NormBox(0.0, 0.0, 0.06, 0.08),
+        NormBox(0.94, 0.0, 0.06, 0.08),
+        NormBox(0.0, 0.92, 0.06, 0.08),
+        NormBox(0.94, 0.92, 0.06, 0.08),
+    )
+
+    def _photo(self, boxes):
+        return Photo(
+            media_id=MEDIA,
+            pixel_width=SOURCE_W,
+            pixel_height=SOURCE_H,
+            faces=tuple(
+                Face(face_id=chr(ord("a") + index) * 64, box=box)
+                for index, box in enumerate(boxes)
+            ),
+        )
+
+    def _full_bleed_page(self, photo):
+        """One full-bleed placement, built with the same primitive `layout_page`
+        uses -- `place` -- rather than through the arrangement ladder.
+
+        The ladder is why this cannot be done with `layout_page`: it calls
+        `placement_is_print_safe` and returns None for a placement whose face is
+        in the trim zone, so the engine falls back to an inset frame and, if
+        nothing works, raises. That refusal is asserted separately below. Here
+        the point is the OTHER half of the defence: a page that reached an
+        AlbumSpec anyway -- from a hand-edited spec, from apps/desktop's editor,
+        from a future planner -- must be caught by the print validator.
+        """
+        geometry = page_geometry(LAYFLAT, "right")
+        placement = place(
+            photo,
+            full_bleed_frame(geometry),
+            geometry,
+            placement_id="p2-0-11111111",
+            dpi_floor=LAYFLAT["dpi_floor"],
+        )
+        return page(2, [placement], side="right", spread_id="spread-02")
+
+    def test_a_face_in_the_trim_zone_fails_the_gate(self):
+        pages = album(20)
+        pages[2] = self._full_bleed_page(self._photo(self.CORNERS[:1]))
+
+        safety = pages[2]["placements"][0]["face_safety"]
+        self.assertEqual(1, safety["face_count"])
+        self.assertEqual(1, safety["faces_in_trim_zone"])
+        self.assertFalse(safety["all_faces_in_safe_zone"])
+        self.assertLess(safety["min_face_margin_mm"], 0.0)
+
+        report = run(pages)
+        self.assertEqual("fail", report.status)
+        failures = findings(report, "face_in_trim_zone")
+        self.assertTrue(failures, "the trim-zone gate did not fire")
+        self.assertEqual(2, failures[0].page_index)
+        self.assertEqual("error", failures[0].severity)
+
+    def test_the_same_page_with_no_faces_recorded_passes_vacuously(self):
+        """The bug this whole exercise is about, reproduced deliberately.
+
+        Identical geometry, identical crop, identical everything -- except that
+        nobody recorded where the faces were. `face_count: 0`, no face can be
+        in the trim zone, the gate passes, and the guillotine still cuts
+        through a face. `services/pipeline` planned every album this way until
+        it began storing face rectangles.
+        """
+        pages = album(20)
+        pages[2] = self._full_bleed_page(self._photo(()))
+
+        self.assertEqual(0, pages[2]["placements"][0]["face_safety"]["face_count"])
+        self.assertEqual("pass", run(pages).status)
+        self.assertEqual([], findings(run(pages), "face_in_trim_zone"))
+
+    def test_the_layout_engine_refuses_the_arrangement_before_the_validator_sees_it(self):
+        """Defence in depth, and the two layers are not the same layer.
+
+        `layout_page` drops any arrangement whose placement is not print-safe
+        and tries the next template. So asking for a full bleed on a photo with
+        a face in the corner does not produce the failing page tested above --
+        it produces an INSET page, whose frame is the safe box itself, where no
+        face can be in the trim zone at all.
+
+        Both layers matter. This one keeps the engine from ever proposing the
+        bad page; the validator catches the bad page when it arrives from
+        somewhere else. Neither is a substitute for the other, and neither was
+        being exercised at all while the pipeline planned albums with no faces.
+        """
+        photo = self._photo(self.CORNERS[:1])
+        geometry = page_geometry(LAYFLAT, "right")
+        bleeding = place(
+            photo,
+            full_bleed_frame(geometry),
+            geometry,
+            placement_id="p2-0-11111111",
+            dpi_floor=LAYFLAT["dpi_floor"],
+        )
+        self.assertFalse(
+            placement_is_print_safe(bleeding, LAYFLAT["dpi_floor"]),
+            "the layout engine would have proposed a page with a face in the trim zone",
+        )
+
+        fell_back = layout_page(
+            [photo],
+            LAYFLAT,
+            page_index=2,
+            side="right",
+            spread_id="spread-02",
+            template=FULL_BLEED,
+        )
+        frame = fell_back["placements"][0]["frame"]
+        self.assertNotEqual(
+            full_bleed_frame(geometry).width_mm, frame["width_mm"],
+            "the full-bleed arrangement was accepted despite the face in the trim zone",
+        )
+        safety = fell_back["placements"][0]["face_safety"]
+        self.assertEqual(1, safety["face_count"])
+        self.assertEqual(0, safety["faces_in_trim_zone"])
+        self.assertEqual("pass", run(album(20)).status)
 
 
 class TestHappyPath(unittest.TestCase):

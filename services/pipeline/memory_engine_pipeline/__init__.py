@@ -39,8 +39,16 @@ _LIBRARY_PATHS = (
     _REPO_ROOT / "packages" / "media-db",
     _REPO_ROOT / "packages" / "ranking-engine",
     _REPO_ROOT / "packages" / "album-engine",
+    _REPO_ROOT / "packages" / "face-identity",
     _REPO_ROOT / "packages" / "story-engine",
     _REPO_ROOT / "packages" / "prompt-engine",
+    # `workers/video-analysis` is on this list even though it is a worker rather
+    # than a package: it runs IN PROCESS (pure Python plus an FFmpeg
+    # subprocess), it is the only producer of a `FeatureStream`, and the story
+    # stage consumes it as a library exactly the way it consumes story-engine.
+    # A second copy of the feature producers inside this service would be a
+    # second answer to what a video's motion, shake and loudness are.
+    _REPO_ROOT / "workers" / "video-analysis",
 )
 
 for _path in _LIBRARY_PATHS:

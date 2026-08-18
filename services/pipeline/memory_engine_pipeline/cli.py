@@ -42,6 +42,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"comma-separated subset of: {', '.join(STAGE_NAMES)}")
     parser.add_argument("--rescan", action="store_true",
                         help="ignore the stat inventory and re-read every file")
+    parser.add_argument("--reanalyze-faces", action="store_true",
+                        help="clear the face detection and face embedding steps on "
+                             "every record and run them again. Needed after a "
+                             "detector change, and for a library analysed before "
+                             "faces were wired: face ids include the detector "
+                             "version, so the old rectangles are addressed "
+                             "differently rather than merely stale")
     parser.add_argument("--include-hidden", action="store_true")
     parser.add_argument("--follow-symlinks", action="store_true")
     parser.add_argument("--max-depth", type=int, default=_DEFAULTS.max_depth)
@@ -55,6 +62,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="path to the vendor's ICC profile; without it the print "
                              "renderer embeds a built-in CMYK profile under the "
                              "vendor's name, which is for development only")
+    parser.add_argument("--reel-seconds", type=float, default=_DEFAULTS.reel_seconds,
+                        help="how long the reel is asked to be; it ends on a cut "
+                             "point, so the realised length is usually shorter and "
+                             "the plan says by how much")
     parser.add_argument("--no-render-print", action="store_true")
     parser.add_argument("--no-render-video", action="store_true")
     parser.add_argument("--quiet", action="store_true",
@@ -70,11 +81,13 @@ def main(argv: list[str] | None = None) -> int:
         include_hidden=args.include_hidden,
         max_depth=args.max_depth,
         rescan=args.rescan,
+        reanalyze_faces=args.reanalyze_faces,
         ml_runtime_endpoint=args.ml_runtime,
         vendor_profile=args.vendor_profile,
         album_target_count=args.album_photos,
         album_photos_per_page=args.photos_per_page,
         icc_profile_path=args.icc_profile,
+        reel_seconds=args.reel_seconds,
         render_print=not args.no_render_print,
         render_video=not args.no_render_video,
     )

@@ -45,6 +45,7 @@ from typing import Any
 __all__ = [
     "DEFAULT_ENDPOINT",
     "Detection",
+    "FaceCrop",
     "MlRuntimeClient",
     "MlRuntimeError",
     "MlRuntimeUnavailable",
@@ -159,6 +160,64 @@ class Detection:
     @property
     def area_ratio(self) -> float:
         return max(0.0, self.w) * max(0.0, self.h)
+
+
+@dataclass(frozen=True, slots=True)
+class FaceCrop:
+    """One face to embed: which proxy it is on, and where its landmarks are.
+
+    The landmarks travel with the SCHEME they were produced under, and this
+    type has no default for it. face-record.schema.json: "yunet_5 and
+    insightface_5 are both five points and are NOT interchangeable: feeding one
+    to an alignment template built for the other produces a plausible warp and
+    a wrong embedding, which is the worst failure mode in this system because
+    nothing downstream can detect it." A caller that has forgotten which
+    convention its detector emits cannot construct this object, which is the
+    point.
+
+    The host applies the model's alignment template; the crop is never taken
+    here. That is not a division of labour chosen for tidiness -- ml_runtime
+    .proto says the pixel conversion "is deliberately not the caller's job: a
+    caller that gets it wrong produces an embedding that is confidently wrong
+    rather than absent".
+    """
+
+    item_id: str
+    proxy_id: str
+    landmarks: tuple[tuple[float, float], ...]
+    landmark_scheme: str
+
+    def __post_init__(self) -> None:
+        if not self.landmarks:
+            raise MlRuntimeError(
+                f"{self.item_id}: a face with no landmarks cannot be aligned, and an "
+                "unaligned crop returns a confident wrong embedding rather than an "
+                "error. Do not embed it; record the face without one"
+            )
+        if self.landmark_scheme not in _LANDMARK_SCHEMES:
+            raise MlRuntimeError(
+                f"{self.item_id}: unknown landmark scheme "
+                f"{self.landmark_scheme!r}; known schemes are "
+                f"{sorted(_LANDMARK_SCHEMES)}"
+            )
+
+
+# The landmark schemes `FaceCrop` will accept, as the contract spells them.
+#
+# Written out rather than read from the generated proto module on purpose: this
+# module loads its stubs lazily (`_load_stubs`), so a set derived at import time
+# would drag protobuf into every process that only wanted the dataclasses. The
+# cost of writing it out is that it can fall behind the proto, so it does not
+# rely on anyone noticing -- `tests/test_face_identity.py` asserts this set is
+# exactly the proto's LandmarkScheme enum minus UNSPECIFIED, and fails when a
+# scheme is added on either side.
+#
+# The direction that matters is covered either way: a scheme in the proto but
+# not here is refused by `FaceCrop.__post_init__`, and a scheme here but not in
+# the proto raises in `infer_faces` rather than being sent as UNSPECIFIED.
+_LANDMARK_SCHEMES: frozenset[str] = frozenset(
+    {"insightface_5", "insightface_106", "mediapipe_468", "yunet_5"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,6 +447,84 @@ class MlRuntimeClient:
                 f"{getattr(code, 'name', 'RPC_ERROR')}"
             ) from error
         return self._read(response, model_id=model_id, expected=list(items))
+
+    def infer_faces(
+        self,
+        *,
+        model_id: str,
+        request_id: str,
+        crops: Sequence[FaceCrop],
+        required_landmark_scheme: str,
+        priority: int = 100,
+    ) -> InferOutcome:
+        """Embed faces. One item per FACE, not per photo.
+
+        `required_landmark_scheme` is what the embedding model's alignment
+        template was built for, read from its config by the caller. Every crop
+        is checked against it HERE, before the request is built, and a mismatch
+        raises rather than being sent:
+
+          * The host checks it too (`preprocess._align_face` refuses when the
+            scheme disagrees with the template), so this is belt and braces.
+            Both are wanted. The host's check protects the host from every
+            caller; this one names the detector/embedder pairing that is wrong
+            while the pipeline still has both model ids in hand, and it fails
+            the whole batch rather than returning one INPUT_INVALID per face
+            that a caller could mistake for "this photo was awkward".
+          * A scheme mismatch is the one preprocessing error with no
+            downstream symptom. Every other failure produces an absent
+            embedding; this one produces a present, plausible, wrong one.
+
+        The alignment mode is always NEEDS_ALIGNMENT, never PREALIGNED: nothing
+        in this process warps anything, and PREALIGNED on a proxy is refused by
+        the contract anyway ("a stored proxy is not prealigned").
+        """
+        for crop in crops:
+            if crop.landmark_scheme != required_landmark_scheme:
+                raise MlRuntimeError(
+                    f"{crop.item_id}: landmarks are {crop.landmark_scheme} but "
+                    f"{model_id} aligns with {required_landmark_scheme}. Warping one "
+                    "onto the other's template produces a plausible crop and a wrong "
+                    "embedding, and nothing downstream can detect it"
+                )
+        pb = self._pb
+        scheme_value = getattr(
+            pb, f"LANDMARK_SCHEME_{required_landmark_scheme.upper()}", None
+        )
+        if scheme_value is None:  # pragma: no cover - proto and contract disagree
+            raise MlRuntimeError(
+                f"the ml-runtime proto has no LandmarkScheme for "
+                f"{required_landmark_scheme!r}"
+            )
+        request = pb.InferRequest(
+            request_id=request_id,
+            model_id=model_id,
+            items=[
+                pb.InferItem(
+                    item_id=crop.item_id,
+                    proxy_id=crop.proxy_id,
+                    alignment=pb.ALIGNMENT_NEEDS_ALIGNMENT,
+                    landmarks=[
+                        pb.Point2D(x=x, y=y) for x, y in crop.landmarks
+                    ],
+                    landmark_scheme=scheme_value,
+                )
+                for crop in crops
+            ],
+            deadline_ms=int(self._timeout_s * 1000),
+            priority=priority,
+        )
+        try:
+            response = self._stub.Infer(request, timeout=self._timeout_s)
+        except self._grpc.RpcError as error:
+            code = getattr(error, "code", lambda: None)()
+            raise MlRuntimeError(
+                f"Infer({model_id}) failed at the transport: "
+                f"{getattr(code, 'name', 'RPC_ERROR')}"
+            ) from error
+        return self._read(
+            response, model_id=model_id, expected=[crop.item_id for crop in crops]
+        )
 
     def _read(
         self, response: Any, *, model_id: str, expected: Sequence[str]

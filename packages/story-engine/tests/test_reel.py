@@ -1089,6 +1089,37 @@ class TestVerticalReframe(unittest.TestCase):
             self.assertIsNone(clip["reframe_track_id"])
         _assert_schema_valid(self, plan.edl)
 
+    def test_the_reframe_findings_are_still_recorded_when_there_is_no_crop(self):
+        """A plan with no reframe track must still SAY the reframe was checked.
+
+        `workers/render-video` requires a passing finding for both reframe
+        checks before it renders anything, because `EdlValidation.checks` is the
+        only place it can tell "looked and found nothing wrong" apart from
+        "never looked". Emitting them only when a crop exists made every
+        16:9-into-16:9 master unrenderable, and the renderer's complaint was
+        about a missing check rather than about the absent crop that explained
+        it. This is that regression, pinned.
+        """
+        plan = plan_reel(
+            request(
+                target=RenderTarget(
+                    destination="youtube",
+                    resolution=(1920, 1080),
+                    aspect_ratio=(16, 9),
+                    target_duration=899,
+                    max_duration=5395,
+                    loudness_target_lufs=-14.0,
+                )
+            )
+        )
+        self.assertEqual([], plan.edl["reframe_tracks"])
+        by_id = {c["check_id"]: c for c in plan.edl["validation"]["checks"]}
+        for check_id in ("reframe_aspect_matches_target", "reframe_keyframes_ordered"):
+            self.assertIn(check_id, by_id, f"{check_id} was not recorded at all")
+            self.assertTrue(by_id[check_id]["passed"])
+            self.assertEqual("error", by_id[check_id]["severity"])
+            self.assertIn("no reframe track", by_id[check_id]["detail"])
+
     def test_a_wider_target_crops_height_instead(self):
         portrait = source_media(aspect_ratio=(9, 16))
         plan = plan_reel(

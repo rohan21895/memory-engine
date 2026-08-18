@@ -373,6 +373,65 @@ class TestFaceGate(DatabaseTestCase):
             self.assertFalse(face["identity"]["eligible_for_automated_output"])
         self.assertNotIn(below["media_id"], eligible_media)
 
+    def test_list_faces_pages_the_whole_library_and_filters_nothing(self):
+        """Clustering needs every face, including the ones nobody has settled.
+
+        Filtering by eligibility here would make each run cluster only the
+        faces the previous run had already decided about, which quietly turns
+        an unsupervised pass over the library into a pass over its conclusions.
+        """
+        expected = sorted(record["face_id"] for record in fixtures_for("face-record"))
+        self.assertEqual(len(expected), self.db.count_faces())
+
+        paged: list[str] = []
+        offset = 0
+        while True:
+            page = self.db.list_faces(limit=2, offset=offset)
+            paged.extend(record["face_id"] for record in page)
+            if len(page) < 2:
+                break
+            offset += 2
+        self.assertEqual(expected, paged)
+        self.assertEqual(expected, sorted(paged), "list_faces must order by face_id")
+
+        ineligible = [
+            record
+            for record in self.db.list_faces(limit=100)
+            if not record["identity"]["eligible_for_automated_output"]
+        ]
+        self.assertTrue(ineligible, "list_faces dropped the unsettled faces")
+
+    def test_delete_face_removes_the_row_and_its_candidates(self):
+        """Re-detection with an upgraded detector produces NEW face ids.
+
+        `face_id` is a digest over the detector's id and version, so the old
+        rows are not stale duplicates that will be overwritten -- they are
+        addressed differently and would survive forever, leaving a MediaRecord
+        whose face_count disagrees with the rectangles stored for it.
+        """
+        below = fixture_named("face-record", "below-threshold")
+        self.assertTrue(
+            self.db.connection.execute(
+                "SELECT 1 FROM face_candidate WHERE face_id = ?", (below["face_id"],)
+            ).fetchone()
+        )
+
+        self.assertTrue(self.db.delete_face(below["face_id"]))
+        self.assertEqual([], [
+            record
+            for record in self.db.faces_for_media(below["media_id"])
+            if record["face_id"] == below["face_id"]
+        ])
+        self.assertIsNone(
+            self.db.connection.execute(
+                "SELECT 1 FROM face_candidate WHERE face_id = ?", (below["face_id"],)
+            ).fetchone()
+        )
+        self.assertFalse(
+            self.db.delete_face(below["face_id"]),
+            "deleting a face that is already gone must report that, not claim a delete",
+        )
+
     def test_people_in_media_hides_uncertain_matches(self):
         below = fixture_named("face-record", "below-threshold")
         self.assertEqual([], self.db.people_in_media(below["media_id"]))

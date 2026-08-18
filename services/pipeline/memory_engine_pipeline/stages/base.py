@@ -95,7 +95,28 @@ class Settings:
     # MediaRecord's face summary. Precision over recall: a wrong person in a
     # family album is a catastrophic failure, and the album stage reads this
     # summary.
+    #
+    # It is also the floor `memory_engine_face.records.SUBJECT_DETECTION_FLOOR`
+    # applies when handing rectangles to the print validator, and the two are
+    # deliberately the same number: a face that counts toward "how many people
+    # are in this photo" and a face the trim check protects must be the same
+    # set, or the validator's own contradiction checks fire on a difference of
+    # convention.
     face_score_floor: float = 0.60
+
+    # The recognition model. Its config declares the alignment template, and
+    # the analysis stage refuses to run when that template's landmark scheme is
+    # not the one the detector emits -- see stages/analysis.py.
+    face_embedding_model: str = "arcface-buffalo-l"
+
+    # Clear the two face steps on every record and run them again. The remedy
+    # for a library analysed before faces were wired, or one whose detector has
+    # been swapped: `face_id` includes the detector's id and version, so the
+    # old rectangles are not merely stale, they are addressed differently.
+    # Without this the album stage refuses such a library (its face_count
+    # disagrees with the rectangles stored for it) and there is nothing the
+    # operator can do about it short of deleting the database.
+    reanalyze_faces: bool = False
 
     vendor_profile: str = "layflat-300-square"
     # Path to the vendor's real ICC profile. Absent means the print stage falls
@@ -107,6 +128,12 @@ class Settings:
     icc_profile_path: str | None = None
     album_target_count: int = 24
     album_photos_per_page: int = 1
+
+    # What the reel planner is ASKED for. Landing on a cut point matters more
+    # than hitting the number, so the realised length is usually shorter and the
+    # plan says by how much.
+    reel_seconds: float = 15.0
+    reel_loudness_lufs: float = -14.0
 
     render_print: bool = True
     render_video: bool = True

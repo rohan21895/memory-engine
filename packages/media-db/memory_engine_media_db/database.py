@@ -678,6 +678,46 @@ class Database:
             for row in self._connection.execute(sql + " ORDER BY face_id", (media_id,))
         ]
 
+    def delete_face(self, face_id: str) -> bool:
+        """Forget one face. Its candidates go with it (ON DELETE CASCADE).
+
+        Needed because `face_id` is content-addressed over the detector's id
+        AND version: re-detecting with an upgraded detector produces new ids for
+        the same faces, and without a delete the library accumulates two
+        rectangles per face -- the second of which no MediaRecord's face_count
+        agrees with. The vector index is NOT touched here; the caller owns that
+        because it owns the space name.
+        """
+        with self._connection:
+            cursor = self._connection.execute(
+                "DELETE FROM face WHERE face_id = ?", (face_id,)
+            )
+        return cursor.rowcount > 0
+
+    def list_faces(self, *, limit: int = 500, offset: int = 0) -> list[dict]:
+        """Every FaceRecord, in face_id order, a page at a time.
+
+        Clustering is a whole-library operation -- a person's faces are spread
+        across every event they appear in -- so the alternative to this is one
+        `faces_for_media` call per media row, which is a query per photo for a
+        pass that is going to look at all of them anyway.
+
+        It is deliberately NOT filtered by eligibility. A caller that only
+        wants eligible faces has `faces_for_media(eligible_only=True)` and the
+        person-scoped queries; a caller that is about to CLUSTER wants every
+        face, because eligibility is the output of that pass and not an input
+        to it. Filtering here would quietly make each run cluster only the
+        faces the previous run had already settled.
+        """
+        rows = self._connection.execute(
+            "SELECT record_json FROM face ORDER BY face_id LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        return [json.loads(row["record_json"]) for row in rows]
+
+    def count_faces(self) -> int:
+        return int(self._connection.execute("SELECT count(*) FROM face").fetchone()[0])
+
     def review_queue(self, *, limit: int = 100) -> list[dict]:
         """Faces awaiting a human decision, most informative first.
 

@@ -22,6 +22,8 @@ raised an exception. They returned plausible numbers and were wrong:
 | `NaN` sharpness | Passed an elimination floor untouched, because `NaN < x` is `False` |
 | A config digest re-serialised rather than byte-hashed | Python `1.0` vs JavaScript `1` — every model reporting a mismatch |
 | A `span_id` fixture written by hand | A content-addressed identity test pinning an invented number |
+| A 5-band raster re-wrapped as 4 channels | Every album page sheared; one photo smeared across the full width and repeated ~5× |
+| CMYK ink read back as RGBA | The K band became a 5% alpha; every printed photo flattened to near-white |
 
 This is why the codebase looks paranoid. Nearly every guard here exists because
 the thing it guards against already happened.
@@ -237,8 +239,53 @@ Open, and honest about it:
 - **story-engine and prompt-engine are partial.** `moments.py` and `reel.py` are
   the two largest files in the repo and have **no tests**. Given the 43-of-85
   measurement, untested code from an agent that did not finish is not evidence.
-- **No album has been rendered.** The Phase 2 exit gate — a real library
-  producing a 32-page PDF that passes the validator — has not been met.
+- **An album has now been rendered, and rendering it found the worst defect in
+  the repo.** A 22-page PDF/X-4 comes out of the synthetic library and passes the
+  validator. Getting there needed two fixes. `scripts/demo/make_library.py` wrote
+  no `OffsetTimeOriginal`, so `captured_at.utc` was null for every file and the
+  album stage correctly refused undated media — no album could ever be planned.
+  Then the PDF was wrong: `workers/render-print/src/page.ts` round-tripped the
+  page through `.raw()` and re-wrapped a **five-band** CMYK+alpha buffer as
+  **four** channels, and converted the result a second time as if it were RGBA.
+  Measured on a 306mm page with one declared 121.8×91.3mm placement at
+  (92.1, 107.3): content covered 27.1% of the page with a bounding box spanning
+  the whole of it, instead of the declared 11.9% in the declared frame, and the K
+  band read as a 12/255 alpha flattened every photo to near-white. **The print
+  validator passed every one of those PDFs**, because it validates the AlbumSpec
+  and the renderer did not execute it — the gate CLAUDE.md rule "a PDF below the
+  DPI floor cannot be exported" rests on was measuring a plan nothing followed.
+  Nothing caught it because the only assertion on the artifact was `%PDF` and
+  "bigger than 100kB". `test/page-geometry.test.ts` now measures the raster
+  differentially and fails on both halves of the old behaviour.
+  **The Phase 2 exit gate is still not met**: the plan asks for a real library,
+  and this is a synthetic one whose photo selection came from a stand-in embedder
+  (see below), so what is proven is the chain from AlbumSpec to paper, not the
+  taste of what went on it.
+- **The image embedder has no weights and cannot be fetched.**
+  `siglip2-so400m-384` is absent from `models/weights/` and its
+  `weights.source_url` is a Hugging Face model *page*, not a file, which
+  `scripts/models/fetch_weights.py` explicitly cannot resolve. Analysis requires
+  it alongside the two face models, so **on a machine with the three real
+  checkpoints (YuNet, SCRFD, ArcFace) the album path still cannot run** — it
+  reports `siglip2-so400m-384 (weights_missing)` and album and render-print
+  refuse. Every album rendered so far used the test suite's stand-in host. The
+  reel is unaffected; the video path does not go through SigLIP.
+- **The video path runs, and is missing four producers.** `services/pipeline`'s
+  `story` stage now drives 480p proxy → FeatureStream → `plan_moments` →
+  `plan_reel` → `render-video` and produces a playable file from a synthetic
+  library. What it does NOT have: a transcript backend (so **no cut is certified
+  word-safe** — the EDL carries no `no_mid_word_cut` finding at all), face and
+  smile detection, audio-event classification, and any bundled music (so **no cut
+  is beat-locked**; the <50ms downbeat gate in the build plan's success criteria
+  cannot be measured yet). All four are counted in the stage result and printed.
+- **`MediaRecord.video` is never populated.** `VideoProperties` exists in the
+  contract with `oriented_size`, `rotation_deg` and `is_variable_frame_rate`, and
+  `workers/ingest` writes null. The source's pixel geometry is therefore
+  unmeasured, which is why the reel disables reframing and targets the 480p
+  proxy raster rather than a 1080p master. This is the single change that would
+  make the reel a deliverable product rather than a proof the chain runs.
+- **No film planner exists.** `story-engine` plans reels only; the film planner
+  is a phase 5 item. The runner says so rather than relabelling a reel.
 - **No safety classifier is selected** (issue #21), so the release pipeline has
   no sensitive-content gate. That is a release blocker in its own right.
 - **SCRFD's letterbox padding value is unresolved** (issue #33). Two upstream
