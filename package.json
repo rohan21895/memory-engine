@@ -18,7 +18,7 @@
     "test": "node scripts/ci/run-workspace-check.mjs test",
     "codegen": "node scripts/ci/generate-contracts.mjs",
     "codegen:check": "node scripts/ci/check-codegen-freshness.mjs",
-    "test:egress": "node --test tests/egress/*.test.mjs",
+    "test:egress": "npm run build --workspace @memory-engine/api --silent && node scripts/ci/run-no-skip-tests.mjs tests/egress/*.test.mjs",
     "ci": "npm run lint && npm test && npm run codegen:check && npm run test:egress"
   }
 }

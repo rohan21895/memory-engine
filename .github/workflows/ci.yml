@@ -189,6 +189,10 @@ jobs:
       # holding a path, then inspects the emitted bytes with its own chunk
       # walker. It FAILS rather than skips when these are missing, deliberately:
       # an egress check that did not run must not read as one that passed.
+      # The same suite also opens a loopback listener and proves the API egress
+      # gate never connects without an exact live ledger grant, then exercises
+      # the crash/analytics privacy filter. No TODO or skipped policy check is
+      # accepted as a pass.
       - run: python3 -m pip install --upgrade pip
       - run: python3 -m pip install "pillow>=10.0" "blake3>=0.4"
       - run: npm ci --ignore-scripts
