@@ -116,6 +116,7 @@ def plan_for(
     pinned: str | None = None,
     member: str | None = None,
     filename: str = "model.onnx",
+    conversion: dict | None = None,
 ) -> "fw.Plan":
     return fw.Plan(
         model_id="model-under-test",
@@ -127,6 +128,7 @@ def plan_for(
         pinned_hash=pinned,
         rollout_state="candidate",
         install_path=tmp / "weights" / filename,
+        conversion=conversion,
     )
 
 
@@ -643,6 +645,122 @@ class TokenHandling(unittest.TestCase):
         )
         headers = {name.lower() for name in redirected.headers}
         self.assertIn("authorization", headers)
+
+
+class ArtifactsThisRepositoryBuilds(unittest.TestCase):
+    """Issue #79. SigLIP 2 is published as safetensors and nothing else, so the
+    ONNX vision tower the registry names exists on no server. The fetcher used
+    to report that as UNAVAILABLE -- 'a provenance page rather than a file' --
+    which is true and useless: it reads as 'nothing can be done', and the model
+    that blocks album planning stayed missing behind an accurate message.
+    """
+
+    RECIPE = {
+        "script": "scripts/models/export_siglip2_vision_onnx.py",
+        "input_url": "https://huggingface.co/o/r/resolve/abc/model.safetensors",
+        "input_sha256": "9" * 64,
+    }
+
+    def setUp(self):
+        self.tmp = Path(self.enterContext(__import__("tempfile").TemporaryDirectory()))
+        self.workspace = self.tmp / "staging"
+        self.workspace.mkdir()
+        (self.tmp / "weights").mkdir()
+
+    def run_fetch(self, plan, fetcher, force=False):
+        return fw.fetch_one(
+            plan,
+            fetcher=fetcher,
+            policy=POLICY,
+            workspace=self.workspace,
+            archives={},
+            force=force,
+        )
+
+    def exploding_fetcher(self):
+        """Any network call at all is the defect under test."""
+        return fetcher_for({})
+
+    def test_a_convertible_entry_names_the_command_instead_of_giving_up(self):
+        plan = plan_for(self.tmp, conversion=self.RECIPE)
+        outcome = self.run_fetch(plan, self.exploding_fetcher())
+        self.assertEqual(outcome.state, fw.CONVERTIBLE)
+        self.assertIn(self.RECIPE["script"], outcome.detail)
+        self.assertFalse(plan.install_path.exists())
+
+    def test_the_conversion_input_is_never_downloaded_as_the_artifact(self):
+        """The 4.5GB safetensors must not land under a name ending in .onnx.
+
+        `input_url` looks exactly like a fetchable artifact URL to
+        `artifact_url()` -- it is a Hugging Face /resolve/ link ending in a
+        known suffix -- so nothing about the URL rule would have stopped it.
+        """
+        self.assertIsNotNone(fw.artifact_url(self.RECIPE["input_url"]))
+        plan = plan_for(self.tmp, url=self.RECIPE["input_url"], conversion=self.RECIPE)
+        outcome = self.run_fetch(
+            plan, fetcher_for({self.RECIPE["input_url"]: b"\x08safetensors-ish"})
+        )
+        self.assertEqual(outcome.state, fw.CONVERTIBLE)
+        self.assertFalse(plan.install_path.exists())
+
+    def test_force_does_not_turn_a_conversion_into_a_download(self):
+        plan = plan_for(self.tmp, conversion=self.RECIPE)
+        plan.install_path.write_bytes(ONNX_BYTES)
+        outcome = self.run_fetch(plan, self.exploding_fetcher(), force=True)
+        self.assertEqual(outcome.state, fw.CONVERTIBLE)
+        self.assertEqual(plan.install_path.read_bytes(), ONNX_BYTES)
+
+    def test_an_installed_conversion_is_reported_like_any_other_file(self):
+        """Built or downloaded, an unpinned file on disk is unpinned."""
+        plan = plan_for(self.tmp, conversion=self.RECIPE)
+        plan.install_path.write_bytes(ONNX_BYTES)
+        outcome = self.run_fetch(plan, self.exploding_fetcher())
+        self.assertEqual(outcome.state, fw.NEEDS_PIN)
+        self.assertEqual(outcome.digest, blake3_hex(ONNX_BYTES))
+
+    def test_a_recipe_whose_script_is_gone_is_a_failure_not_an_instruction(self):
+        recipe = dict(self.RECIPE, script="scripts/models/deleted-by-someone.py")
+        plan = plan_for(self.tmp, conversion=recipe)
+        outcome = self.run_fetch(plan, self.exploding_fetcher())
+        self.assertEqual(outcome.state, fw.FAILED)
+        self.assertIn("deleted-by-someone.py", outcome.detail)
+
+    def test_convertible_shares_unavailable_s_exit_code(self):
+        """Not on disk either way, so the run is equally incomplete."""
+        self.assertEqual(
+            fw.exit_code([result(fw.CONVERTIBLE), result(fw.NEEDS_PIN)]),
+            fw.EXIT_PARTIAL,
+        )
+        self.assertEqual(
+            fw.exit_code([result(fw.CONVERTIBLE)]),
+            fw.exit_code([result(fw.UNAVAILABLE)]),
+        )
+
+    def test_convertible_is_not_a_pass(self):
+        self.assertNotEqual(fw.exit_code([result(fw.CONVERTIBLE)]), fw.EXIT_SUCCESS)
+
+    def test_the_report_prints_the_notes_it_collects(self):
+        outcome = fw.Result(model_id="m", state=fw.CONVERTIBLE, detail="run it")
+        outcome.notes.append("input: https://example.test/x.safetensors")
+        stream = io.StringIO()
+        fw.report([outcome], stream=stream)
+        self.assertIn("input: https://example.test/x.safetensors", stream.getvalue())
+
+    def test_the_real_siglip_entry_is_convertible_and_its_script_exists(self):
+        registry = json.loads((REPO_ROOT / "models" / "registry.json").read_bytes())
+        plans, _ = fw.build_plans(
+            registry,
+            REPO_ROOT / "models",
+            self.tmp / "weights",
+            only=["siglip2-so400m-384"],
+            include_placeholders=False,
+        )
+        (plan,) = plans
+        self.assertIsNotNone(plan.conversion)
+        script = REPO_ROOT / plan.conversion["script"]
+        self.assertTrue(script.is_file(), f"{script} is named by the config")
+        outcome = self.run_fetch(plan, self.exploding_fetcher())
+        self.assertEqual(outcome.state, fw.CONVERTIBLE)
 
 
 class RegistryIsFetchable(unittest.TestCase):

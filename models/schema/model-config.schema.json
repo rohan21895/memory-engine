@@ -269,6 +269,63 @@
             "int4"
           ],
           "default": "fp32"
+        },
+        "conversion": {
+          "description": "Present when NO PUBLISHER SHIPS THIS ARTIFACT and we produce it ourselves. Issue #79: google/siglip2-so400m-patch14-384 publishes safetensors only, so `filename` names a file that exists on no server and the fetcher would have gone on reporting the entry unavailable forever. A conversion nobody else can reproduce is worse than none, so this block names the exact input (an immutable URL plus its SHA-256) and the script in this repository that turns it into the artifact. `scripts/models/fetch_weights.py` reads this and reports the entry CONVERTIBLE with the command to run, instead of downloading `input_url` and installing the conversion INPUT under the artifact's name. It is not a substitute for `blake3`: the input is pinned here, the output is pinned there, and only a human writes the latter.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "script",
+                "input_url",
+                "input_sha256"
+              ],
+              "properties": {
+                "script": {
+                  "description": "Repository-relative path of the script that produces the artifact. Must exist; a conversion whose script was deleted is a claim of reproducibility that is no longer true.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "input_url": {
+                  "description": "The exact file converted, at an immutable revision. A branch name would let the input change under the digest that describes the output.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "input_sha256": {
+                  "description": "SHA-256 of the bytes at `input_url`, checked by the conversion script before it builds anything. SHA-256 rather than BLAKE3 because publishers state SHA-256 -- Hugging Face's LFS oid is one -- so this digest can be compared against the source's own record instead of only against ourselves.",
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "input_byte_size": {
+                  "oneOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "toolchain": {
+                  "description": "What produced the artifact, in enough detail to explain why a re-run's bytes differ. Byte-identical re-export is not claimed: the graph is emitted by whatever PyTorch is installed. What is reproducible is the input and the procedure.",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -293,9 +350,32 @@
               },
               "archive_member": {
                 "type": "null"
+              },
+              "conversion": {
+                "type": "null"
               }
             },
-            "$comment": "No source means no artifact, so a hash, byte size or archive member alongside a null source_url is describing a file that does not exist."
+            "$comment": "No source means no artifact, so a hash, byte size, archive member or conversion recipe alongside a null source_url is describing a file that does not exist."
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "conversion"
+            ],
+            "properties": {
+              "conversion": {
+                "type": "object"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "archive_member": {
+                "type": "null"
+              }
+            },
+            "$comment": "A converted artifact is built, not extracted. An archive member alongside a conversion recipe describes two different ways of obtaining the same file, and the fetcher would have to pick one."
           }
         }
       ]

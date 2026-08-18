@@ -837,3 +837,74 @@ class TestClassAxisIsPinned(SchemaRejectionTestCase):
         for name, config in others:
             with self.subTest(config=name):
                 self.assertAccepted(config, f"{name} without a class_order")
+
+
+class TestConversionRecipesAreComplete(SchemaRejectionTestCase):
+    """Issue #79. When no publisher ships an artifact and we build it, the
+    recipe is the only thing standing between "reproducible" and "somebody's
+    laptop once produced this". A half-written recipe is worse than none,
+    because it looks like provenance.
+    """
+
+    def siglip(self) -> dict:
+        return dict(configs())["siglip2-so400m-384.json"]
+
+    def test_the_entry_that_needs_one_has_one(self):
+        conversion = self.siglip()["weights"]["conversion"]
+        self.assertIsInstance(conversion, dict)
+        self.assertTrue(
+            (REPO_ROOT / conversion["script"]).is_file(),
+            "the config names a conversion script that is not in this checkout",
+        )
+
+    def test_the_pinned_input_is_an_immutable_revision(self):
+        """A branch name would let the input change under the output's digest."""
+        conversion = self.siglip()["weights"]["conversion"]
+        url = conversion["input_url"]
+        self.assertIn("/resolve/", url)
+        revision = url.split("/resolve/", 1)[1].split("/", 1)[0]
+        self.assertRegex(
+            revision, r"^[0-9a-f]{40}$",
+            f"{revision!r} is not a commit SHA -- 'main' is not a pin",
+        )
+
+    def test_a_recipe_without_its_input_digest_is_refused(self):
+        for missing in ("script", "input_url", "input_sha256"):
+            with self.subTest(missing=missing):
+                recipe = dict(self.siglip()["weights"]["conversion"])
+                recipe.pop(missing)
+                self.assertRejected(
+                    _mutated(self.siglip(), ("weights", "conversion"), recipe),
+                    f"a conversion recipe with no {missing}",
+                )
+
+    def test_an_input_digest_that_is_not_a_sha256_is_refused(self):
+        recipe = dict(self.siglip()["weights"]["conversion"], input_sha256="deadbeef")
+        self.assertRejected(
+            _mutated(self.siglip(), ("weights", "conversion"), recipe),
+            "a truncated input digest",
+        )
+
+    def test_a_recipe_with_no_source_at_all_is_refused(self):
+        """source_url null means no checkpoint has been chosen. There is then
+        nothing to convert, and a recipe claiming otherwise describes a file
+        that does not exist."""
+        broken = _mutated(self.siglip(), ("weights", "source_url"), None)
+        broken["weights"]["blake3"] = None
+        broken["weights"]["byte_size"] = None
+        self.assertRejected(broken, "a conversion recipe with a null source_url")
+
+    def test_a_recipe_cannot_also_be_an_archive_member(self):
+        self.assertRejected(
+            _mutated(self.siglip(), ("weights", "archive_member"), "onnx/model.onnx"),
+            "an artifact that is both built and extracted",
+        )
+
+    def test_an_entry_with_no_recipe_is_still_valid(self):
+        yunet = dict(configs())["yunet-2023mar.json"]
+        self.assertNotIn("conversion", yunet["weights"])
+        self.assertAccepted(yunet, "a plain fetchable artifact")
+        self.assertAccepted(
+            _mutated(yunet, ("weights", "conversion"), None),
+            "an explicit null conversion",
+        )

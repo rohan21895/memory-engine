@@ -296,6 +296,7 @@ class FakeMlRuntime:
         # is a real state and not a broken fake.
         self.emit_landmarks = emit_landmarks
         self.infer_calls: list[tuple[str, int]] = []
+        self.infer_requests: list[Any] = []
         self.face_embedding_requests: list[Any] = []
         self._server: Any = None
         self.endpoint = ""
@@ -348,6 +349,10 @@ class FakeMlRuntime:
 
             def Infer(self, request, context):  # noqa: N802
                 host.infer_calls.append((request.model_id, len(request.items)))
+                # Kept so a test can assert what deadline the caller asked for.
+                # The client's `deadline_ms` and its gRPC timeout must agree,
+                # and until issue #79 neither scaled with the batch.
+                host.infer_requests.append(request)
                 if request.model_id not in host.models:
                     return pb.InferResponse(
                         request_id=request.request_id,

@@ -11,7 +11,14 @@
     "archive_member": null,
     "blake3": null,
     "byte_size": null,
-    "quantization": "fp16"
+    "quantization": "fp16",
+    "conversion": {
+      "script": "scripts/models/export_siglip2_vision_onnx.py",
+      "input_url": "https://huggingface.co/google/siglip2-so400m-patch14-384/resolve/e8e487298228002f3d8a82e0cd5c8ea9c567f57f/model.safetensors",
+      "input_sha256": "9f4f4a49f908ef0c979bce8ff5a5c0e88882dc6c5dc4304387cbbd152558e2c2",
+      "input_byte_size": 4544143072,
+      "toolchain": "torch 2.13.0 (TorchScript exporter, dynamo=False), transformers 5.15.0, ONNX opset 17, macOS arm64 CPU. Byte-identical re-export is NOT claimed across PyTorch versions -- 2.9.1 and 2.13.0 produce files that differ in size. The input and the procedure are what reproduce."
+    }
   },
   "runtime_targets": [
     "onnxruntime_coreml",
@@ -27,7 +34,7 @@
       "height": 384
     },
     "resize": "stretch",
-    "interpolation": "bicubic",
+    "interpolation": "bilinear",
     "color_order": "rgb",
     "layout": "nchw",
     "scale": 0.00392156862745098,
@@ -67,10 +74,10 @@
     }
   ],
   "batching": {
-    "supported": false,
-    "max_batch": 1,
-    "dynamic_axes": false,
-    "verified_against": null
+    "supported": true,
+    "max_batch": 8,
+    "dynamic_axes": true,
+    "verified_against": "The exported graph, blake3 e4d1e5d0b294c25bb02cefc560326a6c9d9caaf4fce156ba80a0a3fabf4e2df7, read with onnxruntime 1.28.0 on 2026-08-18: get_inputs()[0].shape is ['batch', 3, 384, 384], so the leading axis is symbolic rather than fixed. Executed, not just read: a batch of 8 returned (8, 1152); row 0 matched the same image run alone to cosine 1.0000000, and an alternating mirrored row differed at cosine 0.9969, so the rows are independent. THAT 1.0000000 IS THE RUNTIME'S, NOT THE GRAPH'S. Re-measured on onnxruntime 1.29.0 the same comparison is cosine 0.99999625, max |diff| 0.0112: ORT selects different kernels for a batch of 8 than for a batch of 1, so batch-vs-single agreement is an onnxruntime-version property and must not be read as exactness. `verify()` asserts a 0.9999 floor rather than equality for exactly this reason. What IS exact, measured on 1.29.0: repeated runs of one input in one session are bitwise identical, and eight identical rows in one batch return eight bitwise identical embeddings -- so nothing here leaks across rows. 8 is the number that was run -- `scripts/models/export_siglip2_vision_onnx.py --verify` re-runs exactly max_batch, so raising this number requires re-running it, not editing it."
   },
   "license": {
     "code_license": "Apache-2.0",
@@ -89,5 +96,5 @@
     "promoted_at": null
   },
   "eval": null,
-  "notes": "SigLIP 2 uses a sigmoid loss rather than CLIP's softmax contrastive loss, so raw logits are not comparable to CLIP's and any threshold tuned on a CLIP model must be re-tuned. Stretch resize rather than centre crop is deliberate: cropping loses the edges of a composition, and composition is part of what we score.\n\nNO ONNX AT THE DECLARED SOURCE (checked 2026-08-17 via the HF API). google/siglip2-so400m-patch14-384 publishes safetensors only, so there is no siglip2-so400m-patch14-384-vision.onnx to download and scripts/models/fetch_weights.py reports this entry UNAVAILABLE. source_url stays the provenance page rather than being repointed at something plausible: the two ways to actually get this file are to export the vision tower locally from the safetensors, or to adopt the third-party conversion at onnx-community/siglip2-so400m-patch14-384-ONNX. The conversion is NOT a URL edit -- its graph exposes last_hidden_state and pooler_output where this config binds `image_embeds`, and its fp32 vision tower is 1.7GB against this config's declared fp16 -- so adopting it changes `outputs`, `quantization` and the embedding that every stored vector lives in, which is an eval-harness decision, not a fetch. The repository is NOT gated (HF API reports gated:false), so no token is involved either way.\n\nBATCHING (issue #31): DEMOTED TO 1, UNVERIFIED. This entry declared supported=true, max_batch=16, dynamic_axes=true. weights.blake3 is null, so the ONNX graph it names has never been produced or hashed, let alone had its input shape read -- the claim was an assumption wearing the clothes of a measurement, which is the same defect issue #31 found in the YuNet entry. Restore it by running onnxruntime.InferenceSession(...).get_inputs()[0].shape against the pinned checkpoint and recording that in batching.verified_against. Declining to batch costs throughput and nothing else."
+  "notes": "SigLIP 2 uses a sigmoid loss rather than CLIP's softmax contrastive loss, so raw logits are not comparable to CLIP's and any threshold tuned on a CLIP model must be re-tuned. Stretch resize rather than centre crop is deliberate: cropping loses the edges of a composition, and composition is part of what we score.\n\nNO PUBLISHER SHIPS THIS ARTIFACT; WE BUILD IT (issue #79). google/siglip2-so400m-patch14-384 publishes safetensors only, so no URL serves siglip2-so400m-patch14-384-vision.onnx and no `source_url` edit could ever have made one appear. `weights.conversion` names the input -- one file at one immutable revision, checked by SHA-256 before anything is built from it -- and the script in this repository that produces the artifact. `source_url` remains the model page because that is what it is: provenance for the weights, not a download. scripts/models/fetch_weights.py reads `conversion` and reports CONVERTIBLE with the command, rather than UNAVAILABLE.\n\nWhy our own export and not onnx-community/siglip2-so400m-patch14-384-ONNX: that graph exposes last_hidden_state and pooler_output where this config binds `image_embeds`, and its vision tower is fp32. Adopting it would mean rewriting `outputs` to match somebody else's export decisions -- and a config bound to an output name that is not in the graph is the defect this repository shipped twice already (#36 for SCRFD, ArcFace in #69). Ours is named at export time, and `--verify` reads the name back off the real graph with onnxruntime.\n\nVISION TOWER ONLY. The text tower is not exported: nothing at inference reads text embeddings (search is text-conditioned through the prompt engine, not through SigLIP's text encoder), and including it would roughly double the artifact. `image_embeds` is upstream's own name -- SiglipModel.forward computes image_embeds = vision_outputs.pooler_output -- and this graph stops BEFORE the L2 normalisation, because postprocessing.steps applies it. Moving it into the graph would normalise twice or not at all depending on which side someone edited last.\n\nPRECISION. quantization fp16 describes the stored weights: every initializer in the graph is float16 (~857MB against ~1.71GB for the same tower in fp32). The graph's input and output are float32 on purpose -- preprocessing produces float32 and the vector store holds float32, so an fp16 boundary would add a lossy cast on each side for nothing. Measured against the fp32 PyTorch reference on the same tensor: cosine 0.99999765, max |diff| 0.02145 on values whose mean magnitude is 0.30522.\n\nINTERPOLATION CORRECTED, 2026-08-18. This config said `bicubic`; the publisher's own preprocessor_config.json says `resample: 2`, which is PIL BILINEAR. Nothing would have raised -- a bicubic-resized tensor is a perfectly valid tensor -- but it is not the tensor the model was trained to see. Measured on a real photograph through the exported graph, the two resamplings give embeddings a cosine 0.995721 apart, which is inside the range near-duplicate decisions are made in. A residual gap remains and is NOT fixed here: workers/ml-runtime resizes with cv2.INTER_LINEAR, and OpenCV does not antialias on downscale where PIL does, so a 1600px proxy reaching 384px still differs from the publisher's pipeline. Measured on the same photograph: cv2.INTER_LINEAR sits at cosine 0.969841 from the publisher's PIL BILINEAR, cv2.INTER_CUBIC at 0.957858, and cv2.INTER_AREA at 0.996222. So this correction is an improvement and not a cure. Fixing the rest means changing how workers/ml-runtime resizes, which is outside this config; the numbers are recorded in docs/model-registry.md so the change has evidence to start from.\n\nBATCHING (issue #31): RESTORED, and this time measured -- see batching.verified_against. The previous demotion to 1 was correct at the time: there was no graph to read."
 }

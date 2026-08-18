@@ -107,7 +107,7 @@
         "diversity",
         "zero_shot_tags"
       ],
-      "config_blake3": "65c9cf13138fd4b63e953e58fd970a46a959a38ddbc6aa82ee38b759cdf37a00"
+      "config_blake3": "471c253b01ccda18d597d3852d7172eb22bbe811362721e9ae83bce41693854c"
     },
     {
       "model_id": "yunet-2023mar",

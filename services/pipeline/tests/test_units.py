@@ -508,6 +508,50 @@ class RuntimeClient(unittest.TestCase):
             )
         self.assertEqual({"media-one", "media-two"}, set(outcome.tensors))
 
+    def test_the_deadline_grows_with_the_batch(self):
+        """Issue #79. The deadline was fixed, and every model was small.
+
+        SigLIP 2 so400m measures ~2.5s per image on a laptop CPU, so a batch of
+        32 needs ~85s against the old fixed 60s: with real weights installed
+        for the first time, EVERY analysis pass died at the transport with
+        DEADLINE_EXCEEDED and the album path could not run at all. The bug is
+        not the number, it is that one request's budget did not depend on how
+        much work the request contained.
+        """
+        with FakeMlRuntime() as host, mlruntime.MlRuntimeClient(host.endpoint) as client:
+            self.assertEqual(60.0, client.deadline_for(1))
+            self.assertEqual(60.0, client.deadline_for(3))
+            self.assertEqual(
+                32 * client.PER_ITEM_DEADLINE_S, client.deadline_for(32)
+            )
+            self.assertGreater(
+                client.deadline_for(32),
+                32 * 2.5,
+                "a batch of 32 SigLIP images must fit inside its own deadline",
+            )
+
+    def test_an_empty_batch_still_gets_the_fixed_budget(self):
+        with FakeMlRuntime() as host, mlruntime.MlRuntimeClient(host.endpoint) as client:
+            self.assertEqual(60.0, client.deadline_for(0))
+
+    def test_the_request_carries_the_deadline_the_client_waits_for(self):
+        """The host must be told the same budget the caller enforces.
+
+        A `deadline_ms` shorter than the gRPC timeout makes the host abandon
+        work the caller was still willing to wait for; longer, and the caller
+        gives up on a host that was going to answer. Both look like a flaky
+        model rather than a mismatched pair of numbers.
+        """
+        items = {f"media-{index}": "ab" * 32 for index in range(4)}
+        with FakeMlRuntime() as host, mlruntime.MlRuntimeClient(host.endpoint) as client:
+            client.infer_proxies(
+                model_id="siglip2-so400m-384", request_id="r-deadline", items=items
+            )
+        (request,) = host.infer_requests
+        self.assertEqual(
+            int(client.deadline_for(len(items)) * 1000), request.deadline_ms
+        )
+
     def test_a_whole_request_error_raises(self):
         with FakeMlRuntime(models=()) as host, \
                 mlruntime.MlRuntimeClient(host.endpoint) as client:
