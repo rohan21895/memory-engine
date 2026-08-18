@@ -5,8 +5,9 @@ not run must not report the same thing as a stage that ran and found nothing to
 do, and neither may report what a stage that succeeded reports. Collapsing
 those three is how a pipeline produces a confident, empty result.
 
-    COMPLETED    did work, and the work is durable.
-    SKIPPED      nothing to do; the previous run's output is still valid.
+    COMPLETED    did work, or verified and reused a durable result.
+    SKIPPED      requested work did not run and produced no result. This is
+                 incomplete, never a successful cache hit.
     BLOCKED      a prerequisite is missing that a person must fix -- the model
                  host is not running, an upstream stage is blocked. Recoverable
                  by acting and re-running. NOT a success.
@@ -15,10 +16,11 @@ those three is how a pipeline produces a confident, empty result.
                  build rather than a service start.
     FAILED       ran and broke.
 
-Only COMPLETED and SKIPPED let dependents run. Everything else propagates: a
-dependent of a blocked stage is itself blocked, with the blocking stage named,
-so the summary says "album: blocked by analyze_image" rather than "album:
-produced 0 pages".
+COMPLETED and SKIPPED let dependents inspect durable state or report their own
+absence. Only COMPLETED is a successful run outcome. Everything else propagates
+or leaves the run incomplete: a dependent of a blocked stage is itself blocked,
+with the blocking stage named, so the summary says "album: blocked by
+analyze_image" rather than "album: produced 0 pages".
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ class StageStatus(str, Enum):
 
     @property
     def is_success(self) -> bool:
-        return self.satisfies_dependents
+        return self is StageStatus.COMPLETED
 
 
 @dataclass(frozen=True, slots=True)

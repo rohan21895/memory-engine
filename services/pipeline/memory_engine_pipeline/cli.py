@@ -2,13 +2,13 @@
 
 The exit code is the contract with whatever is driving this:
 
-    0   every requested stage completed or had nothing to do
+    0   every requested stage completed or reused a verified durable result
     1   something was BLOCKED or UNAVAILABLE -- the model host is not running,
         a worker is not built. Recoverable by acting, and NOT a success.
     2   something FAILED.
 
-A run that produced a library with no analysis in it exits 1, loudly. That is
-the whole point of separating the codes.
+A run that produced a library with no analysis in it, or disabled a requested
+deliverable, exits 1 loudly. That is the whole point of separating the codes.
 """
 
 from __future__ import annotations

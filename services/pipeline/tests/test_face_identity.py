@@ -501,7 +501,7 @@ class FaceIdentityWiring(unittest.TestCase):
             second = self._run(host)
 
         self.assertEqual([], host.infer_calls)
-        self.assertEqual(StageStatus.SKIPPED, _stage(second, "faces").status)
+        self.assertEqual(StageStatus.COMPLETED, _stage(second, "faces").status)
 
     def test_reanalyze_faces_redoes_the_face_steps_and_only_those(self):
         with FakeMlRuntime() as host:

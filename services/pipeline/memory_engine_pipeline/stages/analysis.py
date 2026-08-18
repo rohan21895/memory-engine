@@ -326,7 +326,7 @@ def run(ctx: StageContext) -> StageResult:
     if job["state"]["status"] == "completed" and outstanding == 0:
         return StageResult(
             stage=STAGE,
-            status=StageStatus.SKIPPED,
+            status=StageStatus.COMPLETED,
             detail="every record in the library is already analysed",
             job_id=job["job_id"],
             counts={"media": media_count, "pending": 0},

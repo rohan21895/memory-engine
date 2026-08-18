@@ -173,7 +173,7 @@ def run(ctx: StageContext) -> StageResult:
     if job["state"]["status"] == "completed" and output_pdf.is_file():
         return StageResult(
             stage=STAGE,
-            status=StageStatus.SKIPPED,
+            status=StageStatus.COMPLETED,
             detail="this album has already been rendered",
             job_id=job["job_id"],
             outputs=(str(output_pdf),),

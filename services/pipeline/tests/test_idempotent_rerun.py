@@ -87,20 +87,20 @@ class IdempotentRerun(unittest.TestCase):
             second = self._run(host)
 
         ingest = _stage(second, "ingest")
-        self.assertEqual(StageStatus.SKIPPED, ingest.status)
+        self.assertEqual(StageStatus.COMPLETED, ingest.status)
         self.assertIn("unchanged", ingest.detail)
         # Not "hashed zero files" -- the worker was never started at all.
         self.assertNotIn("processed", ingest.counts)
 
         self.assertEqual(
-            StageStatus.SKIPPED, _stage(second, "analysis").status,
+            StageStatus.COMPLETED, _stage(second, "analysis").status,
             _stage(second, "analysis").detail,
         )
         self.assertEqual(
             [], host.infer_calls,
             "an unchanged library must not send a single item to the model host",
         )
-        self.assertEqual(StageStatus.SKIPPED, _stage(second, "ranking").status)
+        self.assertEqual(StageStatus.COMPLETED, _stage(second, "ranking").status)
 
     def test_ids_are_identical_across_runs(self):
         with FakeMlRuntime() as host:
@@ -118,7 +118,7 @@ class IdempotentRerun(unittest.TestCase):
             _stage(first, "album").job_id, _stage(second, "album").job_id,
             "the album job id is the content address of the plan; it must not drift",
         )
-        self.assertEqual(StageStatus.SKIPPED, _stage(second, "album").status)
+        self.assertEqual(StageStatus.COMPLETED, _stage(second, "album").status)
 
     def test_adding_one_file_costs_one_file(self):
         with FakeMlRuntime() as host:
