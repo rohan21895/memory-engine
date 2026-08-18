@@ -230,17 +230,47 @@ export async function renderPage(context: PageRenderContext): Promise<RenderedPa
     create: { width: widthPx, height: heightPx, channels: 4, background: backgroundColor },
   }).composite(composites);
   output = output.flatten({ background: backgroundColor });
-  output = output.withIccProfile(context.icc.transformProfile).toColourspace(context.icc.colorSpace);
-  const converted = await output.raw().toBuffer({ resolveWithObject: true });
-  const jpeg = await sharp(converted.data, {
-    raw: {
-      width: converted.info.width,
-      height: converted.info.height,
-      channels: context.icc.components,
-    },
-  })
+  output = output
+    .withIccProfile(context.icc.transformProfile)
     .toColourspace(context.icc.colorSpace)
+    // JPEG carries no alpha, and the composite pipeline is still carrying one:
+    // after `toColourspace("cmyk")` this image has FIVE bands, four ink plus
+    // alpha. Dropping it here is what makes the band count equal to the
+    // profile's component count below.
+    .removeAlpha();
+
+  // This USED TO round-trip through `.raw()` and re-wrap the buffer with an
+  // explicit `channels: icc.components`, then convert to the target colourspace
+  // a second time. Both halves of that were wrong and neither raised:
+  //
+  //   * the raw buffer had 5 bands and was re-wrapped as 4, so every row was
+  //     read at the wrong stride -- the page sheared, and the single placement
+  //     smeared across the full page width and repeated about five times;
+  //   * sharp reads a 4-band raw buffer as RGBA, so the ink values were then
+  //     converted CMYK->as-if-RGBA->CMYK. The 'alpha' was the K band, so a
+  //     12/255 black turned the whole photo 95% transparent and it flattened
+  //     to near-white.
+  //
+  // Measured on a 306mm page with one 121.8x91.3mm placement at (92.1, 107.3):
+  // content occupied 27.1% of the page with a bounding box covering all of it,
+  // instead of the declared 11.9%. Every PDF this worker produced was
+  // geometrically and tonally wrong, and the print validator passed each one,
+  // because the validator measures the AlbumSpec and this function did not
+  // execute it. Encoding straight from the pipeline is both correct and one
+  // fewer full-page buffer.
+  const jpeg = await output
     .jpeg({ quality: 95, chromaSubsampling: "4:4:4", optimizeScans: false, trellisQuantisation: false })
     .toBuffer();
+  const encoded = await sharp(jpeg).metadata();
+  if (encoded.width !== widthPx || encoded.height !== heightPx || encoded.channels !== context.icc.components) {
+    // A page raster that is not the size and band count the vendor profile
+    // implies is not a page. Refuse rather than emit a plausible book.
+    throw new RenderPrintError(
+      "validation_failed",
+      `page ${context.page.page_index} rasterised to ${encoded.width}x${encoded.height} in ` +
+        `${encoded.channels} channels; the ${context.icc.colorSpace} profile at ${context.dpi} DPI ` +
+        `requires ${widthPx}x${heightPx} in ${context.icc.components}.`,
+    );
+  }
   return { jpeg, widthPx, heightPx, cacheKey: digestParts(pageParts) };
 }

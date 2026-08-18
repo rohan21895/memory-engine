@@ -54,7 +54,13 @@ describe("deterministic print rendering", () => {
     ).rejects.toThrow(/simulated process death/);
     expect(firstArtifact?.index).toBe(0);
     const pageMetadata = await sharp(firstArtifact!.path).metadata();
-    expect(pageMetadata).toMatchObject({ space: "cmyk", channels: 4, hasProfile: false });
+    // `hasProfile` was false here only because the old raw round-trip in
+    // renderPage discarded the profile on its way through an untyped buffer --
+    // the same round-trip that sheared the page. A cached page raster is
+    // resumed from on a later run, and four unlabelled ink bands are ambiguous;
+    // carrying the profile it was rendered in is the state that survives a
+    // restart truthfully.
+    expect(pageMetadata).toMatchObject({ space: "cmyk", channels: 4, hasProfile: true });
 
     let sourceReads = 0;
     const resumed = await renderAlbum(makeAlbum(), {

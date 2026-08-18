@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -70,6 +71,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(REPO / "packages/media-db"))
 sys.path.insert(0, str(REPO / "packages/ranking-engine"))
 sys.path.insert(0, str(REPO / "packages/album-engine"))
+sys.path.insert(0, str(REPO / "services/pipeline"))
 
 from _paths import real_media_location  # noqa: E402
 
@@ -572,6 +574,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--i-know-this-is-my-real-library", action="store_true",
                         dest="allow_real",
                         help="scan a real photo folder anyway")
+    parser.add_argument("--ml-runtime", default=os.environ.get("MEMORY_ENGINE_ML_RUNTIME"),
+                        help="HOST:PORT of a running workers/ml-runtime. Without it "
+                             "stages 13-15 are SKIPPED: analysis is a hard gate, so "
+                             "no album, PDF or reel can be produced, and this script "
+                             "will say so rather than pretending")
+    parser.add_argument("--album-photos", type=int, default=24,
+                        help="how many photos the album is asked for")
+    parser.add_argument("--reel-seconds", type=float, default=15.0,
+                        help="how long the reel is asked to be")
     args = parser.parse_args(argv)
 
     source = args.source.expanduser().resolve()
@@ -597,7 +608,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  source   {source}")
     print(f"  workdir  {workdir}")
 
-    run = Run(total=12)
+    run = Run(total=15)
     tools = preflight(run, source, args.ffmpeg)
 
     records = stage_ingest(run, tools, source, workdir, records_dir)
@@ -612,6 +623,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     stage_clustering(run, records)
     stage_album(run, tools, records)
     stage_reel(run, tools, records)
+
+    # 13-15: the product itself, and then its output opened rather than listed.
+    pipeline_report = stage_pipeline(run, tools, args, source, workdir)
+    stage_verify_pdf(run, pipeline_report)
+    stage_verify_video(run, tools, pipeline_report)
 
     if database is not None:
         summarise(database, groups, args.search)
@@ -1380,6 +1396,305 @@ def stage_reel(run: Run, tools: Tools, records: dict[str, dict]) -> None:
                "emits MomentRecords into media-db",
     )
     run.report(stage)
+
+
+# ---------------------------------------------------------------------------
+# Stage 13: the finished artifacts
+# ---------------------------------------------------------------------------
+#
+# Stages 2-12 above walk the library and check the parts. This one runs the
+# actual product -- `services/pipeline`, the same code path `python -m
+# memory_engine_pipeline` runs -- and then stages 14 and 15 OPEN what it wrote.
+#
+# Opening them is the entire point. Every artifact check this repo had before
+# today was a check on a filename or a file size: the end-to-end test asserted
+# `%PDF` and "bigger than 100kB", and passed for months over a renderer that
+# sheared every page and washed every photo out to near-white. A pipeline that
+# writes a plausible file is the failure mode this project keeps finding, so a
+# stage that reports "wrote 22 pages" without counting them is not evidence.
+
+
+def stage_pipeline(run: Run, tools: Tools, args, source: Path, workdir: Path):
+    """Run the real pipeline. Returns its RunReport, or None."""
+    stage = run.stage("pipeline — album, reel, and the renders")
+    if not args.ml_runtime:
+        stage.skip(
+            reason="no model host endpoint was given (--ml-runtime HOST:PORT)",
+            consequence="the album, the print gate, the PDF and the reel are all "
+                        "unproven: analysis is a hard gate and refuses to run "
+                        "without a host, so nothing downstream of it executes",
+            remedy="start workers/ml-runtime and pass --ml-runtime 127.0.0.1:50051",
+        )
+        run.report(stage)
+        return None
+    try:
+        from memory_engine_pipeline.runner import run_pipeline  # noqa: PLC0415
+        from memory_engine_pipeline.stages.base import Settings, StageStatus  # noqa: PLC0415
+    except ImportError as error:
+        stage.skip(reason=f"services/pipeline will not import: {error}",
+                   consequence="no finished artifact is produced or checked")
+        run.report(stage)
+        return None
+
+    started = time.time()
+    report = run_pipeline(
+        [source],
+        workdir / "pipeline",
+        settings=Settings(
+            ml_runtime_endpoint=args.ml_runtime,
+            album_target_count=args.album_photos,
+            reel_seconds=args.reel_seconds,
+        ),
+    )
+    stage.note(f"{len(report.results)} stages in {time.time() - started:.1f}s")
+    for result in report.results:
+        stage.note(f"{result.stage:<14} {result.status.value:<12} {result.detail}")
+
+    # A blocked stage is NOT a demo failure -- a machine without SigLIP weights
+    # genuinely cannot analyse photos, and saying so is the correct behaviour.
+    # It is reported as a skip with the blocker named, so the ledger says which
+    # of the three artifacts this machine could not make and why.
+    blocked = [r for r in report.results if r.status is not StageStatus.COMPLETED
+               and r.status is not StageStatus.SKIPPED]
+    if blocked:
+        stage.skip(
+            reason="; ".join(f"{r.stage}: {r.detail}" for r in blocked),
+            consequence="the artifacts those stages would have produced do not "
+                        "exist, and nothing below checks them",
+            remedy="see the named blocker above",
+        )
+    stage.check("no stage failed outright",
+                not any(r.status is StageStatus.FAILED for r in report.results),
+                "a failed stage is a defect, unlike a blocked one")
+    run.report(stage)
+    return report
+
+
+def _outputs(report, stage_name: str, suffix: str) -> list[Path]:
+    if report is None:
+        return []
+    for result in report.results:
+        if result.stage == stage_name:
+            return [Path(p) for p in result.outputs if str(p).endswith(suffix)]
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Stage 14: open the PDF
+# ---------------------------------------------------------------------------
+
+
+def stage_verify_pdf(run: Run, report) -> None:
+    stage = run.stage("print artifact — opened and measured")
+    pdfs = _outputs(report, "render-print", ".pdf")
+    if not pdfs:
+        stage.skip(
+            reason="the pipeline produced no PDF (see the stage above for why)",
+            consequence="page count, the PDF/X output intent, the physical page "
+                        "boxes and the placement geometry are all unchecked",
+        )
+        run.report(stage)
+        return
+
+    pdf = pdfs[0]
+    raw = pdf.read_bytes()
+    stage.note(f"{pdf.name}  {len(raw):,} bytes")
+
+    specs = _outputs(report, "album", ".json")
+    declared_pages = None
+    if specs:
+        spec = json.loads(specs[0].read_text())
+        declared_pages = len(spec["pages"])
+        stage.note(f"AlbumSpec declares {declared_pages} pages, "
+                   f"validation {spec['validation']['status']} "
+                   f"({spec['validation']['error_count']} errors, "
+                   f"{spec['validation']['warning_count']} warnings)")
+
+    stage.check("it is a PDF", raw[:4] == b"%PDF", f"starts with {raw[:8]!r}")
+
+    # Page count from the file itself, two independent ways, then against the
+    # plan. "The renderer said 22" is not a count.
+    page_objects = len(re.findall(rb"/Type\s*/Page[^s]", raw))
+    counts = {int(v) for v in re.findall(rb"/Count\s+(\d+)", raw)}
+    stage.note(f"{page_objects} page objects, /Count {sorted(counts)}")
+    stage.check("page objects and the page tree agree",
+                counts == {page_objects},
+                f"{page_objects} /Type /Page objects against /Count {sorted(counts)}")
+    if declared_pages is not None:
+        stage.check("the PDF has exactly the pages the AlbumSpec planned",
+                    page_objects == declared_pages,
+                    f"{page_objects} in the file, {declared_pages} in the plan")
+
+    # PDF/X-4 is what the vendor profile asks for, and an OutputIntent is the
+    # part that makes the colour numbers mean anything at a printer.
+    intent = b"/S /GTS_PDFX" in raw
+    profile = b"/DestOutputProfile" in raw
+    version = re.findall(rb"/GTS_PDFXVersion\s*\(([^)]*)\)", raw)
+    condition = re.findall(rb"/OutputConditionIdentifier\s*<([0-9A-Fa-f]+)>", raw)
+    stage.check("it declares a PDF/X OutputIntent", intent)
+    stage.check("the output intent embeds a destination profile", profile,
+                "without the ICC bytes the intent names a condition nobody can "
+                "reproduce")
+    stage.check("the PDF/X version is stated", bool(version),
+                f"found {version}")
+    if condition:
+        try:
+            name = bytes.fromhex(condition[0].decode()).decode("utf-16-be").strip("﻿")
+            stage.note(f"output condition: {name}")
+        except (ValueError, UnicodeDecodeError):
+            pass
+
+    boxes = {key: set(re.findall(rb"/" + key + rb"\s*\[[^\]]*\]", raw))
+             for key in (b"MediaBox", b"TrimBox", b"BleedBox")}
+    for key, found in boxes.items():
+        stage.note(f"{key.decode()}: {[b.decode() for b in sorted(found)]}")
+    stage.check("every page carries a trim box",
+                len(boxes[b"TrimBox"]) >= 1,
+                "a PDF/X page with no TrimBox has not said where it gets cut")
+
+    run.report(stage)
+
+
+# ---------------------------------------------------------------------------
+# Stage 15: probe the video
+# ---------------------------------------------------------------------------
+
+
+def stage_verify_video(run: Run, tools: Tools, report) -> None:
+    stage = run.stage("video artifact — probed and sampled")
+    videos = _outputs(report, "render-video", ".mp4")
+    if not videos:
+        stage.skip(
+            reason="the pipeline produced no video (see the pipeline stage for why)",
+            consequence="duration, frame rate, frame count and whether the file "
+                        "is anything but black frames are all unchecked",
+        )
+        run.report(stage)
+        return
+    if not tools.ffmpeg:
+        stage.skip(reason="ffmpeg/ffprobe is not on PATH",
+                   consequence="the rendered video is not opened at all")
+        run.report(stage)
+        return
+
+    video = videos[0]
+    probe = tools.ffmpeg.replace("ffmpeg", "ffprobe")
+    stage.note(f"{video.name}  {video.stat().st_size:,} bytes")
+
+    def ffprobe(*extra: str) -> dict:
+        out = subprocess.run(
+            [probe, "-v", "error", *extra, "-of", "json", str(video)],
+            capture_output=True, text=True, check=False,
+        )
+        return json.loads(out.stdout or "{}")
+
+    meta = ffprobe("-show_entries",
+                   "format=duration,size:stream=codec_name,codec_type,width,height,"
+                   "r_frame_rate,nb_frames,sample_rate,channels")
+    streams = meta.get("streams") or []
+    fmt = meta.get("format") or {}
+    video_streams = [s for s in streams if s.get("codec_type") == "video"]
+    stage.check("the container holds a video stream", bool(video_streams))
+    if not video_streams:
+        run.report(stage)
+        return
+    v = video_streams[0]
+    duration = float(fmt.get("duration") or 0.0)
+    stage.note(f"{v.get('codec_name')} {v.get('width')}x{v.get('height')} "
+               f"@ {v.get('r_frame_rate')}  {duration:.3f}s")
+    for a in (s for s in streams if s.get("codec_type") == "audio"):
+        stage.note(f"audio: {a.get('codec_name')} {a.get('sample_rate')}Hz "
+                   f"{a.get('channels')}ch")
+
+    # The EDL is the claim; the file is the evidence. Decoding every frame is
+    # what separates "the header says 225" from "there are 225".
+    edls = _outputs(report, "story", ".json")
+    if edls:
+        edl = json.loads(edls[0].read_text())
+        # A track holds `items`, and an item is a clip, a gap or a transition.
+        # Counting items would count the absences too, and "a hard cut is the
+        # absence of a Transition" is the convention here, so only clips count.
+        clips = [item for track in (edl.get("tracks") or [])
+                 if track.get("kind") == "video"
+                 for item in (track.get("items") or [])
+                 if item.get("item_type") == "clip"]
+        stage.note(f"EDL {edl.get('edl_id','?')[:12]} kind={edl.get('kind')}: "
+                   f"{len(clips)} clips, validation "
+                   f"{(edl.get('validation') or {}).get('status')}")
+        # The EDL's rate is a RationalTime; 30000/1001 has no exact float form,
+        # which is why the contract stores it as a pair and why this compares
+        # the pair rather than a rounded number.
+        rate = edl.get("rate")
+        if isinstance(rate, dict) and rate.get("rate"):
+            stage.check("the container frame rate is the EDL's timeline rate",
+                        abs(eval_rate(v.get("r_frame_rate")) - rate_value(rate)) < 0.01,
+                        f"container {v.get('r_frame_rate')} vs EDL "
+                        f"{rate.get('value')}/{rate.get('rate')}")
+        # Every cut the EDL planned should be a boundary in the file. Reported
+        # rather than asserted: two adjacent shots of the same scene genuinely
+        # produce no measurable jump, and failing on that would be wrong.
+        stage.note(f"the EDL claims {max(0, len(clips) - 1)} internal cuts; "
+                   "boundaries are reported below, not asserted -- adjacent "
+                   "shots of one scene need not differ")
+
+    counted = ffprobe("-count_frames", "-select_streams", "v:0",
+                      "-show_entries", "stream=nb_read_frames")
+    read_frames = int(((counted.get("streams") or [{}])[0]).get("nb_read_frames") or 0)
+    stage.note(f"decoded {read_frames} frames")
+    stage.check("the file decodes to a non-empty run of frames", read_frames > 0)
+    expected = round(duration * eval_rate(v.get("r_frame_rate")))
+    stage.check("decoded frame count matches duration x rate",
+                abs(read_frames - expected) <= 1,
+                f"{read_frames} decoded, {expected} implied by "
+                f"{duration:.3f}s at {v.get('r_frame_rate')}")
+
+    # Not a run of black frames. This is the check that a renderer which
+    # produced a correctly-sized, correctly-timed, entirely empty file fails.
+    black = subprocess.run(
+        [tools.ffmpeg, "-v", "info", "-i", str(video),
+         "-vf", "blackdetect=d=0.1:pix_th=0.10", "-f", "null", "-"],
+        capture_output=True, text=True, check=False,
+    )
+    hits = [line for line in black.stderr.splitlines() if "black_start" in line]
+    for line in hits:
+        stage.note(line.strip())
+    stage.check("no black run of 0.1s or longer", not hits,
+                f"{len(hits)} black run(s) detected")
+
+    # And the picture actually changes: a still frame held for the whole
+    # duration passes every check above.
+    stats = subprocess.run(
+        [probe, "-v", "error", "-f", "lavfi", "-i", f"movie={video},signalstats",
+         "-show_entries", "frame_tags=lavfi.signalstats.YAVG",
+         "-of", "csv=p=0"],
+        capture_output=True, text=True, check=False,
+    )
+    values = []
+    for line in stats.stdout.splitlines():
+        field = line.split(",")[0].strip()
+        if field:
+            try:
+                values.append(float(field))
+            except ValueError:
+                pass
+    if values:
+        stage.note(f"frame brightness YAVG min={min(values):.1f} "
+                   f"max={max(values):.1f} over {len(values)} frames")
+        stage.check("the picture is not a single held frame",
+                    max(values) - min(values) > 1.0,
+                    f"YAVG varies by only {max(values) - min(values):.2f}")
+    run.report(stage)
+
+
+def eval_rate(text: str | None) -> float:
+    if not text or "/" not in text:
+        return 0.0
+    num, den = text.split("/", 1)
+    return float(num) / float(den) if float(den) else 0.0
+
+
+def rate_value(rate: dict) -> float:
+    return float(rate["value"]) / float(rate["rate"]) if rate.get("rate") else 0.0
 
 
 # ---------------------------------------------------------------------------

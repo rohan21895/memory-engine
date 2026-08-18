@@ -473,6 +473,28 @@ def _photo(ctx: StageContext, record: Mapping[str, Any]) -> Any:
     boxes = face_boxes_for_layout(
         detected_face_from_record(face) for face in stored
     )
+    # The check above compares the claim against the DATABASE ROWS. What layout
+    # is handed is `boxes`, and `face_boxes_for_layout` filters those rows again
+    # against `memory_engine_face.records.SUBJECT_DETECTION_FLOOR` -- a constant
+    # in a different package from the `Settings.face_score_floor` that decided
+    # `face_count`. The two are equal today and `stages/base.py` says they must
+    # be, but nothing made that true, so raising one of them by itself would
+    # drop faces between the row count and the layout set with every existing
+    # guard still passing. Measured: two stored faces at 0.65 and 0.95, claimed
+    # 2, rows 2 -- the guard passes -- and with the face-identity constant alone
+    # moved to 0.70, layout receives ONE box and `face_in_trim_zone` passes
+    # without ever seeing the other. So the claim is compared against what
+    # layout actually gets, which is the only set the trim check can protect.
+    if len(boxes) < claimed:
+        raise FaceEvidenceMissing(
+            f"{media_id[:12]} reports {claimed} face(s) and the library holds "
+            f"{len(stored)} rectangle(s), but only {len(boxes)} reached face-safe "
+            "layout. The two detection floors -- Settings.face_score_floor, which "
+            "counted the faces, and memory_engine_face.records."
+            "SUBJECT_DETECTION_FLOOR, which filters them for layout -- disagree. "
+            "The trim-zone check would pass without seeing every face the album "
+            "believes is in this photo."
+        )
     size = (record.get("image") or {}).get("oriented_size") or {}
     return Photo(
         media_id=media_id,
