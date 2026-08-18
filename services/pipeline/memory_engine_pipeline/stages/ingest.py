@@ -299,7 +299,14 @@ def _execute(
             files_done=(job.get("state", {}).get("progress") or {}).get("units_done", 0),
         )
 
-    job = ctx.jobs.begin(job)
+    # The worker checkpoint is the fine-grained resume manifest and can carry
+    # hundreds of thousands of output refs.  The database job is only coarse
+    # scheduler state: jobstore.py explicitly names the MediaRecords as the
+    # durable truth.  Persisting the worker's whole manifest here makes every
+    # state transition traverse/serialize it before the worker can resume.
+    # Keep the full `job` for the worker and a compact copy for JobStore.
+    tracking = ctx.jobs.begin(_scan_job_for_store(job))
+    job = _with_tracking_state(job, tracking)
     ctx.reporter.event(STAGE, "stage_start", label, roots=len(roots))
 
     job_file = ctx.path("ingest", f"{job['job_id']}.request.json")
@@ -319,7 +326,8 @@ def _execute(
         message = (stderr or stdout or "").strip().splitlines()
         detail = message[-1] if message else f"exit code {process.returncode}"
         ctx.jobs.fail(
-            job, code="internal_error", message="ingest worker failed", retryable=True
+            _scan_job_for_store(job),
+            code="internal_error", message="ingest worker failed", retryable=True
         )
         return StageResult(stage=STAGE, status=StageStatus.FAILED, detail=detail,
                            job_id=job["job_id"])
@@ -328,7 +336,7 @@ def _execute(
     persisted = read_json(checkpoint)
     if not isinstance(persisted, dict) or persisted.get("job_id") != job["job_id"]:
         ctx.jobs.fail(
-            job,
+            _scan_job_for_store(job),
             code="internal_error",
             message="ingest worker wrote no usable checkpoint",
             retryable=True,
@@ -341,8 +349,39 @@ def _execute(
         )
     job = persisted
 
-    loaded, skipped = _load_records(ctx, job)
+    loaded, skipped, unreadable = _load_records(ctx, job)
     elapsed = time.monotonic() - started
+
+    media_outputs = _media_outputs(job)
+    unexpected_outputs = len(job.get("outputs") or []) - len(media_outputs)
+    duplicate_ids = len(media_outputs) - len({output["id"] for output in media_outputs})
+    missing_from_database = _missing_media_ids(ctx, media_outputs)
+    if unreadable or unexpected_outputs or duplicate_ids or missing_from_database:
+        detail = (
+            "ingest outputs were not durably imported: "
+            f"unreadable={unreadable}, unexpected={unexpected_outputs}, "
+            f"duplicate_ids={duplicate_ids}, missing_from_media_db={len(missing_from_database)}"
+        )
+        ctx.jobs.fail(
+            _scan_job_for_store(job),
+            code="internal_error",
+            message=detail,
+            retryable=True,
+        )
+        return StageResult(
+            stage=STAGE,
+            status=StageStatus.FAILED,
+            detail=detail,
+            job_id=job["job_id"],
+            counts={
+                "loaded": loaded,
+                "already_present": skipped,
+                "unreadable": unreadable,
+                "unexpected_outputs": unexpected_outputs,
+                "duplicate_output_ids": duplicate_ids,
+                "missing_from_media_db": len(missing_from_database),
+            },
+        )
 
     complete = bool(report.get("complete", False))
     if not complete:
@@ -350,7 +389,7 @@ def _execute(
         # It has no reason to today (the runner passes no batch limit), but a
         # runner that assumed completion would silently truncate a library if
         # that ever changed.
-        ctx.jobs.put(job)
+        ctx.jobs.put(_scan_job_for_store(job))
         return StageResult(
             stage=STAGE,
             status=StageStatus.FAILED,
@@ -359,7 +398,13 @@ def _execute(
             counts={"loaded": loaded, "already_present": skipped},
         )
 
-    ctx.jobs.complete(job, outputs=job.get("outputs") or [])
+    # Every worker output is now represented by a durable MediaRecord.  The
+    # terminal scheduler JobSpec no longer needs a second 100k-element answer
+    # to "what was imported".  Completing the compact form retains full schema
+    # validation while making validation/serialization bounded by scheduler
+    # state rather than library size.  The on-disk worker checkpoint remains
+    # full, so a crash before this line can always retry the import.
+    ctx.jobs.complete(_scan_job_for_store(job))
     counts = {
         "processed": int(report.get("processed", 0)),
         "resumed_skips": int(report.get("resumed_skips", 0)),
@@ -420,7 +465,40 @@ def _last_json_line(stdout: str) -> dict[str, Any]:
     return {}
 
 
-def _load_records(ctx: StageContext, job: dict[str, Any]) -> tuple[int, int]:
+def _media_outputs(job: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        output
+        for output in (job.get("outputs") or [])
+        if output.get("kind") == "media_record" and output.get("id") and output.get("path")
+    ]
+
+
+def _scan_job_for_store(job: dict[str, Any]) -> dict[str, Any]:
+    """The schema-valid coarse scan state stored in media-db.
+
+    The worker's on-disk checkpoint keeps the full arrays.  This function is a
+    non-mutating shallow copy with fresh mutable children for exactly the
+    fields JobStore transitions edit.
+    """
+    compact = dict(job)
+    compact["state"] = dict(job["state"])
+    compact["checkpoint"] = dict(job.get("checkpoint") or {})
+    compact["checkpoint"]["partial_output_ids"] = []
+    compact["outputs"] = []
+    error = job.get("error")
+    compact["error"] = dict(error) if isinstance(error, dict) else error
+    return compact
+
+
+def _with_tracking_state(job: dict[str, Any], tracking: dict[str, Any]) -> dict[str, Any]:
+    worker = dict(job)
+    worker["state"] = dict(tracking["state"])
+    error = tracking.get("error")
+    worker["error"] = dict(error) if isinstance(error, dict) else error
+    return worker
+
+
+def _load_records(ctx: StageContext, job: dict[str, Any]) -> tuple[int, int, int]:
     """Load this job's MediaRecords into media-db.
 
     `put_media` is an idempotent upsert, so re-loading is safe; the membership
@@ -429,16 +507,13 @@ def _load_records(ctx: StageContext, job: dict[str, Any]) -> tuple[int, int]:
     media_id FROM media`, because materialising every id in a 300k library
     costs tens of megabytes to save a few hundred queries.
     """
-    outputs = [
-        output
-        for output in (job.get("outputs") or [])
-        if output.get("kind") == "media_record" and output.get("path")
-    ]
+    outputs = _media_outputs(job)
     if not outputs:
-        return 0, 0
+        return 0, 0, 0
 
     loaded = 0
     skipped = 0
+    unreadable = 0
     connection = ctx.database.connection
     chunk = 500
     for start in range(0, len(outputs), chunk):
@@ -457,6 +532,7 @@ def _load_records(ctx: StageContext, job: dict[str, Any]) -> tuple[int, int]:
                 continue
             record = read_json(Path(output["path"]))
             if record is None:
+                unreadable += 1
                 ctx.reporter.event(
                     STAGE,
                     "note",
@@ -481,4 +557,24 @@ def _load_records(ctx: StageContext, job: dict[str, Any]) -> tuple[int, int]:
         message="stored",
         force=True,
     )
-    return loaded, skipped
+    return loaded, skipped, unreadable
+
+
+def _missing_media_ids(
+    ctx: StageContext, outputs: list[dict[str, Any]]
+) -> tuple[str, ...]:
+    """Output ids absent from media-db after import, in bounded queries."""
+    missing: list[str] = []
+    connection = ctx.database.connection
+    chunk = 500
+    for start in range(0, len(outputs), chunk):
+        ids = [output["id"] for output in outputs[start : start + chunk]]
+        placeholders = ",".join("?" for _ in ids)
+        present = {
+            row[0]
+            for row in connection.execute(
+                f"SELECT media_id FROM media WHERE media_id IN ({placeholders})", ids
+            )
+        }
+        missing.extend(media_id for media_id in ids if media_id not in present)
+    return tuple(missing)

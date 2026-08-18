@@ -25,7 +25,12 @@ from support import (  # noqa: E402
 )
 
 from memory_engine_pipeline import classical, ids, inventory, mlruntime  # noqa: E402
-from memory_engine_pipeline.jobstore import JobValidationError, build_job  # noqa: E402
+from memory_engine_pipeline.jobstore import (  # noqa: E402
+    JobValidationError,
+    build_job,
+    validate_job,
+)
+from memory_engine_pipeline.stages.ingest import _scan_job_for_store  # noqa: E402
 
 
 class SourceLocatorDigest(unittest.TestCase):
@@ -114,6 +119,47 @@ class JobIdentity(unittest.TestCase):
     def test_a_job_that_violates_the_contract_raises(self):
         with self.assertRaises(JobValidationError):
             build_job(job_type="not_a_real_job_type", scope="s", params={})
+
+
+class ScanJobStorageShape(unittest.TestCase):
+    """The scheduler copy stays bounded; the worker copy stays resumable."""
+
+    def test_a_large_worker_manifest_compacts_without_mutating_or_weakening_it(self):
+        job = build_job(
+            job_type="scan_source",
+            scope="test",
+            params={"follow_symlinks": False, "include_hidden": False, "max_depth": 32},
+            source_paths=["/synthetic/source"],
+            locator_digest="a" * 64,
+        )
+        outputs = [
+            {
+                "kind": "media_record",
+                "id": f"{index:064x}",
+                "path": f"/synthetic/records/{index}.json",
+                "byte_size": 1,
+                "produced_at": "2026-08-18T00:00:00Z",
+            }
+            for index in range(10_000)
+        ]
+        job["outputs"] = outputs
+        job["checkpoint"]["partial_output_ids"] = [output["id"] for output in outputs]
+
+        compact = _scan_job_for_store(job)
+
+        self.assertEqual([], compact["outputs"])
+        self.assertEqual([], compact["checkpoint"]["partial_output_ids"])
+        self.assertEqual(10_000, len(job["outputs"]))
+        self.assertEqual(10_000, len(job["checkpoint"]["partial_output_ids"]))
+        self.assertIsNot(compact["state"], job["state"])
+        self.assertIsNot(compact["checkpoint"], job["checkpoint"])
+        validate_job(compact)
+
+        # Compaction changes the stored data, not the contract gate. A bad
+        # scheduler state must still fail the complete Draft 2020-12 schema.
+        compact["state"]["status"] = "pretend-completed"
+        with self.assertRaises(JobValidationError):
+            validate_job(compact)
 
 
 class FaceIdentity(unittest.TestCase):

@@ -243,6 +243,150 @@ class _FailAfter:
         return self._database.put_media(record)
 
 
+class _DropAfter:
+    """A corrupt storage boundary that acknowledges records without writing."""
+
+    def __init__(self, database, limit: int) -> None:
+        self._database = database
+        self._limit = limit
+        self.writes = 0
+
+    def __getattr__(self, name):
+        return getattr(self._database, name)
+
+    def put_media(self, record):
+        self.writes += 1
+        if self.writes > self._limit:
+            return record["media_id"]
+        return self._database.put_media(record)
+
+
+class InterruptedIngestImport(unittest.TestCase):
+    """The full manifest survives until every MediaRecord is durable."""
+
+    @classmethod
+    def setUpClass(cls):
+        require_ingest_binary()
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="mep-src-"))
+        self.workdir = Path(tempfile.mkdtemp(prefix="mep-work-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.addCleanup(shutil.rmtree, self.workdir, True)
+        make_library(self.root, PHOTOS, size=SMALL)
+
+    def _worker_checkpoint(self) -> dict:
+        checkpoints = sorted(
+            path for path in (self.workdir / "ingest").glob("*.json")
+            if not path.name.endswith(".request.json")
+        )
+        self.assertEqual(1, len(checkpoints))
+        return json.loads(checkpoints[0].read_text(encoding="utf-8"))
+
+    def test_completed_scan_stores_records_not_a_second_full_manifest(self):
+        from memory_engine_media_db import Database
+
+        result = run_pipeline(
+            [self.root], self.workdir, stages=["ingest"],
+            settings=Settings(render_print=False, render_video=False),
+        )
+        self.assertEqual(StageStatus.COMPLETED, _stage(result, "ingest").status)
+
+        worker = self._worker_checkpoint()
+        self.assertEqual(PHOTOS, len(worker["outputs"]))
+        self.assertEqual(PHOTOS, len(worker["checkpoint"]["partial_output_ids"]))
+
+        with Database.open(self.workdir / "library.db") as database:
+            self.assertEqual(PHOTOS, database.count_media())
+            completed = [
+                job for job in database.jobs_by_status("completed")
+                if job["job_type"] == "scan_source"
+            ]
+        self.assertEqual(1, len(completed))
+        self.assertEqual([], completed[0]["outputs"])
+        self.assertEqual([], completed[0]["checkpoint"]["partial_output_ids"])
+
+    def test_a_crash_during_record_import_retains_and_reuses_the_full_checkpoint(self):
+        from memory_engine_media_db import Database
+
+        database = Database.open(self.workdir / "library.db")
+        guard = _FailAfter(database, limit=3)
+        interrupted = run_pipeline(
+            [self.root], self.workdir, stages=["ingest"],
+            settings=Settings(render_print=False, render_video=False),
+            database=guard,
+        )
+        running = [
+            job for job in database.jobs_by_status("running")
+            if job["job_type"] == "scan_source"
+        ]
+        database.close()
+
+        self.assertEqual(StageStatus.FAILED, _stage(interrupted, "ingest").status)
+        self.assertIn("simulated crash", _stage(interrupted, "ingest").detail)
+        self.assertEqual(1, len(running))
+        self.assertEqual([], running[0]["outputs"])
+        self.assertEqual([], running[0]["checkpoint"]["partial_output_ids"])
+
+        checkpoint = self._worker_checkpoint()
+        self.assertEqual("completed", checkpoint["state"]["status"])
+        self.assertEqual(PHOTOS, len(checkpoint["outputs"]))
+        self.assertEqual(PHOTOS, len(checkpoint["checkpoint"]["partial_output_ids"]))
+        self.assertTrue(
+            all(Path(output["path"]).is_file() for output in checkpoint["outputs"]),
+            "the retry manifest points at missing record artifacts",
+        )
+
+        resumed = run_pipeline(
+            [self.root], self.workdir, stages=["ingest"],
+            settings=Settings(render_print=False, render_video=False),
+        )
+        ingest = _stage(resumed, "ingest")
+        self.assertEqual(StageStatus.COMPLETED, ingest.status, ingest.detail)
+        self.assertEqual((running[0]["job_id"],), resumed.reclaimed_jobs)
+        self.assertEqual(PHOTOS - 3, ingest.counts["loaded"])
+        self.assertEqual(3, ingest.counts["already_present"])
+
+        with Database.open(self.workdir / "library.db") as database:
+            self.assertEqual(PHOTOS, database.count_media())
+            completed = [
+                job for job in database.jobs_by_status("completed")
+                if job["job_type"] == "scan_source"
+            ]
+        self.assertEqual(1, len(completed))
+        self.assertEqual([], completed[0]["outputs"])
+        self.assertEqual([], completed[0]["checkpoint"]["partial_output_ids"])
+
+    def test_acknowledged_but_missing_records_cannot_complete_the_scan(self):
+        from memory_engine_media_db import Database
+
+        database = Database.open(self.workdir / "library.db")
+        guard = _DropAfter(database, limit=3)
+        incomplete = run_pipeline(
+            [self.root], self.workdir, stages=["ingest"],
+            settings=Settings(render_print=False, render_video=False),
+            database=guard,
+        )
+        self.assertEqual(3, database.count_media())
+        database.close()
+
+        ingest = _stage(incomplete, "ingest")
+        self.assertEqual(StageStatus.FAILED, ingest.status)
+        self.assertEqual(PHOTOS - 3, ingest.counts["missing_from_media_db"])
+        self.assertIn("not durably imported", ingest.detail)
+        self.assertFalse((self.workdir / "inventory.json").exists())
+        checkpoint = self._worker_checkpoint()
+        self.assertEqual(PHOTOS, len(checkpoint["outputs"]))
+
+        resumed = run_pipeline(
+            [self.root], self.workdir, stages=["ingest"],
+            settings=Settings(render_print=False, render_video=False),
+        )
+        self.assertEqual(StageStatus.COMPLETED, _stage(resumed, "ingest").status)
+        with Database.open(self.workdir / "library.db") as database:
+            self.assertEqual(PHOTOS, database.count_media())
+
+
 class KilledDuringAnalysis(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
