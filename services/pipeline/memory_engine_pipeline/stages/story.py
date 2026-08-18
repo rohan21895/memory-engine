@@ -58,22 +58,26 @@ THREE THINGS THE PLANNER HAS TO BE TOLD, AND WHERE EACH COMES FROM
   five different rates is planned at one of them and the rest are REPORTED as
   excluded, not silently dropped.
 
-  GEOMETRY. This is the gap worth reading twice. `MediaRecord.video`
-  (VideoProperties: `oriented_size`, `rotation_deg`, `is_variable_frame_rate`)
-  is null for every video in the library, because `workers/ingest` does not
-  populate it. So the SOURCE's pixel geometry is unmeasured, and this stage will
-  not invent it:
+  GEOMETRY. This used to be the gap worth reading twice: `MediaRecord.video`
+  was null for every video, so the SOURCE's pixel geometry was unmeasured, the
+  render target fell back to the 480p proxy raster, and reframing was disabled
+  because a crop needs an aspect ratio nobody had measured. `workers/ingest`
+  now populates `VideoProperties` (issue #78), so:
 
-    - `reframe` is DISABLED. A landscape->vertical crop needs the source's
-      aspect ratio, and a crop computed from an assumed 16:9 would silently
-      frame the wrong part of a 4:3 or a rotated clip.
-    - The render target is the PROXY RASTER, which is the only picture geometry
-      the library has actually measured (`ProxyRef.size`, written by the worker
-      that produced the pixels). Media are grouped by that raster so a 9:16
-      phone clip is never scaled into a 16:9 timeline.
+    - The render target is `MediaRecord.video.oriented_size` -- the size AFTER
+      the container's display matrix is applied, which is the space every
+      normalised coordinate in this system lives in. A 1920x1080 library plans
+      a 1920x1080 master rather than an 854x480 one.
+    - `reframe` is ENABLED, because the source aspect ratio is now a measured
+      number rather than an assumption.
 
-  A 1080p master needs `MediaRecord.video.oriented_size`. That is an ingest
-  issue, not something to paper over here.
+  THE FALLBACK IS STILL THERE, AND IT STILL MATTERS. A record whose `video` is
+  null -- ingested before #78, or written by a worker that could not probe its
+  source -- goes back to the proxy raster with reframing off. Measured and
+  unmeasured media are never mixed into one reel: where the geometry came from
+  is part of the grouping key, not a detail, because a target derived from a
+  measurement and one derived from a fallback are different claims about the
+  picture. Which of the two this run used is printed.
 
   MUSIC. There is none. `packages/story-engine/music/library.json` is
   `audio_bundled: false` -- three placeholder entries defining the shape, no
@@ -727,6 +731,12 @@ class _ReelOutcome:
     counts: dict[str, Any]
 
 
+# Where a candidate's target geometry came from. Part of the grouping key, so a
+# reel is never assembled half out of measurements and half out of fallbacks.
+_SOURCE_GEOMETRY = "source"
+_PROXY_GEOMETRY = "proxy"
+
+
 @dataclass(frozen=True, slots=True)
 class _Candidate:
     media_id: str
@@ -734,16 +744,43 @@ class _Candidate:
     start_value: int
     frame_count: int
     raster: tuple[int, int]
+    #: `MediaRecord.video.oriented_size` when ingest measured it, else the proxy
+    #: raster. `geometry_from` says which, so it never has to be guessed.
+    geometry: tuple[int, int]
+    geometry_from: str
     path: str
     label: str | None
+
+
+def _oriented_size(record: Mapping[str, Any]) -> tuple[int, int] | None:
+    """The source's displayed size, if `workers/ingest` measured it.
+
+    `oriented_size` is the size AFTER the container's display matrix is applied.
+    A portrait phone clip is stored as a landscape raster with a rotation flag,
+    and reading the stored raster here would put every reframe crop on its side
+    with nothing downstream able to tell -- so this reads the one field that
+    already has the turn in it, and nothing else.
+    """
+    video = record.get("video")
+    if not isinstance(video, Mapping):
+        return None
+    oriented = video.get("oriented_size")
+    if not isinstance(oriented, Mapping):
+        return None
+    width, height = oriented.get("width"), oriented.get("height")
+    if not isinstance(width, int) or not isinstance(height, int):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
 
 
 def _candidates(ctx: StageContext) -> list[_Candidate]:
     """Every video whose proxy pins a rate and a raster, and whose file is here.
 
     The rate comes from the sidecar's exact time base, not from its float
-    `source_rate`. The raster is the proxy's, which is the only picture
-    geometry anything in this repository has measured.
+    `source_rate`. The proxy raster is still read, because it is what the
+    geometry falls back to for a record ingest could not measure.
     """
     from memory_engine_video_analysis.proxy import (  # noqa: PLC0415
         ProxyError,
@@ -768,6 +805,7 @@ def _candidates(ctx: StageContext) -> list[_Candidate]:
         width, height = found[0].width, found[0].height
         if not width or not height:
             continue
+        oriented = _oriented_size(record)
         out.append(
             _Candidate(
                 media_id=media_id,
@@ -775,6 +813,10 @@ def _candidates(ctx: StageContext) -> list[_Candidate]:
                 start_value=grid.start_value,
                 frame_count=grid.frame_count,
                 raster=(width, height),
+                geometry=oriented if oriented is not None else (width, height),
+                geometry_from=(
+                    _PROXY_GEOMETRY if oriented is None else _SOURCE_GEOMETRY
+                ),
                 path=source,
                 label=(record.get("sources") or [{}])[0].get("original_filename"),
             )
@@ -789,22 +831,38 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
     if not candidates:
         return None
 
-    # One timeline rate, one target geometry. `render-video` refuses a source at
-    # a rate other than the timeline's rather than resampling it, and a source
-    # of a different shape would be scaled into the target without anything
-    # saying so, so both are grouping keys rather than things to reconcile.
-    groups: dict[tuple[float, tuple[int, int]], list[_Candidate]] = {}
+    # One timeline rate, one target geometry, and one PROVENANCE for that
+    # geometry. `render-video` refuses a source at a rate other than the
+    # timeline's rather than resampling it, and a source of a different shape
+    # would be scaled into the target without anything saying so. The third
+    # component is the one that is easy to leave out: a clip whose oriented size
+    # ingest measured and a clip that fell back to its proxy raster can land on
+    # the same numbers by coincidence, and mixing them would put a measurement
+    # and an assumption behind the same declared target.
+    groups: dict[tuple[float, tuple[int, int], str], list[_Candidate]] = {}
     for candidate in candidates:
-        groups.setdefault((candidate.rate, candidate.raster), []).append(candidate)
-    # Most sources first, then the higher rate, then the wider raster: a stable
-    # total order, so the same library plans the same reel on every machine.
+        groups.setdefault(
+            (candidate.rate, candidate.geometry, candidate.geometry_from), []
+        ).append(candidate)
+    # Most sources first, then measured geometry over fallback, then the higher
+    # rate, then the wider frame: a stable total order, so the same library
+    # plans the same reel on every machine.
     key = max(
         groups,
-        key=lambda item: (len(groups[item]), item[0], item[1][0], item[1][1]),
+        key=lambda item: (
+            len(groups[item]),
+            item[2] == _SOURCE_GEOMETRY,
+            item[0],
+            item[1][0],
+            item[1][1],
+        ),
     )
-    rate, raster = key
+    rate, raster, geometry_from = key
     chosen = sorted(groups[key], key=lambda candidate: candidate.media_id)
-    excluded = [c for c in candidates if (c.rate, c.raster) != key]
+    excluded = [
+        c for c in candidates if (c.rate, c.geometry, c.geometry_from) != key
+    ]
+    measured = geometry_from == _SOURCE_GEOMETRY
 
     notes: list[str] = []
     if excluded:
@@ -812,20 +870,37 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
             f"{len(excluded)} video(s) are not in this reel because an EDL has one "
             "timeline rate and one target geometry: "
             + ", ".join(
-                sorted({f"{c.rate:g} fps {c.raster[0]}x{c.raster[1]}" for c in excluded})
+                sorted(
+                    {
+                        f"{c.rate:g} fps {c.geometry[0]}x{c.geometry[1]}"
+                        f" ({c.geometry_from})"
+                        for c in excluded
+                    }
+                )
             )
-            + f" against {rate:g} fps {raster[0]}x{raster[1]}"
+            + f" against {rate:g} fps {raster[0]}x{raster[1]} ({geometry_from})"
         )
-    notes.append(
-        "the render target is the 480p proxy raster, which is the only picture "
-        "geometry this library has measured: MediaRecord.video is null for every "
-        "video because workers/ingest does not populate it, so the source's "
-        "oriented size is unknown and no larger master can be planned honestly"
-    )
-    notes.append(
-        "reframe is disabled: a landscape-to-vertical crop needs the source aspect "
-        "ratio, which is the same missing measurement"
-    )
+    if measured:
+        notes.append(
+            f"the render target is {raster[0]}x{raster[1]}, the source's own "
+            "MediaRecord.video.oriented_size -- the size AFTER the container's "
+            "display matrix is applied, which is the space every normalised "
+            "coordinate in this system lives in"
+        )
+        notes.append(
+            "reframe is enabled: the source aspect ratio is measured, so a crop "
+            "computed from it frames the picture rather than an assumption about it"
+        )
+    else:
+        notes.append(
+            "the render target is the 480p proxy raster: MediaRecord.video is null "
+            "for these records, so the source's oriented size is unmeasured and no "
+            "larger master can be planned honestly. Re-run ingest to measure it"
+        )
+        notes.append(
+            "reframe is disabled: a landscape-to-vertical crop needs the source "
+            "aspect ratio, which is the same missing measurement"
+        )
     notes.append(
         "no music: packages/story-engine/music/library.json bundles no audio, so "
         "there is no beat grid and no cut in this reel is beat-locked"
@@ -876,7 +951,7 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
         media=tuple(media),
         moments=tuple(moments),
         name=f"{ctx.settings.scope} reel",
-        reframe=reel_module.ReframeSettings(enabled=False),
+        reframe=reel_module.ReframeSettings(enabled=measured),
         ambient=reel_module.AmbientSettings(
             default_gain_db=0.0, high_pass_hz=None, noise_suppression="none"
         ),
@@ -930,6 +1005,8 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
         "kind": plan.edl["kind"],
         "rate": rate,
         "resolution": f"{raster[0]}x{raster[1]}",
+        "resolution_measured_from": geometry_from,
+        "reframe": "enabled" if measured else "disabled (source geometry unmeasured)",
         "clips": len(clips),
         "beat_locked": beat_locked,
         "duration_s": round(plan.duration_frames / rate, 3),
@@ -942,6 +1019,8 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
     detail = (
         f"reel EDL {plan.edl_id[:12]}: {len(clips)} clips, "
         f"{plan.duration_frames / rate:.2f}s at {rate:g} fps, "
+        f"{raster[0]}x{raster[1]} from the "
+        f"{'measured source' if measured else 'proxy raster'}, "
         f"{beat_locked} of {len(clips)} cuts beat-locked, "
         "0 cuts certified word-safe (no transcript backend)"
     )
