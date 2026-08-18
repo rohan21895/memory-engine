@@ -116,6 +116,10 @@ jobs:
       # migration set rather than as a stray file. Runs on its own so the
       # failure names itself.
       - run: node scripts/ci/check-no-shadow-files.mjs
+      # Fails if scripts/ci/local-ci.sh stops covering what this workflow runs.
+      # That script claimed CI-equivalence while omitting four gates, including
+      # the one directly above, for three days (#97).
+      - run: node scripts/ci/check-local-ci-parity.mjs
 
   codegen-freshness:
     name: Codegen Freshness
