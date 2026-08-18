@@ -464,6 +464,110 @@ class FaceIdentityWiring(unittest.TestCase):
         # its own even once a calibration exists.
         self.assertFalse(after["identity"]["eligible_for_automated_output"])
 
+    def test_a_user_confirmed_identity_survives_re_detection(self):
+        """A stable face_id keeps the human decision, not the new model default.
+
+        The sensitive-envelope regression above is deliberately not enough:
+        before this test, re-detection restored that envelope while silently
+        replacing a user-confirmed name with an unassigned model decision.
+        """
+        person_id = "3f2a91c4-7b6e-4d1a-9c85-2e4b7a1f6d03"
+        decided_at = "2026-08-18T12:00:00Z"
+        with FakeMlRuntime() as host:
+            self._run(host, stages=["ingest", "analysis"])
+            with self._database() as database:
+                target = database.list_faces(limit=1000)[0]
+                target["sensitive"]["minor_status"] = "confirmed_adult"
+                target["identity"] = {
+                    "person_id": person_id,
+                    "assignment": "user_confirmed",
+                    "confidence": 1.0,
+                    "threshold_profile": "automated_output",
+                    "threshold_used": 0.92,
+                    "eligible_for_automated_output": True,
+                    "candidates": [],
+                    "review_reason": None,
+                    "decided_by": "user",
+                    "decided_at": decided_at,
+                }
+                database.put_face(target)
+                expected_identity = dict(target["identity"])
+                face_id = target["face_id"]
+                media_id = target["media_id"]
+
+            report = self._run(
+                host,
+                stages=["ingest", "analysis"],
+                reanalyze_faces=True,
+            )
+
+        analysis = _stage(report, "analysis")
+        self.assertEqual(StageStatus.COMPLETED, analysis.status, analysis.detail)
+        with self._database() as database:
+            after = next(
+                record
+                for record in database.list_faces(limit=1000)
+                if record["face_id"] == face_id
+            )
+        self.assertIsNotNone(after)
+        self.assertEqual(expected_identity, after["identity"])
+        self.assertEqual(person_id, after["identity"]["person_id"])
+        self.assertTrue(after["identity"]["eligible_for_automated_output"])
+        self.assertEqual("user", after["identity"]["decided_by"])
+        with self._database() as database:
+            summary = database.get_media(media_id)["faces"]
+        self.assertIn(person_id, summary["confirmed_person_ids"])
+        self.assertEqual(summary["face_count"] - 1, summary["pending_review_count"])
+
+    def test_per_face_embedding_errors_fail_the_affected_media_and_stage(self):
+        """A host answer saying every face failed is not a completed analysis."""
+        with FakeMlRuntime() as host:
+            first = self._run(host, stages=["ingest", "analysis"])
+            self.assertEqual(
+                StageStatus.COMPLETED,
+                _stage(first, "analysis").status,
+                _stage(first, "analysis").detail,
+            )
+            with self._database() as database:
+                faces = database.list_faces(limit=1000)
+            face_ids = {face["face_id"] for face in faces}
+            affected_media = {face["media_id"] for face in faces}
+            self.assertTrue(face_ids, "the fixture produced no face failures to test")
+            host.fail_items = frozenset(face_ids)
+
+            report = self._run(
+                host,
+                stages=["ingest", "analysis"],
+                reanalyze_faces=True,
+            )
+
+        analysis = _stage(report, "analysis")
+        self.assertEqual(StageStatus.FAILED, analysis.status, analysis.detail)
+        self.assertEqual(2, report.exit_code)
+        self.assertEqual(len(face_ids), analysis.counts["faces_embedding_failed"])
+        self.assertEqual(
+            {
+                "retryable": 0,
+                "non_retryable": len(face_ids),
+                "by_reason": {"proxy_not_found": len(face_ids)},
+            },
+            analysis.counts["face_embedding_failures"],
+        )
+        self.assertGreater(analysis.counts["still_pending"], 0)
+
+        with self._database() as database:
+            stored_faces = {
+                face["face_id"]: face for face in database.list_faces(limit=1000)
+            }
+            for media_id in affected_media:
+                media = database.get_media(media_id)
+                step = media["processing"]["stages"]["face_embedding"]
+                self.assertEqual("failed", step["status"], media_id)
+                self.assertFalse(step["last_error"]["retryable"], media_id)
+                self.assertEqual("analyzing", media["processing"]["state"])
+            for face_id in face_ids:
+                self.assertIsNone(stored_faces[face_id]["embedding"])
+
     def test_a_face_with_no_landmarks_is_kept_and_never_embedded(self):
         """An unembeddable face is still a face.
 

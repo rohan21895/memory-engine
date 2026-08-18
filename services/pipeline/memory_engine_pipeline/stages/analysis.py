@@ -661,6 +661,11 @@ def _run_models(
         "faces_found": 0,
         "faces_embedded": 0,
         "faces_embedding_failed": 0,
+        "face_embedding_failures": {
+            "retryable": 0,
+            "non_retryable": 0,
+            "by_reason": {},
+        },
         "faces_without_landmarks": 0,
     }
 
@@ -788,6 +793,11 @@ def _run_models(
                         pin=outcome.pin,
                         face_stack=face_stack,
                     )
+                    eligible_identities = [
+                        face["identity"]
+                        for face in written
+                        if face["identity"]["eligible_for_automated_output"]
+                    ]
                     record["faces"] = {
                         # A count AND the ids now. The empty `face_ids` this
                         # field used to carry was honest at the time (nothing
@@ -796,14 +806,22 @@ def _run_models(
                         # face can be in the trim zone, and the gate CLAUDE.md
                         # rule 5 rests on could not fail.
                         #
-                        # `confirmed_person_ids` stays empty and is not the same
-                        # kind of empty: nobody is eligible for automated output
-                        # until a calibration exists. The faces stage rewrites
-                        # it from the assignments rather than leaving it to rot.
                         "face_count": len(written),
                         "face_ids": [face["face_id"] for face in written],
-                        "confirmed_person_ids": [],
-                        "pending_review_count": len(written),
+                        # Usually empty because no calibration exists today,
+                        # but a human-confirmed identity is authoritative and
+                        # survives re-detection. Replacing this summary with
+                        # model defaults while preserving the FaceRecord would
+                        # leave two answers to whether the person is confirmed.
+                        "confirmed_person_ids": sorted(
+                            {
+                                identity["person_id"]
+                                for identity in eligible_identities
+                                if identity.get("person_id") is not None
+                            }
+                        ),
+                        "pending_review_count": len(written)
+                        - len(eligible_identities),
                         "largest_face_area_ratio": (
                             round(max(d.area_ratio for d in detections), 6)
                             if detections else None
@@ -957,14 +975,17 @@ def _write_detected_faces(
         # anything a human answered about it has to survive the rewrite:
         # `created_at` is when this face was first seen, not when it was last
         # re-derived, and the minor-safety envelope is the answer itself.
-        face_record = faceidentity.restore_sensitive(
-            faceidentity.record_for(
-                face,
-                assignments[face.face_id],
-                created_at=(previous or {}).get("created_at") or now,
-                updated_at=now,
-            ),
-            (previous or {}).get("sensitive"),
+        face_record = faceidentity.record_for(
+            face,
+            assignments[face.face_id],
+            created_at=(previous or {}).get("created_at") or now,
+            updated_at=now,
+        )
+        faceidentity.restore_sensitive(
+            face_record, (previous or {}).get("sensitive")
+        )
+        faceidentity.restore_human_identity(
+            face_record, (previous or {}).get("identity")
         )
         ctx.database.put_face(face_record)
         written.append(dict(face_record))
@@ -1058,7 +1079,7 @@ def _run_face_embedding(
         # A transport or contract failure is the whole request's, not one
         # record's, and must not be recorded as "these photos have no faces".
         # It propagates out of the stage, which marks nothing.
-        counts["faces_embedded"] += _embed_crops(
+        embedded, failures_by_media = _embed_crops(
             ctx,
             client=client,
             job=job,
@@ -1066,9 +1087,42 @@ def _run_face_embedding(
             stored_by_face=stored_by_face,
             face_stack=face_stack,
         )
+        counts["faces_embedded"] += embedded
+        failure_counts = counts["face_embedding_failures"]
+        for failures in failures_by_media.values():
+            counts["faces_embedding_failed"] += len(failures)
+            for failure in failures:
+                retryability = (
+                    "retryable" if failure.retryable else "non_retryable"
+                )
+                failure_counts[retryability] += 1
+                by_reason = failure_counts["by_reason"]
+                by_reason[failure.code] = by_reason.get(failure.code, 0) + 1
 
         for media_id, record in batch:
-            _mark(record, FACE_EMBEDDING_STEP, "done", job_id=job["job_id"])
+            failures = failures_by_media.get(media_id, ())
+            if failures:
+                by_reason: dict[str, int] = {}
+                for failure in failures:
+                    by_reason[failure.code] = by_reason.get(failure.code, 0) + 1
+                reasons = ", ".join(
+                    f"{code}: {count}" for code, count in sorted(by_reason.items())
+                )
+                _mark(
+                    record,
+                    FACE_EMBEDDING_STEP,
+                    "failed",
+                    last_error={
+                        "code": "model-inference-failed",
+                        "message": (
+                            f"{len(failures)} face embedding(s) failed ({reasons})"
+                        ),
+                        "retryable": any(failure.retryable for failure in failures),
+                        "occurred_at": utc_now(),
+                    },
+                )
+            else:
+                _mark(record, FACE_EMBEDDING_STEP, "done", job_id=job["job_id"])
             record["updated_at"] = utc_now()
             _roll_up(record, required=ALL_STEPS)
             ctx.database.put_media(record)
@@ -1130,9 +1184,10 @@ def _embed_crops(
     crops: Sequence[mlruntime.FaceCrop],
     stored_by_face: Mapping[str, dict[str, Any]],
     face_stack: FaceStack,
-) -> int:
+) -> tuple[int, dict[str, list[mlruntime.ItemFailure]]]:
     """Send the crops in host-sized chunks and store what comes back."""
     embedded = 0
+    failures_by_media: dict[str, list[mlruntime.ItemFailure]] = {}
     for start in range(0, len(crops), ctx.settings.infer_batch):
         chunk = list(crops[start : start + ctx.settings.infer_batch])
         outcome = client.infer_faces(
@@ -1156,6 +1211,7 @@ def _embed_crops(
                     f"face {crop.item_id[:12]} was not embedded: "
                     f"{failure.message or failure.code}",
                 )
+                failures_by_media.setdefault(record["media_id"], []).append(failure)
                 continue
             values = outcome.tensors.get(crop.item_id)
             if values is None or len(values) != face_stack.dimensions:
@@ -1179,7 +1235,7 @@ def _embed_crops(
             record["updated_at"] = utc_now()
             ctx.database.put_face(record)
             embedded += 1
-    return embedded
+    return embedded, failures_by_media
 
 
 def _is_normalised(values: Sequence[float]) -> bool:
