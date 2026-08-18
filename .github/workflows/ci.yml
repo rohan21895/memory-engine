@@ -100,10 +100,12 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      # Homebrew's ffmpeg exposes the VideoToolbox decoder/encoder pair used by
-      # the release worker. The test preflight refuses to start if either tool
-      # is absent; the worker itself refuses any software fallback.
-      - run: brew install ffmpeg
+      # The supported runtime is FFmpeg 7. An unversioned install pulled 8.1.2:
+      # its capability tables advertised the full VideoToolbox pipeline, but
+      # every real proxy command failed. Pin the major and link the keg-only
+      # formula so both the Python fixture builder and Rust worker resolve it.
+      - run: brew install ffmpeg@7
+      - run: brew link --force ffmpeg@7
       - run: python3 -m pip install --upgrade pip
       - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "pillow>=10.0" "numpy>=1.26" ./workers/ml-runtime
       - run: npm ci --ignore-scripts

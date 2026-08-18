@@ -56,7 +56,8 @@ const executableRunLines = script
 const EXEMPT = [
   [/^npm ci\b/, "installs dependencies; the local tree already has them"],
   [/^python3 -m pip install/, "installs dependencies"],
-  [/^brew install ffmpeg$/, "installs the macOS pipeline prerequisite"],
+  [/^brew install ffmpeg@7$/, "installs the supported macOS pipeline runtime"],
+  [/^brew link --force ffmpeg@7$/, "places the keg-only CI runtime on PATH"],
   [/^cargo test .*apps\/desktop/, "Windows Desktop job; not platform-independent"],
   [/^cargo test .*workers\/ingest/, "run by run-workspace-check.mjs, which the script does call"],
   [/^npm run codegen:check/, "same check as check-codegen-freshness.mjs, which the script calls"],
