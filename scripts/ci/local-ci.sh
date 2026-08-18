@@ -30,6 +30,7 @@ run "ci parity"              node scripts/ci/check-local-ci-parity.mjs
 run "codegen freshness"      node scripts/ci/check-codegen-freshness.mjs
 run "shadow guard tests"     node --test scripts/ci/check-no-shadow-files.test.mjs
 run "shadow files"           node scripts/ci/check-no-shadow-files.mjs
+run "CI/local parity"        node scripts/ci/check-local-ci-parity.mjs
 run "lint (workspace)"       node scripts/ci/run-workspace-check.mjs lint
 # These are test prerequisites, not redundant builds: pipeline tests invoke
 # the release ingest path and the compiled render-video CLI by contract.

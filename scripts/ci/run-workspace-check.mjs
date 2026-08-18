@@ -4,8 +4,18 @@ import process from "node:process";
 import { findFilesNamed, readJson, repositoryRoot, run } from "./lib.mjs";
 
 const check = process.argv[2];
+const options = new Set(process.argv.slice(3));
+const deferPipeline = options.delete("--defer-pipeline");
 if (!new Set(["lint", "test"]).has(check)) {
-  throw new Error("Usage: run-workspace-check.mjs <lint|test>");
+  throw new Error(
+    "Usage: run-workspace-check.mjs <lint|test> [--defer-pipeline]",
+  );
+}
+if (options.size > 0) {
+  throw new Error(`Unknown option(s): ${[...options].join(", ")}`);
+}
+if (deferPipeline && check !== "test") {
+  throw new Error("--defer-pipeline is valid only for the test check");
 }
 
 let checksRun = 0;
@@ -55,6 +65,20 @@ for (const manifest of cargoManifests) {
 
 for (const pyproject of findFilesNamed("pyproject.toml")) {
   const projectDirectory = path.dirname(pyproject);
+  if (
+    deferPipeline &&
+    projectDirectory === path.join(repositoryRoot, "services", "pipeline")
+  ) {
+    // The production worker refuses software video decoding. GitHub's Linux
+    // runner has no NVDEC device, so this component runs in the required macOS
+    // VideoToolbox job instead. Name the deferral: it is not a passing result
+    // for this job, and the workflow remains red until the dedicated job passes.
+    console.error(
+      "workspace component NOT RUN IN THIS JOB: services/pipeline " +
+        "(deferred to the required macOS hardware pipeline job)",
+    );
+    continue;
+  }
   if (check === "lint") {
     run("python3", ["-m", "compileall", "-q", projectDirectory]);
     checksRun += 1;

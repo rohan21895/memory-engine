@@ -41,17 +41,31 @@ const script = scriptSource
   .split("\n")
   .filter((line) => line.trim() !== "" && !/^\s*#/.test(line))
   .join("\n");
+// Stricter still than comment-stripping: only a `run "label" ...` invocation
+// counts as running a command. A bare mention on an executable line (an echo,
+// a variable assignment) is still not execution.
+const executableRunLines = script
+  .split("\n")
+  .map((line) => line.trim())
+  .filter(
+    (line) => /^run\s+/.test(line) || /^\(\s*cd\b.*\brun\s+/.test(line),
+  );
 
 // Reasons, not just a skip list. Each says why the local script cannot or need
 // not run this, so a reader can judge whether the exemption is still true.
 const EXEMPT = [
   [/^npm ci\b/, "installs dependencies; the local tree already has them"],
   [/^python3 -m pip install/, "installs dependencies"],
+  [/^brew install ffmpeg$/, "installs the macOS pipeline prerequisite"],
   [/^cargo test .*apps\/desktop/, "Windows Desktop job; not platform-independent"],
   [/^cargo test .*workers\/ingest/, "run by run-workspace-check.mjs, which the script does call"],
   [/^npm run codegen:check/, "same check as check-codegen-freshness.mjs, which the script calls"],
   [/^npm run lint$/, "run by run-workspace-check.mjs lint"],
   [/^npm test$/, "run by run-workspace-check.mjs test"],
+  [
+    /^python3 services\/pipeline\/tests\/run_required_suite\.py$/,
+    "run by the undeferred workspace test command on supported local hardware",
+  ],
 ];
 
 const commands = [
@@ -65,6 +79,19 @@ const commands = [
 ];
 
 const missing = [];
+const deferredPipelineCommand =
+  "node scripts/ci/run-workspace-check.mjs test --defer-pipeline";
+const requiredPipelineCommand =
+  "python3 services/pipeline/tests/run_required_suite.py";
+if (
+  commands.includes(deferredPipelineCommand) &&
+  !commands.includes(requiredPipelineCommand)
+) {
+  missing.push({
+    command: requiredPipelineCommand,
+    signature: "required because the Linux workspace job defers services/pipeline",
+  });
+}
 for (const command of commands) {
   const exemption = EXEMPT.find(([pattern]) => pattern.test(command));
   if (exemption) continue;
@@ -89,14 +116,17 @@ for (const command of commands) {
 
   if (!signature) {
     missing.push({ command, signature: "(could not derive one)" });
-  } else if (!script.includes(signature)) {
+  } else if (!executableRunLines.some((line) => line.includes(signature))) {
     missing.push({ command, signature });
   }
 }
 
 if (missing.length === 0) {
+  const requiredCommandCount = commands.filter(
+    (command) => !EXEMPT.some(([pattern]) => pattern.test(command)),
+  ).length;
   console.log(
-    `local-ci.sh covers all ${commands.length - EXEMPT.length} platform-independent workflow commands.`,
+    `local-ci.sh covers all ${requiredCommandCount} platform-independent workflow commands.`,
   );
   process.exit(0);
 }

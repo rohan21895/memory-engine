@@ -68,12 +68,11 @@ jobs:
       # one -- so CI has to carry them.
       - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "pillow>=10.0" "numpy>=1.26" ./workers/ml-runtime
       - run: npm ci --ignore-scripts
-      # Pipeline integration tests execute these exact artifacts. `cargo test`
-      # only creates a debug worker and vitest does not emit render-video/dist,
-      # so a fresh runner otherwise skips most of the pipeline while green.
-      - run: cargo build --release --manifest-path workers/ingest/Cargo.toml --all-features
-      - run: npm run build --workspace @memory-engine/render-video
-      - run: npm test
+      # The Linux host has no NVDEC device and the production ingest worker
+      # correctly refuses software decode. Run every other workspace component
+      # here and defer services/pipeline to the required macOS VideoToolbox job
+      # below. The runner names the deferral rather than reporting a skip/pass.
+      - run: node scripts/ci/run-workspace-check.mjs test --defer-pipeline
       # CLAUDE.md hard rule 7: "Model swaps are gated by the eval harness in
       # CI." Until this step existed the harness was a library nothing but its
       # own test file imported, so the rule was not true. Every committed
@@ -88,6 +87,31 @@ jobs:
       - name: Eval harness regression gate
         working-directory: packages/eval-harness
         run: python3 -m memory_engine_eval.harness gates/*.gate.json
+
+  pipeline-integration:
+    name: Pipeline Integration (VideoToolbox)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # Homebrew's ffmpeg exposes the VideoToolbox decoder/encoder pair used by
+      # the release worker. The test preflight refuses to start if either tool
+      # is absent; the worker itself refuses any software fallback.
+      - run: brew install ffmpeg
+      - run: python3 -m pip install --upgrade pip
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "pillow>=10.0" "numpy>=1.26" ./workers/ml-runtime
+      - run: npm ci --ignore-scripts
+      # `cargo test` only creates a debug worker and vitest does not emit
+      # render-video/dist. Build the exact artifacts the pipeline invokes.
+      - run: cargo build --release --manifest-path workers/ingest/Cargo.toml --all-features
+      - run: npm run build --workspace @memory-engine/render-video
+      - run: python3 services/pipeline/tests/run_required_suite.py
 
   windows-ingest:
     name: Windows Ingest
