@@ -76,6 +76,23 @@ def _type(node: AnyType) -> str:
             return "i64"
         if isinstance(node.value, float):
             return "f64"
+        if isinstance(node.value, list):
+            # A const ARRAY. This used to fall through to `String`, which
+            # compiles, looks right, and then fails to deserialise every real
+            # document -- the exact shape of defect this generator is supposed
+            # to refuse rather than emit. Rust has no stable spelling for "a
+            # Vec pinned to one value", so the container is emitted with the
+            # correct wire type and the value constraint stays where it is
+            # already enforced: in the schema, and in the other two languages.
+            # Same trade the numeric-enum path makes, for the same reason.
+            item = node.value[0] if node.value else None
+            if isinstance(item, bool):
+                return "Vec<bool>"
+            if isinstance(item, int):
+                return "Vec<i64>"
+            if isinstance(item, float):
+                return "Vec<f64>"
+            return "Vec<String>"
         return "String"
     if isinstance(node, UnionOf):
         # Untagged and tagged unions alike are emitted as named enums ahead of

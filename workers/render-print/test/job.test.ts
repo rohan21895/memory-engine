@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { runRenderPrintJob } from "../src/job.js";
-import { findTestFont, makeAlbum, makeJob, sourceJpeg, HASH_A } from "./helpers.js";
+import { findTestFont, makeAlbum, makeClearance, makeJob, sourceJpeg, HASH_A } from "./helpers.js";
 
 describe("render_print JobSpec execution", () => {
   it("checkpoints pages, completes, and keeps a completed replay terminal", async () => {
@@ -19,6 +19,7 @@ describe("render_print JobSpec execution", () => {
       icc_profile: { name: "Sharp built-in CMYK", builtin: "cmyk" },
       asset_paths: { bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb: sourcePath },
       font_paths: { "Test Font": await findTestFont() },
+      safety_clearance: makeClearance(),
     };
     const persisted: number[] = [];
     const completed = await runRenderPrintJob(makeJob(params), makeAlbum(), {
@@ -52,6 +53,7 @@ describe("render_print JobSpec execution", () => {
       icc_profile: { name: "Sharp built-in CMYK", builtin: "cmyk" },
       asset_paths: {},
       font_paths: {},
+      safety_clearance: makeClearance(),
     };
     const album = makeAlbum();
     album.validation.status = "fail";

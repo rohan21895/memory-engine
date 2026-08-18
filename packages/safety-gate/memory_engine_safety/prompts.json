@@ -1,0 +1,119 @@
+{
+  "prompt_bank_version": 1,
+  "text_tower": "google/siglip2-so400m-patch14-384",
+  "why_this_file_is_the_training_data": "docs/safety-classifier-decision.md §4 found no off-the-shelf open NSFW classifier with documented, rights-cleared training data -- not one of thirteen. So the head is a construction: each class's weight row is the L2-normalised mean of its prompts embedded through SigLIP 2's OWN text tower, offline, at build time. The text tower never ships. That makes this file the closest thing this classifier has to a training set, and unlike every candidate's it is text we wrote, in the repository, reviewable and diffable and arguable-with. If you think a class is wrong, you can point at the line.",
+  "class_order_note": "The `classes` object below is keyed by name and its iteration order is NOT the tensor order. memory_engine_safety.classes.CLASS_ORDER is the only thing that decides which column is which class, and textinit.py reads the rows out in that order. A JSON object cannot be transposed by reordering it, which is the point.",
+  "reference_class": "benign",
+  "reference_note": "`benign` is a fourth direction that is never emitted. Zero-shot SigLIP scores carry a large class-independent component -- roughly, how photograph-like the image is -- and subtracting a benign reference removes most of it, which is what leaves the calibration in §6.2 step 2 with six parameters to fit rather than a scale problem to solve. Decision doc §6.2 step 1: K = 4, three scores.",
+  "wording_rules": [
+    "Describe the PHOTOGRAPH, not the person. 'a photograph of X' is the caption distribution SigLIP was trained on; a bare noun is not.",
+    "No slurs, no fetish vocabulary, no scene descriptions written for effect. The prompts steer an embedding; prose that reads like the thing it is detecting adds nothing to a cosine and makes the file unreviewable by the people who most need to review it.",
+    "medical_or_artistic prompts must name the CONTEXT (clinical, documentary, museum, fine art), because context is the entire axis. A prompt that names only anatomy collapses this class into the other two.",
+    "Cover non-Western dress and settings deliberately. §8.3: a web-trained backbone over-flags what its captions under-represent, and this is an India-first product."
+  ],
+  "classes": {
+    "explicit": {
+      "meaning": "Photographic sexual content. Not nudity as such -- a fine-art nude and a life-drawing class are `medical_or_artistic`, and the whole reason there are three classes is that collapsing them is the failure.",
+      "known_weakness": "Illustrated, animated and AI-generated explicit content. Every third-party model in the audit trained specifically on that material because it had to; ours trains on nothing, so it will be weakest exactly where they invested most (§8.2). Also close-range self-shot phone imagery, which is plausibly the highest-prevalence explicit content in a real library and the worst-represented in web-caption data.",
+      "prompts": [
+        "a pornographic photograph",
+        "an explicit sexual photograph",
+        "a photograph of a sex act",
+        "explicit adult content",
+        "a photograph from an adult film",
+        "a sexually explicit image intended to arouse",
+        "a close-up photograph of exposed genitals",
+        "a photograph of people engaged in sexual activity",
+        "hardcore adult material",
+        "an explicit image from an adult website",
+        "a sexually explicit selfie taken on a phone",
+        "an explicit photograph sent in a private message",
+        "a nude photograph posed for sexual display",
+        "explicit content unsuitable for any shared album",
+        "a photograph that would be censored on a social network",
+        "an explicit drawing or animation of a sex act",
+        "AI-generated explicit sexual imagery",
+        "a screenshot of explicit adult content",
+        "a photograph of a strip club performance",
+        "an explicit photograph of a person posing for a camera"
+      ]
+    },
+    "suggestive": {
+      "meaning": "Not explicit, and not something a person would want auto-published to an audience they did not choose photo by photo. Swimwear, lingerie, an intimate but clothed moment. The class exists because 'safe unless pornographic' is how a bikini holiday photograph ends up on a public share link.",
+      "known_weakness": "Over-fires on beaches, swimming galas, saunas, Holi and colour runs, body paint, and cultural dress that exposes the torso (§8.1). Those are ordinary family photographs and this class blocking them is a real cost, which is why a block is overridable per item and per sink.",
+      "prompts": [
+        "a photograph of a person in lingerie",
+        "a photograph of a person in underwear",
+        "a suggestive photograph in swimwear",
+        "a glamour photograph",
+        "a boudoir photograph",
+        "a photograph of a person posing suggestively",
+        "a revealing photograph taken for a partner",
+        "a photograph emphasising the body rather than the moment",
+        "a suggestive photograph unsuitable for a public share link",
+        "a photograph of a person in a swimsuit posing for the camera",
+        "an intimate photograph of a couple in bed",
+        "a photograph of a person undressing",
+        "a photograph taken through a bathroom or bedroom doorway",
+        "a suggestive selfie in a mirror",
+        "a photograph of a person in a towel",
+        "a photograph from a swimwear fashion shoot",
+        "a photograph of a pole dance or burlesque performance",
+        "a suggestive photograph of a person on a bed",
+        "a photograph of a wet t-shirt or see-through clothing",
+        "a photograph a person would not want shared without being asked"
+      ]
+    },
+    "medical_or_artistic": {
+      "meaning": "The class that stops this being a one-flag model with extra columns. A breastfeeding photograph, a post-mastectomy record, a dermatology photograph, a museum statue, a life-drawing study. These are frequently the most emotionally load-bearing images in a family library and quietly dropping them from an anniversary album is a real harm, even though it is the 'safe' direction.",
+      "known_weakness": "It is a DISPOSITION signal, not a licence. A photograph can score high here and high on `explicit`; scoring here does not clear it. What the score is for is the remedy -- decision doc §6.5 proposes routing to the review queue with an explanation rather than silent omission, and that proposal is NOT implemented here because it changes policy and needs sign-off.",
+      "prompts": [
+        "a photograph of a mother breastfeeding her baby",
+        "a documentary photograph of breastfeeding",
+        "a clinical photograph of a surgical scar",
+        "a post-mastectomy photograph documenting recovery",
+        "a medical photograph taken for a doctor",
+        "a dermatology photograph of a skin condition",
+        "a clinical photograph of a wound healing",
+        "a photograph of a pregnant belly",
+        "a maternity photograph documenting a pregnancy",
+        "a photograph of a newborn baby being bathed",
+        "a photograph of a classical marble statue in a museum",
+        "a photograph of a nude painting in an art gallery",
+        "a fine-art nude photograph in black and white",
+        "a life-drawing study of the human figure",
+        "a photograph of a temple carving",
+        "a photograph of a sculpture in a public square",
+        "an anatomical illustration in a textbook",
+        "a photograph of a physiotherapy session",
+        "a photograph documenting a birthmark or a tattoo for the record",
+        "an ethnographic photograph of traditional dress"
+      ]
+    },
+    "benign": {
+      "meaning": "The reference direction. Never emitted, never thresholded; subtracted from the other three so what is left is the class signal rather than the how-photograph-like-is-this signal. Deliberately ordinary, deliberately the contents of a real family library, and deliberately not all Western.",
+      "prompts": [
+        "a family photograph at a birthday party",
+        "a photograph of children playing in a garden",
+        "a holiday photograph at the beach",
+        "a photograph of a wedding ceremony",
+        "a photograph of a meal on a table",
+        "a landscape photograph of mountains",
+        "a photograph of a city street",
+        "a portrait photograph of a smiling person",
+        "a photograph of a dog in a park",
+        "a photograph of a school sports day",
+        "a photograph of a Diwali celebration",
+        "a photograph of a family at a temple",
+        "a photograph of a grandmother holding a baby",
+        "a photograph of friends at a restaurant",
+        "a photograph of a swimming lesson",
+        "a photograph of a cricket match",
+        "a photograph of a train journey",
+        "a photograph of a market stall",
+        "a screenshot of a phone screen",
+        "a blurry photograph taken by accident"
+      ]
+    }
+  }
+}

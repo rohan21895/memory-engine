@@ -176,7 +176,7 @@
         "share_gating",
         "egress_gating"
       ],
-      "config_blake3": "dc7e3cdb2973f3fbcfad9e75b101147ad407b6ca5255f282e92a15184ec9dbdd"
+      "config_blake3": "8d2cadf06da6affe50352b1752b153c8ad02b3881a7090e0d8ce2e3cd098dd8d"
     },
     {
       "model_id": "paddleocr-mobile-det",

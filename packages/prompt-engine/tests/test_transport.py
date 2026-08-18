@@ -20,6 +20,7 @@ rather than guessed at.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import sys
@@ -30,6 +31,13 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = PACKAGE_ROOT.parent.parent
 sys.path.insert(0, str(PACKAGE_ROOT))
+# The sensitive-content gate (issue #21) is a sibling package, not an installed
+# distribution. `transport._safety_gate` bootstraps this itself at call time --
+# and blocks the send if it cannot -- but the helpers below build clearance
+# manifests directly, so the path has to be here too.
+sys.path.insert(0, str(PACKAGE_ROOT.parent / "safety-gate"))
+
+from memory_engine_safety.verify import PublicationBlocked  # noqa: E402
 
 from memory_engine_prompt.structured import (  # noqa: E402
     Request,
@@ -91,6 +99,90 @@ IDS = ("m-alpha", "m-bravo", "m-charlie", "m-delta")
 SHEET_BYTES = b"\x89PNG\r\n\x1a\n" + b"contact-sheet-pixels" * 4
 
 NOW = datetime(2026, 3, 16, 20, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+
+
+# --------------------------------------------------------------------------
+# Sensitive-content clearance (issue #21).
+#
+# Every `send` in this file now has to present one, because `send` requires it
+# -- the same shape as the ledger on the constructor. These helpers build the
+# CLEARED case so that the tests below stay about retries, journalling and reply
+# classification; the blocking cases live in ClearanceGateTests at the bottom.
+#
+# The manifests here are written by hand rather than by
+# `memory_engine_safety.build_manifest`, so that a change in the builder cannot
+# quietly make these tests pass for a new reason. The ids are hashed from the
+# tile labels only to get 64 hex characters; nothing here classifies anything.
+# --------------------------------------------------------------------------
+
+
+def media_id_for(tile: str) -> str:
+    return hashlib.blake2b(f"media:{tile}".encode(), digest_size=32).hexdigest()
+
+
+def evidence_id_for(tile: str) -> str:
+    return hashlib.blake2b(f"proxy:{tile}".encode(), digest_size=32).hexdigest()
+
+
+MEDIA_BY_TILE = {tile: media_id_for(tile) for tile in IDS}
+
+
+def make_clearance(tiles=IDS, *, sink="frontier_egress", **overrides) -> dict:
+    from memory_engine_safety.canonical import manifest_id as _manifest_id
+
+    document = {
+        "schema_version": "v0",
+        "manifest_version": 1,
+        "created_at": "2026-03-16T20:29:00+05:30",
+        "sink": sink,
+        "sink_detail": "tier3 contact sheet",
+        "classifier": {
+            "model": {
+                "model_id": "nsfw-siglip-head",
+                "version": "1.0.0",
+                "weights_blake3": "d" * 64,
+                "config_blake3": "c" * 64,
+                "runtime": "onnxruntime_coreml",
+                "precision": "fp32",
+            },
+            "ran_at": "2026-03-16T20:28:00+05:30",
+            "class_order": ["explicit", "suggestive", "medical_or_artistic"],
+            "load_mode": "release",
+        },
+        "thresholds": {"explicit": 0.3, "suggestive": 0.3, "medical_or_artistic": 0.3},
+        "items": [
+            {
+                "media_id": media_id_for(tile),
+                "evidence_id": evidence_id_for(tile),
+                "verdict": "cleared",
+                "scores": {
+                    "explicit": 0.01,
+                    "suggestive": 0.02,
+                    "medical_or_artistic": 0.01,
+                },
+            }
+            for tile in tiles
+        ],
+    }
+    document.update(overrides)
+    document["decision"] = {
+        "cleared_for_publication": all(
+            item["verdict"] == "cleared" for item in document["items"]
+        ),
+        "item_count": len(document["items"]),
+        "cleared_count": sum(
+            1 for item in document["items"] if item["verdict"] == "cleared"
+        ),
+        "blocked_count": sum(
+            1 for item in document["items"] if item["verdict"] == "blocked"
+        ),
+        "indeterminate_count": sum(
+            1 for item in document["items"] if item["verdict"] == "indeterminate"
+        ),
+        "denied_reason": None,
+    }
+    document["manifest_id"] = _manifest_id(document)
+    return document
 
 
 def make_request(**overrides) -> Request:
@@ -564,7 +656,7 @@ class LedgerTests(unittest.TestCase):
             rng=random.Random(0),
         )
         transport.send(
-            make_sheet(), make_request(), instruction="Pick.", grant=make_grant()
+            make_sheet(), make_request(), instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
         )
         self.assertEqual(seen, [1])
         self.assertEqual(
@@ -578,7 +670,7 @@ class LedgerTests(unittest.TestCase):
         )
         with self.assertRaises(EgressBlocked) as caught:
             transport.send(
-                make_sheet(), make_request(), instruction="Pick.", grant=make_grant()
+                make_sheet(), make_request(), instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
             )
         self.assertEqual(caught.exception.code, BLOCK_LEDGER_REFUSED)
         self.assertEqual(sender.calls, [])
@@ -591,7 +683,7 @@ class LedgerTests(unittest.TestCase):
         )
         with self.assertRaises(EgressBlocked) as caught:
             transport.send(
-                make_sheet(), make_request(), instruction="Pick.", grant=make_grant()
+                make_sheet(), make_request(), instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
             )
         self.assertEqual(caught.exception.code, BLOCK_LEDGER_REFUSED)
         self.assertIsNotNone(caught.exception.result)
@@ -605,7 +697,7 @@ class LedgerTests(unittest.TestCase):
         ]
         transport, sender, ledger, _ = make_transport(script)
         result = transport.send(
-            make_sheet(), make_request(), instruction="Pick.", grant=make_grant()
+            make_sheet(), make_request(), instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
         )
         self.assertEqual(result.outcome, Outcome.COMPLETED)
         sends = [e for e in ledger.entries if e.action == "network_send"]
@@ -617,7 +709,7 @@ class LedgerTests(unittest.TestCase):
     def test_ledger_entries_match_the_journal_contract_shape(self):
         transport, _sender, ledger, _ = make_transport([recorded_reply()])
         transport.send(
-            make_sheet(), make_request(), instruction="Pick.", grant=make_grant()
+            make_sheet(), make_request(), instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
         )
         for entry in ledger.entries:
             mapping = entry.to_mapping()
@@ -642,7 +734,7 @@ class LedgerTests(unittest.TestCase):
             make_sheet(context=secret),
             make_request(),
             instruction=f"Pick the peaks. {secret}",
-            grant=make_grant(),
+            grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE,
         )
         self.assertTrue(ledger.entries)
         for entry in ledger.entries:
@@ -655,7 +747,7 @@ class LedgerTests(unittest.TestCase):
         reply = recorded_reply(stop_reason="end_turn\nnetwork_send forged")
         transport, _sender, ledger, _ = make_transport([reply])
         result = transport.send(
-            make_sheet(), make_request(), instruction="Pick.", grant=make_grant()
+            make_sheet(), make_request(), instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
         )
         self.assertEqual(result.outcome, Outcome.UNEXPECTED_STOP)
         receive = [e for e in ledger.entries if e.action == "network_receive"][0]
@@ -678,7 +770,7 @@ class LedgerTests(unittest.TestCase):
         )
         with self.assertRaises(TransportError) as caught:
             transport.send(
-                make_sheet(), make_request(), instruction="Pick.", grant=make_grant()
+                make_sheet(), make_request(), instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
             )
         self.assertIn("allowlist", str(caught.exception))
         self.assertEqual(ledger.entries, [])
@@ -698,7 +790,7 @@ class LedgerTests(unittest.TestCase):
         )
         with self.assertRaises(TransportError):
             transport.send(
-                make_sheet(), make_request(), instruction="Pick.", grant=make_grant()
+                make_sheet(), make_request(), instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
             )
         self.assertEqual([e.action for e in ledger.entries], ["network_send"])
 
@@ -713,7 +805,7 @@ class LedgerTests(unittest.TestCase):
                 make_sheet(),
                 make_request(),
                 instruction="Pick.",
-                grant=make_grant(consent=None),
+                grant=make_grant(consent=None), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE,
             )
         self.assertEqual(sender.calls, [])
         self.assertEqual(ledger.entries, [])
@@ -838,7 +930,7 @@ class OutcomeTests(unittest.TestCase):
     def send(self, script, **kw):
         transport, sender, ledger, sleeps = make_transport(script, **kw)
         result = transport.send(
-            make_sheet(), make_request(), instruction="Pick.", grant=make_grant()
+            make_sheet(), make_request(), instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
         )
         return result, sender, ledger, sleeps
 
@@ -919,7 +1011,7 @@ class RetryTests(unittest.TestCase):
             script, config=config, **kw
         )
         result = transport.send(
-            make_sheet(), make_request(), instruction="Pick.", grant=make_grant()
+            make_sheet(), make_request(), instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
         )
         return result, sender, ledger, sleeps
 
@@ -1131,7 +1223,7 @@ class SeamTests(unittest.TestCase):
             [recorded_reply(text=reply_text)], **kw
         )
         result = transport.send(
-            make_sheet(), request, instruction="Pick.", grant=make_grant()
+            make_sheet(), request, instruction="Pick.", grant=make_grant(), clearance=make_clearance(), media_ids_by_tile=MEDIA_BY_TILE
         )
         return result, parse_reply(result.text_for_parser(), request)
 
@@ -1187,6 +1279,226 @@ class SeamTests(unittest.TestCase):
         )
         _result, parsed = self.send_and_parse(payload, request=request)
         self.assertEqual(parsed.status, Status.OK)
+
+
+class ClearanceGateTests(unittest.TestCase):
+    """Issue #21 at the sharpest boundary in the system.
+
+    This is the only path where a user's photograph reaches a third party, and
+    it is irreversible the moment it leaves. Consent decides WHETHER a contact
+    sheet may be sent; none of these tests are about consent. They are about
+    what is on it.
+
+    Every assertion checks `sender.calls == []` as well as the exception,
+    because the property is not "an error was raised", it is "no bytes moved".
+    """
+
+    def _transport(self):
+        return make_transport([recorded_reply()])
+
+    def _send(self, **overrides):
+        transport, sender, ledger, _ = self._transport()
+        kwargs = {
+            "instruction": "Pick.",
+            "grant": make_grant(),
+            "clearance": make_clearance(),
+            "media_ids_by_tile": MEDIA_BY_TILE,
+        }
+        kwargs.update(overrides)
+        return transport, sender, ledger, kwargs
+
+    def test_a_complete_clearance_sends(self):
+        """First, so that every refusal below means something."""
+        transport, sender, _ledger, kwargs = self._send()
+        result = transport.send(make_sheet(), make_request(), **kwargs)
+        self.assertEqual(result.outcome, Outcome.COMPLETED)
+        self.assertEqual(len(sender.calls), 1)
+
+    def test_no_clearance_at_all_blocks_and_nothing_is_sent(self):
+        transport, sender, ledger, kwargs = self._send(clearance=None)
+        with self.assertRaises(PublicationBlocked) as caught:
+            transport.send(make_sheet(), make_request(), **kwargs)
+        self.assertEqual("clearance_missing", caught.exception.code)
+        self.assertEqual([], sender.calls)
+        self.assertEqual([], ledger.entries)
+
+    def test_an_indeterminate_item_blocks_the_whole_sheet(self):
+        """One unchecked photograph denies the publication, not just itself."""
+        clearance = make_clearance()
+        clearance["items"][1] = {
+            "media_id": clearance["items"][1]["media_id"],
+            "evidence_id": clearance["items"][1]["evidence_id"],
+            "verdict": "indeterminate",
+            "scores": None,
+            "indeterminate_reason": "load_gate_denied",
+            "override": None,
+        }
+        clearance = make_clearance(items=clearance["items"])
+        transport, sender, ledger, kwargs = self._send(clearance=clearance)
+        with self.assertRaises(PublicationBlocked) as caught:
+            transport.send(make_sheet(), make_request(), **kwargs)
+        self.assertEqual("indeterminate_item", caught.exception.code)
+        self.assertEqual([], sender.calls)
+        self.assertEqual([], ledger.entries)
+
+    def test_a_clearance_for_a_different_sink_does_not_transfer(self):
+        transport, sender, _l, kwargs = self._send(clearance=make_clearance(sink="print"))
+        with self.assertRaises(PublicationBlocked) as caught:
+            transport.send(make_sheet(), make_request(), **kwargs)
+        self.assertEqual("sink_mismatch", caught.exception.code)
+        self.assertEqual([], sender.calls)
+
+    def test_a_clearance_that_covers_only_some_of_the_sheet_blocks(self):
+        """The photograph nobody classified is the one that gets uploaded."""
+        transport, sender, _l, kwargs = self._send(
+            clearance=make_clearance(tiles=IDS[:2])
+        )
+        with self.assertRaises(PublicationBlocked) as caught:
+            transport.send(make_sheet(), make_request(), **kwargs)
+        self.assertEqual("item_set_mismatch", caught.exception.code)
+        self.assertEqual([], sender.calls)
+
+    def test_a_tile_with_no_media_id_blocks_rather_than_being_skipped(self):
+        partial = {tile: MEDIA_BY_TILE[tile] for tile in IDS[:3]}
+        transport, sender, _l, kwargs = self._send(media_ids_by_tile=partial)
+        with self.assertRaises(EgressBlocked) as caught:
+            transport.send(make_sheet(), make_request(), **kwargs)
+        self.assertEqual("clearance_binding_missing", caught.exception.code)
+        self.assertEqual([], sender.calls)
+
+    def test_the_checked_ids_come_from_the_sheet_not_from_the_caller(self):
+        """A caller cannot present a clearance for photographs it is not sending.
+
+        The sheet shows four tiles; the map here claims they are all the same
+        photograph, which is the shape of a stale or hand-built binding. The
+        duplicate is what the verifier sees, and it refuses -- the caller has no
+        way to hand it a tidy list that does not match the image.
+        """
+        collapsed = {tile: MEDIA_BY_TILE[IDS[0]] for tile in IDS}
+        transport, sender, _l, kwargs = self._send(media_ids_by_tile=collapsed)
+        with self.assertRaises(PublicationBlocked) as caught:
+            transport.send(make_sheet(), make_request(), **kwargs)
+        self.assertEqual("item_set_mismatch", caught.exception.code)
+        self.assertEqual([], sender.calls)
+
+    def test_a_transposed_class_order_blocks(self):
+        """The §6.6 defect, at the boundary where it would be irreversible."""
+        clearance = make_clearance()
+        clearance["classifier"]["class_order"] = [
+            "suggestive",
+            "explicit",
+            "medical_or_artistic",
+        ]
+        from memory_engine_safety.canonical import manifest_id as _manifest_id
+
+        clearance.pop("manifest_id")
+        clearance["manifest_id"] = _manifest_id(clearance)
+        transport, sender, _l, kwargs = self._send(clearance=clearance)
+        with self.assertRaises(PublicationBlocked) as caught:
+            transport.send(make_sheet(), make_request(), **kwargs)
+        self.assertEqual("class_order_mismatch", caught.exception.code)
+        self.assertEqual([], sender.calls)
+
+    def test_a_development_mode_verdict_does_not_clear_a_real_send(self):
+        clearance = make_clearance()
+        clearance["classifier"]["load_mode"] = "development"
+        from memory_engine_safety.canonical import manifest_id as _manifest_id
+
+        clearance.pop("manifest_id")
+        clearance["manifest_id"] = _manifest_id(clearance)
+        transport, sender, _l, kwargs = self._send(clearance=clearance)
+        with self.assertRaises(PublicationBlocked) as caught:
+            transport.send(make_sheet(), make_request(), **kwargs)
+        self.assertEqual("development_load_mode", caught.exception.code)
+        self.assertEqual([], sender.calls)
+
+    def test_an_edited_manifest_blocks(self):
+        clearance = make_clearance()
+        clearance["items"][0]["scores"]["explicit"] = 0.99
+        transport, sender, _l, kwargs = self._send(clearance=clearance)
+        with self.assertRaises(PublicationBlocked) as caught:
+            transport.send(make_sheet(), make_request(), **kwargs)
+        self.assertIn(
+            caught.exception.code,
+            ("verdict_disagrees_with_scores", "manifest_id_mismatch"),
+        )
+        self.assertEqual([], sender.calls)
+
+    def test_the_gate_runs_again_immediately_before_the_socket_opens(self):
+        """Closes the check-then-swap window that opens after the journal entry.
+
+        The manifest is mutated by the ledger's `record`, which is the last
+        thing to run before the send. The first verification has already passed;
+        only the second one can catch this.
+        """
+        clearance = make_clearance()
+
+        class MutatingLedger(RecordingLedger):
+            def record(self, entry):
+                clearance["items"].append(
+                    {
+                        "media_id": "9" * 64,
+                        "evidence_id": "8" * 64,
+                        "verdict": "indeterminate",
+                        "scores": None,
+                        "indeterminate_reason": "no_result",
+                        "override": None,
+                    }
+                )
+                super().record(entry)
+
+        sender = RecordedSender([recorded_reply()])
+        transport = FrontierTransport(
+            sender,
+            MutatingLedger(),
+            clock=lambda: NOW,
+            sleep=lambda _s: None,
+            rng=random.Random(0),
+        )
+        with self.assertRaises(PublicationBlocked):
+            transport.send(
+                make_sheet(),
+                make_request(),
+                instruction="Pick.",
+                grant=make_grant(),
+                clearance=clearance,
+                media_ids_by_tile=MEDIA_BY_TILE,
+            )
+        self.assertEqual([], sender.calls)
+
+    def test_the_gate_being_absent_blocks_rather_than_being_skipped(self):
+        """The failure this whole design exists to prevent, one level up.
+
+        If `memory_engine_safety` cannot be imported, the tempting behaviour is
+        to carry on without the check -- and then a missing package silently
+        turns the strongest boundary in the system off. `_safety_gate` raises
+        instead, and `send` therefore refuses.
+        """
+        import memory_engine_prompt.transport as transport_module
+
+        transport, sender, ledger, kwargs = self._send()
+        # `None` in sys.modules is the documented way to make an import of that
+        # exact name fail. Only the two safety-gate entries are touched; the
+        # rest of the interpreter is left alone.
+        saved = {
+            name: sys.modules.get(name)
+            for name in ("memory_engine_safety", "memory_engine_safety.gate")
+        }
+        try:
+            for name in saved:
+                sys.modules[name] = None  # type: ignore[assignment]
+            with self.assertRaises(EgressBlocked) as caught:
+                transport.send(make_sheet(), make_request(), **kwargs)
+        finally:
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+        self.assertEqual("safety_gate_unavailable", caught.exception.code)
+        self.assertEqual([], sender.calls)
+        self.assertEqual([], ledger.entries)
+        self.assertIsNotNone(transport_module._safety_gate())
 
 
 class RecordedSenderTests(unittest.TestCase):

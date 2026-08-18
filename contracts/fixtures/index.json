@@ -532,6 +532,20 @@
       ]
     },
     {
+      "path": "safety-clearance/schema-invalid/class-order-transposed.json",
+      "schema": "safety-clearance",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "classifier",
+        "class_order"
+      ],
+      "rejected_by": "schema_type",
+      "purpose": "THE DEFECT WITH NO SYMPTOM (issue #21, decision doc \u00a76.6). The same three class names, `explicit` and `suggestive` swapped. Every score is still in [0,1], the 0.3 threshold still fires, the counts still add up, and every breastfeeding photograph is now `explicit`. Until `ClassifierPin.class_order` existed there was nothing anywhere that said which column of a [-1,3] tensor was which class, so this manifest was indistinguishable from a correct one. It is a `const` in the schema precisely so the rejection is automatic rather than a reviewer noticing.",
+      "exercises": [
+        "the class axis is pinned as an ORDER, not a set"
+      ]
+    },
+    {
       "path": "safety-clearance/schema-invalid/cleared-while-indeterminate.json",
       "schema": "safety-clearance",
       "expectation": "schema-invalid",
@@ -571,6 +585,12 @@
       "schema": "safety-clearance",
       "expectation": "valid",
       "purpose": "A parent overriding a positive result on a breastfeeding photo scored medical_or_artistic. The classifier does not get a veto over a family's judgement about their own photographs; the override is attributable and scoped to this item and this sink only."
+    },
+    {
+      "path": "safety-clearance/valid/share-blocked-without-override.json",
+      "schema": "safety-clearance",
+      "expectation": "valid",
+      "purpose": "The share sink, and the reason sinks are not interchangeable. One item scored above the `suggestive` threshold, nobody overrode it, and the publication is denied -- while the very same photograph could legitimately be cleared for a private printed book. A verifier that accepted a print clearance for a share link would publish it to people the user never approved photo by photo."
     }
   ]
 }

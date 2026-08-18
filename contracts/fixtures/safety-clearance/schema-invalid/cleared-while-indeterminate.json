@@ -14,6 +14,11 @@
       "precision": "fp32"
     },
     "ran_at": "2026-08-16T18:00:00Z",
+    "class_order": [
+      "explicit",
+      "suggestive",
+      "medical_or_artistic"
+    ],
     "load_mode": "development"
   },
   "thresholds": {
@@ -49,5 +54,5 @@
     "indeterminate_count": 1,
     "denied_reason": "the safety classifier could not be loaded, so one item has no verdict; absence is indeterminate and indeterminate blocks"
   },
-  "manifest_id": "16f9a8c8189de9e13079f9b0d6c70a6e01e9804499ac5454e1dc6eab8146c741"
+  "manifest_id": "c6496d2b796d5c6eb8aa0a2dac49a2618b45ee5fd9ed56278d42db7f2468d84d"
 }

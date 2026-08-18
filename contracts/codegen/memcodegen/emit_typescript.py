@@ -38,6 +38,14 @@ def _value(value: Any) -> str:
         return "null"
     if isinstance(value, str):
         return f'"{value}"'
+    if isinstance(value, list):
+        # A const array becomes a TUPLE type, not `string[]`: length and order
+        # are both part of what the const pins, and `class_order` exists
+        # entirely because the order is the thing that can be wrong.
+        # (This previously fell through to `str(value)`, which produced Python's
+        # repr -- single-quoted strings that TypeScript happens to accept. Right
+        # output, wrong reason.)
+        return f"[{', '.join(_value(item) for item in value)}]"
     return str(value)
 
 

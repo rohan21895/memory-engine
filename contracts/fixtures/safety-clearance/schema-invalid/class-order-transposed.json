@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "created_at": "2026-08-16T18:00:05Z",
   "sink": "print",
-  "sink_detail": "layflat-300-square, order not yet placed",
+  "sink_detail": "layflat-300-square -- and the columns are the wrong way round",
   "classifier": {
     "model": {
       "model_id": "nsfw-siglip-head",
@@ -15,8 +15,8 @@
     },
     "ran_at": "2026-08-16T18:00:00Z",
     "class_order": [
-      "explicit",
       "suggestive",
+      "explicit",
       "medical_or_artistic"
     ],
     "load_mode": "release"
@@ -56,5 +56,5 @@
     "indeterminate_count": 0,
     "denied_reason": null
   },
-  "manifest_id": "6ea2b26ce8bbf57ff075d946c55d63f940e7fb5fb5b82255e4b4b891aa57c7a0"
+  "manifest_id": "7e2b979e70f0f67c451079b9fe50c05f80e37c45286a69f18459592ff1d46c05"
 }

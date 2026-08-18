@@ -1,0 +1,262 @@
+{
+  "encoding_version": "safety-clearance-manifest:v1",
+  "description": "Golden manifest -> manifest_id vectors for SafetyClearance.manifest_id. Every implementation in every language must reproduce both columns, because the Python planner writes the id and the TypeScript print worker recomputes it before it emits a PDF -- and a manifest that verifies in one and fails in the other is a gate that blocks correct output, which is how gates get switched off. `preimage_utf8_hex` is the hex of the exact bytes that get hashed; it is here rather than only the digest because a digest mismatch says nothing about WHICH field diverged, and the pre-image says exactly.",
+  "algorithm": {
+    "step_1": "Take the manifest and REMOVE the keys `manifest_id` and `decision`.",
+    "step_2": "Serialise what is left by RFC 8785 JCS: keys sorted by code unit, `,` and `:` separators, no whitespace, UTF-8, no BOM.",
+    "step_3": "BLAKE3-256 those bytes; the id is the lowercase hex digest."
+  },
+  "why_decision_is_excluded": "`decision` is DERIVED from `items` and is recomputed by every verifier rather than trusted, so hashing it would bind the manifest to a value nobody is allowed to believe. The consequence is worth stating because it looks like a hole and is not: two manifests that differ ONLY in their decision block share a manifest_id -- see the `same-body-different-decision` pair below. That is safe exactly as long as every verifier recomputes the decision from the items and denies on disagreement, which is why `verify.py` does both and has a test for each.",
+  "number_format": "RFC 8785 / ECMAScript Number::toString. Python writes the float 1.0 as `1.0` and JavaScript writes `1`; the canonical form writes `1`. Exponent notation is REFUSED rather than written -- it is the one range where the two languages' shortest round-trip formatting differs in padding, and no field in this schema needs it.",
+  "hash": "BLAKE3-256, lowercase hex",
+  "vectors": [
+    {
+      "name": "print-cleared",
+      "why": "The ordinary case, byte-identical to contracts/fixtures/safety-clearance/valid/print-run-fully-cleared.json. If an implementation gets only one vector right, this is the one it will be.",
+      "manifest": {
+        "schema_version": "v0",
+        "manifest_version": 1,
+        "created_at": "2026-08-16T18:00:05Z",
+        "sink": "print",
+        "sink_detail": "layflat-300-square, order not yet placed",
+        "classifier": {
+          "model": {
+            "model_id": "nsfw-siglip-head",
+            "version": "1.0.0",
+            "weights_blake3": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "config_blake3": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "runtime": "onnxruntime_coreml",
+            "precision": "fp32"
+          },
+          "ran_at": "2026-08-16T18:00:00Z",
+          "class_order": [
+            "explicit",
+            "suggestive",
+            "medical_or_artistic"
+          ],
+          "load_mode": "release"
+        },
+        "thresholds": {
+          "explicit": 0.3,
+          "suggestive": 0.3,
+          "medical_or_artistic": 0.3
+        },
+        "items": [
+          {
+            "media_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "evidence_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "verdict": "cleared",
+            "scores": {
+              "explicit": 0.01,
+              "suggestive": 0.02,
+              "medical_or_artistic": 0.01
+            }
+          },
+          {
+            "media_id": "2222222222222222222222222222222222222222222222222222222222222222",
+            "evidence_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "verdict": "cleared",
+            "scores": {
+              "explicit": 0.02,
+              "suggestive": 0.05,
+              "medical_or_artistic": 0.01
+            }
+          }
+        ],
+        "decision": {
+          "cleared_for_publication": true,
+          "item_count": 2,
+          "cleared_count": 2,
+          "blocked_count": 0,
+          "indeterminate_count": 0,
+          "denied_reason": null
+        },
+        "manifest_id": "6ea2b26ce8bbf57ff075d946c55d63f940e7fb5fb5b82255e4b4b891aa57c7a0"
+      },
+      "preimage_utf8_hex": "7b22636c6173736966696572223a7b22636c6173735f6f72646572223a5b226578706c69636974222c2273756767657374697665222c226d65646963616c5f6f725f6172746973746963225d2c226c6f61645f6d6f6465223a2272656c65617365222c226d6f64656c223a7b22636f6e6669675f626c616b6533223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c226d6f64656c5f6964223a226e7366772d7369676c69702d68656164222c22707265636973696f6e223a2266703332222c2272756e74696d65223a226f6e6e7872756e74696d655f636f72656d6c222c2276657273696f6e223a22312e302e30222c22776569676874735f626c616b6533223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464227d2c2272616e5f6174223a22323032362d30382d31365431383a30303a30305a227d2c22637265617465645f6174223a22323032362d30382d31365431383a30303a30355a222c226974656d73223a5b7b2265766964656e63655f6964223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c226d656469615f6964223a2231313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c2273636f726573223a7b226578706c69636974223a302e30312c226d65646963616c5f6f725f6172746973746963223a302e30312c2273756767657374697665223a302e30327d2c2276657264696374223a22636c6561726564227d2c7b2265766964656e63655f6964223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c226d656469615f6964223a2232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232222c2273636f726573223a7b226578706c69636974223a302e30322c226d65646963616c5f6f725f6172746973746963223a302e30312c2273756767657374697665223a302e30357d2c2276657264696374223a22636c6561726564227d5d2c226d616e69666573745f76657273696f6e223a312c22736368656d615f76657273696f6e223a227630222c2273696e6b223a227072696e74222c2273696e6b5f64657461696c223a226c6179666c61742d3330302d7371756172652c206f72646572206e6f742079657420706c61636564222c227468726573686f6c6473223a7b226578706c69636974223a302e332c226d65646963616c5f6f725f6172746973746963223a302e332c2273756767657374697665223a302e337d7d",
+      "manifest_id": "6ea2b26ce8bbf57ff075d946c55d63f940e7fb5fb5b82255e4b4b891aa57c7a0"
+    },
+    {
+      "name": "print-with-human-override",
+      "why": "An override object nested inside an item. Exercises key sorting at depth three and a null (`note` is present on some items and absent on others).",
+      "manifest": {
+        "schema_version": "v0",
+        "manifest_version": 1,
+        "created_at": "2026-08-16T18:02:00Z",
+        "sink": "print",
+        "sink_detail": "family album",
+        "classifier": {
+          "model": {
+            "model_id": "nsfw-siglip-head",
+            "version": "1.0.0",
+            "weights_blake3": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "config_blake3": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "runtime": "onnxruntime_coreml",
+            "precision": "fp32"
+          },
+          "ran_at": "2026-08-16T18:00:00Z",
+          "class_order": [
+            "explicit",
+            "suggestive",
+            "medical_or_artistic"
+          ],
+          "load_mode": "release"
+        },
+        "thresholds": {
+          "explicit": 0.3,
+          "suggestive": 0.3,
+          "medical_or_artistic": 0.3
+        },
+        "items": [
+          {
+            "media_id": "4444444444444444444444444444444444444444444444444444444444444444",
+            "evidence_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "verdict": "blocked",
+            "scores": {
+              "explicit": 0.05,
+              "suggestive": 0.2,
+              "medical_or_artistic": 0.71
+            },
+            "override": {
+              "decided_at": "2026-08-16T18:01:55Z",
+              "decided_by": "local:rohan",
+              "scope": "item_and_sink",
+              "note": "breastfeeding photo, scored medical_or_artistic; belongs in the family book"
+            }
+          }
+        ],
+        "decision": {
+          "cleared_for_publication": true,
+          "item_count": 1,
+          "cleared_count": 0,
+          "blocked_count": 1,
+          "indeterminate_count": 0,
+          "denied_reason": null
+        },
+        "manifest_id": "2077b516076b0d58616b73664c5fc33a33286ac84e0084e9d35e7891f36b02e1"
+      },
+      "preimage_utf8_hex": "7b22636c6173736966696572223a7b22636c6173735f6f72646572223a5b226578706c69636974222c2273756767657374697665222c226d65646963616c5f6f725f6172746973746963225d2c226c6f61645f6d6f6465223a2272656c65617365222c226d6f64656c223a7b22636f6e6669675f626c616b6533223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c226d6f64656c5f6964223a226e7366772d7369676c69702d68656164222c22707265636973696f6e223a2266703332222c2272756e74696d65223a226f6e6e7872756e74696d655f636f72656d6c222c2276657273696f6e223a22312e302e30222c22776569676874735f626c616b6533223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464227d2c2272616e5f6174223a22323032362d30382d31365431383a30303a30305a227d2c22637265617465645f6174223a22323032362d30382d31365431383a30323a30305a222c226974656d73223a5b7b2265766964656e63655f6964223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464222c226d656469615f6964223a2234343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434222c226f76657272696465223a7b22646563696465645f6174223a22323032362d30382d31365431383a30313a35355a222c22646563696465645f6279223a226c6f63616c3a726f68616e222c226e6f7465223a2262726561737466656564696e672070686f746f2c2073636f726564206d65646963616c5f6f725f61727469737469633b2062656c6f6e677320696e207468652066616d696c7920626f6f6b222c2273636f7065223a226974656d5f616e645f73696e6b227d2c2273636f726573223a7b226578706c69636974223a302e30352c226d65646963616c5f6f725f6172746973746963223a302e37312c2273756767657374697665223a302e327d2c2276657264696374223a22626c6f636b6564227d5d2c226d616e69666573745f76657273696f6e223a312c22736368656d615f76657273696f6e223a227630222c2273696e6b223a227072696e74222c2273696e6b5f64657461696c223a2266616d696c7920616c62756d222c227468726573686f6c6473223a7b226578706c69636974223a302e332c226d65646963616c5f6f725f6172746973746963223a302e332c2273756767657374697665223a302e337d7d",
+      "manifest_id": "2077b516076b0d58616b73664c5fc33a33286ac84e0084e9d35e7891f36b02e1"
+    },
+    {
+      "name": "same-body-different-decision",
+      "why": "THE PAIR THAT MATTERS, half one. This manifest and contracts/fixtures/safety-clearance/schema-invalid/cleared-while-indeterminate.json have identical bodies and contradictory decision blocks, so they MUST produce the same manifest_id. An implementation that hashed the whole document would produce two ids here and would then also accept a manifest whose decision had been flipped, because it would be verifying the wrong thing.",
+      "manifest": {
+        "schema_version": "v0",
+        "manifest_version": 1,
+        "created_at": "2026-08-16T18:01:00Z",
+        "sink": "frontier_egress",
+        "sink_detail": "tier3 contact sheet",
+        "classifier": {
+          "model": {
+            "model_id": "nsfw-siglip-head",
+            "version": "1.0.0",
+            "weights_blake3": null,
+            "config_blake3": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "runtime": "onnxruntime_coreml",
+            "precision": "fp32"
+          },
+          "ran_at": "2026-08-16T18:00:00Z",
+          "class_order": [
+            "explicit",
+            "suggestive",
+            "medical_or_artistic"
+          ],
+          "load_mode": "development"
+        },
+        "thresholds": {
+          "explicit": 0.3,
+          "suggestive": 0.3,
+          "medical_or_artistic": 0.3
+        },
+        "items": [
+          {
+            "media_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "evidence_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "verdict": "cleared",
+            "scores": {
+              "explicit": 0.01,
+              "suggestive": 0.02,
+              "medical_or_artistic": 0.01
+            }
+          },
+          {
+            "media_id": "3333333333333333333333333333333333333333333333333333333333333333",
+            "evidence_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "verdict": "indeterminate",
+            "scores": null,
+            "indeterminate_reason": "model_unloadable",
+            "override": null
+          }
+        ],
+        "decision": {
+          "cleared_for_publication": false,
+          "item_count": 2,
+          "cleared_count": 1,
+          "blocked_count": 0,
+          "indeterminate_count": 1,
+          "denied_reason": "the safety classifier could not be loaded, so one item has no verdict; absence is indeterminate and indeterminate blocks"
+        },
+        "manifest_id": "c6496d2b796d5c6eb8aa0a2dac49a2618b45ee5fd9ed56278d42db7f2468d84d"
+      },
+      "preimage_utf8_hex": "7b22636c6173736966696572223a7b22636c6173735f6f72646572223a5b226578706c69636974222c2273756767657374697665222c226d65646963616c5f6f725f6172746973746963225d2c226c6f61645f6d6f6465223a22646576656c6f706d656e74222c226d6f64656c223a7b22636f6e6669675f626c616b6533223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c226d6f64656c5f6964223a226e7366772d7369676c69702d68656164222c22707265636973696f6e223a2266703332222c2272756e74696d65223a226f6e6e7872756e74696d655f636f72656d6c222c2276657273696f6e223a22312e302e30222c22776569676874735f626c616b6533223a6e756c6c7d2c2272616e5f6174223a22323032362d30382d31365431383a30303a30305a227d2c22637265617465645f6174223a22323032362d30382d31365431383a30313a30305a222c226974656d73223a5b7b2265766964656e63655f6964223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c226d656469615f6964223a2231313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c2273636f726573223a7b226578706c69636974223a302e30312c226d65646963616c5f6f725f6172746973746963223a302e30312c2273756767657374697665223a302e30327d2c2276657264696374223a22636c6561726564227d2c7b2265766964656e63655f6964223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c22696e64657465726d696e6174655f726561736f6e223a226d6f64656c5f756e6c6f616461626c65222c226d656469615f6964223a2233333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333222c226f76657272696465223a6e756c6c2c2273636f726573223a6e756c6c2c2276657264696374223a22696e64657465726d696e617465227d5d2c226d616e69666573745f76657273696f6e223a312c22736368656d615f76657273696f6e223a227630222c2273696e6b223a2266726f6e746965725f656772657373222c2273696e6b5f64657461696c223a22746965723320636f6e74616374207368656574222c227468726573686f6c6473223a7b226578706c69636974223a302e332c226d65646963616c5f6f725f6172746973746963223a302e332c2273756767657374697665223a302e337d7d",
+      "manifest_id": "c6496d2b796d5c6eb8aa0a2dac49a2618b45ee5fd9ed56278d42db7f2468d84d"
+    },
+    {
+      "name": "number-hostile",
+      "why": "Every float shape that has ever broken a digest in this repository, in one manifest: 1.0 must serialise as `1`, 0.0 as `0`, and 0.30000000000000004 as its own shortest round-trip decimal rather than as 0.3. A `null` sink_detail is included because a writer that omits nulls produces different bytes.",
+      "manifest": {
+        "schema_version": "v0",
+        "manifest_version": 1,
+        "created_at": "2026-08-16T18:00:05Z",
+        "sink": "print",
+        "sink_detail": null,
+        "classifier": {
+          "model": {
+            "model_id": "nsfw-siglip-head",
+            "version": "1.0.0",
+            "weights_blake3": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "config_blake3": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "runtime": "onnxruntime_coreml",
+            "precision": "fp32"
+          },
+          "ran_at": "2026-08-16T18:00:00Z",
+          "class_order": [
+            "explicit",
+            "suggestive",
+            "medical_or_artistic"
+          ],
+          "load_mode": "release"
+        },
+        "thresholds": {
+          "explicit": 1.0,
+          "suggestive": 0.0,
+          "medical_or_artistic": 0.30000000000000004
+        },
+        "items": [
+          {
+            "media_id": "1111111111111111111111111111111111111111111111111111111111111111",
+            "evidence_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "verdict": "cleared",
+            "scores": {
+              "explicit": 0.1,
+              "suggestive": 0.0,
+              "medical_or_artistic": 0.25
+            }
+          }
+        ],
+        "decision": {
+          "cleared_for_publication": false,
+          "item_count": 1,
+          "cleared_count": 1,
+          "blocked_count": 0,
+          "indeterminate_count": 0,
+          "denied_reason": null
+        },
+        "manifest_id": "233f886b12e511c73efeacdbabbfafa86ea4f3a4499dfe18a47076fe817c1be2"
+      },
+      "preimage_utf8_hex": "7b22636c6173736966696572223a7b22636c6173735f6f72646572223a5b226578706c69636974222c2273756767657374697665222c226d65646963616c5f6f725f6172746973746963225d2c226c6f61645f6d6f6465223a2272656c65617365222c226d6f64656c223a7b22636f6e6669675f626c616b6533223a2263636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363222c226d6f64656c5f6964223a226e7366772d7369676c69702d68656164222c22707265636973696f6e223a2266703332222c2272756e74696d65223a226f6e6e7872756e74696d655f636f72656d6c222c2276657273696f6e223a22312e302e30222c22776569676874735f626c616b6533223a2264646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464227d2c2272616e5f6174223a22323032362d30382d31365431383a30303a30305a227d2c22637265617465645f6174223a22323032362d30382d31365431383a30303a30355a222c226974656d73223a5b7b2265766964656e63655f6964223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c226d656469615f6964223a2231313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c2273636f726573223a7b226578706c69636974223a302e312c226d65646963616c5f6f725f6172746973746963223a302e32352c2273756767657374697665223a307d2c2276657264696374223a22636c6561726564227d5d2c226d616e69666573745f76657273696f6e223a312c22736368656d615f76657273696f6e223a227630222c2273696e6b223a227072696e74222c2273696e6b5f64657461696c223a6e756c6c2c227468726573686f6c6473223a7b226578706c69636974223a312c226d65646963616c5f6f725f6172746973746963223a302e33303030303030303030303030303030342c2273756767657374697665223a307d7d",
+      "manifest_id": "233f886b12e511c73efeacdbabbfafa86ea4f3a4499dfe18a47076fe817c1be2"
+    }
+  ]
+}

@@ -98,11 +98,13 @@ import base64
 import json
 import random
 import re
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from memory_engine_prompt.structured import Request, Untrusted
@@ -200,6 +202,47 @@ _STOP_END_TURN = "end_turn"
 _STOP_MAX_TOKENS = "max_tokens"
 _STOP_REFUSAL = "refusal"
 _STOP_PAUSE_TURN = "pause_turn"
+
+
+def _safety_gate():
+    """`memory_engine_safety.gate`, or a refusal. Never a no-op.
+
+    Issue #21. Consent decides WHETHER a contact sheet may be sent; it says
+    nothing about WHAT IS ON IT, and this is the only path in the system where a
+    user's photograph reaches a third party. So the sensitive-content clearance
+    is checked here, and the check cannot be skipped by the gate being absent:
+    an import failure raises `EgressBlocked`, which stops the send, rather than
+    being swallowed into a code path that proceeds.
+
+    Imported inside the function for the reason `memory_engine_prompt/__init__`
+    already gives for this package's other edges -- importing the parser must
+    not require anything else to import cleanly -- and the sys.path bootstrap
+    mirrors `services/pipeline/.../mlruntime.py`: `packages/*` are sibling
+    directories in a monorepo rather than installed distributions.
+    """
+    try:
+        import memory_engine_safety.gate as gate  # noqa: PLC0415
+
+        return gate
+    except ImportError:
+        pass
+
+    packages_root = Path(__file__).resolve().parents[3]
+    for sibling in ("safety-gate",):
+        candidate = packages_root / sibling
+        if candidate.is_dir() and str(candidate) not in sys.path:
+            sys.path.append(str(candidate))
+    try:
+        import memory_engine_safety.gate as gate  # noqa: PLC0415
+
+        return gate
+    except ImportError as failure:
+        raise EgressBlocked(
+            "safety_gate_unavailable",
+            f"the sensitive-content gate could not be imported ({failure}), so "
+            "nobody checked what is on this contact sheet. Absence is "
+            "indeterminate and indeterminate blocks.",
+        ) from failure
 
 
 class Outcome(Enum):
@@ -1422,6 +1465,36 @@ class FrontierTransport:
     ) -> PreparedRequest:
         return build_request(sheet, request, instruction, self._config)
 
+    @staticmethod
+    def _media_ids_on(
+        sheet: ContactSheet, media_ids_by_tile: Mapping[str, str]
+    ) -> tuple[str, ...]:
+        """The media ids on this sheet, in the sheet's own tile order.
+
+        A label with no media id blocks rather than being skipped. Skipping is
+        how a photograph ends up on an uploaded sheet with no verdict about it,
+        which is the whole failure being prevented -- and the manifest would
+        still have been "complete" for the items that happened to be listed.
+        """
+        if not isinstance(media_ids_by_tile, Mapping):
+            raise EgressBlocked(
+                "clearance_binding_missing",
+                "media_ids_by_tile must map every tile label on the sheet to the "
+                "media id behind it; without it there is no way to say which "
+                "photographs the clearance is about",
+            )
+        resolved: list[str] = []
+        for tile in sheet.tile_ids:
+            media_id = media_ids_by_tile.get(tile)
+            if not isinstance(media_id, str) or not media_id:
+                raise EgressBlocked(
+                    "clearance_binding_missing",
+                    f"tile {tile!r} is on this contact sheet and no media id was "
+                    "supplied for it, so no verdict can be matched to it",
+                )
+            resolved.append(media_id)
+        return tuple(resolved)
+
     def send(
         self,
         sheet: ContactSheet,
@@ -1429,21 +1502,46 @@ class FrontierTransport:
         *,
         instruction: str,
         grant: EgressGrant,
+        clearance: Mapping[str, Any] | None,
+        media_ids_by_tile: Mapping[str, str],
     ) -> TransportResult:
-        """Build, check consent, journal, send, retry, classify.
+        """Build, check consent, check clearance, journal, send, retry, classify.
 
         Ordering is the point:
 
-          1. build   -- pure, and it can fail on a sheet/request mismatch before
-                        anyone has been asked for consent.
-          2. check   -- raises `EgressBlocked`; no bytes have moved.
-          3. journal -- BEFORE each send, once per attempt.
-          4. send    -- one attempt.
-          5. journal -- the receive, before the reply is handed back.
+          1. build     -- pure, and it can fail on a sheet/request mismatch
+                          before anyone has been asked for consent.
+          2. consent   -- raises `EgressBlocked`; no bytes have moved.
+          3. clearance -- raises `PublicationBlocked`; still no bytes.
+          4. journal   -- BEFORE each send, once per attempt.
+          5. clearance -- AGAIN, immediately before the socket opens.
+          6. send      -- one attempt.
+          7. journal   -- the receive, before the reply is handed back.
 
         A `SenderFault` never escapes; it becomes an `Outcome`. `EgressBlocked`
         always escapes, because a caller confusing "blocked" with "the API said
-        no" is a privacy bug rather than a reliability one.
+        no" is a privacy bug rather than a reliability one. `PublicationBlocked`
+        escapes for the same reason and is deliberately a DIFFERENT type: issue
+        #21's whole point is that consent covers whether a sheet may be sent and
+        says nothing about what is on it, so collapsing the two into one
+        exception would let a caller handle one and believe it had handled both.
+
+        WHY `clearance` IS REQUIRED AND MAY BE None
+        Required so that no caller can send without confronting it -- the same
+        shape as `ledger` on the constructor, which has no default because a
+        default would be a silent no-op. `None` is permitted as a VALUE because
+        "there is no clearance" is a real state the gate has to reject out loud,
+        and a signature that made it unrepresentable would push callers into
+        inventing an empty manifest instead.
+
+        WHY THE MEDIA IDS ARE DERIVED RATHER THAN PASSED
+        `media_ids_by_tile` maps a sheet LABEL to the media id behind it -- the
+        composer's `SheetManifest` inverted, and never sent anywhere. The
+        ordered id list handed to the verifier is built here from
+        `sheet.tile_ids`, so the set that is checked is the set that is on the
+        image. A caller passing its own ordered list could pass yesterday's, and
+        the whole reason clearance is a manifest rather than a per-record flag
+        is to close exactly that gap.
         """
         prepared = self.prepare(sheet, request, instruction)
         check_egress(
@@ -1453,6 +1551,9 @@ class FrontierTransport:
             media_type=sheet.media_type,
             max_payload_bytes=self._config.max_payload_bytes,
         )
+        media_ids = self._media_ids_on(sheet, media_ids_by_tile)
+        gate = _safety_gate()
+        gate.guard_frontier_egress(clearance, media_ids=media_ids)
 
         policy = self._config.retry
         attempts: list[Attempt] = []
@@ -1464,6 +1565,13 @@ class FrontierTransport:
                 prepared,
                 detail=self.send_detail(prepared, index, policy.max_attempts),
             )
+
+            # Re-verified here rather than only above, because the journal entry
+            # has now been written and the next statement opens a socket. Cost
+            # is one BLAKE3 over a few kilobytes; what it buys is that no
+            # mutation of the manifest between the consent check and the send
+            # can widen what leaves.
+            gate.guard_frontier_egress(clearance, media_ids=media_ids)
 
             try:
                 message = self._sender(prepared)

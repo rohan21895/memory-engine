@@ -21,7 +21,7 @@
       "$ref": "common.schema.json#/$defs/SchemaVersion"
     },
     "manifest_id": {
-      "description": "BLAKE3 over the canonical manifest body, computed exactly as models/policy/digest.py computes a config digest: over the SERIALISED BYTES of this document with `manifest_id` and `decision` removed. Bytes rather than a re-serialisation, because Python writes the float 1.0 as `1.0` and JavaScript writes `1`, and a manifest that verifies in the pipeline and fails in the Rust renderer is a gate that blocks correct output -- which is how gates get disabled.",
+      "description": "BLAKE3 over the manifest body: this document with `manifest_id` and `decision` removed, serialised by the RFC 8785 rule this repository already uses for `edl_id`, `job_id` and `params_digest` -- keys sorted by code unit, `,` and `:` separators, no whitespace, UTF-8, and every number rendered by ECMAScript `Number::toString` with exponent notation REFUSED rather than written.\n\nTHE ALGORITHM CHANGED IN #21 AND THE OLD ONE WAS NOT IMPLEMENTABLE. It said 'the SERIALISED BYTES of this document with manifest_id and decision removed. Bytes rather than a re-serialisation.' There are no such bytes: you cannot delete two keys from a byte string without re-serialising it, so every implementation would have invented its own canonical form -- which is the exact divergence the sentence was trying to prevent. models/policy/digest.py can hash bytes because a config file IS the artifact; a manifest body is a projection of one, so it has to be constructed.\n\nThe number rule is the load-bearing half. Python writes the float 1.0 as `1.0` where JavaScript writes `1`, and a manifest that verifies in the pipeline and fails in the renderer is a gate that blocks correct output, which is how gates get disabled. `contracts/vectors/safety-clearance-manifest-id.json` pins the exact pre-image bytes, and both the Python and TypeScript implementations are checked against it -- a digest mismatch says only that something diverged, the pre-image says which field did.\n\nWHAT EXCLUDING `decision` MEANS, STATED SO NOBODY HAS TO REDISCOVER IT. Two manifests that differ ONLY in their decision block hash to the SAME manifest_id -- they describe the same publication, and the decision is a derived assertion about it rather than part of it. That is safe exactly as long as every verifier RECOMPUTES the decision from `items` and denies on disagreement, which is what `ClearanceDecision` already requires and what both implementations do. It is not safe if any consumer ever reads `cleared_for_publication` and believes it. The vectors file carries this pair as `same-body-different-decision` so the property is tested rather than assumed.",
       "$ref": "common.schema.json#/$defs/Blake3Hash"
     },
     "manifest_version": {
@@ -80,7 +80,8 @@
       "additionalProperties": false,
       "required": [
         "model",
-        "ran_at"
+        "ran_at",
+        "class_order"
       ],
       "properties": {
         "model": {
@@ -88,6 +89,18 @@
         },
         "ran_at": {
           "$ref": "common.schema.json#/$defs/Timestamp"
+        },
+        "class_order": {
+          "description": "WHICH COLUMN OF THE CLASSIFIER'S OUTPUT VECTOR IS WHICH CLASS, as the producer applied it.\n\nThe head emits an unlabelled `[-1, 3]` tensor. `ClassScores` is keyed by name, so by the time scores reach this manifest the mapping has already been applied and is no longer visible -- and if it was applied wrongly, nothing here or downstream can tell. Transpose two columns and every breastfeeding photograph classifies as `explicit`, every score is in range, every count adds up, the manifest validates, and no test fails. That is the whole reason this field exists: it is the only place the mapping is written down where a machine can check it.\n\nIt is a `const`, so the only valid value is the contract's own order and a transposed manifest is REJECTED BY VALIDATION rather than by review. Const does not make it pointless to write: the producer must copy it out of the config that governed the run, and `models/schema/model-config.schema.json` pins the same three strings in the same order on the safety classifier's output. A config whose `class_order` was edited can no longer produce a manifest that validates.\n\nOrder, not a set. `[\"suggestive\", \"explicit\", \"medical_or_artistic\"]` contains the same three strings and describes a different model.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "const": [
+            "explicit",
+            "suggestive",
+            "medical_or_artistic"
+          ]
         },
         "load_mode": {
           "description": "Which gate the host was running under. A verdict produced by a DEVELOPMENT-mode host -- unpinned weights, unverified licence -- must never clear a real publication, and a verifier serving a release sink must refuse it. Recorded rather than assumed, because 'we were only testing' is how unverified weights reach production.",

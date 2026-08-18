@@ -712,3 +712,128 @@ class TestBatchingClaimsAreAttributable(SchemaRejectionTestCase):
             ),
             "a batching claim that names the measurement behind it",
         )
+
+
+# The contract's own class axis, read rather than retyped. If
+# safety-clearance.schema.json ever changes its order, this test starts failing
+# instead of the two files quietly describing different models.
+CONTRACT_CLASS_ORDER = json.loads(
+    (REPO_ROOT / "contracts" / "schemas" / "safety-clearance.schema.json").read_text(
+        encoding="utf-8"
+    )
+)["$defs"]["ClassifierPin"]["properties"]["class_order"]["const"]
+
+
+class TestClassAxisIsPinned(SchemaRejectionTestCase):
+    """Issue #21 / decision doc §6.6, the defect that had no symptom.
+
+    `sensitive_logits` is shape [-1, 3] and nothing said which index was which
+    class. Transposing two columns turns every breastfeeding photograph into
+    `explicit`: the scores stay in [0, 1], the 0.3 threshold still fires, the
+    clearance manifest still validates, and not one test in this repository
+    fails. It is the same family as the SCRFD output-name defect (#36) and the
+    landmark-scheme hazard -- an unlabelled tensor crossing a process boundary
+    -- except that here the failure lands in a family's album rather than in a
+    ranking.
+
+    Four things have to hold, and the first two are the only ones JSON Schema
+    can state.
+    """
+
+    def _safety_configs(self) -> list[tuple[str, dict]]:
+        return [
+            (name, config)
+            for name, config in configs()
+            if config["task"] == "safety_classifier"
+        ]
+
+    def test_there_is_a_safety_classifier_to_check(self):
+        """Guard against this whole class passing vacuously."""
+        self.assertTrue(
+            self._safety_configs(),
+            "no safety_classifier config exists; every test below would pass by "
+            "checking nothing",
+        )
+
+    def test_every_class_axis_declares_its_order(self):
+        for name, config in self._safety_configs():
+            for output in config["outputs"]:
+                if output["meaning"] not in {"logits", "scores"}:
+                    continue
+                with self.subTest(config=name, output=output["name"]):
+                    self.assertEqual(
+                        CONTRACT_CLASS_ORDER,
+                        output.get("class_order"),
+                        f"{name}: {output['name']} does not declare the contract's "
+                        "class order, so nothing pins which column is which class",
+                    )
+
+    def test_the_order_has_exactly_one_entry_per_column(self):
+        """`len(class_order) == shape[-1]`, which JSON Schema cannot say.
+
+        A three-name order over a four-column tensor reads the wrong column and
+        is silent about it, exactly like a transposition.
+        """
+        for name, config in self._safety_configs():
+            for output in config["outputs"]:
+                order = output.get("class_order")
+                if order is None:
+                    continue
+                shape = output.get("shape") or []
+                with self.subTest(config=name, output=output["name"]):
+                    self.assertTrue(shape, f"{name}: {output['name']} declares no shape")
+                    self.assertEqual(
+                        shape[-1],
+                        len(order),
+                        f"{name}: {output['name']} has {shape[-1]} columns and "
+                        f"{len(order)} class names",
+                    )
+
+    def test_the_schema_refuses_a_transposed_order(self):
+        """THE TEST THE DEFECT WOULD HAVE FAILED.
+
+        Same three strings, two of them swapped. Every other check in the
+        repository passes on this config.
+        """
+        name, config = self._safety_configs()[0]
+        transposed = ["suggestive", "explicit", "medical_or_artistic"]
+        self.assertNotEqual(CONTRACT_CLASS_ORDER, transposed)
+        self.assertRejected(
+            _mutated(config, ("outputs", 0, "class_order"), transposed),
+            f"{name} with explicit and suggestive transposed",
+        )
+
+    def test_the_schema_refuses_a_missing_order(self):
+        name, config = self._safety_configs()[0]
+        self.assertRejected(
+            _mutated(config, ("outputs", 0, "class_order"), _REMOVE),
+            f"{name} with no class_order at all -- which is where this started",
+        )
+
+    def test_the_schema_refuses_a_renamed_class(self):
+        """`nsfw` is the one-flag model this design exists to refuse."""
+        name, config = self._safety_configs()[0]
+        self.assertRejected(
+            _mutated(
+                config,
+                ("outputs", 0, "class_order"),
+                ["nsfw", "suggestive", "medical_or_artistic"],
+            ),
+            f"{name} with a class renamed",
+        )
+
+    def test_a_non_safety_config_is_not_forced_to_declare_one(self):
+        """The requirement is scoped to the task that needs it.
+
+        SCRFD's outputs are anchor grids, not class axes; forcing a class_order
+        onto them would produce a field people fill in with anything.
+        """
+        others = [
+            (name, config)
+            for name, config in configs()
+            if config["task"] != "safety_classifier"
+        ]
+        self.assertTrue(others)
+        for name, config in others:
+            with self.subTest(config=name):
+                self.assertAccepted(config, f"{name} without a class_order")
