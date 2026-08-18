@@ -1764,14 +1764,32 @@ mod real_media_tests {
     /// half is red and its bottom half is not — which is what makes the
     /// DIRECTION of the turn measurable rather than merely its axis.
     fn rotated_clip(ffmpeg_path: &Path, directory: &Path) -> PathBuf {
-        rotated_clip_inner(ffmpeg_path, directory, false)
+        rotated_clip_inner(ffmpeg_path, directory, false, "-90")
     }
 
     fn marked_rotated_clip(ffmpeg_path: &Path, directory: &Path) -> PathBuf {
-        rotated_clip_inner(ffmpeg_path, directory, true)
+        rotated_clip_inner(ffmpeg_path, directory, true, "-90")
     }
 
-    fn rotated_clip_inner(ffmpeg_path: &Path, directory: &Path, marked: bool) -> PathBuf {
+    /// The same marked fixture under any display matrix.
+    ///
+    /// `display_rotation` is FFmpeg's own input option, whose sign is
+    /// COUNTER-clockwise — the same convention `display_rotation_degrees`
+    /// reads back off the container and negates.
+    fn marked_clip_rotated_by(
+        ffmpeg_path: &Path,
+        directory: &Path,
+        display_rotation: &str,
+    ) -> PathBuf {
+        rotated_clip_inner(ffmpeg_path, directory, true, display_rotation)
+    }
+
+    fn rotated_clip_inner(
+        ffmpeg_path: &Path,
+        directory: &Path,
+        marked: bool,
+        display_rotation: &str,
+    ) -> PathBuf {
         let upright = directory.join(if marked { "marked.mp4" } else { "upright.mp4" });
         let mut arguments = vec![
             "-f",
@@ -1795,15 +1813,15 @@ mod real_media_tests {
         ]);
         encode(ffmpeg_path, &arguments);
         let rotated = directory.join(if marked {
-            "marked-rotated.mp4"
+            format!("marked-rotated{display_rotation}.mp4")
         } else {
-            "rotated.mp4"
+            format!("rotated{display_rotation}.mp4")
         });
         encode(
             ffmpeg_path,
             &[
                 "-display_rotation:v:0",
-                "-90",
+                display_rotation,
                 "-i",
                 upright.to_str().expect("path"),
                 "-c",
@@ -2071,6 +2089,99 @@ mod real_media_tests {
              on the bottom means the sign convention is inverted and the picture is \
              upside down while every other check still passes."
         );
+    }
+
+    /// The other two quarter turns, also measured in pixels.
+    ///
+    /// `the_turn_goes_clockwise_and_the_pixels_say_so` anchors ONE of the three
+    /// branches of `orientation_filters` to the picture. The other two were
+    /// asserted only as strings — `contains("hflip,vflip")`,
+    /// `contains("transpose=2")` — and a string test cannot tell a correct
+    /// mapping from a confident wrong one, because the expectation is written
+    /// from the same belief as the code. Neither can anything downstream: a
+    /// half turn does not change the aspect ratio, so `raster_matches_oriented`
+    /// passes on an upside-down proxy, and a 270 source that took the 90 filter
+    /// still lands on a 270x480 raster.
+    ///
+    /// The fixture is red down the LEFT HALF of the stored raster, so each turn
+    /// puts it somewhere different and only one place is right:
+    ///
+    ///   180 (`hflip,vflip`)       left half -> RIGHT half, raster stays wide
+    ///   270 (`transpose=2`, ccw)  left half -> BOTTOM half, raster goes tall
+    ///
+    /// Both were checked against FFmpeg's own software autorotate of the same
+    /// file before being written down here, so these are the reference
+    /// behaviour rather than this worker's opinion of it.
+    #[test]
+    fn the_half_turn_and_the_counter_clockwise_turn_land_where_the_pixels_say() {
+        let Some(ffmpeg_path) = ffmpeg() else {
+            eprintln!(
+                "SKIPPED the_half_turn_and_the_counter_clockwise_turn_land_where_the_pixels_say: \
+                 no runnable ffmpeg. This check did NOT run."
+            );
+            return;
+        };
+
+        // `-display_rotation` is counter-clockwise, so 180 reads back as a half
+        // turn and +90 reads back as the 270 clockwise turn.
+        for (display_rotation, expected_deg) in [("180", 180_i64), ("90", 270)] {
+            let directory = tempfile::tempdir().expect("tempdir");
+            let clip = marked_clip_rotated_by(&ffmpeg_path, directory.path(), display_rotation);
+
+            // The premise, asserted rather than assumed.
+            let left = patch_rgb(&ffmpeg_path, &clip, (0.05, 0.4, 0.3, 0.2), false);
+            let right = patch_rgb(&ffmpeg_path, &clip, (0.65, 0.4, 0.3, 0.2), false);
+            assert!(
+                is_red(left) && !is_red(right),
+                "the fixture must be red on the left of the STORED raster, \
+                 got left={left:?} right={right:?}"
+            );
+
+            let Some(record) = run_proxy(&clip, directory.path()) else {
+                eprintln!(
+                    "SKIPPED the_half_turn_and_the_counter_clockwise_turn_land_where_the_pixels_\
+                     say: this host has no hardware backend the worker accepts. This check did \
+                     NOT run."
+                );
+                return;
+            };
+            let video = record.video.expect("MediaRecord.video is populated");
+            assert_eq!(
+                video.rotation_deg,
+                Some(expected_deg),
+                "-display_rotation {display_rotation} is a {expected_deg} degree clockwise turn"
+            );
+            let proxy = record.proxies.expect("a proxy")[0].clone();
+            let proxy_path = PathBuf::from(&proxy.path);
+
+            // Where the red half has to be after this particular turn. Read
+            // WITH autorotate, so a proxy that wrongly kept a display matrix
+            // of its own would be turned again here and land somewhere else.
+            let (red_region, plain_region) = if expected_deg == 180 {
+                ((0.65, 0.4, 0.3, 0.2), (0.05, 0.4, 0.3, 0.2))
+            } else {
+                ((0.4, 0.65, 0.2, 0.3), (0.4, 0.05, 0.2, 0.3))
+            };
+            let red = patch_rgb(&ffmpeg_path, &proxy_path, red_region, true);
+            let plain = patch_rgb(&ffmpeg_path, &proxy_path, plain_region, true);
+            assert!(
+                is_red(red) && !is_red(plain),
+                "a {expected_deg} degree turn puts the stored left half at {red_region:?} of \
+                 the proxy, not at {plain_region:?}. Got {red:?} and {plain:?}; this is a \
+                 picture that is turned the wrong way in every reel and every face box \
+                 computed from it, and every other check in this file still passes."
+            );
+
+            let raster = proxy.size.expect("a measured proxy raster");
+            let tall = raster.height > raster.width;
+            assert_eq!(
+                tall,
+                expected_deg == 270,
+                "a {expected_deg} degree turn of a 1920x1080 source: got {}x{}",
+                raster.width,
+                raster.height
+            );
+        }
     }
 
     /// The turn must be applied exactly once, and the proxy must not carry the
