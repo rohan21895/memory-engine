@@ -10,7 +10,7 @@ export { parseParams, runRenderVideoJob, RENDER_VIDEO_CHECKPOINT_VERSION } from 
 export { spanAssemblyId, digestFile, digestJson, canonicalJson } from "./digest.js";
 export { frames, frameRange, framesToSamples, framesToSeconds } from "./time.js";
 export type { ContractGap, GateReport, UnactedDeclaration } from "./gate.js";
-export type { BuiltGraph, Interpretation } from "./filtergraph.js";
+export type { BuiltGraph, InputSeeking, Interpretation } from "./filtergraph.js";
 export type { EncodeProfile } from "./encode.js";
 export type { Program, VideoSegment, AudioContribution } from "./program.js";
 export type { SourceResolver, ResolvedSource } from "./sources.js";

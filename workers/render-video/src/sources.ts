@@ -44,6 +44,10 @@ export interface ResolvedSource {
   memberDigests: string[];
   /** Total frames across members, for a video source. */
   frameCount: number;
+  /** ffprobe demuxer family. Used only to select proven operational input seeking. */
+  formatName: string;
+  /** Actual container brand; the demuxer family aliases MOV, MP4 and 3GP together. */
+  formatMajorBrand: string | null;
 }
 
 function fail(code: "file_not_found" | "file_unreadable" | "file_corrupt" | "validation_failed" | "unsupported_format", detail: string): never {
@@ -122,11 +126,13 @@ export async function resolveSources(
       );
     }
 
+    const kind = ref.media_kind ?? "video";
     const probed = [];
-    for (const path of paths) probed.push(await probe(tools, path));
+    for (const path of paths) {
+      probed.push(await probe(tools, path, { qualifyInputSeeking: kind === "video" && !isAssembly }));
+    }
 
     const available = frameRange(ref.available_range, edl.rate, `media_ref ${ref.media_ref_id} available_range`);
-    const kind = ref.media_kind ?? "video";
 
     let video: ProbedVideoStream | null = null;
     let frameCount = 0;
@@ -231,6 +237,8 @@ export async function resolveSources(
       audio,
       memberDigests,
       frameCount,
+      formatName: probed[0]!.formatName,
+      formatMajorBrand: probed[0]!.formatMajorBrand,
     });
   }
 
