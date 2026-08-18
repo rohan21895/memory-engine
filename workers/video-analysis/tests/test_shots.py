@@ -237,6 +237,24 @@ class FlashEdgeSymmetry(unittest.TestCase):
         self.assertEqual((), detection.cut_frames)
         self.assertEqual(1, len(detection.shots))
 
+    def test_the_recorded_frame_is_the_flash_not_the_peak(self) -> None:
+        """Both edges must report the SAME frame: where the flash actually is.
+
+        The first fix stopped the flash being called a cut but still recorded
+        it at whichever edge peaked, so `suppressed_flashes` read 45 on one
+        ffmpeg build and 46 on another. That is the original defect wearing a
+        different field, and CI caught it a second time.
+        """
+        outgoing = shots.detect_shots(
+            self._stream(flash_at=45, out_gain=1.0, back_gain=0.98), rate=self.RATE
+        )
+        returning = shots.detect_shots(
+            self._stream(flash_at=45, out_gain=0.98, back_gain=1.0), rate=self.RATE
+        )
+        self.assertIn(45, outgoing.suppressed_flashes)
+        self.assertIn(45, returning.suppressed_flashes)
+        self.assertEqual(outgoing.suppressed_flashes, returning.suppressed_flashes)
+
     def test_a_real_cut_is_still_a_cut(self) -> None:
         """The suppression must not have been bought by blinding the detector.
 

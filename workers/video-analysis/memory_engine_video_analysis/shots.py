@@ -389,11 +389,12 @@ def _classical_cuts(
             index += 1
             continue
 
-        returned = _flash_return(signatures, index, flash_span)
-        if returned is not None:
-            flashes.append(index)
-            blocked_until = returned + 1
-            index = returned + 1
+        found = _flash_return(signatures, index, flash_span)
+        if found is not None:
+            settled_at, flash_at = found
+            flashes.append(flash_at)
+            blocked_until = settled_at + 1
+            index = settled_at + 1
             continue
 
         if cuts and index - cuts[-1] < minimum:
@@ -418,7 +419,7 @@ def _classical_cuts(
 
 def _flash_return(
     signatures: Sequence[Sequence[float]], index: int, span: int
-) -> int | None:
+) -> tuple[int, int] | None:
     """The frame at which the picture returns to what preceded a spike, if it does.
 
     A flash is a PAIR of opposing spikes: the picture leaves, then comes back.
@@ -434,13 +435,19 @@ def _flash_return(
     was reported as a cut on Linux and not on macOS, because ffmpeg 6 and 7
     quantise the two edges of the spike differently.
 
-    Returns the frame the picture has settled at, or None if it never settles.
+    Returns (settled_at, flash_at), or None if the picture never settles.
+
+    Two frames, not one, because they differ on the return edge and the caller
+    needs both: it resumes scanning from `settled_at`, and RECORDS `flash_at`.
+    Recording the peak instead would leave `suppressed_flashes` naming whichever
+    edge encoder noise happened to make larger -- the same fragility this
+    function exists to remove, moved into a different field.
     """
     # Outgoing edge: the picture leaves at `index` and comes back later.
     before = signatures[index - 1]
     for j in range(index + 1, min(len(signatures), index + span + 1)):
         if _distance(before, signatures[j]) <= FLASH_RETURN_DELTA_E:
-            return j
+            return j, index
 
     # Return edge: the picture at `index` is already back to something it held
     # shortly before, so the frames in between were the transient. Compared
@@ -454,5 +461,7 @@ def _flash_return(
     here = signatures[index]
     for k in range(index - 2, max(-1, index - span - 2), -1):
         if _distance(signatures[k], here) <= FLASH_RETURN_DELTA_E:
-            return index
+            # k is the last frame before the transient, so the flash itself
+            # begins at k + 1. The picture has already settled by `index`.
+            return index, k + 1
     return None
