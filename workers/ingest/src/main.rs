@@ -27,6 +27,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut job: JobSpec = serde_json::from_slice(&fs::read(job_path)?)?;
     let store = CheckpointStore::new(checkpoint_path);
+    store.recover(&mut job)?;
     let report = match job.job_type {
         JobSpecJobType::ScanSource => {
             serde_json::to_value(execute_scan(&mut job, &output_dir, &store)?)?
