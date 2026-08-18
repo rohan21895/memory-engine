@@ -13,6 +13,13 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+# coverage.py's data file. `coverage/` above catches the HTML report directory
+# and not this, which is a SQLite database storing the ABSOLUTE path of every
+# file it measured. One was sitting untracked in packages/story-engine holding
+# this machine's home directory; on a public repo that is one careless `git add`
+# away from being published.
+.coverage
+.coverage.*
 
 # Editors and operating systems
 .DS_Store

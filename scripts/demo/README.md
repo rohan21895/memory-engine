@@ -32,8 +32,13 @@ With a model host serving the full Tier 1 stack, on the default 60-still /
           album         completed   22-page album, print validation passed
           render-print  completed   PDF/X-4 written to .../outputs/pdf/408ff52a….pdf
           story         completed   reel EDL 02e76b210a82: 5 clips, 7.50s at 30 fps,
-                                    0 of 5 cuts beat-locked, 0 certified word-safe
-          render-video  completed   reel written to .../outputs/video/02e76b21….mp4
+                                    0 of 5 cuts beat-locked, 0 certified word-safe;
+                                    film EDL 62bc052607b5: 10 shots in 3 acts,
+                                    22.53s at 30 fps, holds 2.00-2.87s (pacing
+                                    spread 0.38, 10 of 10 window-limited),
+                                    0 L-cuts, 0 certified word-safe
+          render-video  completed   reel written to .../outputs/video/02e76b21….mp4;
+                                    film written to .../outputs/video/62bc0526….mp4
 
   [14/15] print artifact — opened and measured      ok
           AlbumSpec declares 22 pages, validation pass (0 errors, 22 warnings)
@@ -42,18 +47,43 @@ With a model host serving the full Tier 1 stack, on the default 60-still /
           MediaBox: [0 0 867.401575 867.401575]   TrimBox: [8.503937 … 858.897638]
           checks: 7/7 passed
 
-  [15/15] video artifact — probed and sampled       ok
+  [15/15] video artifacts — probed and sampled      ok
           h264 854x480 @ 30/1  7.500s   audio: aac 48000Hz 2ch
           EDL 02e76b210a82 kind=reel: 5 clips, validation pass
           decoded 225 frames
           frame brightness YAVG min=97.3 max=149.7 over 225 frames
-          checks: 5/5 passed
+          h264 854x480 @ 30/1  22.533s  audio: aac 48000Hz 2ch
+          EDL 62bc052607b5 kind=film: 10 clips, validation pass
+          decoded 676 frames
+          frame brightness YAVG min=96.1 max=151.2 over 676 frames
+          checks: 10/10 passed
 ```
 
-**Two of the three promised outputs, and the third does not exist.** A
-print-ready PDF and a 15-second-target reel are produced. There is **no film**:
-`packages/story-engine` has no film planner (build plan phase 5), and stage 13
-says so rather than relabelling the reel.
+**All three promised outputs are produced, and the third is honest about what
+it is missing.** A print-ready PDF, a 15-second-target reel, and a film: a
+three-act cut of the same moments in chronological order, planned by
+`packages/story-engine/memory_engine_story/film.py` and rendered by the same
+worker. Stage 13 prints both EDLs and stage 15 opens both files.
+
+The film is a genuinely different cut — different running order, different
+holds, `kind: "film"`, `story_arc.template: "three_act"` — and not a longer
+reel. What it is *not* yet is a film in the sense the build plan means:
+
+* **`0 cuts certified word-safe`, on the film as on the reel.** There is no
+  transcript backend, so speech-aware trimming, the L-cut and the
+  error-severity mid-word gate — the three things that separate a film planner
+  from a long reel — are all built, tested and inert. The plan emits no
+  `no_mid_word_cut` finding at all. Absent is not passing.
+* **Every shot is window-limited.** The holds come out as long as each moment's
+  trimmable window allows rather than as long as the pacing policy asks, so the
+  reported `pacing spread` is a fact about the moment scorer's windows and not
+  about the film's design. The run prints the count.
+* **It runs about 22 seconds, against a 60-second floor for the form.** The
+  library only affords ten shots. The plan says so rather than presenting a
+  short thing as a film.
+* **Its sources run in declaration order.** Every synthetic clip carries
+  `capture.captured_at.precision: unknown`, so the planner is given no
+  chronology and refuses to invent one by sorting on content hash.
 
 Read the numbers, not the ticks:
 
@@ -77,7 +107,7 @@ size. `services/pipeline`'s end-to-end test asserted `%PDF` and "bigger than
 100kB" — and passed over a renderer that sheared every page and washed every
 photo out to near-white, for as long as that renderer existed.
 
-| stage 14, on the PDF | stage 15, on the MP4 |
+| stage 14, on the PDF | stage 15, on each MP4 |
 | --- | --- |
 | page objects counted in the file | codec, raster, rate, duration from ffprobe |
 | page tree `/Count` agrees with them | **every frame decoded** and counted |
@@ -89,7 +119,8 @@ photo out to near-white, for as long as that renderer existed.
 ### Without `--ml-runtime`
 
 Stages 13–15 are `SKIPPED`, and the ledger says the album, the print gate, the
-PDF and the reel are all unproven. That is honest rather than convenient:
+PDF, the reel and the film are all unproven. That is honest rather than
+convenient:
 analysis is a hard gate, so with no model host nothing downstream of it runs.
 Stages 1–12 still walk, hash, dedupe, date and cluster the library.
 
@@ -99,8 +130,9 @@ its `weights.source_url` is a model *page*, not a file, so
 `scripts/models/fetch_weights.py` cannot fetch it. Analysis requires the
 embedder alongside the two face models and reports
 `the model host is serving but cannot provide: siglip2-so400m-384
-(weights_missing)`; album and render-print then refuse. The reel is unaffected
-and still renders, because the video path does not go through SigLIP.
+(weights_missing)`; album and render-print then refuse. The reel and the film
+are unaffected and still render, because the video path does not go through
+SigLIP.
 
 ## make_library.py
 
@@ -163,18 +195,22 @@ fields start being populated, the stages start running by themselves.
 
 ## What is not measured, and therefore not claimed
 
-The reel is cut from the features that exist. Four producers do not, and every
-run names all four rather than letting a reader assume them:
+Both cuts are made from the features that exist. Four producers do not, and
+every run names all four rather than letting a reader assume them:
 
 | missing | consequence |
 | --- | --- |
 | transcription (faster-whisper) | word timings unknown, so **no cut is certified word-safe**, and the EDL carries no `no_mid_word_cut` finding *at all* — absent, not passing |
 | beat detection (no bundled music) | `packages/story-engine/music/library.json` is `audio_bundled: false`, so there is no `BeatGrid` and **no cut is beat-locked**; the build plan's <50ms downbeat gate cannot be measured |
-| face / smile detection in video | `face_presence`, `max_face_area_ratio`, `smile_intensity` absent; the reel cannot prefer a face |
+| face / smile detection in video | `face_presence`, `max_face_area_ratio`, `smile_intensity` absent; neither cut can prefer a face, and the film's pacing loses its emotional-peak input |
 | audio events (CLAP) | speech and noise ratios absent; the duck-under-speech and wind-noise rules can never fire |
 
-A reel cut without speech data is a different product from one cut with it. The
-stage counts `beat_locked: 0` and `word_safe_cuts_certified: 0` and prints both.
+A cut made without speech data is a different product from one made with it,
+and it costs the film more than the reel: speech-aware trimming, the L-cut and
+the error-severity mid-word gate are the three things that make a film planner
+different from a long reel, and all three are inert. The stage counts
+`beat_locked: 0`, `word_safe_cuts_certified: 0` and `l_cuts: 0`, and prints
+them.
 
 Two more, both in the summary line every run:
 
@@ -182,7 +218,7 @@ Two more, both in the summary line every run:
   geometry is unmeasured. The render target is therefore the 480p proxy raster
   (854×480), not a 1080p master, and vertical reframing is disabled because a
   landscape-to-vertical crop needs a source aspect ratio nobody has measured.
-* **Five of ten clips are excluded** from the reel, with their rates and rasters
+* **Five of ten clips are excluded** from both cuts, with their rates and rasters
   named: an EDL carries one timeline rate and one target geometry, and the
   library deliberately contains 24 / 25 / 29.97 / 30 / 60 fps and a vertical
   clip.

@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -232,7 +233,15 @@ def _asset_paths(ctx: StageContext, album: dict[str, Any]) -> dict[str, str]:
 
 
 def run_video(ctx: StageContext) -> StageResult:
-    """EDL -> `workers/render-video` -> a file.
+    """Every EDL the story stage produced -> `workers/render-video` -> files.
+
+    PLURAL, AND THAT IS THE POINT.
+
+    The story stage emits a reel AND a film. Rendering only `outputs[0]` would
+    silently drop whichever plan came second, and the run summary would still
+    read `ok` -- a finished pipeline missing one of its three products, with
+    nothing anywhere saying so. So this stage renders every EDL it was handed,
+    reports each one, and fails if any of them fails.
 
     THE REFUSALS ARE THE INTERESTING PART OF THIS STAGE.
 
@@ -279,17 +288,17 @@ def run_video(ctx: StageContext) -> StageResult:
             status=StageStatus.SKIPPED,
             detail="the story stage produced no EDL to render",
         )
-    edl_path = Path(story_result.outputs[0])
-    sources_path = edl_path.with_suffix(".sources.json")
-    if not edl_path.is_file() or not sources_path.is_file():
-        return StageResult(
-            stage=VIDEO_STAGE,
-            status=StageStatus.FAILED,
-            detail=(
-                f"the story stage named {edl_path} but the plan or its source map "
-                "is not on disk"
-            ),
-        )
+    edl_paths = [Path(entry) for entry in story_result.outputs]
+    for edl_path in edl_paths:
+        if not edl_path.is_file() or not edl_path.with_suffix(".sources.json").is_file():
+            return StageResult(
+                stage=VIDEO_STAGE,
+                status=StageStatus.FAILED,
+                detail=(
+                    f"the story stage named {edl_path} but the plan or its source "
+                    "map is not on disk"
+                ),
+            )
 
     node = _node()
     entry = ctx.repo_root / _VIDEO_ENTRY
@@ -315,20 +324,77 @@ def run_video(ctx: StageContext) -> StageResult:
             detail="ffmpeg and ffprobe are not both on PATH; nothing can be encoded",
         )
 
+    outcomes = [
+        _render_one(ctx, edl_path, node=node, entry=entry) for edl_path in edl_paths
+    ]
+
+    failed = [o for o in outcomes if o.status is StageStatus.FAILED]
+    detail = "; ".join(o.detail for o in outcomes)
+    if failed:
+        # Reported together rather than on the first failure, for the same
+        # reason the worker lists every refusal at once: "the reel rendered and
+        # the film did not" is a different situation from "nothing rendered",
+        # and a caller has to be able to tell them apart.
+        ctx.reporter.event(VIDEO_STAGE, "stage_failed", detail)
+        return StageResult(
+            stage=VIDEO_STAGE,
+            status=StageStatus.FAILED,
+            detail=detail,
+            job_id=failed[0].job_id,
+            outputs=tuple(str(o.output) for o in outcomes if o.output is not None),
+            counts={o.kind: o.counts for o in outcomes},
+        )
+
+    status = (
+        StageStatus.SKIPPED
+        if outcomes and all(o.status is StageStatus.SKIPPED for o in outcomes)
+        else StageStatus.COMPLETED
+    )
+    return StageResult(
+        stage=VIDEO_STAGE,
+        status=status,
+        detail=detail,
+        job_id=outcomes[0].job_id if outcomes else None,
+        outputs=tuple(str(o.output) for o in outcomes if o.output is not None),
+        counts={o.kind: o.counts for o in outcomes},
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _VideoOutcome:
+    kind: str
+    status: StageStatus
+    detail: str
+    job_id: str | None
+    output: Path | None
+    counts: dict[str, Any]
+
+
+def _render_one(
+    ctx: StageContext, edl_path: Path, *, node: str, entry: Path
+) -> _VideoOutcome:
+    """One EDL through the worker. Never raises; every ending is an outcome."""
     edl = json.loads(edl_path.read_text(encoding="utf-8"))
-    sources = json.loads(sources_path.read_text(encoding="utf-8"))
+    sources = json.loads(
+        edl_path.with_suffix(".sources.json").read_text(encoding="utf-8")
+    )
+    kind = str(edl.get("kind") or "video")
     missing = [
         media_id for media_id, entry_ in sources.items()
         if not all(Path(path).is_file() for path in entry_.get("paths") or [])
     ]
     if missing:
-        return StageResult(
-            stage=VIDEO_STAGE,
+        return _VideoOutcome(
+            kind=kind,
             status=StageStatus.FAILED,
             detail=(
-                f"{len(missing)} source file(s) the plan names are not on disk; the "
-                "renderer will not substitute black and neither will this stage"
+                f"{kind}: {len(missing)} source file(s) the plan names are not on "
+                "disk; the renderer will not substitute black and neither will "
+                "this stage"
             ),
+            job_id=None,
+            output=None,
+            counts={"edl_id": edl.get("edl_id")},
         )
 
     edl_id = edl["edl_id"]
@@ -361,19 +427,20 @@ def run_video(ctx: StageContext) -> StageResult:
     else:
         ctx.jobs.put(job)
     if job["state"]["status"] == "completed" and output.is_file():
-        return StageResult(
-            stage=VIDEO_STAGE,
+        return _VideoOutcome(
+            kind=kind,
             status=StageStatus.SKIPPED,
-            detail="this EDL has already been rendered",
+            detail=f"this {kind} EDL has already been rendered",
             job_id=job["job_id"],
-            outputs=(str(output),),
+            output=output,
+            counts={"edl_id": edl_id},
         )
 
     job = ctx.jobs.begin(job)
     ctx.reporter.event(
         VIDEO_STAGE,
         "stage_start",
-        f"rendering {edl['kind']} {edl_id[:12]} from {len(sources)} source(s)",
+        f"rendering {kind} {edl_id[:12]} from {len(sources)} source(s)",
     )
 
     job_file = ctx.path("render-video", f"{job['job_id']}.json")
@@ -393,17 +460,17 @@ def run_video(ctx: StageContext) -> StageResult:
     # honoured it.
     for line in (process.stderr or "").splitlines():
         if line.startswith(("not acted upon:", "interpreted:")):
-            ctx.reporter.event(VIDEO_STAGE, "note", line)
+            ctx.reporter.event(VIDEO_STAGE, "note", f"{kind}: {line}")
 
     if process.returncode != 0 or written["state"]["status"] != "completed":
         error = written.get("error") or {}
         detail = error.get("message") or (process.stderr or "").strip() or "render failed"
-        ctx.reporter.event(VIDEO_STAGE, "stage_failed", detail)
-        return StageResult(
-            stage=VIDEO_STAGE,
+        return _VideoOutcome(
+            kind=kind,
             status=StageStatus.FAILED,
-            detail=detail,
+            detail=f"{kind}: {detail}",
             job_id=job["job_id"],
+            output=None,
             counts={"edl_id": edl_id, "refusal_code": error.get("code")},
         )
 
@@ -420,12 +487,12 @@ def run_video(ctx: StageContext) -> StageResult:
         "at": utc_now(),
     }
     ctx.reporter.event(VIDEO_STAGE, "stage_done", f"wrote {output.name}")
-    return StageResult(
-        stage=VIDEO_STAGE,
+    return _VideoOutcome(
+        kind=kind,
         status=StageStatus.COMPLETED,
-        detail=f"{edl['kind']} written to {output}",
+        detail=f"{kind} written to {output}",
         job_id=job["job_id"],
-        outputs=(str(output),),
+        output=output,
         counts=counts,
     )
 

@@ -1561,7 +1561,14 @@ def stage_verify_pdf(run: Run, report) -> None:
 
 
 def stage_verify_video(run: Run, tools: Tools, report) -> None:
-    stage = run.stage("video artifact — probed and sampled")
+    """Open EVERY video the pipeline rendered, not just the first one.
+
+    The story stage emits a reel and a film. Probing `videos[0]` would open the
+    reel, print five ticks, and leave the film -- a longer file, cut by a
+    different planner, and therefore the one more likely to be wrong -- entirely
+    unopened while the stage still reported ok.
+    """
+    stage = run.stage("video artifacts — probed and sampled")
     videos = _outputs(report, "render-video", ".mp4")
     if not videos:
         stage.skip(
@@ -1577,7 +1584,19 @@ def stage_verify_video(run: Run, tools: Tools, report) -> None:
         run.report(stage)
         return
 
-    video = videos[0]
+    # A rendered file is named for the `edl_id` it came from, so the plan and
+    # its evidence are paired by identity rather than by position.
+    plans = {
+        path.stem: path
+        for path in _outputs(report, "story", ".json")
+        if not path.name.endswith(".sources.json")
+    }
+    for video in sorted(videos):
+        _probe_video(run, stage, tools, video, plans.get(video.stem))
+    run.report(stage)
+
+
+def _probe_video(run: Run, stage, tools: Tools, video: Path, plan: Path | None) -> None:
     probe = tools.ffmpeg.replace("ffmpeg", "ffprobe")
     stage.note(f"{video.name}  {video.stat().st_size:,} bytes")
 
@@ -1596,7 +1615,6 @@ def stage_verify_video(run: Run, tools: Tools, report) -> None:
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
     stage.check("the container holds a video stream", bool(video_streams))
     if not video_streams:
-        run.report(stage)
         return
     v = video_streams[0]
     duration = float(fmt.get("duration") or 0.0)
@@ -1608,9 +1626,11 @@ def stage_verify_video(run: Run, tools: Tools, report) -> None:
 
     # The EDL is the claim; the file is the evidence. Decoding every frame is
     # what separates "the header says 225" from "there are 225".
-    edls = _outputs(report, "story", ".json")
-    if edls:
-        edl = json.loads(edls[0].read_text())
+    if plan is None:
+        stage.note(f"{video.name} names no EDL this run produced; its cut list, "
+                   "timeline rate and clip count are unchecked")
+    else:
+        edl = json.loads(plan.read_text())
         # A track holds `items`, and an item is a clip, a gap or a transition.
         # Counting items would count the absences too, and "a hard cut is the
         # absence of a Transition" is the convention here, so only clips count.
@@ -1683,7 +1703,6 @@ def stage_verify_video(run: Run, tools: Tools, report) -> None:
         stage.check("the picture is not a single held frame",
                     max(values) - min(values) > 1.0,
                     f"YAVG varies by only {max(values) - min(values):.2f}")
-    run.report(stage)
 
 
 def eval_rate(text: str | None) -> float:
