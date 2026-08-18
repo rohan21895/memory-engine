@@ -113,6 +113,25 @@ jobs:
       # render-video/dist. Build the exact artifacts the pipeline invokes.
       - run: cargo build --release --manifest-path workers/ingest/Cargo.toml --all-features
       - run: npm run build --workspace @memory-engine/render-video
+      # Capability tables are not proof: FFmpeg 7 and 8 both advertised this
+      # complete chain on the hosted runner and the worker still failed at
+      # runtime. Exercise synthetic bytes here so stderr is safe to publish;
+      # production worker errors deliberately redact source details.
+      - name: Verify VideoToolbox runtime
+        run: |
+          pipeline_fixture_source="${RUNNER_TEMP}/memory-engine-vt-source.mp4"
+          pipeline_fixture_proxy="${RUNNER_TEMP}/memory-engine-vt-proxy.mp4"
+          ffmpeg -hide_banner -nostdin -loglevel error \
+            -f lavfi -i "testsrc2=size=320x240:rate=30" -t 1 \
+            -c:v libx264 -pix_fmt yuv420p -y "${pipeline_fixture_source}"
+          ffmpeg -hide_banner -nostdin -loglevel info \
+            -hwaccel videotoolbox -hwaccel_output_format videotoolbox_vld \
+            -i "${pipeline_fixture_source}" -map 0:v:0 -map '0:a?' \
+            -map_metadata -1 \
+            -vf "scale_vt=w=ceil(iw*480/ih/2)*2:h=480,hwdownload,format=nv12,setsar=1,showinfo" \
+            -fps_mode passthrough -c:v h264_videotoolbox -allow_sw 0 \
+            -profile:v high -b:v 1060660 -c:a aac -b:a 96k \
+            -movflags +faststart -y "${pipeline_fixture_proxy}"
       - run: python3 services/pipeline/tests/run_required_suite.py
 
   windows-ingest:
