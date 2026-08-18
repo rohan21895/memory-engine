@@ -495,4 +495,24 @@ describe("resumption", () => {
     expect(second.id).toBe(first.id);
     expect(await digestFile(second.path)).toBe(first.id);
   }, 240_000);
+
+  it("discards a corrupt interrupted partial and rebuilds the same intended film", async () => {
+    const work = await workspace("resume-corrupt");
+    const edl = videoOnlyEdl();
+    const options = {
+      sources: { [source.videoMediaId]: { paths: [source.videoPath] } },
+      encode: encode(FFV1_MKV, false),
+      workDirectory: work,
+      tools: TOOLS,
+    };
+    const first = await renderVideo(edl, options);
+    await writeFile(first.path, Buffer.from("interrupted encode"));
+
+    const resumed = await renderVideo(edl, options);
+
+    expect(resumed.path).toBe(first.path);
+    expect(resumed.id).toBe(first.id);
+    expect(resumed.verification.frameCount).toBe(110);
+    expect(await digestFile(resumed.path)).toBe(first.id);
+  }, 240_000);
 });

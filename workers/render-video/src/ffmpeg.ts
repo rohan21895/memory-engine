@@ -12,16 +12,132 @@ export interface CommandResult {
   stderr: string;
 }
 
-export async function run(command: string, args: readonly string[]): Promise<CommandResult> {
+export interface ToolProgress {
+  frame: number | null;
+  outTimeUs: number | null;
+  status: "continue" | "end";
+}
+
+export interface RunOptions {
+  onProgress?: (progress: ToolProgress) => Promise<void> | void;
+  /** Zero deliberately discards captured stdout while still parsing progress. */
+  stdoutLimitBytes?: number;
+  stderrLimitBytes?: number;
+}
+
+export const TOOL_OUTPUT_CAPTURE_LIMIT_BYTES = 256 * 1024;
+const ERROR_DIAGNOSTIC_LIMIT_BYTES = 8 * 1024;
+const PROGRESS_LINE_BUFFER_LIMIT = 16 * 1024;
+
+class BoundedCapture {
+  private buffer = Buffer.alloc(0);
+  readonly limit: number;
+  truncated = false;
+
+  constructor(limit: number) {
+    this.limit = limit;
+  }
+
+  append(chunk: Buffer): void {
+    if (chunk.length === 0) return;
+    if (this.limit === 0) {
+      this.truncated = true;
+      return;
+    }
+    if (chunk.length >= this.limit) {
+      this.buffer = Buffer.from(chunk.subarray(chunk.length - this.limit));
+      this.truncated = true;
+      return;
+    }
+    const combined = Buffer.concat([this.buffer, chunk]);
+    if (combined.length > this.limit) {
+      this.buffer = combined.subarray(combined.length - this.limit);
+      this.truncated = true;
+    } else {
+      this.buffer = combined;
+    }
+  }
+
+  text(): string {
+    return this.buffer.toString("utf8");
+  }
+}
+
+function captureLimit(value: number | undefined): number {
+  if (value === undefined) return TOOL_OUTPUT_CAPTURE_LIMIT_BYTES;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RenderVideoError("validation_failed", "A media-tool output limit must be a non-negative integer.");
+  }
+  return value;
+}
+
+function errorDiagnostic(stderr: string): string {
+  const lastLines = stderr.trim().split("\n").slice(-12).join("\n");
+  return lastLines.slice(-ERROR_DIAGNOSTIC_LIMIT_BYTES);
+}
+
+export async function run(
+  command: string,
+  args: readonly string[],
+  options: RunOptions = {},
+): Promise<CommandResult> {
+  const stdoutLimit = captureLimit(options.stdoutLimitBytes);
+  const stderrLimit = captureLimit(options.stderrLimitBytes);
   return new Promise((resolve, reject) => {
     const child = spawn(command, [...args], { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
+    const stdout = new BoundedCapture(stdoutLimit);
+    const stderr = new BoundedCapture(stderrLimit);
+    let progressBuffer = "";
+    let progressFields: Record<string, string> = {};
+    let progressQueue = Promise.resolve();
+    let progressError: unknown = null;
+
+    const scheduleProgress = (status: "continue" | "end"): void => {
+      if (!options.onProgress) return;
+      const frameValue = Number(progressFields.frame);
+      const outTimeValue = Number(progressFields.out_time_us);
+      const progress: ToolProgress = {
+        frame: Number.isSafeInteger(frameValue) && frameValue >= 0 ? frameValue : null,
+        outTimeUs: Number.isSafeInteger(outTimeValue) && outTimeValue >= 0 ? outTimeValue : null,
+        status,
+      };
+      progressQueue = progressQueue
+        .then(() => options.onProgress!(progress))
+        .catch((error: unknown) => {
+          progressError ??= error;
+          child.kill("SIGTERM");
+        });
+    };
+
+    const parseProgress = (chunk: Buffer): void => {
+      if (!options.onProgress) return;
+      progressBuffer += chunk.toString("utf8");
+      if (progressBuffer.length > PROGRESS_LINE_BUFFER_LIMIT && !progressBuffer.includes("\n")) {
+        progressBuffer = progressBuffer.slice(-PROGRESS_LINE_BUFFER_LIMIT);
+      }
+      const lines = progressBuffer.split("\n");
+      progressBuffer = lines.pop() ?? "";
+      for (const raw of lines) {
+        const line = raw.trim();
+        const separator = line.indexOf("=");
+        if (separator <= 0) continue;
+        const key = line.slice(0, separator);
+        const value = line.slice(separator + 1);
+        if (key === "progress" && (value === "continue" || value === "end")) {
+          scheduleProgress(value);
+          progressFields = {};
+        } else {
+          progressFields[key] = value;
+        }
+      }
+    };
+
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
+      stdout.append(chunk);
+      parseProgress(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
+      stderr.append(chunk);
     });
     child.on("error", (error: NodeJS.ErrnoException) => {
       reject(
@@ -32,16 +148,34 @@ export async function run(command: string, args: readonly string[]): Promise<Com
       );
     });
     child.on("close", (code) => {
-      if (code === 0) resolve({ stdout, stderr });
-      else {
-        const tail = stderr.trim().split("\n").slice(-12).join("\n");
+      void progressQueue.then(() => {
+        if (progressError) {
+          reject(progressError);
+          return;
+        }
+        const capturedStdout = stdout.text();
+        const capturedStderr = stderr.text();
+        if (code === 0 && stdoutLimit > 0 && stdout.truncated) {
+          reject(
+            new RenderVideoError(
+              "internal_error",
+              `A media tool produced more than ${stdoutLimit} bytes of machine-readable output.`,
+            ),
+          );
+          return;
+        }
+        if (code === 0) {
+          resolve({ stdout: capturedStdout, stderr: capturedStderr });
+          return;
+        }
+        const tail = errorDiagnostic(capturedStderr);
         reject(
           new RenderVideoError(
             "internal_error",
-            `A media tool exited with status ${code}. Last output:\n${tail}`,
+            `A media tool exited with status ${code}. Last bounded output:\n${tail}`,
           ),
         );
-      }
+      });
     });
   });
 }

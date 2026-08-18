@@ -13,6 +13,7 @@ import {
   probe,
   run,
   type LoudnessMeasurement,
+  type RunOptions,
   type ToolPaths,
 } from "./ffmpeg.js";
 import { buildGraph, type Interpretation } from "./filtergraph.js";
@@ -26,6 +27,13 @@ export interface RenderVideoOptions {
   encode: EncodeProfile;
   workDirectory: string;
   tools?: Partial<ToolPaths>;
+  onProgress?: (progress: RenderProgress) => Promise<void> | void;
+}
+
+export interface RenderProgress {
+  framesDone: number;
+  totalFrames: number;
+  status: "continue" | "end";
 }
 
 export interface RenderVerification {
@@ -201,6 +209,10 @@ export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promis
     "-threads:v",
     String(options.encode.threads),
     ...BITEXACT_ARGS,
+    "-stats_period",
+    "1",
+    "-progress",
+    "pipe:1",
     "-f",
     options.encode.container,
     "-y",
@@ -249,7 +261,17 @@ export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promis
     if (!verification) await unlink(partial).catch(() => undefined);
   }
   if (!verification) {
-    await run(tools.ffmpeg, [...command, partial]);
+    const runOptions: RunOptions = { stdoutLimitBytes: 0 };
+    if (options.onProgress) {
+      runOptions.onProgress = (progress) => {
+        const fromClock = progress.outTimeUs === null
+          ? 0
+          : Math.floor((progress.outTimeUs * edl.rate) / 1_000_000);
+        const framesDone = Math.min(program.totalFrames, Math.max(0, progress.frame ?? fromClock));
+        return options.onProgress!({ framesDone, totalFrames: program.totalFrames, status: progress.status });
+      };
+    }
+    await run(tools.ffmpeg, [...command, partial], runOptions);
     verification = await verifyOutput(tools, edl, program, partial, stage);
   }
   const id = await digestFile(partial);
