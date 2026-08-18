@@ -10,14 +10,14 @@ import { guardPrint, PublicationBlocked } from "./clearance.js";
 import { canonicalJson, digestBytes } from "./digest.js";
 import { asRenderPrintError, RenderPrintError } from "./errors.js";
 import type { IccProfileInput } from "./icc.js";
-import type { FontResolver, PlacementAssetResolver } from "./page.js";
+import { isPageCacheIdentity, type FontResolver, type PlacementAssetResolver } from "./page.js";
 import {
   renderAlbum,
   writePdfOnce,
   type PageArtifact,
 } from "./renderer.js";
 
-export const RENDER_PRINT_CHECKPOINT_VERSION = 1;
+export const RENDER_PRINT_CHECKPOINT_VERSION = 2;
 
 export interface RenderPrintJobParams {
   output_path: string;
@@ -67,8 +67,8 @@ export interface RenderPrintJobDependencies {
   now?: () => string;
 }
 
-interface CursorV1 {
-  version: 1;
+interface CursorV2 {
+  version: 2;
   pages: PageArtifact[];
 }
 
@@ -128,8 +128,8 @@ function parseCursor(job: JobSpec, pageStore: string): Map<number, PageArtifact>
     return new Map();
   }
   try {
-    const cursor = JSON.parse(job.checkpoint.cursor) as CursorV1;
-    if (cursor.version !== 1 || !Array.isArray(cursor.pages)) return new Map();
+    const cursor = JSON.parse(job.checkpoint.cursor) as CursorV2;
+    if (cursor.version !== 2 || !Array.isArray(cursor.pages)) return new Map();
     const root = resolve(pageStore);
     const entries: [number, PageArtifact][] = [];
     for (const artifact of cursor.pages) {
@@ -137,7 +137,8 @@ function parseCursor(job: JobSpec, pageStore: string): Map<number, PageArtifact>
         !Number.isInteger(artifact.index) ||
         typeof artifact.id !== "string" ||
         !/^[0-9a-f]{64}$/.test(artifact.id) ||
-        typeof artifact.path !== "string"
+        typeof artifact.path !== "string" ||
+        !isPageCacheIdentity(artifact.identity)
       ) {
         return new Map();
       }
@@ -168,9 +169,36 @@ export async function runRenderPrintJob(
   album: AlbumSpec,
   dependencies: RenderPrintJobDependencies,
 ): Promise<JobSpec> {
-  if (original.state.status === "completed") return original;
-  const job = structuredClone(original);
   const now = dependencies.now ?? (() => new Date().toISOString());
+  if (
+    original.state.status === "completed" &&
+    original.checkpoint?.checkpoint_version === RENDER_PRINT_CHECKPOINT_VERSION
+  ) {
+    return original;
+  }
+  const job = structuredClone(original);
+  if (job.state.status === "completed") {
+    const occurredAt = now();
+    const error = new RenderPrintError(
+      "validation_failed",
+      "The completed PDF was produced by an obsolete renderer and has been invalidated; rerender to a new output target.",
+    );
+    job.state.status = "failed";
+    job.state.heartbeat_at = occurredAt;
+    job.state.finished_at = occurredAt;
+    job.error = jobError(error, job.state.attempts, occurredAt);
+    job.outputs = [];
+    job.checkpoint = {
+      resumable: false,
+      cursor: null,
+      checkpoint_version: RENDER_PRINT_CHECKPOINT_VERSION,
+      updated_at: occurredAt,
+      completed_input_ids: [],
+      partial_output_ids: [],
+    };
+    await dependencies.persist(job);
+    return job;
+  }
 
   try {
     if (job.job_type !== "render_print") {
@@ -218,7 +246,7 @@ export async function runRenderPrintJob(
     job.error = null;
     job.checkpoint = {
       resumable: true,
-      cursor: JSON.stringify({ version: 1, pages: [...resumedPages.values()] } satisfies CursorV1),
+      cursor: JSON.stringify({ version: 2, pages: [...resumedPages.values()] } satisfies CursorV2),
       checkpoint_version: RENDER_PRINT_CHECKPOINT_VERSION,
       updated_at: now(),
       completed_input_ids: [],
@@ -237,9 +265,9 @@ export async function runRenderPrintJob(
         job.checkpoint = {
           resumable: true,
           cursor: JSON.stringify({
-            version: 1,
+            version: 2,
             pages: [...resumedPages.values()].sort((left, right) => left.index - right.index),
-          } satisfies CursorV1),
+          } satisfies CursorV2),
           checkpoint_version: RENDER_PRINT_CHECKPOINT_VERSION,
           updated_at: now(),
           completed_input_ids: [],

@@ -11,8 +11,11 @@ import { RenderPrintError } from "./errors.js";
 import { assertRenderGate } from "./gate.js";
 import { loadAndCheckIccProfile, type CheckedIccProfile, type IccProfileInput } from "./icc.js";
 import {
+  pageCacheIdentityMatches,
+  preparePageRender,
   renderPage,
   type FontResolver,
+  type PageCacheIdentity,
   type PlacementAssetResolver,
   type RenderedPage,
 } from "./page.js";
@@ -22,6 +25,7 @@ export interface PageArtifact {
   index: number;
   id: string;
   path: string;
+  identity?: PageCacheIdentity;
 }
 
 export interface RenderPrintOptions {
@@ -44,15 +48,38 @@ export interface RenderPrintResult {
 
 async function readResumedPage(
   artifact: PageArtifact,
-  expectedWidth: number,
-  expectedHeight: number,
+  expectedIndex: number,
+  expectedIdentity: PageCacheIdentity,
+  icc: CheckedIccProfile,
 ): Promise<RenderedPage | null> {
   try {
+    if (
+      artifact.index !== expectedIndex ||
+      !pageCacheIdentityMatches(artifact.identity, expectedIdentity)
+    ) {
+      return null;
+    }
     const jpeg = await readFile(artifact.path);
     if (digestBytes(jpeg) !== artifact.id) return null;
     const metadata = await sharp(jpeg).metadata();
-    if (metadata.width !== expectedWidth || metadata.height !== expectedHeight) return null;
-    return { jpeg, widthPx: expectedWidth, heightPx: expectedHeight, cacheKey: artifact.id };
+    const encodedColorSpace = metadata.space === "cmyk" ? "cmyk" : "rgb";
+    if (
+      metadata.width !== expectedIdentity.widthPx ||
+      metadata.height !== expectedIdentity.heightPx ||
+      metadata.channels !== icc.components ||
+      encodedColorSpace !== icc.colorSpace ||
+      !metadata.hasProfile ||
+      !metadata.icc ||
+      digestBytes(metadata.icc) !== icc.digest
+    ) {
+      return null;
+    }
+    return {
+      jpeg,
+      widthPx: expectedIdentity.widthPx,
+      heightPx: expectedIdentity.heightPx,
+      cacheIdentity: expectedIdentity,
+    };
   } catch {
     return null;
   }
@@ -76,7 +103,7 @@ async function persistPage(
       throw new RenderPrintError("internal_error", "A content-addressed page cache entry was inconsistent.");
     }
   }
-  return { index, id, path };
+  return { index, id, path, identity: page.cacheIdentity };
 }
 
 export async function renderAlbum(spec: AlbumSpec, options: RenderPrintOptions): Promise<RenderPrintResult> {
@@ -85,26 +112,28 @@ export async function renderAlbum(spec: AlbumSpec, options: RenderPrintOptions):
   const dpi = Math.max(spec.vendor_profile.dpi_floor, spec.vendor_profile.dpi_preferred ?? 0);
   const widthMm = spec.vendor_profile.trim_size_mm.width_mm + spec.vendor_profile.bleed_mm * 2;
   const heightMm = spec.vendor_profile.trim_size_mm.height_mm + spec.vendor_profile.bleed_mm * 2;
-  const widthPx = Math.max(1, Math.round((widthMm * dpi) / 25.4));
-  const heightPx = Math.max(1, Math.round((heightMm * dpi) / 25.4));
   const renderedPages: RenderedPage[] = [];
   const artifacts: PageArtifact[] = [];
 
   for (const page of spec.pages) {
+    const context = {
+      page,
+      widthMm,
+      heightMm,
+      dpi,
+      dpiFloor: spec.vendor_profile.dpi_floor,
+      icc,
+      resolvePlacementAsset: options.resolvePlacementAsset,
+      resolveFont: options.resolveFont,
+    };
+    const prepared = await preparePageRender(context);
     const resumed = options.resumedPages?.get(page.page_index);
-    const cached = resumed ? await readResumedPage(resumed, widthPx, heightPx) : null;
+    const cached = resumed
+      ? await readResumedPage(resumed, page.page_index, prepared.identity, icc)
+      : null;
     const rendered =
       cached ??
-      (await renderPage({
-        page,
-        widthMm,
-        heightMm,
-        dpi,
-        dpiFloor: spec.vendor_profile.dpi_floor,
-        icc,
-        resolvePlacementAsset: options.resolvePlacementAsset,
-        resolveFont: options.resolveFont,
-      }));
+      (await renderPage(context, prepared));
     renderedPages.push(rendered);
 
     if (options.pageStoreDirectory) {

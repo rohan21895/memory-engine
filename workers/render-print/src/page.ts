@@ -8,7 +8,7 @@ import type {
   TextBlock,
 } from "../../../contracts/codegen/generated/typescript/index.js";
 
-import { digestParts } from "./digest.js";
+import { canonicalJson, digestBytes, digestParts } from "./digest.js";
 import { RenderPrintError } from "./errors.js";
 import type { CheckedIccProfile } from "./icc.js";
 
@@ -31,7 +31,47 @@ export interface RenderedPage {
   jpeg: Buffer;
   widthPx: number;
   heightPx: number;
+  cacheIdentity: PageCacheIdentity;
+}
+
+export const PAGE_CACHE_FORMAT_VERSION = 2 as const;
+export const RENDER_PRINT_PAGE_RENDERER_VERSION = "render-print-page-v2";
+
+export interface PageSourceDigest {
+  kind: "placement" | "font";
+  reference: string;
+  digest: string;
+}
+
+export interface PageCacheIdentity {
+  cacheVersion: typeof PAGE_CACHE_FORMAT_VERSION;
+  rendererVersion: string;
+  pagePlanDigest: string;
+  sourceDigests: PageSourceDigest[];
+  iccDigest: string;
+  dpi: number;
+  dpiFloor: number;
+  widthPx: number;
+  heightPx: number;
+  colorSpace: CheckedIccProfile["colorSpace"];
+  components: CheckedIccProfile["components"];
   cacheKey: string;
+}
+
+interface PreparedPlacement {
+  placement: Placement;
+  bytes: Buffer;
+}
+
+interface PreparedText {
+  block: TextBlock;
+  bytes: Buffer;
+}
+
+export interface PreparedPageRender {
+  placements: PreparedPlacement[];
+  textBlocks: PreparedText[];
+  identity: PageCacheIdentity;
 }
 
 const MM_PER_INCH = 25.4;
@@ -66,6 +106,135 @@ function escapeXml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+export function isPageCacheIdentity(value: unknown): value is PageCacheIdentity {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const identity = value as Record<string, unknown>;
+  if (
+    identity.cacheVersion !== PAGE_CACHE_FORMAT_VERSION ||
+    identity.rendererVersion !== RENDER_PRINT_PAGE_RENDERER_VERSION ||
+    typeof identity.pagePlanDigest !== "string" ||
+    !/^[0-9a-f]{64}$/.test(identity.pagePlanDigest) ||
+    !Array.isArray(identity.sourceDigests) ||
+    typeof identity.iccDigest !== "string" ||
+    !/^[0-9a-f]{64}$/.test(identity.iccDigest) ||
+    typeof identity.dpi !== "number" ||
+    !Number.isFinite(identity.dpi) ||
+    identity.dpi <= 0 ||
+    typeof identity.dpiFloor !== "number" ||
+    !Number.isFinite(identity.dpiFloor) ||
+    identity.dpiFloor <= 0 ||
+    typeof identity.widthPx !== "number" ||
+    !Number.isInteger(identity.widthPx) ||
+    identity.widthPx <= 0 ||
+    typeof identity.heightPx !== "number" ||
+    !Number.isInteger(identity.heightPx) ||
+    identity.heightPx <= 0 ||
+    (identity.colorSpace !== "rgb" && identity.colorSpace !== "cmyk") ||
+    (identity.components !== 3 && identity.components !== 4) ||
+    (identity.colorSpace === "rgb" && identity.components !== 3) ||
+    (identity.colorSpace === "cmyk" && identity.components !== 4) ||
+    typeof identity.cacheKey !== "string" ||
+    !/^[0-9a-f]{64}$/.test(identity.cacheKey)
+  ) {
+    return false;
+  }
+  return identity.sourceDigests.every((source) => {
+    if (typeof source !== "object" || source === null || Array.isArray(source)) return false;
+    const digest = source as Record<string, unknown>;
+    return (
+      (digest.kind === "placement" || digest.kind === "font") &&
+      typeof digest.reference === "string" &&
+      typeof digest.digest === "string" &&
+      /^[0-9a-f]{64}$/.test(digest.digest)
+    );
+  });
+}
+
+export function pageCacheIdentityMatches(
+  candidate: unknown,
+  expected: PageCacheIdentity,
+): candidate is PageCacheIdentity {
+  return isPageCacheIdentity(candidate) && canonicalJson(candidate) === canonicalJson(expected);
+}
+
+export async function preparePageRender(context: PageRenderContext): Promise<PreparedPageRender> {
+  const widthPx = mmToSize(context.widthMm, context.dpi);
+  const heightPx = mmToSize(context.heightMm, context.dpi);
+  const placements: PreparedPlacement[] = [];
+  const textBlocks: PreparedText[] = [];
+  const sourceDigests: PageSourceDigest[] = [];
+  const orderedPlacements = context.page.placements
+    .map((placement, order) => ({ placement, order }))
+    .sort((left, right) =>
+      (left.placement.z_index ?? 0) - (right.placement.z_index ?? 0) || left.order - right.order,
+    );
+
+  for (const { placement } of orderedPlacements) {
+    let resolved: LocalAsset;
+    try {
+      resolved = await context.resolvePlacementAsset(placement);
+    } catch {
+      throw new RenderPrintError("file_not_found", `${placement.placement_id} has no resolved render asset.`);
+    }
+    const bytes = await assetBytes(resolved, placement.placement_id);
+    placements.push({ placement, bytes });
+    sourceDigests.push({
+      kind: "placement",
+      reference: `${placement.placement_id}:${placement.media_id}`,
+      digest: digestBytes(bytes),
+    });
+  }
+
+  for (const block of context.page.text_blocks ?? []) {
+    if (!block.font_family) {
+      throw new RenderPrintError("validation_failed", `${block.block_id} does not pin a font family.`);
+    }
+    let resolved: LocalAsset;
+    try {
+      resolved = await context.resolveFont(block.font_family);
+    } catch {
+      throw new RenderPrintError("file_not_found", `${block.block_id} has no resolved font asset.`);
+    }
+    const bytes = await assetBytes(resolved, block.block_id);
+    textBlocks.push({ block, bytes });
+    sourceDigests.push({
+      kind: "font",
+      reference: `${block.block_id}:${block.font_family}`,
+      digest: digestBytes(bytes),
+    });
+  }
+
+  const pagePlanDigest = digestBytes(new TextEncoder().encode(canonicalJson(context.page)));
+  const identityParts: string[] = [
+    `cache-format:${PAGE_CACHE_FORMAT_VERSION}`,
+    `renderer:${RENDER_PRINT_PAGE_RENDERER_VERSION}`,
+    `plan:${pagePlanDigest}`,
+    `icc:${context.icc.digest}`,
+    `dpi:${context.dpi}`,
+    `dpi-floor:${context.dpiFloor}`,
+    `raster:${widthPx}x${heightPx}`,
+    `color:${context.icc.colorSpace}:${context.icc.components}`,
+  ];
+  for (const source of sourceDigests) {
+    identityParts.push(`${source.kind}:${source.reference}`, source.digest);
+  }
+  const identity: PageCacheIdentity = {
+    cacheVersion: PAGE_CACHE_FORMAT_VERSION,
+    rendererVersion: RENDER_PRINT_PAGE_RENDERER_VERSION,
+    pagePlanDigest,
+    sourceDigests,
+    iccDigest: context.icc.digest,
+    dpi: context.dpi,
+    dpiFloor: context.dpiFloor,
+    widthPx,
+    heightPx,
+    colorSpace: context.icc.colorSpace,
+    components: context.icc.components,
+    cacheKey: digestParts(identityParts),
+  };
+  return { placements, textBlocks, identity };
 }
 
 async function renderPlacement(
@@ -180,7 +349,11 @@ async function renderText(
   return { image, left, top };
 }
 
-export async function renderPage(context: PageRenderContext): Promise<RenderedPage> {
+export async function renderPage(
+  context: PageRenderContext,
+  prepared?: PreparedPageRender,
+): Promise<RenderedPage> {
+  const inputs = prepared ?? (await preparePageRender(context));
   const widthPx = mmToSize(context.widthMm, context.dpi);
   const heightPx = mmToSize(context.heightMm, context.dpi);
   const background = context.page.background;
@@ -189,39 +362,13 @@ export async function renderPage(context: PageRenderContext): Promise<RenderedPa
       ? assertHexColor(background.color_hex ?? "#ffffff", `page ${context.page.page_index}`)
       : "#ffffff";
 
-  const pageParts: (string | Uint8Array)[] = [JSON.stringify(context.page), String(context.dpi), context.icc.digest];
   const composites: OverlayOptions[] = [];
-  const placements = context.page.placements
-    .map((placement, order) => ({ placement, order }))
-    .sort((left, right) =>
-      (left.placement.z_index ?? 0) - (right.placement.z_index ?? 0) || left.order - right.order,
-    );
-
-  for (const { placement } of placements) {
-    let resolved: LocalAsset;
-    try {
-      resolved = await context.resolvePlacementAsset(placement);
-    } catch {
-      throw new RenderPrintError("file_not_found", `${placement.placement_id} has no resolved render asset.`);
-    }
-    const bytes = await assetBytes(resolved, placement.placement_id);
-    pageParts.push(bytes);
+  for (const { placement, bytes } of inputs.placements) {
     const rendered = await renderPlacement(placement, bytes, context.dpi, context.dpiFloor);
     composites.push({ input: rendered.image, left: rendered.left, top: rendered.top });
   }
 
-  for (const block of context.page.text_blocks ?? []) {
-    if (!block.font_family) {
-      throw new RenderPrintError("validation_failed", `${block.block_id} does not pin a font family.`);
-    }
-    let resolved: LocalAsset;
-    try {
-      resolved = await context.resolveFont(block.font_family);
-    } catch {
-      throw new RenderPrintError("file_not_found", `${block.block_id} has no resolved font asset.`);
-    }
-    const bytes = await assetBytes(resolved, block.block_id);
-    pageParts.push(bytes);
+  for (const { block, bytes } of inputs.textBlocks) {
     const rendered = await renderText(block, bytes, context.dpi);
     composites.push({ input: rendered.image, left: rendered.left, top: rendered.top });
   }
@@ -272,5 +419,5 @@ export async function renderPage(context: PageRenderContext): Promise<RenderedPa
         `requires ${widthPx}x${heightPx} in ${context.icc.components}.`,
     );
   }
-  return { jpeg, widthPx, heightPx, cacheKey: digestParts(pageParts) };
+  return { jpeg, widthPx, heightPx, cacheIdentity: inputs.identity };
 }
