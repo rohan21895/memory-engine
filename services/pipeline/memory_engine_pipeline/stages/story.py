@@ -1,4 +1,4 @@
-"""`story` — video proxies -> FeatureStream -> plan_moments -> plan_reel -> an EDL.
+"""`story` — video proxies -> FeatureStream -> plan_moments -> a reel AND a film.
 
 WHAT THIS FILE USED TO SAY, AND WHAT CHANGED
 
@@ -10,6 +10,7 @@ of the five now exist and are driven from here:
     the feature stream     workers/video-analysis `analyse_proxy`
     moment scoring         packages/story-engine `plan_moments`
     the reel plan          packages/story-engine `plan_reel` -> an EDL
+    the film plan          packages/story-engine `plan_film` -> a second EDL
 
 TWO OF THE FIVE STILL DO NOT EXIST, AND THAT IS REPORTED ON EVERY RUN.
 
@@ -18,13 +19,23 @@ TWO OF THE FIVE STILL DO NOT EXIST, AND THAT IS REPORTED ON EVERY RUN.
                                        renormalises the absence rather than
                                        reading it as silence, so the scores are
                                        honest -- but NO CUT IN THE OUTPUT CAN BE
-                                       CERTIFIED WORD-SAFE. `plan_reel` emits
-                                       its `no_mid_word_cut` finding only when
-                                       words exist, so a reel planned here
-                                       carries no such finding at all. A reel
-                                       cut without speech data is a different
-                                       product from one cut with it, and the
-                                       difference is invisible in the file.
+                                       CERTIFIED WORD-SAFE. `plan_reel` and
+                                       `plan_film` both emit their
+                                       `no_mid_word_cut` finding only when words
+                                       exist, so neither plan produced here
+                                       carries one at all. A cut made without
+                                       speech data is a different product from
+                                       one made with it, and the difference is
+                                       invisible in the file.
+
+                                       It costs the FILM more than the reel.
+                                       Speech-aware trimming, the L-cut and the
+                                       error-severity mid-word gate are the
+                                       three things that make a film planner
+                                       different from a long reel, and all
+                                       three are inert here. `FilmPlan.
+                                       word_safe_certified` is False and the
+                                       film's notes say so in those words.
     face / smile / audio-event      -> `face_presence`, `max_face_area_ratio`,
     detection (SCRFD, CLAP)            `smile_intensity`, `noise` are None.
                                        The reel therefore cannot prefer a face,
@@ -41,14 +52,30 @@ It does not synthesise a FeatureStream. Every frame-level number it hands
 moments nobody measured, it would render, and a video artifact is the hardest
 output for a person to audit against its source.
 
-WHAT THIS STAGE PLANS, AND WHAT IT DELIBERATELY DOES NOT
+WHAT THIS STAGE PLANS
 
-  * A REEL. `plan_reel` is built, tested and produces a contract EDL.
-  * NOT A FILM. `packages/story-engine` has no film planner -- the build plan
-    puts it in Phase 5, together with story-arc prompting and speech-aware
-    trimming. Relabelling a reel `kind: "film"` would cost one line and would be
-    a lie about the product, so this stage reports the film as not planned and
-    names the missing planner.
+TWO EDLs, FROM ONE POOL OF MOMENTS, AND THEY ARE DIFFERENT CUTS.
+
+  * A REEL. `plan_reel`: 15 seconds asked for, cut on a tick grid (there is no
+    music, so nothing is beat-locked), strongest moment moved to the front.
+  * A FILM. `plan_film`: a three-act arc over the SAME moments in chronological
+    order, held for seconds rather than beats, with the pacing varying by act
+    and by content. `kind: "film"`, `story_arc.template: "three_act"`.
+
+    This file used to say "NOT A FILM ... relabelling a reel `kind: film` would
+    cost one line and would be a lie about the product". The planner now exists,
+    and the line above is what changed: the film is a different cut list, a
+    different running order and a different set of holds, planned by a different
+    module. What has NOT changed is the honesty about what is missing, and the
+    film loses more to it than the reel does -- see the transcription entry
+    above.
+
+BOTH PLANS DESCRIBE THE SAME FOOTAGE, DELIBERATELY.
+
+The rate/raster group, the media refs and the moment pool are chosen once and
+handed to both planners. Two outputs planned from two different selections
+would be two answers to two questions, and "why is the person in the reel not
+in the film" would have no answer that mentions taste.
 
 THREE THINGS THE PLANNER HAS TO BE TOLD, AND WHERE EACH COMES FROM
 
@@ -103,6 +130,29 @@ no music the ambient IS the mix, so:
 The second is not a default chosen to get past the gate; it is the only level
 that means anything without a bed, and "no DSP" is a statement the renderer can
 execute rather than one it has to interpret. It is announced every run.
+
+UNITY MEANS ALL THREE GAINS, NOT JUST THE DEFAULT ONE
+
+`AmbientSettings` carries three levels -- `default_gain_db`, `speech_gain_db`
+and `wind_gain_db` -- and only the first is named "default". Opening the bed to
+unity by setting `default_gain_db=0` and leaving `speech_gain_db` at its -6
+inverts the type's meaning: -6 is where speech sits when it comes UP out of a
+bed ducked to -14, and against an open bed it is 6 dB DOWN. Every shot with
+speech in it would then be the quietest shot in the cut -- the exact opposite
+of `preserve_speech: true`, which is written into the plan beside it.
+
+So this stage sets `speech_gain_db=0` too. There is no bed here for speech to
+come up out of; the location sound IS the mix, and speech is part of it at the
+level it was recorded. `wind_gain_db` is left alone, because wind is still wind
+with no music playing.
+
+This is not a hypothetical that was reasoned about. `plan_film` refuses the
+combination outright and the story stage FAILED on every run until both gains
+moved -- taking the reel down with it, since the refusal is a ValueError and
+the caller only catches `FilmTooShort`. The reel planner does not check, so the
+reel had been carrying the same inversion silently: harmless only because
+nothing in this pipeline measures speech yet, and waiting for the transcript
+backend to arrive and make the speaking shots the hardest ones to hear.
 
 RESUMABILITY
 
@@ -352,20 +402,16 @@ def run(ctx: StageContext) -> StageResult:
             counts={"videos": len(videos), "proxies": proxies, "moments": moments},
         )
 
-    plan = _plan_reel(ctx)
     counts: dict[str, Any] = {
         "videos": len(videos),
         "proxies": proxies,
         "moments": moments,
         "not_wired": [producer for producer, _ in ABSENT_PRODUCERS],
-        "film": (
-            "not planned: packages/story-engine has no film planner (build plan "
-            "phase 5). A reel relabelled as a film would be a lie about the product."
-        ),
     }
-    if plan is None:
+    selection = _select(ctx)
+    if selection is None:
         detail = (
-            "moments were scored but no reel could be planned: no group of videos "
+            "moments were scored but nothing could be planned: no group of videos "
             "shares a frame rate and a proxy raster, so there is no single timeline "
             "rate and target geometry a contract EDL could declare"
         )
@@ -374,16 +420,59 @@ def run(ctx: StageContext) -> StageResult:
             stage=STAGE, status=StageStatus.FAILED, detail=detail, counts=counts
         )
 
-    counts["reel"] = plan.counts
-    for note in plan.notes:
+    planned_at = utc_now()
+    for note in selection.notes:
         ctx.reporter.event(STAGE, "note", note)
-    ctx.reporter.event(STAGE, "stage_done", plan.detail, reel=plan.counts)
+
+    from memory_engine_story.film import FilmTooShort  # noqa: PLC0415
+
+    reel = _plan_reel(ctx, selection, planned_at)
+    # The film is planned independently of the reel: they are two products, and
+    # a library that affords one and not the other must produce the one it
+    # affords rather than nothing. `plan_film` REFUSES below three usable
+    # moments -- a three-act arc needs a shot in each act, and a two-shot
+    # artifact labelled a film is the relabelling this stage has always
+    # refused to do. Its own message is reported verbatim.
+    film_refusal = ""
+    try:
+        film = _plan_film(ctx, selection, planned_at)
+    except FilmTooShort as error:
+        film, film_refusal = None, f"no film planned: {error}"
+
+    if reel is None and film is None:
+        detail = (
+            "moments were scored and neither a reel nor a film could be planned "
+            f"from them. {film_refusal}".strip()
+        )
+        ctx.reporter.event(STAGE, "stage_failed", detail)
+        return StageResult(
+            stage=STAGE, status=StageStatus.FAILED, detail=detail, counts=counts
+        )
+
+    outputs: list[str] = []
+    details: list[str] = []
+    for outcome in (reel, film):
+        if outcome is None:
+            continue
+        counts[outcome.kind] = outcome.counts
+        outputs.append(str(outcome.path))
+        details.append(outcome.detail)
+        for note in outcome.notes:
+            ctx.reporter.event(STAGE, "note", note)
+    if reel is None:
+        counts["reel"] = "not planned"
+    if film is None:
+        counts["film"] = film_refusal
+        details.append(film_refusal)
+        ctx.reporter.event(STAGE, "note", film_refusal)
+
+    detail = "; ".join(details)
+    ctx.reporter.event(STAGE, "stage_done", detail)
     return StageResult(
         stage=STAGE,
         status=StageStatus.COMPLETED,
-        detail=plan.detail,
-        job_id=plan.job_id,
-        outputs=(str(plan.path),),
+        detail=detail,
+        outputs=tuple(outputs),
         counts=counts,
     )
 
@@ -719,13 +808,13 @@ def _score_moments(ctx: StageContext, videos: Sequence[str]) -> dict[str, Any]:
     return counts
 
 
-# --------------------------------------------------------------------- reel --
+# ------------------------------------------------------------------ selection --
 
 
 @dataclass(frozen=True, slots=True)
-class _ReelOutcome:
+class _PlanOutcome:
+    kind: str
     path: Path
-    job_id: str | None
     detail: str
     notes: tuple[str, ...]
     counts: dict[str, Any]
@@ -750,6 +839,27 @@ class _Candidate:
     geometry_from: str
     path: str
     label: str | None
+    captured_local: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Selection:
+    """One rate, one raster, one moment pool — shared by both planners.
+
+    Chosen once and handed to the reel and the film alike. Selecting twice
+    would let the two outputs describe different footage, and the difference
+    would look like an editorial choice rather than an accident of grouping.
+    """
+
+    rate: float
+    raster: tuple[int, int]
+    aspect: tuple[int, int]
+    media: tuple[Any, ...]
+    moments: tuple[Any, ...]
+    sources: dict[str, dict[str, list[str]]]
+    media_sequence: tuple[str, ...]
+    excluded: int
+    notes: tuple[str, ...]
 
 
 def _oriented_size(record: Mapping[str, Any]) -> tuple[int, int] | None:
@@ -819,12 +929,29 @@ def _candidates(ctx: StageContext) -> list[_Candidate]:
                 ),
                 path=source,
                 label=(record.get("sources") or [{}])[0].get("original_filename"),
+                captured_local=_captured_local(record),
             )
         )
     return out
 
 
-def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
+def _captured_local(record: Mapping[str, Any]) -> str | None:
+    """The device's wall-clock reading, or None when there is no usable one.
+
+    `MediaRecord.capture.captured_at` is a TimeAssertion precisely so a file
+    with no EXIF gets `precision: unknown` rather than a fabricated date, and
+    this is the one caller that must respect that: a film ordered by fabricated
+    dates is a story told in the wrong order, which is worse than a film that
+    admits it does not know the order.
+    """
+    assertion = ((record.get("capture") or {}).get("captured_at") or {})
+    if assertion.get("precision") in (None, "unknown"):
+        return None
+    local = assertion.get("local")
+    return str(local) if local else None
+
+
+def _select(ctx: StageContext) -> _Selection | None:
     from memory_engine_story import reel as reel_module  # noqa: PLC0415
 
     candidates = _candidates(ctx)
@@ -867,8 +994,8 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
     notes: list[str] = []
     if excluded:
         notes.append(
-            f"{len(excluded)} video(s) are not in this reel because an EDL has one "
-            "timeline rate and one target geometry: "
+            f"{len(excluded)} video(s) are not in these plans because an EDL has "
+            "one timeline rate and one target geometry: "
             + ", ".join(
                 sorted(
                     {
@@ -903,7 +1030,8 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
         )
     notes.append(
         "no music: packages/story-engine/music/library.json bundles no audio, so "
-        "there is no beat grid and no cut in this reel is beat-locked"
+        "there is no beat grid, no cut in the reel is beat-locked, and the film "
+        "has no bed for its ducking rule to pull down"
     )
     notes.append(
         "ambient is at unity gain with no high-pass and no noise suppression. The "
@@ -911,7 +1039,6 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
         "under a music bed; with no bed the ambient is the whole mix"
     )
 
-    planned_at = utc_now()
     aspect = _reduced(raster)
     media: list[Any] = []
     sources: dict[str, dict[str, list[str]]] = {}
@@ -939,21 +1066,111 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
     if not moments:
         return None
 
+    # ALL OR NOTHING. A partial capture order would run some files by the clock
+    # and the rest by content hash, and the seam between the two would read as
+    # chronology. `plan_film` refuses a partial sequence for the same reason;
+    # this is where the decision is made rather than discovered.
+    dated = [c for c in chosen if c.captured_local is not None]
+    if len(dated) == len(chosen):
+        media_sequence = tuple(
+            c.media_id
+            for c in sorted(chosen, key=lambda c: (c.captured_local or "", c.media_id))
+        )
+    else:
+        media_sequence = ()
+        notes.append(
+            f"{len(chosen) - len(dated)} of {len(chosen)} sources carry no usable "
+            "capture time (MediaRecord.capture.captured_at precision 'unknown'), so "
+            "the film is given no chronology and runs its sources in declaration "
+            "order. It says so in its own notes"
+        )
+
+    return _Selection(
+        rate=rate,
+        raster=raster,
+        aspect=aspect,
+        media=tuple(media),
+        moments=tuple(moments),
+        sources=sources,
+        media_sequence=media_sequence,
+        excluded=len(excluded),
+        notes=tuple(notes),
+    )
+
+
+def _write_plan(
+    ctx: StageContext,
+    edl: Mapping[str, Any],
+    edl_id: str,
+    sources: Mapping[str, Any],
+    notes: list[str],
+) -> Path:
+    """Persist one EDL and the source map the renderer needs to open it."""
+    errors = sorted(_edl_validator().iter_errors(edl), key=lambda error: list(error.path))
+    if errors:
+        raise ValueError(
+            f"the {edl['kind']} planner produced an EDL the contract rejects: "
+            + "; ".join(f"{list(e.path)}: {e.message}" for e in errors[:3])
+        )
+    path = ctx.workdir / "outputs" / "edl" / f"{edl_id}.json"
+    manifest = ctx.workdir / "outputs" / "edl" / f"{edl_id}.sources.json"
+    if path.is_file():
+        # Same id means the same plan. Rewriting it would move `generated_at`
+        # and change the bytes of a file the render job is keyed on, so a
+        # re-run would look like new work to anything comparing files.
+        notes.append(f"the {edl['kind']} plan {edl_id[:12]} was already on disk")
+    else:
+        write_json_atomically(path, edl)
+    if not manifest.is_file():
+        # Written unconditionally when absent, even beside a plan that already
+        # exists: the EDL addresses sources by hash and never by path, so
+        # without this map the renderer has nothing to open and the render
+        # stage fails on a file it could have rewritten.
+        write_json_atomically(manifest, dict(sources))
+    return path
+
+
+def _video_clips(edl: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return [
+        item
+        for track in edl["tracks"]
+        if track["kind"] == "video"
+        for item in track["items"]
+        if item["item_type"] == "clip"
+    ]
+
+
+# --------------------------------------------------------------------- reel --
+
+
+def _plan_reel(
+    ctx: StageContext, selection: _Selection, planned_at: str
+) -> _PlanOutcome | None:
+    from memory_engine_story import reel as reel_module  # noqa: PLC0415
+
+    rate = selection.rate
+    notes: list[str] = []
     request = reel_module.ReelRequest(
         rate=rate,
         target=reel_module.RenderTarget(
             destination="master",
-            resolution=raster,
-            aspect_ratio=aspect,
+            resolution=selection.raster,
+            aspect_ratio=selection.aspect,
             target_duration=float(ctx.settings.reel_seconds) * rate,
             loudness_target_lufs=ctx.settings.reel_loudness_lufs,
         ),
-        media=tuple(media),
-        moments=tuple(moments),
+        media=selection.media,
+        moments=selection.moments,
         name=f"{ctx.settings.scope} reel",
         reframe=reel_module.ReframeSettings(enabled=measured),
         ambient=reel_module.AmbientSettings(
-            default_gain_db=0.0, high_pass_hz=None, noise_suppression="none"
+            default_gain_db=0.0,
+            # Unity for speech as well: with no bed to duck, -6 would put every
+            # speaking shot BELOW every other one. See the ambient section of
+            # the module docstring.
+            speech_gain_db=0.0,
+            high_pass_hz=None,
+            noise_suppression="none",
         ),
         # REQUEST fields, because `plan_reel` is a pure function and reading a
         # clock inside it would make the plan irreproducible. The real instant
@@ -966,39 +1183,9 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
     )
     plan = reel_module.plan_reel(request)
     notes.extend(plan.notes)
+    path = _write_plan(ctx, plan.edl, plan.edl_id, selection.sources, notes)
 
-    errors = sorted(
-        _edl_validator().iter_errors(plan.edl), key=lambda error: list(error.path)
-    )
-    if errors:
-        raise ValueError(
-            "the reel planner produced an EDL the contract rejects: "
-            + "; ".join(f"{list(e.path)}: {e.message}" for e in errors[:3])
-        )
-
-    path = ctx.workdir / "outputs" / "edl" / f"{plan.edl_id}.json"
-    manifest = ctx.workdir / "outputs" / "edl" / f"{plan.edl_id}.sources.json"
-    if path.is_file():
-        # Same id means the same plan. Rewriting it would move `generated_at`
-        # and change the bytes of a file the render job is keyed on, so a
-        # re-run would look like new work to anything comparing files.
-        notes.append(f"the reel plan {plan.edl_id[:12]} was already on disk")
-    else:
-        write_json_atomically(path, plan.edl)
-    if not manifest.is_file():
-        # Written unconditionally when absent, even beside a plan that already
-        # exists: the EDL addresses sources by hash and never by path, so
-        # without this map the renderer has nothing to open and the render
-        # stage fails on a file it could have rewritten.
-        write_json_atomically(manifest, sources)
-
-    clips = [
-        item
-        for track in plan.edl["tracks"]
-        if track["kind"] == "video"
-        for item in track["items"]
-        if item["item_type"] == "clip"
-    ]
+    clips = _video_clips(plan.edl)
     beat_locked = sum(1 for clip in clips if clip.get("beat_lock"))
     counts = {
         "edl_id": plan.edl_id,
@@ -1010,9 +1197,9 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
         "clips": len(clips),
         "beat_locked": beat_locked,
         "duration_s": round(plan.duration_frames / rate, 3),
-        "moments_available": len(moments),
-        "sources": len(chosen),
-        "sources_excluded": len(excluded),
+        "moments_available": len(selection.moments),
+        "sources": len(selection.media),
+        "sources_excluded": selection.excluded,
         "validation": plan.status,
         "word_safe_cuts_certified": 0,
     }
@@ -1024,8 +1211,104 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
         f"{beat_locked} of {len(clips)} cuts beat-locked, "
         "0 cuts certified word-safe (no transcript backend)"
     )
-    return _ReelOutcome(
-        path=path, job_id=None, detail=detail, notes=tuple(notes), counts=counts
+    return _PlanOutcome(
+        kind="reel", path=path, detail=detail, notes=tuple(notes), counts=counts
+    )
+
+
+# --------------------------------------------------------------------- film --
+
+
+def _plan_film(
+    ctx: StageContext, selection: _Selection, planned_at: str
+) -> _PlanOutcome | None:
+    """The second output, from the same moments and a different cut.
+
+    Nothing here asks for a duration. The reel is told "fifteen seconds" and
+    ends on the nearest cut point; a film is as long as the footage it holds,
+    and asking for a length would make the planner drop shots to hit a number.
+    `FilmRequest.min_film_seconds` is the OTHER direction -- it is what makes
+    the plan say "this ran 22 seconds against a 60 second floor for the form"
+    instead of quietly presenting a short thing as a film.
+    """
+    from memory_engine_story import film as film_module  # noqa: PLC0415
+
+    rate = selection.rate
+    notes: list[str] = []
+    request = film_module.FilmRequest(
+        rate=rate,
+        target=film_module.RenderTarget(
+            destination="master",
+            resolution=selection.raster,
+            aspect_ratio=selection.aspect,
+            loudness_target_lufs=ctx.settings.reel_loudness_lufs,
+        ),
+        media=selection.media,
+        moments=selection.moments,
+        media_sequence=selection.media_sequence,
+        name=f"{ctx.settings.scope} film",
+        # Same two reasons as the reel: the source geometry is unmeasured, and
+        # there is no music bed for the ambient defaults to sit under.
+        reframe=film_module.ReframeSettings(enabled=False),
+        ambient=film_module.AmbientSettings(
+            # `plan_film` REFUSES default_gain_db=0 with speech_gain_db=-6, and
+            # is right to: it would plan every speaking shot 6 dB under every
+            # other one. Same reasoning as the reel above, enforced here.
+            default_gain_db=0.0,
+            speech_gain_db=0.0,
+            high_pass_hz=None,
+            noise_suppression="none",
+        ),
+        # Hard cuts. `plan_film` will place dissolves at act boundaries, and
+        # `workers/render-video` refuses them over unmuted ambient beds on
+        # contracts#52 — the contract never says whether the beds cross-fade
+        # with the picture or hard-cut at the cut point. Asking for one here
+        # would produce a film nothing in this repository can render.
+        act_transition_frames=0,
+        generated_at=planned_at,
+        validated_at=planned_at,
+    )
+    plan = film_module.plan_film(request)
+    notes.extend(plan.notes)
+    path = _write_plan(ctx, plan.edl, plan.edl_id, selection.sources, notes)
+
+    clips = _video_clips(plan.edl)
+    arc = plan.edl["story_arc"]
+    acts = {
+        act["act_id"]: len(act["beats"][0]["satisfied_by_clip_ids"])
+        for act in arc["acts"]
+    }
+    counts = {
+        "edl_id": plan.edl_id,
+        "kind": plan.edl["kind"],
+        "rate": rate,
+        "resolution": f"{selection.raster[0]}x{selection.raster[1]}",
+        "clips": len(clips),
+        "duration_s": round(plan.duration_frames / rate, 3),
+        "arc_template": arc["template"],
+        "acts": acts,
+        "shot_seconds": [round(frames / rate, 3) for frames in plan.shot_frames],
+        "pacing_spread": plan.pacing_spread,
+        "window_limited_shots": plan.window_limited,
+        "l_cuts": plan.l_cuts,
+        "chronology": "capture_time" if selection.media_sequence else "declaration_order",
+        "moments_available": len(selection.moments),
+        "sources": len(selection.media),
+        "sources_excluded": selection.excluded,
+        "validation": plan.status,
+        "word_safe_cuts_certified": 0,
+    }
+    detail = (
+        f"film EDL {plan.edl_id[:12]}: {len(clips)} shots in 3 acts, "
+        f"{plan.duration_frames / rate:.2f}s at {rate:g} fps, "
+        f"holds {min(plan.shot_frames) / rate:.2f}-{max(plan.shot_frames) / rate:.2f}s "
+        f"(pacing spread {plan.pacing_spread:.2f}, "
+        f"{plan.window_limited} of {len(clips)} window-limited), "
+        f"{plan.l_cuts} L-cuts, "
+        "0 cuts certified word-safe (no transcript backend)"
+    )
+    return _PlanOutcome(
+        kind="film", path=path, detail=detail, notes=tuple(notes), counts=counts
     )
 
 

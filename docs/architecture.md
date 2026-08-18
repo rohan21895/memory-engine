@@ -284,8 +284,22 @@ Open, and honest about it:
   unmeasured, which is why the reel disables reframing and targets the 480p
   proxy raster rather than a 1080p master. This is the single change that would
   make the reel a deliverable product rather than a proof the chain runs.
-- **No film planner exists.** `story-engine` plans reels only; the film planner
-  is a phase 5 item. The runner says so rather than relabelling a reel.
+- **A film planner exists and its speech machinery is inert.**
+  `story-engine/film.py` plans a three-act film beside the reel, from the same
+  moment pool, and `render-video` renders it. What it cannot do here is the part
+  that makes a film a film: speech-aware trimming, L-cuts and the error-severity
+  mid-word gate all need word timings, and there is no transcript backend. The
+  plan states that (`FilmPlan.word_safe_certified` is False; no
+  `no_mid_word_cut` finding is emitted at all) rather than letting the absence
+  read as a pass. Its pacing is also window-limited on today's moments: the
+  holds come out as long as the analysis layer's windows allow rather than as
+  long as the pacing policy asks, and `FilmPlan.window_limited` counts them.
+- **A film's act dissolves cannot be rendered.** The planner will place them at
+  act boundaries; `render-video` refuses a transition over an unmuted ambient
+  bed on contracts#52, because the contract never says whether the beds
+  cross-fade with the picture or hard-cut at the cut point. The default is
+  therefore hard cuts, and the refusal is announced in the plan's notes the
+  moment a caller turns dissolves on.
 - **No safety classifier is selected** (issue #21), so the release pipeline has
   no sensitive-content gate. That is a release blocker in its own right.
 - **SCRFD's letterbox padding value is unresolved** (issue #33). Two upstream
