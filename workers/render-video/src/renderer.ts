@@ -356,6 +356,25 @@ async function verifyOutput(
 }
 
 /**
+ * Re-validates a published render before a completed JobSpec is trusted. This deliberately
+ * calls the same verifier as a fresh encode so replay cannot turn a missing frame, changed
+ * geometry, wrong frame rate, or out-of-spec mix into a successful cache hit.
+ */
+export async function verifyPublishedRender(
+  edl: EDL,
+  path: string,
+  configuredTools: Partial<ToolPaths> = {},
+): Promise<RenderVerification> {
+  assertRenderable(edl);
+  const program = buildProgram(edl);
+  const stage = loudnessStage(edl);
+  if (program.audio.length > 0 && !stage) {
+    fail("validation_failed", "The program carries audio and the EDL declares no MixPlan.");
+  }
+  return verifyOutput({ ...DEFAULT_TOOLS, ...configuredTools }, edl, program, path, stage);
+}
+
+/**
  * Publishes the render to its final path. Content addressed, so a replay of a completed
  * job is a no-op and an output target holding different bytes is a refusal rather than an
  * overwrite. Same shape as `workers/render-print`'s `writePdfOnce`.
