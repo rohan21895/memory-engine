@@ -115,6 +115,7 @@ jobs:
       # Cheap, and it caught a phantom migration that read as a broken
       # migration set rather than as a stray file. Runs on its own so the
       # failure names itself.
+      - run: node --test scripts/ci/check-no-shadow-files.test.mjs
       - run: node scripts/ci/check-no-shadow-files.mjs
       # Fails if scripts/ci/local-ci.sh stops covering what this workflow runs.
       # That script claimed CI-equivalence while omitting four gates, including

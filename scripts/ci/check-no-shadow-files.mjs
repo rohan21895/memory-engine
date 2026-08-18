@@ -23,9 +23,10 @@
 // hide them from `git status` while leaving them on disk for every runtime
 // loader to find, which is strictly worse than seeing them.
 
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { repositoryRoot } from "./lib.mjs";
 
 const SKIP = new Set([".git", "node_modules", "target", "dist", "__pycache__", ".venv"]);
@@ -34,37 +35,47 @@ const SKIP = new Set([".git", "node_modules", "target", "dist", "__pycache__", "
 // the original extension (or nothing, for extensionless files).
 const SHADOW = /^.+ \d+(\.[^.]+)?$/;
 
-function walk(directory, found) {
-  for (const entry of readdirSync(directory)) {
-    if (SKIP.has(entry)) continue;
-    const full = path.join(directory, entry);
-    if (SHADOW.test(entry)) found.push(path.relative(repositoryRoot, full));
-    let stats;
-    try {
-      stats = statSync(full);
-    } catch {
-      continue; // a symlink to nowhere is not this check's problem
-    }
-    if (stats.isDirectory()) walk(full, found);
+function walk(root, directory, found) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (SKIP.has(entry.name)) continue;
+    const full = path.join(directory, entry.name);
+    if (SHADOW.test(entry.name)) found.push(path.relative(root, full));
+    // Dirent reports the directory entry itself. Unlike statSync it never
+    // follows a symlink into a foreign tree (or back into this one), and a
+    // symlink is not reported as a directory here. The link's own name is
+    // still checked above, because a symlink named `models 2` is a shadow file
+    // even though its target is outside this check's authority.
+    if (entry.isDirectory()) walk(root, full, found);
   }
   return found;
 }
 
-const found = walk(repositoryRoot, []);
-
-if (found.length === 0) {
-  console.log("No shadow copies found.");
-  process.exit(0);
+export function findShadowFiles(root = repositoryRoot) {
+  const resolvedRoot = path.resolve(root);
+  return walk(resolvedRoot, resolvedRoot, []).sort();
 }
 
-console.error(
-  `${found.length} shadow ${found.length === 1 ? "copy" : "copies"} found. ` +
-    "These are almost certainly duplicates created by a sync or copy tool, and " +
-    "directory-walking loaders will pick them up:\n",
-);
-for (const file of found) console.error(`  ${file}`);
-console.error(
-  "\nCompare each against the file it shadows, then delete it. If one is " +
-    "genuinely wanted, rename it so it does not end in a space and a number.",
-);
-process.exit(1);
+export function main(root = repositoryRoot) {
+  const found = findShadowFiles(root);
+  if (found.length === 0) {
+    console.log("No shadow copies found.");
+    return 0;
+  }
+
+  console.error(
+    `${found.length} shadow ${found.length === 1 ? "copy" : "copies"} found. ` +
+      "These are almost certainly duplicates created by a sync or copy tool, and " +
+      "directory-walking loaders will pick them up:\n",
+  );
+  for (const file of found) console.error(`  ${file}`);
+  console.error(
+    "\nCompare each against the file it shadows, then delete it. If one is " +
+      "genuinely wanted, rename it so it does not end in a space and a number.",
+  );
+  return 1;
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
+if (import.meta.url === invokedPath) {
+  process.exitCode = main();
+}
