@@ -44,6 +44,8 @@ export interface ResolvedSource {
   memberDigests: string[];
   /** Total frames across members, for a video source. */
   frameCount: number;
+  /** ffprobe demuxer family. Used only to select proven operational input seeking. */
+  formatName: string;
 }
 
 function fail(code: "file_not_found" | "file_unreadable" | "file_corrupt" | "validation_failed" | "unsupported_format", detail: string): never {
@@ -231,6 +233,7 @@ export async function resolveSources(
       audio,
       memberDigests,
       frameCount,
+      formatName: probed[0]!.formatName,
     });
   }
 

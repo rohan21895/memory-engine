@@ -17,7 +17,7 @@ import {
   type RunOptions,
   type ToolPaths,
 } from "./ffmpeg.js";
-import { buildGraph, type Interpretation } from "./filtergraph.js";
+import { buildGraph, type InputSeeking, type Interpretation } from "./filtergraph.js";
 import { assertRenderable, type ContractGap, type UnactedDeclaration } from "./gate.js";
 import { buildProgram, type Program } from "./program.js";
 import { assertEveryRefIsUsed, resolveSources, type ResolvedSource, type SourceResolver } from "./sources.js";
@@ -29,6 +29,8 @@ export interface RenderVideoOptions {
   workDirectory: string;
   tools?: Partial<ToolPaths>;
   onProgress?: (progress: RenderProgress) => Promise<void> | void;
+  /** Operational diagnostic fallback; safe seeking is still restricted by probed source type. */
+  inputSeeking?: InputSeeking;
 }
 
 export interface RenderProgress {
@@ -291,7 +293,7 @@ export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promis
   for (const contribution of program.audio) used.add(contribution.mediaRefId);
   assertEveryRefIsUsed(edl, used);
 
-  const graph = buildGraph(edl, program, sources, options.encode);
+  const graph = buildGraph(edl, program, sources, options.encode, options.inputSeeking);
   const stage = graph.audioLabel ? loudnessStage(edl) : null;
   if (graph.audioLabel && !stage) {
     fail("validation_failed", "The program carries audio and the EDL declares no MixPlan.");

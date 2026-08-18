@@ -1,5 +1,6 @@
-import type { EDL, MixPlan, ReframeTrack } from "../../../contracts/codegen/generated/typescript/index.js";
+import { extname } from "node:path";
 
+import type { EDL, MixPlan, ReframeTrack } from "../../../contracts/codegen/generated/typescript/index.js";
 import { RenderVideoError } from "./errors.js";
 import type { EncodeProfile } from "./encode.js";
 import type { AudioContribution, DuckingWindow, Program, VideoSegment } from "./program.js";
@@ -46,6 +47,20 @@ export interface Interpretation {
   issue: string;
 }
 
+export type InputSeeking = "safe" | "disabled";
+
+export function canSeekVideoInput(source: ResolvedSource, rate: number): boolean {
+  const provenRate = rate === 30 || rate === 30_000 / 1_001;
+  return (
+    source.paths.length === 1 &&
+    source.video?.codecName === "h264" &&
+    source.formatName.split(",").includes("mp4") &&
+    extname(source.paths[0]!).toLowerCase() === ".mp4" &&
+    source.video.startTimeSeconds === 0 &&
+    provenRate
+  );
+}
+
 function fail(detail: string): never {
   throw new RenderVideoError("validation_failed", `The video renderer could not build a filtergraph: ${detail}`);
 }
@@ -64,6 +79,38 @@ class GraphBuilder {
   addInput(source: ResolvedSource): number {
     this.inputs.push({ args: [...source.inputArgs], mediaRefId: source.mediaRefId });
     return this.baseIndex + this.inputs.length - 1;
+  }
+
+  addVideoInput(
+    source: ResolvedSource,
+    sourceOffset: number,
+    rate: number,
+    inputSeeking: InputSeeking,
+  ): { index: number; trimStart: number } {
+    const canSeek =
+      inputSeeking === "safe" &&
+      sourceOffset > 0 &&
+      canSeekVideoInput(source, rate);
+    if (!canSeek) return { index: this.addInput(source), trimStart: sourceOffset };
+
+    const args = [...source.inputArgs];
+    // `-r` rewrites input timestamps from frame zero. After `-ss` that makes the
+    // keyframe preroll look like new timeline frames and defeats accurate seeking.
+    // The source probe already proved the H.264 stream's CFR, so let the demuxer keep
+    // its native timestamps on sought inputs.
+    const declaredRate = args.indexOf("-r");
+    if (declaredRate >= 0) args.splice(declaredRate, 2);
+    const inputIndex = args.lastIndexOf("-i");
+    if (inputIndex < 0) return { index: this.addInput(source), trimStart: sourceOffset };
+    args.splice(
+      inputIndex,
+      0,
+      "-accurate_seek",
+      "-ss",
+      secondsArg(framesToSeconds(sourceOffset, rate)),
+    );
+    this.inputs.push({ args, mediaRefId: source.mediaRefId });
+    return { index: this.baseIndex + this.inputs.length - 1, trimStart: 0 };
   }
 
   add(chain: string): void {
@@ -115,6 +162,7 @@ function videoSegmentChain(
   sources: ReadonlyMap<string, ResolvedSource>,
   segment: VideoSegment,
   index: number,
+  inputSeeking: InputSeeking,
 ): string {
   const label = `v${index}`;
   const rate = edl.rate;
@@ -132,8 +180,8 @@ function videoSegmentChain(
   if (segment.kind === "clip") {
     const source = sources.get(segment.mediaRefId);
     if (!source) fail(`no resolved source for ${segment.mediaRefId}.`);
-    const input = builder.addInput(source);
-    let chain = `[${input}:v]trim=start_frame=${segment.sourceOffset}:end_frame=${segment.sourceOffset + segment.length},setpts=PTS-STARTPTS`;
+    const input = builder.addVideoInput(source, segment.sourceOffset, rate, inputSeeking);
+    let chain = `[${input.index}:v]trim=start_frame=${input.trimStart}:end_frame=${input.trimStart + segment.length},setpts=PTS-STARTPTS`;
     if (segment.reframeTrackId) {
       const track = reframeById.get(segment.reframeTrackId);
       if (!track) fail(`reframe track ${segment.reframeTrackId} is not declared.`);
@@ -149,9 +197,9 @@ function videoSegmentChain(
   sides.forEach((side, position) => {
     const source = sources.get(side.mediaRefId);
     if (!source) fail(`no resolved source for ${side.mediaRefId}.`);
-    const input = builder.addInput(source);
+    const input = builder.addVideoInput(source, side.sourceOffset, rate, inputSeeking);
     const sideLabel = `x${index}_${position}`;
-    let chain = `[${input}:v]trim=start_frame=${side.sourceOffset}:end_frame=${side.sourceOffset + segment.length},setpts=PTS-STARTPTS`;
+    let chain = `[${input.index}:v]trim=start_frame=${input.trimStart}:end_frame=${input.trimStart + segment.length},setpts=PTS-STARTPTS`;
     if (side.reframeTrackId) {
       const track = reframeById.get(side.reframeTrackId);
       if (!track) fail(`reframe track ${side.reframeTrackId} is not declared.`);
@@ -358,11 +406,12 @@ export function buildGraph(
   program: Program,
   sources: ReadonlyMap<string, ResolvedSource>,
   profile: EncodeProfile,
+  inputSeeking: InputSeeking = "safe",
 ): BuiltGraph {
   const video = new GraphBuilder(0);
 
   const videoLabels = program.video.map((segment, index) =>
-    videoSegmentChain(video, edl, profile, sources, segment, index),
+    videoSegmentChain(video, edl, profile, sources, segment, index, inputSeeking),
   );
   if (videoLabels.length === 1) {
     video.add(`[${videoLabels[0]}]null[vout]`);

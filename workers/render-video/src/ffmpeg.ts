@@ -181,6 +181,8 @@ export async function run(
 }
 
 export interface ProbedVideoStream {
+  codecName: string;
+  startTimeSeconds: number;
   width: number;
   height: number;
   /** avg_frame_rate and r_frame_rate as exact rationals; both are required to agree. */
@@ -198,6 +200,7 @@ export interface ProbedAudioStream {
 
 export interface ProbedFile {
   path: string;
+  formatName: string;
   video: ProbedVideoStream | null;
   audio: ProbedAudioStream | null;
   /** Container duration in seconds. Used only where an exact frame count does not exist. */
@@ -237,15 +240,18 @@ export async function probe(tools: ToolPaths, path: string, options: ProbeOption
     "-show_streams",
     "-show_format",
     "-show_entries",
-    "format=duration:stream=index,codec_type,width,height,avg_frame_rate,r_frame_rate,nb_read_packets,pix_fmt,color_transfer,sample_rate,channels:stream_side_data=rotation:stream_tags=rotate",
+    "format=duration,format_name:stream=index,codec_name,codec_type,width,height,avg_frame_rate,r_frame_rate,nb_read_packets,pix_fmt,color_transfer,start_time,sample_rate,channels:stream_side_data=rotation:stream_tags=rotate",
     "-of",
     "json",
     path,
   ]);
 
-  let parsed: { streams?: Record<string, unknown>[]; format?: { duration?: string } };
+  let parsed: { streams?: Record<string, unknown>[]; format?: { duration?: string; format_name?: string } };
   try {
-    parsed = JSON.parse(stdout) as { streams?: Record<string, unknown>[]; format?: { duration?: string } };
+    parsed = JSON.parse(stdout) as {
+      streams?: Record<string, unknown>[];
+      format?: { duration?: string; format_name?: string };
+    };
   } catch {
     throw new RenderVideoError("file_corrupt", "A source file could not be probed.");
   }
@@ -270,6 +276,8 @@ export async function probe(tools: ToolPaths, path: string, options: ProbeOption
       const rotationValue = (stream as { side_data_list?: { rotation?: number }[] }).side_data_list?.[0]?.rotation;
       const tagRotate = (stream as { tags?: { rotate?: string } }).tags?.rotate;
       video = {
+        codecName: String(stream.codec_name ?? ""),
+        startTimeSeconds: Number(stream.start_time ?? Number.NaN),
         width: Number(stream.width),
         height: Number(stream.height),
         frameRate: requireConstantFrameRate ? average : real,
@@ -288,7 +296,13 @@ export async function probe(tools: ToolPaths, path: string, options: ProbeOption
   }
 
   const durationSeconds = Number(parsed.format?.duration ?? Number.NaN);
-  return { path, video, audio, durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0 };
+  return {
+    path,
+    formatName: String(parsed.format?.format_name ?? ""),
+    video,
+    audio,
+    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0,
+  };
 }
 
 /** Integrated loudness and true peak, from ffmpeg's own R128 meter. */

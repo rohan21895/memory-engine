@@ -121,6 +121,9 @@ describe("the picture the plan asked for", () => {
       height: 640,
     });
     expect(result.verification.frameRate).toBeCloseTo(NTSC_30, 6);
+    // Only single-file H.264/MP4 at an equivalence-tested rate is seeked. FFV1 keeps
+    // the exact decode-from-start fallback instead of inheriting an unproven shortcut.
+    expect(result.command).not.toContain("-ss");
   }, 120_000);
 
   it("moves the crop between keyframes rather than holding the first one", async () => {
