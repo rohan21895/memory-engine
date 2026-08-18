@@ -426,17 +426,14 @@ def _render_one(
         job = stored
     else:
         ctx.jobs.put(job)
-    if job["state"]["status"] == "completed" and output.is_file():
-        return _VideoOutcome(
-            kind=kind,
-            status=StageStatus.SKIPPED,
-            detail=f"this {kind} EDL has already been rendered",
-            job_id=job["job_id"],
-            output=output,
-            counts={"edl_id": edl_id},
-        )
-
-    job = ctx.jobs.begin(job)
+    # A completed state is a claim, not proof that its artifact still exists or
+    # still contains the bytes the worker validated. Hand it back to the worker
+    # unchanged: the completed-job path checks size, BLAKE3, and media probe
+    # invariants before it allows reuse. Calling begin() here would erase that
+    # state and accidentally turn verification into a fresh encode.
+    verifying_completed = job["state"]["status"] == "completed"
+    if not verifying_completed:
+        job = ctx.jobs.begin(job)
     ctx.reporter.event(
         VIDEO_STAGE,
         "stage_start",
@@ -472,6 +469,27 @@ def _render_one(
             job_id=job["job_id"],
             output=None,
             counts={"edl_id": edl_id, "refusal_code": error.get("code")},
+        )
+
+    if verifying_completed:
+        recorded = next(
+            (
+                item for item in written.get("outputs") or []
+                if item.get("kind") == "rendered_video"
+            ),
+            {},
+        )
+        return _VideoOutcome(
+            kind=kind,
+            status=StageStatus.COMPLETED,
+            detail=f"this {kind} EDL has already been rendered and verified",
+            job_id=job["job_id"],
+            output=output,
+            counts={
+                "edl_id": edl_id,
+                "byte_size": recorded.get("byte_size"),
+                "output_id": recorded.get("id"),
+            },
         )
 
     report = _last_json_object(process.stdout)

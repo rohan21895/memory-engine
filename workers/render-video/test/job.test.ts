@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { copyFile, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { beforeAll, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { EDL, JobSpec } from "../../../contracts/codegen/generated/typescript/index.js";
 
 import { run } from "../src/ffmpeg.js";
+import { digestFile } from "../src/digest.js";
 import { parseParams, runRenderVideoJob } from "../src/job.js";
 import { renderVideo } from "../src/renderer.js";
 import {
@@ -23,10 +24,21 @@ import {
 } from "./helpers.js";
 
 let source: Fixture;
+let completedArtifact: { id: string; path: string; byteSize: number };
 
 beforeAll(async () => {
   await run(TOOLS.ffmpeg, ["-hide_banner", "-version"]);
   source = await fixture();
+  const jobParams = await params("completed-artifact");
+  const outcome = await runRenderVideoJob(makeJob(edl().edl_id, jobParams), edl(), {
+    persist: async () => undefined,
+  });
+  if (!outcome.result) throw new Error(outcome.job.error?.message ?? "Could not build the completed-job fixture.");
+  completedArtifact = {
+    id: outcome.result.id,
+    path: jobParams.output_path as string,
+    byteSize: outcome.result.byteSize,
+  };
 }, 180_000);
 
 function edl(): EDL {
@@ -69,6 +81,31 @@ function persistTo(store: JobSpec[]): (job: JobSpec) => Promise<void> {
   };
 }
 
+async function completedJob(prefix: string): Promise<JobSpec> {
+  const jobParams = await params(prefix);
+  const outputPath = jobParams.output_path as string;
+  await copyFile(completedArtifact.path, outputPath);
+  const job = makeJob(edl().edl_id, jobParams);
+  job.state = {
+    status: "completed",
+    attempts: 1,
+    started_at: "2026-08-17T00:00:00Z",
+    heartbeat_at: "2026-08-17T00:00:01Z",
+    finished_at: "2026-08-17T00:00:01Z",
+    progress: { units_done: 1, units_total: 1, unit: "files" },
+  };
+  job.outputs = [
+    {
+      kind: "rendered_video",
+      id: completedArtifact.id,
+      path: outputPath,
+      byte_size: completedArtifact.byteSize,
+      produced_at: "2026-08-17T00:00:01Z",
+    },
+  ];
+  return job;
+}
+
 describe("the render_video job", () => {
   it("runs, publishes a content-addressed output, and records it on the JobSpec", async () => {
     const jobParams = await params("job-ok");
@@ -88,14 +125,86 @@ describe("the render_video job", () => {
     expect(store[0]!.state.status).toBe("running");
   }, 240_000);
 
-  it("returns a completed job untouched instead of rendering again", async () => {
-    const jobParams = await params("job-replay");
+  it("reuses a completed job only after its published artifact verifies", async () => {
     const store: JobSpec[] = [];
-    const { job } = await runRenderVideoJob(makeJob(edl().edl_id, jobParams), edl(), { persist: persistTo(store) });
+    const job = await completedJob("job-replay");
     const replay = await runRenderVideoJob(job, edl(), { persist: persistTo(store) });
     expect(replay.result).toBeNull();
     expect(replay.job).toBe(job);
+    expect(store).toEqual([]);
   }, 240_000);
+
+  it("fails a completed job whose published artifact is missing", async () => {
+    const job = await completedJob("job-replay-missing");
+    await unlink(job.outputs![0]!.path!);
+    const store: JobSpec[] = [];
+
+    const replay = await runRenderVideoJob(job, edl(), { persist: persistTo(store) });
+
+    expect(replay.result).toBeNull();
+    expect(replay.job.state.status).toBe("failed");
+    expect(replay.job.error).toMatchObject({ code: "file_not_found", retryable: false });
+    expect(store.at(-1)?.state.status).toBe("failed");
+  }, 60_000);
+
+  it("fails a completed job whose published artifact was truncated", async () => {
+    const job = await completedJob("job-replay-truncated");
+    const bytes = await readFile(job.outputs![0]!.path!);
+    await writeFile(job.outputs![0]!.path!, bytes.subarray(0, Math.floor(bytes.length / 2)));
+
+    const replay = await runRenderVideoJob(job, edl(), { persist: async () => undefined });
+
+    expect(replay.job.state.status).toBe("failed");
+    expect(replay.job.error).toMatchObject({ code: "file_corrupt", retryable: false });
+    expect(replay.job.error!.message).toMatch(/byte size/i);
+  }, 60_000);
+
+  it("fails a completed job whose published artifact has a different BLAKE3 at the same size", async () => {
+    const job = await completedJob("job-replay-digest");
+    const path = job.outputs![0]!.path!;
+    const bytes = await readFile(path);
+    bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 0xff;
+    await writeFile(path, bytes);
+
+    const replay = await runRenderVideoJob(job, edl(), { persist: async () => undefined });
+
+    expect((await stat(path)).size).toBe(job.outputs![0]!.byte_size);
+    expect(replay.job.state.status).toBe("failed");
+    expect(replay.job.error).toMatchObject({ code: "file_corrupt", retryable: false });
+    expect(replay.job.error!.message).toMatch(/BLAKE3/i);
+  }, 60_000);
+
+  it("reapplies the post-render probe invariants before reusing a completed job", async () => {
+    const job = await completedJob("job-replay-probe");
+    const path = job.outputs![0]!.path!;
+    await run(TOOLS.ffmpeg, [
+      "-nostdin",
+      "-hide_banner",
+      "-nostats",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=size=320x240:rate=30000/1001",
+      "-frames:v",
+      "30",
+      "-c:v",
+      "ffv1",
+      "-pix_fmt",
+      "yuv420p",
+      "-f",
+      "matroska",
+      "-y",
+      path,
+    ]);
+    job.outputs![0]!.id = await digestFile(path);
+    job.outputs![0]!.byte_size = (await stat(path)).size;
+
+    const replay = await runRenderVideoJob(job, edl(), { persist: async () => undefined });
+
+    expect(replay.job.state.status).toBe("failed");
+    expect(replay.job.error).toMatchObject({ code: "internal_error", retryable: false });
+    expect(replay.job.error!.message).toMatch(/320x240.*360x640/);
+  }, 60_000);
 
   it("publishes the same bytes twice and refuses to overwrite a different render", async () => {
     const jobParams = await params("job-publish");

@@ -1,11 +1,12 @@
+import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import type { EDL, JobError, JobSpec } from "../../../contracts/codegen/generated/typescript/index.js";
+import type { EDL, JobError, JobOutput, JobSpec } from "../../../contracts/codegen/generated/typescript/index.js";
 
-import { canonicalJson, digestBytes } from "./digest.js";
+import { canonicalJson, digestBytes, digestFile } from "./digest.js";
 import { parseEncodeProfile, type EncodeProfile } from "./encode.js";
 import { asRenderVideoError, RenderVideoError } from "./errors.js";
-import { publishRenderOnce, renderVideo, type RenderVideoResult } from "./renderer.js";
+import { publishRenderOnce, renderVideo, type RenderVideoResult, verifyPublishedRender } from "./renderer.js";
 import type { SourceResolver } from "./sources.js";
 
 export const RENDER_VIDEO_CHECKPOINT_VERSION = 1;
@@ -82,12 +83,88 @@ export interface RenderVideoJobOutcome {
   result: RenderVideoResult | null;
 }
 
+function recordedCompletedOutput(job: JobSpec, expectedPath: string): JobOutput {
+  if (job.outputs?.length !== 1 || job.outputs[0]?.kind !== "rendered_video") {
+    throw new RenderVideoError(
+      "validation_failed",
+      "A completed render_video job must record exactly one rendered_video output.",
+    );
+  }
+  const output = job.outputs[0];
+  if (output.path !== expectedPath) {
+    throw new RenderVideoError(
+      "validation_failed",
+      "The completed render_video output path does not match params.output_path.",
+    );
+  }
+  if (!/^[0-9a-f]{64}$/.test(output.id)) {
+    throw new RenderVideoError("validation_failed", "The completed render_video output records no valid BLAKE3.");
+  }
+  if (!Number.isSafeInteger(output.byte_size) || (output.byte_size ?? 0) <= 0) {
+    throw new RenderVideoError(
+      "validation_failed",
+      "The completed render_video output records no positive integer byte size.",
+    );
+  }
+  return output;
+}
+
+async function verifyCompletedOutput(
+  job: JobSpec,
+  edl: EDL,
+  params: RenderVideoJobParams,
+  tools: { ffmpeg?: string; ffprobe?: string },
+): Promise<void> {
+  const output = recordedCompletedOutput(job, params.output_path);
+  let info;
+  try {
+    info = await stat(params.output_path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new RenderVideoError("file_not_found", "The completed render_video output file is missing.");
+    }
+    if (code === "EACCES" || code === "EPERM") {
+      throw new RenderVideoError("permission_denied", "The completed render_video output file cannot be inspected.");
+    }
+    throw error;
+  }
+  if (!info.isFile()) {
+    throw new RenderVideoError("validation_failed", "The completed render_video output path is not a regular file.");
+  }
+  if (info.size === 0) {
+    throw new RenderVideoError("zero_byte_file", "The completed render_video output file is empty.");
+  }
+  if (info.size !== output.byte_size) {
+    throw new RenderVideoError(
+      "file_corrupt",
+      `The completed render_video output byte size is ${info.size}; the job records ${output.byte_size}.`,
+    );
+  }
+
+  let actualDigest: string;
+  try {
+    actualDigest = await digestFile(params.output_path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new RenderVideoError("file_not_found", "The completed render_video output disappeared during verification.");
+    }
+    throw error;
+  }
+  if (actualDigest !== output.id) {
+    throw new RenderVideoError(
+      "file_corrupt",
+      `The completed render_video output BLAKE3 is ${actualDigest}; the job records ${output.id}.`,
+    );
+  }
+  await verifyPublishedRender(edl, params.output_path, tools);
+}
+
 export async function runRenderVideoJob(
   original: JobSpec,
   edl: EDL,
   dependencies: RenderVideoJobDependencies,
 ): Promise<RenderVideoJobOutcome> {
-  if (original.state.status === "completed") return { job: original, result: null };
   const job = structuredClone(original);
   const now = dependencies.now ?? (() => new Date().toISOString());
 
@@ -113,6 +190,14 @@ export async function runRenderVideoJob(
     }
     const params = parseParams(job.params);
     const workDirectory = resolve(params.work_directory, job.job_id);
+    const tools: { ffmpeg?: string; ffprobe?: string } = {};
+    if (params.ffmpeg_path) tools.ffmpeg = params.ffmpeg_path;
+    if (params.ffprobe_path) tools.ffprobe = params.ffprobe_path;
+
+    if (job.state.status === "completed") {
+      await verifyCompletedOutput(job, edl, params, tools);
+      return { job: original, result: null };
+    }
 
     job.state.status = "running";
     job.state.attempts += 1;
@@ -129,10 +214,6 @@ export async function runRenderVideoJob(
       partial_output_ids: [],
     };
     await dependencies.persist(job);
-
-    const tools: { ffmpeg?: string; ffprobe?: string } = {};
-    if (params.ffmpeg_path) tools.ffmpeg = params.ffmpeg_path;
-    if (params.ffprobe_path) tools.ffprobe = params.ffprobe_path;
 
     const result = await renderVideo(edl, {
       sources: params.sources,

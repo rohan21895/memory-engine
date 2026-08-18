@@ -318,6 +318,8 @@ class RenderTheReel(unittest.TestCase):
         self.assertEqual(int(timeline), result.counts["reel"]["frames"])
 
     def test_a_second_run_does_not_re_encode(self):
+        output = Path(_stage(self.report, "render-video").outputs[0])
+        before = output.stat()
         again = run_pipeline(
             [self.root],
             self.workdir,
@@ -325,7 +327,30 @@ class RenderTheReel(unittest.TestCase):
             settings=Settings(render_print=False, reel_seconds=4.0),
         )
         result = _stage(again, "render-video")
-        self.assertEqual(StageStatus.SKIPPED, result.status, result.detail)
+        self.assertEqual(StageStatus.COMPLETED, result.status, result.detail)
+        self.assertIn("verified", result.detail)
+        after = output.stat()
+        self.assertEqual(before.st_ino, after.st_ino, "verified reuse replaced the file")
+        self.assertEqual(before.st_mtime_ns, after.st_mtime_ns, "verified reuse re-encoded")
+
+    def test_z_a_completed_job_with_same_size_corruption_fails_verification(self):
+        output = Path(_stage(self.report, "render-video").outputs[0])
+        damaged = bytearray(output.read_bytes())
+        damaged[-1] ^= 0xFF
+        output.write_bytes(damaged)
+        size = output.stat().st_size
+
+        again = run_pipeline(
+            [self.root],
+            self.workdir,
+            stages=["ingest", "story", "render-video"],
+            settings=Settings(render_print=False, reel_seconds=4.0),
+        )
+        result = _stage(again, "render-video")
+
+        self.assertEqual(size, output.stat().st_size, "the mutation did not preserve size")
+        self.assertEqual(StageStatus.FAILED, result.status, result.detail)
+        self.assertIn("BLAKE3", result.detail)
 
     def test_a_contract_gap_is_reported_with_its_issue_and_not_worked_around(self):
         """The refusal path, exercised on a real refusal.
