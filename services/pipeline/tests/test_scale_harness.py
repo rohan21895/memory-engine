@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from support import PACKAGE_ROOT  # noqa: F401,E402 - also installs package import path
 
@@ -29,7 +31,6 @@ from memory_engine_pipeline.scale_harness import (  # noqa: E402
 from memory_engine_pipeline.runner import run_pipeline  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-INGEST_BINARY = REPO_ROOT / "workers/ingest/target/release/memory-engine-ingest"
 
 
 class SyntheticGenerator(unittest.TestCase):
@@ -214,35 +215,48 @@ class ReportSemantics(unittest.TestCase):
 class PublicApiIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if not INGEST_BINARY.is_file():
-            try:
-                build = subprocess.run(
-                    [
-                        "cargo",
-                        "build",
-                        "--release",
-                        "--manifest-path",
-                        str(REPO_ROOT / "workers/ingest/Cargo.toml"),
-                    ],
-                    cwd=REPO_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            except OSError as error:
-                raise RuntimeError(
-                    "scale integration could not start the required release ingest build"
-                ) from error
-            if build.returncode != 0:
-                raise RuntimeError(
-                    "scale integration could not build the required release ingest worker: "
-                    f"{build.stderr.strip() or build.stdout.strip()}"
-                )
-        if not INGEST_BINARY.is_file():
+        cls._build_temp = tempfile.TemporaryDirectory(prefix="memory-scale-ingest-build-")
+        cls.addClassCleanup(cls._build_temp.cleanup)
+        build_root = Path(cls._build_temp.name)
+        cargo_target = build_root / "cargo-target"
+        build_env = os.environ.copy()
+        build_env["CARGO_TARGET_DIR"] = str(cargo_target)
+        try:
+            build = subprocess.run(
+                [
+                    "cargo",
+                    "build",
+                    "--release",
+                    "--manifest-path",
+                    str(REPO_ROOT / "workers/ingest/Cargo.toml"),
+                ],
+                cwd=REPO_ROOT,
+                env=build_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            raise RuntimeError(
+                "scale integration could not start the required release ingest build"
+            ) from error
+        if build.returncode != 0:
+            raise RuntimeError(
+                "scale integration could not build the required release ingest worker: "
+                f"{build.stderr.strip() or build.stdout.strip()}"
+            )
+        built_binary = cargo_target / "release/memory-engine-ingest"
+        if not built_binary.is_file():
             raise RuntimeError(
                 "cargo reported a successful release build but the release ingest "
-                f"artifact is absent at {INGEST_BINARY}"
+                f"artifact is absent at {built_binary}"
             )
+        cls._ingest_binary_patch = mock.patch(
+            "memory_engine_pipeline.stages.ingest.INGEST_BINARY",
+            built_binary,
+        )
+        cls._ingest_binary_patch.start()
+        cls.addClassCleanup(cls._ingest_binary_patch.stop)
 
     def setUp(self):
         self.scratch = Path(tempfile.mkdtemp(prefix="memory-scale-integration-"))
