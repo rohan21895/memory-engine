@@ -67,6 +67,7 @@ __all__ = [
     "embedding_of",
     "gallery",
     "record_for",
+    "restore_human_identity",
     "restore_sensitive",
 ]
 
@@ -198,4 +199,32 @@ def restore_sensitive(
     """
     if sensitive:
         record["sensitive"] = dict(sensitive)
+    return record
+
+
+def restore_human_identity(
+    record: dict[str, Any], identity: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Keep an authoritative human decision when re-deriving the same face.
+
+    Detection can update the box, landmarks and model evidence. It cannot
+    revoke an answer a person already gave. A stable content-addressed
+    ``face_id`` means this is the same face, so replacing ``user_confirmed`` or
+    ``user_rejected`` with the model's fresh ``unassigned`` default is silent
+    data loss, not re-analysis.
+
+    ``decided_by: user`` is included as a belt-and-braces signal for records
+    written by older clients whose assignment vocabulary may be narrower. The
+    whole identity block is restored because the person id, eligibility gate,
+    confidence provenance and decision timestamp are one atomic decision; a
+    mixture of old and new fields could satisfy the schema while explaining a
+    decision nobody made.
+    """
+    if not identity:
+        return record
+    if (
+        identity.get("decided_by") == "user"
+        or identity.get("assignment") in {"user_confirmed", "user_rejected"}
+    ):
+        record["identity"] = dict(identity)
     return record
