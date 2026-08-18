@@ -159,18 +159,38 @@ class StoryStage(unittest.TestCase):
         self.assertEqual(1, reel["sources_excluded"])
         self.assertEqual(30.0, reel["rate"])
 
-    def test_the_plan_declares_no_crop_it_could_not_compute(self):
-        """`MediaRecord.video` is null, so the SOURCE aspect ratio is unknown.
+    def test_the_render_target_is_the_measured_source_and_not_the_proxy(self):
+        """The target is `MediaRecord.video.oriented_size`, not the 480p raster.
 
-        A reframe track computed from an assumed 16:9 would frame the wrong part
-        of a 4:3 clip and nothing downstream could tell. The stage disables
-        reframing instead, and the target is the proxy raster -- the only
-        picture geometry anything here has measured.
+        `workers/ingest` measures the source's displayed geometry (issue #78),
+        so the plan no longer falls back to the only picture the library had
+        decoded for itself. The clips here are 640x360 and their proxies are
+        854x480: asserting the target is 640x360 is asserting that the number
+        came from the SOURCE, because the fallback would give the larger one.
         """
+        reel = self.story.counts["reel"]
+        self.assertEqual("640x360", reel["resolution"])
+        self.assertEqual("source", reel["resolution_measured_from"])
+        edl = json.loads(Path(self.story.outputs[0]).read_text(encoding="utf-8"))
+        self.assertEqual(
+            {"width": 640, "height": 360}, edl["target"]["resolution"]
+        )
+
+    def test_reframe_is_on_but_declares_no_crop_where_none_is_needed(self):
+        """Reframing is available now; it is still not applied for free.
+
+        Every source in this group shares one measured geometry, so the target
+        aspect matches each clip's and there is nothing to crop. The EDL must
+        still SAY the reframe was checked -- `render-video` requires a passing
+        finding for both reframe checks, and an absent finding would read as a
+        check nobody ran.
+        """
+        self.assertEqual("enabled", self.story.counts["reel"]["reframe"])
         edl = json.loads(Path(self.story.outputs[0]).read_text(encoding="utf-8"))
         self.assertEqual([], edl["reframe_tracks"])
         by_id = {c["check_id"]: c for c in edl["validation"]["checks"]}
         self.assertTrue(by_id["reframe_aspect_matches_target"]["passed"])
+        self.assertTrue(by_id["reframe_keyframes_ordered"]["passed"])
 
     def test_the_edl_validates_against_the_contract(self):
         from jsonschema import Draft202012Validator  # noqa: PLC0415
@@ -324,6 +344,75 @@ class RenderTheReel(unittest.TestCase):
                 "a refused plan still produced a file",
             )
         finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+class UnmeasuredGeometry(unittest.TestCase):
+    """A library ingested before #78 must still plan, and must say so.
+
+    `MediaRecord.video` is null for every record any earlier build of
+    `workers/ingest` wrote. The stage has to fall back to the proxy raster and
+    turn reframing off for those, exactly as it did before -- because a crop
+    computed from a geometry nobody measured frames the wrong part of the shot,
+    and that is invisible in the output. This drops `video` back out of a
+    measured library to exercise that path against real proxies rather than
+    against a mock of one.
+    """
+
+    def test_a_record_without_video_falls_back_to_the_proxy_raster(self):
+        require_ingest_binary()
+        require_ffmpeg()
+        from memory_engine_media_db import Database  # noqa: PLC0415
+
+        root = Path(tempfile.mkdtemp(prefix="mep-story-unmeasured-"))
+        workdir = Path(tempfile.mkdtemp(prefix="mep-story-unmeasured-work-"))
+        try:
+            write_clip(root / "VID_0001.mp4", seconds=2.0, rate=30)
+            write_clip(root / "VID_0002.mp4", seconds=2.0, rate=30, tone_hz=660)
+            first = run_pipeline(
+                [root],
+                workdir,
+                stages=["ingest", "story"],
+                settings=Settings(render_print=False, render_video=False,
+                                  reel_seconds=4.0),
+            )
+            self.assertEqual(
+                "source", _stage(first, "story").counts["reel"]["resolution_measured_from"]
+            )
+
+            database = Database.open(workdir / "library.db")
+            try:
+                for media_id, in database.connection.execute(
+                    "SELECT media_id FROM media WHERE kind = 'video'"
+                ).fetchall():
+                    record = database.get_media(media_id)
+                    record["video"] = None
+                    database.put_media(record)
+            finally:
+                database.close()
+            shutil.rmtree(workdir / "outputs" / "edl", ignore_errors=True)
+
+            again = _stage(
+                run_pipeline(
+                    [root],
+                    workdir,
+                    stages=["ingest", "story"],
+                    settings=Settings(render_print=False, render_video=False,
+                                      reel_seconds=4.0),
+                ),
+                "story",
+            )
+            self.assertEqual(StageStatus.COMPLETED, again.status, again.detail)
+            reel = again.counts["reel"]
+            # The proxy raster, which is 854x480 for a 640x360 source.
+            self.assertEqual("854x480", reel["resolution"])
+            self.assertEqual("proxy", reel["resolution_measured_from"])
+            self.assertIn("disabled", reel["reframe"])
+            self.assertIn("proxy raster", again.detail)
+            edl = json.loads(Path(again.outputs[0]).read_text(encoding="utf-8"))
+            self.assertEqual([], edl["reframe_tracks"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
             shutil.rmtree(workdir, ignore_errors=True)
 
 
