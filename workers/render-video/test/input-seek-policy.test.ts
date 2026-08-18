@@ -21,11 +21,13 @@ function source(overrides: Partial<ResolvedSource> = {}): ResolvedSource {
       pixelFormat: "yuv420p",
       colorTransfer: "bt709",
       rotation: 0,
+      packetCadence: { frameTicks: 512, packetCount: 1_800 },
     },
     audio: null,
     memberDigests: ["a".repeat(64)],
     frameCount: 1_800,
     formatName: "mov,mp4,m4a,3gp,3g2,mj2",
+    formatMajorBrand: "isom",
     ...overrides,
   };
 }
@@ -42,8 +44,13 @@ describe("the conservative input-seek policy", () => {
     // containers. The actual extension is the conservative distinction we proved.
     expect(canSeekVideoInput(source({ paths: ["source.mov"] }), 30)).toBe(false);
     expect(canSeekVideoInput(source({ paths: ["source.3gp"] }), 30)).toBe(false);
+    expect(canSeekVideoInput(source({ formatMajorBrand: "qt" }), 30)).toBe(false);
+    expect(canSeekVideoInput(source({ formatMajorBrand: "3gp6" }), 30)).toBe(false);
     expect(canSeekVideoInput(source({ video: { ...source().video!, codecName: "hevc" } }), 30)).toBe(false);
     expect(canSeekVideoInput(source({ video: { ...source().video!, startTimeSeconds: 0.5 } }), 30)).toBe(false);
+    // Equal reported rates are only a summary. Absence here means the full packet scan
+    // found fractional ticks, variable cadence, malformed timing, or could not run.
+    expect(canSeekVideoInput(source({ video: { ...source().video!, packetCadence: null } }), 30)).toBe(false);
     expect(canSeekVideoInput(source(), 25)).toBe(false);
   });
 });

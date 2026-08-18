@@ -49,14 +49,21 @@ export interface Interpretation {
 
 export type InputSeeking = "safe" | "disabled";
 
+// Narrow on purpose. FFprobe reports one MOV-family demuxer alias for actual MP4,
+// QuickTime and 3GP files, and a filename extension is not container evidence.
+const PROVEN_MP4_MAJOR_BRANDS = new Set(["isom", "iso2", "mp41", "mp42", "avc1"]);
+
 export function canSeekVideoInput(source: ResolvedSource, rate: number): boolean {
   const provenRate = rate === 30 || rate === 30_000 / 1_001;
   return (
     source.paths.length === 1 &&
     source.video?.codecName === "h264" &&
     source.formatName.split(",").includes("mp4") &&
+    source.formatMajorBrand !== null &&
+    PROVEN_MP4_MAJOR_BRANDS.has(source.formatMajorBrand) &&
     extname(source.paths[0]!).toLowerCase() === ".mp4" &&
     source.video.startTimeSeconds === 0 &&
+    source.video.packetCadence !== null &&
     provenRate
   );
 }

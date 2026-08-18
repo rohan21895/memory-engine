@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { EDL, MediaRef, Track } from "../../../contracts/codegen/generated/typescript/index.js";
 
 import { digestFile, spanAssemblyId } from "../src/digest.js";
+import type { EncodeProfile } from "../src/encode.js";
 import { run } from "../src/ffmpeg.js";
 import { decodedFrameDigest, renderVideo, type RenderVideoResult } from "../src/renderer.js";
 import { clip, FFV1_MKV, makeEdl, range, t, TOOLS, videoRef, workspace } from "./helpers.js";
@@ -21,6 +22,8 @@ const RATE_NTSC = 30_000 / 1_001;
 let fixtureDirectory: string;
 let source30: EncodedSource;
 let sourceNtsc: EncodedSource;
+let sourceCoarseTimeBase: EncodedSource;
+let sourceDeceptiveVfr: EncodedSource;
 let spanPaths: string[];
 let spanId: string;
 
@@ -31,6 +34,7 @@ async function makeH264(
   startFrame: number,
   frames: number,
   withAudio: boolean,
+  trackTimescale?: number,
 ): Promise<EncodedSource> {
   const path = join(fixtureDirectory, name);
   const endFrame = startFrame + frames;
@@ -53,16 +57,39 @@ async function makeH264(
     "-profile:v", "high", "-flags:v", "+cgop",
     "-g", "120", "-keyint_min", "120", "-sc_threshold", "0",
     ...(withAudio ? ["-c:a", "aac", "-b:a", "128k"] : ["-an"]),
+    ...(trackTimescale ? ["-video_track_timescale", String(trackTimescale)] : []),
     "-map_metadata", "-1", "-frames:v", String(frames), "-y", path,
   ];
   await run(TOOLS.ffmpeg, args);
   return { path, mediaId: await digestFile(path), frames, rate };
 }
 
+async function makeDeceptiveVfr(name: string): Promise<EncodedSource> {
+  const path = join(fixtureDirectory, name);
+  const frames = 600;
+  // Across the full file both reported rates are exactly 30/1 and the time base
+  // admits an integral 3000 ticks/frame. Individual packets are nevertheless VFR:
+  // the paired timestamps become 1/5999-tick steps, with a compensating last gap.
+  await run(TOOLS.ffmpeg, [
+    "-nostdin", "-hide_banner", "-nostats",
+    "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=20",
+    "-vf", "settb=expr=1/90000,setpts=if(eq(N\\,599)\\,1800000\\,floor(N/2)*6000)",
+    "-fps_mode", "passthrough",
+    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+    "-profile:v", "high", "-flags:v", "+cgop",
+    "-g", "120", "-keyint_min", "120", "-sc_threshold", "0",
+    "-pix_fmt", "yuv420p", "-video_track_timescale", "90000",
+    "-map_metadata", "-1", "-frames:v", String(frames), "-y", path,
+  ]);
+  return { path, mediaId: await digestFile(path), frames, rate: RATE_30 };
+}
+
 beforeAll(async () => {
   fixtureDirectory = await workspace("input-seek-fixtures");
   source30 = await makeH264("source-30.mp4", RATE_30, "30", 0, 1_800, true);
   sourceNtsc = await makeH264("source-ntsc.mp4", RATE_NTSC, "30000/1001", 0, 600, false);
+  sourceCoarseTimeBase = await makeH264("source-coarse-time-base.mp4", RATE_30, "30", 0, 600, false, 1_000);
+  sourceDeceptiveVfr = await makeDeceptiveVfr("source-vfr-reported-cfr.mp4");
   const first = await makeH264("span-01.mp4", RATE_NTSC, "30000/1001", 0, 300, false);
   const second = await makeH264("span-02.mp4", RATE_NTSC, "30000/1001", 300, 300, false);
   spanPaths = [first.path, second.path];
@@ -119,7 +146,7 @@ function sourceClip(id: string, mediaRefId: string, start: number, duration: num
   });
 }
 
-function encode(withAudio: boolean) {
+function encode(withAudio: boolean): EncodeProfile {
   return {
     container: FFV1_MKV.container,
     scale_flags: FFV1_MKV.scale_flags,
@@ -129,20 +156,62 @@ function encode(withAudio: boolean) {
   };
 }
 
+function deliveryEncode(): EncodeProfile {
+  return {
+    container: "mp4",
+    scale_flags: "bicubic",
+    threads: 1,
+    video: {
+      codec: "libx264",
+      pix_fmt: "yuv420p",
+      args: [
+        "-preset", "medium", "-crf", "18", "-profile:v", "high", "-flags:v", "+cgop",
+        "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
+      ],
+    },
+    audio: null,
+  };
+}
+
 async function render(
   edl: EDL,
   source: { mediaId: string; paths: string[] },
   prefix: string,
   withAudio: boolean,
   inputSeeking?: "disabled",
+  profile: EncodeProfile = encode(withAudio),
 ): Promise<RenderVideoResult> {
   return renderVideo(edl, {
     sources: { [source.mediaId]: { paths: source.paths } },
-    encode: encode(withAudio),
+    encode: profile,
     workDirectory: await workspace(prefix),
     tools: TOOLS,
     ...(inputSeeking ? { inputSeeking } : {}),
   });
+}
+
+interface PacketTiming {
+  streams: Array<{ avg_frame_rate?: string; r_frame_rate?: string; time_base?: string }>;
+  packets: Array<{ dts?: number; pts?: number; duration?: number }>;
+}
+
+async function packetTiming(path: string): Promise<PacketTiming> {
+  const { stdout } = await run(TOOLS.ffprobe, [
+    "-v", "error",
+    "-select_streams", "v:0",
+    "-show_packets",
+    "-show_streams",
+    "-show_entries", "stream=avg_frame_rate,r_frame_rate,time_base:packet=dts,pts,duration",
+    "-of", "json",
+    path,
+  ]);
+  return JSON.parse(stdout) as PacketTiming;
+}
+
+function lateClips(mediaRefId: string): Track["items"] {
+  return [1, 119, 120, 121, 257, 401, 557].map((offset, index) =>
+    sourceClip(`late-${index}`, mediaRefId, offset, 30, RATE_30, false),
+  );
 }
 
 async function decodedAudioDigest(path: string, prefix: string): Promise<string> {
@@ -208,6 +277,57 @@ describe("bounded H.264 input seeking", () => {
     );
     expect(sought.command).toContain((257 / RATE_NTSC).toFixed(9));
     expect(sought.command).toContain((395 / RATE_NTSC).toFixed(9));
+  }, 240_000);
+
+  it("falls back when a 30 fps MP4 time base cannot represent an integral frame tick", async () => {
+    const media = ref(sourceCoarseTimeBase);
+    const edl = plan(media, RATE_30, lateClips(media.media_ref_id), false);
+    const resolver = { mediaId: sourceCoarseTimeBase.mediaId, paths: [sourceCoarseTimeBase.path] };
+    const baseline = await render(edl, resolver, "seek-coarse-off", false, "disabled", deliveryEncode());
+    const safe = await render(edl, resolver, "seek-coarse-safe", false, undefined, deliveryEncode());
+    const sourceTiming = await packetTiming(sourceCoarseTimeBase.path);
+
+    expect(sourceTiming.streams[0]).toMatchObject({
+      avg_frame_rate: "30/1",
+      r_frame_rate: "30/1",
+      time_base: "1/1000",
+    });
+    const sourceDts = sourceTiming.packets
+      .map((packet) => packet.dts)
+      .filter((value): value is number => value !== undefined);
+    expect(new Set(sourceDts.slice(1).map((value, index) => value - sourceDts[index]!))).toEqual(new Set([33, 34]));
+    expect(safe.command).not.toContain("-ss");
+    expect(safe.commandGraphDigest).toBe(baseline.commandGraphDigest);
+    expect(safe.id).toBe(baseline.id);
+    expect(await packetTiming(safe.path)).toEqual(await packetTiming(baseline.path));
+    expect(await decodedFrameDigest(TOOLS, safe.path, await workspace("seek-coarse-digest"))).toBe(
+      await decodedFrameDigest(TOOLS, baseline.path, await workspace("seek-coarse-baseline-digest")),
+    );
+  }, 240_000);
+
+  it("falls back when equal reported rates hide variable packet cadence", async () => {
+    const media = ref(sourceDeceptiveVfr);
+    const edl = plan(media, RATE_30, lateClips(media.media_ref_id), false);
+    const resolver = { mediaId: sourceDeceptiveVfr.mediaId, paths: [sourceDeceptiveVfr.path] };
+    const baseline = await render(edl, resolver, "seek-vfr-off", false, "disabled", deliveryEncode());
+    const safe = await render(edl, resolver, "seek-vfr-safe", false, undefined, deliveryEncode());
+    const sourceTiming = await packetTiming(sourceDeceptiveVfr.path);
+
+    expect(sourceTiming.streams[0]).toMatchObject({
+      avg_frame_rate: "30/1",
+      r_frame_rate: "30/1",
+      time_base: "1/90000",
+    });
+    const dts = sourceTiming.packets.map((packet) => packet.dts).filter((value): value is number => value !== undefined);
+    const steps = new Set(dts.slice(1).map((value, index) => value - dts[index]!));
+    expect(steps.size).toBeGreaterThan(1);
+    expect(safe.command).not.toContain("-ss");
+    expect(safe.commandGraphDigest).toBe(baseline.commandGraphDigest);
+    expect(safe.id).toBe(baseline.id);
+    expect(await packetTiming(safe.path)).toEqual(await packetTiming(baseline.path));
+    expect(await decodedFrameDigest(TOOLS, safe.path, await workspace("seek-vfr-digest"))).toBe(
+      await decodedFrameDigest(TOOLS, baseline.path, await workspace("seek-vfr-baseline-digest")),
+    );
   }, 240_000);
 
   it("keeps H.264 span assemblies on the proven no-seek path", async () => {
