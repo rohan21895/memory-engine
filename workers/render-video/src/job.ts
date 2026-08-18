@@ -6,6 +6,7 @@ import type { EDL, JobError, JobOutput, JobSpec } from "../../../contracts/codeg
 import { canonicalJson, digestBytes, digestFile } from "./digest.js";
 import { parseEncodeProfile, type EncodeProfile } from "./encode.js";
 import { asRenderVideoError, RenderVideoError } from "./errors.js";
+import { buildProgram } from "./program.js";
 import { publishRenderOnce, renderVideo, type RenderVideoResult, verifyPublishedRender } from "./renderer.js";
 import type { SourceResolver } from "./sources.js";
 
@@ -198,12 +199,13 @@ export async function runRenderVideoJob(
       await verifyCompletedOutput(job, edl, params, tools);
       return { job: original, result: null };
     }
+    const totalFrames = buildProgram(edl).totalFrames;
 
     job.state.status = "running";
     job.state.attempts += 1;
     job.state.started_at ??= now();
     job.state.heartbeat_at = now();
-    job.state.progress = { units_done: 0, units_total: 1, unit: "files" };
+    job.state.progress = { units_done: 0, units_total: totalFrames, unit: "frames" };
     job.error = null;
     job.checkpoint = {
       resumable: true,
@@ -220,6 +222,17 @@ export async function runRenderVideoJob(
       encode: params.encode,
       workDirectory,
       tools,
+      onProgress: async (progress) => {
+        const heartbeatAt = now();
+        job.state.heartbeat_at = heartbeatAt;
+        job.state.progress = {
+          units_done: progress.framesDone,
+          units_total: progress.totalFrames,
+          unit: "frames",
+        };
+        if (job.checkpoint) job.checkpoint.updated_at = heartbeatAt;
+        await dependencies.persist(job);
+      },
     });
     await publishRenderOnce(params.output_path, result);
 
@@ -227,7 +240,11 @@ export async function runRenderVideoJob(
     job.state.status = "completed";
     job.state.heartbeat_at = finishedAt;
     job.state.finished_at = finishedAt;
-    job.state.progress = { units_done: 1, units_total: 1, unit: "files" };
+    job.state.progress = {
+      units_done: result.program.totalFrames,
+      units_total: result.program.totalFrames,
+      unit: "frames",
+    };
     job.checkpoint = {
       resumable: true,
       cursor: null,

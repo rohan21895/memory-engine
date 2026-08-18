@@ -57,7 +57,53 @@ function edl(): EDL {
   });
 }
 
-async function params(prefix: string): Promise<Record<string, unknown>> {
+function longFilmEdl(): EDL {
+  const plan = makeEdl({
+    mediaRefs: [videoRef(source.videoMediaId)],
+    resolution: { width: 64, height: 36 },
+    aspect: { numerator: 16, denominator: 9 },
+    audioPlan: {
+      music: [],
+      ambient: {
+        enabled: true,
+        default_gain_db: 0,
+        preserve_speech: true,
+        high_pass_hz: null,
+        noise_suppression: "none",
+        per_clip_gain_db: [],
+      },
+      ducking: [],
+      mix: {
+        master_gain_db: 0,
+        loudness_target_lufs: -14,
+        true_peak_ceiling_db: -1,
+        limiter: true,
+        channels: "stereo",
+        sample_rate: 48_000,
+      },
+    },
+    tracks: [
+      {
+        track_id: "v1",
+        kind: "video",
+        name: "V1",
+        role: "primary",
+        enabled: true,
+        items: Array.from({ length: 90 }, (_, index) =>
+          clip(`film-${String(index).padStart(3, "0")}`, "src-a", SOURCE_ORIGIN + (index % 9) * 30, 30, {
+            audio: { gain_db: 0, muted: false, fade_in: null, fade_out: null, audio_extends_past_out: null },
+          }),
+        ),
+      },
+    ],
+  });
+  plan.kind = "film";
+  plan.name = "ninety-second progress fixture";
+  plan.target.destination = "master";
+  return plan;
+}
+
+async function params(prefix: string, withAudio = false): Promise<Record<string, unknown>> {
   const work = await workspace(prefix);
   return {
     output_path: join(work, "out.mkv"),
@@ -67,7 +113,7 @@ async function params(prefix: string): Promise<Record<string, unknown>> {
       container: FFV1_MKV.container,
       scale_flags: FFV1_MKV.scale_flags,
       video: { codec: "ffv1", pix_fmt: "yuv420p", args: [] },
-      audio: null,
+      audio: withAudio ? { codec: "pcm_s16le", sample_fmt: "s16", args: [] } : null,
       threads: 1,
     },
     ffmpeg_path: TOOLS.ffmpeg,
@@ -123,6 +169,35 @@ describe("the render_video job", () => {
     expect((await stat(published)).size).toBe(result!.byteSize);
     // The state was persisted before the render started, so a kill mid-encode is resumable.
     expect(store[0]!.state.status).toBe("running");
+  }, 240_000);
+
+  it("persists frame progress and fresh heartbeats while rendering a many-clip ninety-second film", async () => {
+    const plan = longFilmEdl();
+    const jobParams = await params("job-long-film", true);
+    const store: JobSpec[] = [];
+    let tick = 0;
+
+    const outcome = await runRenderVideoJob(makeJob(plan.edl_id, jobParams), plan, {
+      persist: persistTo(store),
+      now: () => new Date(Date.UTC(2026, 7, 17, 0, 0, tick++)).toISOString(),
+    });
+
+    expect(outcome.job.state.status).toBe("completed");
+    expect(outcome.result?.program).toMatchObject({ totalFrames: 2_700, segments: 90, audioContributions: 90 });
+    expect(outcome.result?.verification.loudness?.integratedLufs).toBeCloseTo(-14, 0);
+    expect(outcome.result?.verification.loudness?.truePeakDb).toBeLessThanOrEqual(-1 + 0.3);
+    const running = store.filter((snapshot) => snapshot.state.status === "running");
+    expect(running.length).toBeGreaterThan(1);
+    expect(
+      running.some(
+        (snapshot) =>
+          snapshot.state.progress?.unit === "frames" &&
+          snapshot.state.progress.units_done > 0 &&
+          snapshot.state.progress.units_total === 2_700,
+      ),
+    ).toBe(true);
+    expect(new Set(running.map((snapshot) => snapshot.state.heartbeat_at)).size).toBeGreaterThan(1);
+    expect(outcome.job.state.progress).toEqual({ units_done: 2_700, units_total: 2_700, unit: "frames" });
   }, 240_000);
 
   it("reuses a completed job only after its published artifact verifies", async () => {

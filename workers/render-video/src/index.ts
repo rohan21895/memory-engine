@@ -14,5 +14,5 @@ export type { BuiltGraph, Interpretation } from "./filtergraph.js";
 export type { EncodeProfile } from "./encode.js";
 export type { Program, VideoSegment, AudioContribution } from "./program.js";
 export type { SourceResolver, ResolvedSource } from "./sources.js";
-export type { RenderVideoOptions, RenderVideoResult, RenderVerification } from "./renderer.js";
+export type { RenderProgress, RenderVideoOptions, RenderVideoResult, RenderVerification } from "./renderer.js";
 export type { RenderVideoJobParams, RenderVideoJobOutcome } from "./job.js";

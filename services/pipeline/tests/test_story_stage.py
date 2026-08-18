@@ -44,6 +44,11 @@ from support import (  # noqa: E402
 
 from memory_engine_pipeline.runner import run_pipeline  # noqa: E402
 from memory_engine_pipeline.stages.base import Settings, StageStatus  # noqa: E402
+from memory_engine_pipeline.stages.render import (  # noqa: E402
+    _VIDEO_PROCESS_OUTPUT_BYTES,
+    _bounded_process_output,
+    _video_encode_profile,
+)
 
 # Producers that do not exist. Every one of them is a feature `plan_moments`
 # would use and cannot, and the point of naming them here is that the day one
@@ -63,6 +68,41 @@ def _library(root: Path) -> None:
     write_clip(root / "VID_0001.mp4", seconds=2.0, rate=30)
     write_clip(root / "VID_0002.mp4", seconds=2.0, rate=30, tone_hz=660)
     write_clip(root / "VID_0003.mp4", seconds=2.0, rate=24, tone_hz=220)
+
+
+class VideoEncodeProfiles(unittest.TestCase):
+    def test_a_film_gets_an_explicit_bounded_gop_profile(self):
+        profile = _video_encode_profile({"kind": "film", "rate": 30})
+        args = profile["video"]["args"]
+
+        self.assertEqual("libx264", profile["video"]["codec"])
+        self.assertEqual("high", args[args.index("-profile:v") + 1])
+        self.assertEqual("+cgop", args[args.index("-flags:v") + 1])
+        self.assertEqual("60", args[args.index("-g") + 1])
+        self.assertEqual("60", args[args.index("-keyint_min") + 1])
+        self.assertEqual("0", args[args.index("-sc_threshold") + 1])
+
+    def test_the_reel_profile_does_not_silently_gain_film_delivery_rules(self):
+        args = _video_encode_profile({"kind": "reel", "rate": 30})["video"]["args"]
+        self.assertEqual(["-preset", "medium", "-crf", "18"], args)
+        self.assertNotIn("-g", args)
+
+    def test_an_unknown_product_kind_has_no_fallback_profile(self):
+        with self.assertRaisesRegex(ValueError, "no explicit video encode profile"):
+            _video_encode_profile({"kind": "preview", "rate": 30})
+
+
+class VideoProcessSupervision(unittest.TestCase):
+    def test_pipeline_materialises_only_the_bounded_tail_of_worker_output(self):
+        with tempfile.TemporaryFile() as stream:
+            stream.write(
+                b"discard-me:" + b"x" * (_VIDEO_PROCESS_OUTPUT_BYTES * 2) + b":tail-marker"
+            )
+            output = _bounded_process_output(stream)
+
+        self.assertLessEqual(len(output.encode("utf-8")), _VIDEO_PROCESS_OUTPUT_BYTES)
+        self.assertNotIn("discard-me", output)
+        self.assertTrue(output.endswith(":tail-marker"))
 
 
 class StoryStage(unittest.TestCase):
@@ -616,6 +656,27 @@ class FilmFromTheLibrary(unittest.TestCase):
         output = self.workdir / "outputs" / "video" / f"{film['edl_id']}.mp4"
         self.assertTrue(output.is_file())
         self.assertGreater(output.stat().st_size, 1024)
+
+    def test_the_pipeline_surfaces_worker_frame_progress_during_ffmpeg(self):
+        events = [
+            json.loads(line)
+            for line in (self.workdir / "events.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip()
+        ]
+        progress = [
+            event for event in events
+            if event["run_id"] == self.report.run_id
+            and event["stage"] == "render-video"
+            and event["kind"] == "progress"
+            and event.get("unit") == "frames"
+        ]
+        self.assertTrue(progress, "ffmpeg frame progress never reached the pipeline")
+        self.assertTrue(any(event["units_done"] > 0 for event in progress))
+        self.assertTrue(
+            all(event["units_done"] <= event["units_total"] for event in progress)
+        )
 
 
 class NoVideo(unittest.TestCase):

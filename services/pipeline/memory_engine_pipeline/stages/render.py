@@ -30,6 +30,8 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,7 @@ from .base import (
     StageResult,
     StageStatus,
     blocked_by,
+    read_json,
     write_json_atomically,
 )
 
@@ -53,6 +56,8 @@ _VIDEO_ROOT = Path("workers/render-video")
 _VIDEO_ENTRY = _VIDEO_ROOT / "dist" / "workers" / "render-video" / "src" / "cli.js"
 
 VIDEO_SUFFIX = ".mp4"
+_VIDEO_PROGRESS_POLL_SECONDS = 0.25
+_VIDEO_PROCESS_OUTPUT_BYTES = 256 * 1024
 
 # The delivery decision, stated in one place with nothing implicit.
 #
@@ -66,7 +71,7 @@ VIDEO_SUFFIX = ".mp4"
 # `threads: 1` is not a performance choice. x264 slices a frame across threads
 # and the slice boundaries move with the thread count, so a multi-threaded
 # encode is only reproducible on a machine with the same core count.
-ENCODE_PROFILE: dict[str, Any] = {
+REEL_ENCODE_PROFILE: dict[str, Any] = {
     "container": "mp4",
     "scale_flags": "bicubic",
     "threads": 1,
@@ -77,6 +82,49 @@ ENCODE_PROFILE: dict[str, Any] = {
     },
     "audio": {"codec": "aac", "sample_fmt": "fltp", "args": ["-b:a", "192k"]},
 }
+
+
+def _video_encode_profile(edl: dict[str, Any]) -> dict[str, Any]:
+    """The explicit delivery profile for this planned product.
+
+    The film planner emits ``kind: film`` with destination ``master``. A film
+    is long enough that review scrubbing and restart inspection need bounded
+    random access: its H.264 stream therefore pins a closed two-second GOP and
+    disables scene-cut keyframes, instead of allowing clip content to decide
+    where the seek points land. The reel keeps the already-shipped profile.
+
+    This decision belongs here in pipeline shipping code, not in the renderer;
+    the complete chosen block still travels in JobSpec.params and its digest.
+    """
+    kind = edl.get("kind")
+    if kind == "reel":
+        return json.loads(json.dumps(REEL_ENCODE_PROFILE))
+    if kind != "film":
+        raise ValueError(f"no explicit video encode profile for EDL kind {kind!r}")
+
+    rate = edl.get("rate")
+    if not isinstance(rate, (int, float)) or isinstance(rate, bool) or rate <= 0:
+        raise ValueError("a film EDL needs a positive rate before its GOP can be pinned")
+    gop_frames = max(1, round(float(rate) * 2))
+    return {
+        "container": "mp4",
+        "scale_flags": "bicubic",
+        "threads": 1,
+        "video": {
+            "codec": "libx264",
+            "pix_fmt": "yuv420p",
+            "args": [
+                "-preset", "medium",
+                "-crf", "18",
+                "-profile:v", "high",
+                "-flags:v", "+cgop",
+                "-g", str(gop_frames),
+                "-keyint_min", str(gop_frames),
+                "-sc_threshold", "0",
+            ],
+        },
+        "audio": {"codec": "aac", "sample_fmt": "fltp", "args": ["-b:a", "192k"]},
+    }
 
 
 def _node() -> str | None:
@@ -403,11 +451,23 @@ def _render_one(
     output.parent.mkdir(parents=True, exist_ok=True)
     work_directory.mkdir(parents=True, exist_ok=True)
 
+    try:
+        encode_profile = _video_encode_profile(edl)
+    except ValueError as error:
+        return _VideoOutcome(
+            kind=kind,
+            status=StageStatus.FAILED,
+            detail=f"{kind}: {error}",
+            job_id=None,
+            output=None,
+            counts={"edl_id": edl_id},
+        )
+
     params: dict[str, Any] = {
         "output_path": str(output),
         "work_directory": str(work_directory),
         "sources": sources,
-        "encode": ENCODE_PROFILE,
+        "encode": encode_profile,
         "ffmpeg_path": shutil.which("ffmpeg"),
         "ffprobe_path": shutil.which("ffprobe"),
     }
@@ -442,11 +502,11 @@ def _render_one(
 
     job_file = ctx.path("render-video", f"{job['job_id']}.json")
     write_json_atomically(job_file, job)
-    process = subprocess.run(  # noqa: S603
+    process = _run_video_worker(
+        ctx,
         [node, str(entry), "run", str(job_file), str(edl_path)],
-        capture_output=True,
-        text=True,
-        check=False,
+        job_file=job_file,
+        kind=kind,
     )
     written = json.loads(job_file.read_text(encoding="utf-8"))
     ctx.jobs.put(written)
@@ -513,6 +573,80 @@ def _render_one(
         output=output,
         counts=counts,
     )
+
+
+def _run_video_worker(
+    ctx: StageContext,
+    command: list[str],
+    *,
+    job_file: Path,
+    kind: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run the worker while synchronising its atomic JobSpec heartbeats.
+
+    A film encode can hold ffmpeg for minutes. Waiting in ``subprocess.run``
+    leaves the database heartbeat frozen at launch even though the worker is
+    writing honest frame progress to ``job_file``. Poll the atomic file, copy
+    fresh snapshots into the JobStore, and expose changed frame counts through
+    the pipeline reporter. The worker remains the sole progress producer.
+    """
+    # Files keep child output from filling a pipe while this thread polls. Only
+    # their bounded tails are materialised after exit, so a pathological tool
+    # cannot turn a long render into an equally long in-memory diagnostic.
+    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+        process = subprocess.Popen(  # noqa: S603
+            command,
+            stdout=stdout_file,
+            stderr=stderr_file,
+        )
+        last_heartbeat: str | None = None
+        last_progress: tuple[float, float | None, str] | None = None
+        while process.poll() is None:
+            time.sleep(_VIDEO_PROGRESS_POLL_SECONDS)
+            snapshot = read_json(job_file)
+            if not isinstance(snapshot, dict):
+                continue
+            state = snapshot.get("state") or {}
+            heartbeat = state.get("heartbeat_at")
+            if isinstance(heartbeat, str) and heartbeat != last_heartbeat:
+                ctx.jobs.put(snapshot)
+                last_heartbeat = heartbeat
+
+            progress = state.get("progress") or {}
+            done = progress.get("units_done")
+            if not isinstance(done, (int, float)) or isinstance(done, bool):
+                continue
+            total = progress.get("units_total")
+            if not isinstance(total, (int, float)) or isinstance(total, bool):
+                total = None
+            unit = str(progress.get("unit") or "frames")
+            current = (float(done), float(total) if total is not None else None, unit)
+            if current == last_progress:
+                continue
+            last_progress = current
+            ctx.reporter.progress(
+                VIDEO_STAGE,
+                units_done=current[0],
+                units_total=current[1],
+                unit=current[2],
+                message=f"{kind} encode",
+            )
+
+        stdout = _bounded_process_output(stdout_file)
+        stderr = _bounded_process_output(stderr_file)
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=process.returncode if process.returncode is not None else -1,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+
+def _bounded_process_output(stream: Any) -> str:
+    stream.flush()
+    length = stream.tell()
+    stream.seek(max(0, length - _VIDEO_PROCESS_OUTPUT_BYTES))
+    return stream.read().decode("utf-8", errors="replace")
 
 
 def _last_json_object(stdout: str) -> dict[str, Any]:
