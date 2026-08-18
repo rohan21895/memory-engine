@@ -21,6 +21,11 @@ The job's local params schema requires `output_path`, `work_directory`, `icc_pro
 font paths are explicit resolver inputs because neither path exists in `AlbumSpec`, and
 the renderer does not invent either one.
 
-Pages are stored by content hash and checkpointed individually. A killed job resumes from
-verified page artifacts, publishes the final PDF without overwriting different bytes, and
-returns an existing completed job unchanged.
+Pages are stored by content hash and checkpointed individually. Checkpoint version 2 binds
+each artifact to the canonical page plan, resolved placement/font byte digests, ICC digest,
+DPI, raster dimensions, channel count, and the explicit page-renderer version. Resume
+re-authenticates those inputs plus the JPEG's embedded profile before accepting a cache hit;
+version-1/pre-CMYK-fix pages are always rerendered. A killed job publishes the final PDF
+without overwriting different bytes. Only a completed version-2 job remains terminal;
+completed version-1 PDF outputs are marked failed and removed from the job's advertised
+outputs so a pre-fix book cannot be replayed as valid.

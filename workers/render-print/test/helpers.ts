@@ -202,7 +202,7 @@ export function makeJob(params: Record<string, unknown>): JobSpec {
     checkpoint: {
       resumable: true,
       cursor: null,
-      checkpoint_version: 1,
+      checkpoint_version: 2,
       completed_input_ids: [],
       partial_output_ids: [],
     },
