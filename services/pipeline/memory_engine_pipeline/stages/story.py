@@ -839,6 +839,13 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
         f"encode profile {reel_module.encode_profile_for('master')['profile_id']}, "
         "carried in the plan rather than supplied to the renderer (contracts#56)"
     )
+    notes.append(
+        "every source is declared bt709 and the plan carries no tone map. That is an "
+        "ASSERTION, not a measurement: MediaRecord carries no colour tags because "
+        "workers/ingest does not record any, and the 480p proxies this reel is cut from "
+        "are written with no colour tags either, so the declaration is the proxy "
+        "convention rather than a probe of the original (contracts#58, and #100 to make it a measurement)"
+    )
 
     planned_at = utc_now()
     aspect = _reduced(raster)
@@ -853,6 +860,11 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
                 available_duration=float(candidate.frame_count),
                 aspect_ratio=aspect,
                 expected_frame_rate=rate,
+                # contracts#58. Stated rather than probed -- see the note above.
+                # An untagged proxy contradicts nothing, so the renderer accepts
+                # the declaration; a proxy that ever starts carrying tags will
+                # make a wrong declaration fail loudly instead of rendering.
+                color_encoding="bt709",
                 label=candidate.label,
             )
         )

@@ -1,5 +1,14 @@
-import type { EDL, EncodeProfile, MixPlan, ReframeTrack } from "../../../contracts/codegen/generated/typescript/index.js";
+import type {
+  Clip,
+  ColorOp,
+  EDL,
+  EncodeProfile,
+  MediaRef,
+  MixPlan,
+  ReframeTrack,
+} from "../../../contracts/codegen/generated/typescript/index.js";
 
+import { colorChain } from "./color.js";
 import { RenderVideoError } from "./errors.js";
 import type { AudioContribution, DuckingWindow, Program, VideoSegment } from "./program.js";
 import { frameSeriesExpression, planCrop } from "./reframe.js";
@@ -135,9 +144,68 @@ function colourSource(
   return label;
 }
 
-function normaliseChain(target: EDL["target"], profile: EncodeProfile): string {
-  const { width, height } = target.resolution;
-  return `,scale=${width}:${height}:flags=${profile.scaler},setsar=1,format=${profile.video.pixel_format}`;
+/**
+ * Size, aspect and pixel format, plus the colour path for this source (contracts#58).
+ *
+ * Geometry runs FIRST, in the source's own encoding, because that is what the contract
+ * states: scaling in linear light and scaling in a gamma-encoded space give different
+ * edges, and which one it is must not be a renderer's habit. The colour chain then ends in
+ * the pixel format, so an identity chain and a converting one leave the same shape behind
+ * for concat and blend to work on.
+ */
+function normaliseChain(
+  builder: GraphBuilder,
+  edl: EDL,
+  profile: EncodeProfile,
+  ref: MediaRef,
+  ops: readonly ColorOp[],
+): string {
+  const { width, height } = edl.target.resolution;
+  const geometry = `,scale=${width}:${height}:flags=${profile.scaler},setsar=1`;
+  const colour = colorChain(edl.color_pipeline, ref, ops, profile);
+  if (colour.identity) {
+    builder.note(
+      "color_pipeline (identity)",
+      `${ref.color_encoding} source delivered as ${edl.color_pipeline.output_encoding} with no ` +
+        "colour op: the code values are passed through untouched. Stated by the contract as " +
+        "normative rather than chosen here — a round trip through linear light is not lossless " +
+        "at 8 bits per channel, so inserting one would change every frame to no purpose.",
+      "contracts#58 (closed)",
+    );
+    return `${geometry},format=${profile.video.pixel_format}`;
+  }
+  builder.note(
+    "color_pipeline",
+    `${ref.color_encoding} linearised into ${edl.color_pipeline.working_space}, ` +
+      `${ops.length} colour op(s) applied as one fused 3x3 matrix, ` +
+      `${edl.color_pipeline.tone_map ? `${edl.color_pipeline.tone_map.operator} tone map, ` : ""}` +
+      `delivered as ${edl.color_pipeline.output_encoding}. Every quantity is the contract's ` +
+      "own formula (contracts#49, contracts#58); nothing here is a default.",
+    "contracts#49, contracts#58 (closed)",
+  );
+  return `${geometry},${colour.filter}`;
+}
+
+/**
+ * A transition blends two clips that have BOTH already reached `output_encoding`, so the
+ * blend happens in the delivered encoding rather than in linear light. Stated in
+ * ColorPipeline's $comment: a dissolve between two differently-encoded sources otherwise
+ * has no defined value space at all, and picking one silently is how two renderers get
+ * different mid-dissolve frames.
+ */
+function colorOpsByClip(edl: EDL): ReadonlyMap<string, readonly ColorOp[]> {
+  const map = new Map<string, readonly ColorOp[]>();
+  for (const track of edl.tracks) {
+    for (const item of track.items) {
+      if (item.item_type !== "clip") continue;
+      map.set((item as Clip).clip_id, (item as Clip).color_ops ?? []);
+    }
+  }
+  return map;
+}
+
+function mediaRefsById(edl: EDL): ReadonlyMap<string, MediaRef> {
+  return new Map(edl.media_refs.map((ref) => [ref.media_ref_id, ref]));
 }
 
 /**
@@ -155,6 +223,13 @@ function videoSegmentChain(
   const label = `v${index}`;
   const rate = edl.rate;
   const reframeById = new Map((edl.reframe_tracks ?? []).map((track) => [track.reframe_track_id, track]));
+  const refById = mediaRefsById(edl);
+  const opsByClip = colorOpsByClip(edl);
+  const refFor = (mediaRefId: string): MediaRef => {
+    const ref = refById.get(mediaRefId);
+    if (!ref) fail(`media_ref ${mediaRefId} is not declared.`);
+    return ref;
+  };
 
   if (segment.kind === "gap") {
     const colour = segment.fill === "white" ? "white" : "black";
@@ -175,7 +250,13 @@ function videoSegmentChain(
       if (!track) fail(`reframe track ${segment.reframeTrackId} is not declared.`);
       chain += cropChain(builder, track, rate, segment.sourceAbsoluteStart, segment.length, source);
     }
-    chain += normaliseChain(edl.target, profile);
+    chain += normaliseChain(
+      builder,
+      edl,
+      profile,
+      refFor(segment.mediaRefId),
+      opsByClip.get(segment.clipId) ?? [],
+    );
     builder.add(`${chain}[${label}]`);
     return label;
   }
@@ -193,7 +274,13 @@ function videoSegmentChain(
       if (!track) fail(`reframe track ${side.reframeTrackId} is not declared.`);
       chain += cropChain(builder, track, rate, side.sourceAbsoluteStart, segment.length, source);
     }
-    chain += normaliseChain(edl.target, profile);
+    chain += normaliseChain(
+      builder,
+      edl,
+      profile,
+      refFor(side.mediaRefId),
+      opsByClip.get(side.clipId) ?? [],
+    );
     builder.add(`${chain}[${sideLabel}]`);
     sideLabels.push(sideLabel);
   });

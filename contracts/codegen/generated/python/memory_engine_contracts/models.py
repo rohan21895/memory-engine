@@ -1549,67 +1549,95 @@ class ClipAudio(ContractModel):
     )
 
 
+class ColorEncoding(str, Enum):
+    """
+    What a set of code values MEANS: primaries, transfer function and matrix
+    coefficients, as one token. The spelling is closed -- see this def's $comment
+    for the table each token expands to.
+    """
+
+    SRGB = "srgb"
+    BT709 = "bt709"
+    DISPLAY_P3 = "display_p3"
+    BT2020_SDR = "bt2020_sdr"
+    BT2100_PQ = "bt2100_pq"
+    BT2100_HLG = "bt2100_hlg"
+
+
 class ColorOpOp(str, Enum):
     EXPOSURE = "exposure"
-    CONTRAST = "contrast"
     SATURATION = "saturation"
-    TEMPERATURE = "temperature"
-    TINT = "tint"
-    HIGHLIGHTS = "highlights"
-    SHADOWS = "shadows"
-    LIFT = "lift"
-    GAMMA = "gamma"
-    GAIN = "gain"
-    LUT = "lut"
-    AUTO_WHITE_BALANCE = "auto_white_balance"
-    MATCH_TO_REFERENCE = "match_to_reference"
 
 
 class ColorOp(ContractModel):
     """
     A per-clip colour adjustment, planned by the intelligence layer and merely
-    applied by the renderer.
+    applied by the renderer. `amount` is normalised to [-1,1]; what that means in
+    light is stated in this def's $comment, per op, as a formula (contracts#49).
     """
 
-    op: ColorOpOp
-
-    # Signed, normalised to [-1,1] where 0 is no change. A single normalised scale
-    # keeps ops composable and makes 'is this grade aggressive' a question with an
-    # answer.
-    amount: float = Field(
-        description="Signed, normalised to [-1,1] where 0 is no change. A single normalised scale keeps ops composable and makes 'is this grade aggressive' a question with an answer.",
+    # Which adjustment. The enum is short on purpose -- see the $comment for what was
+    # removed and why, and for the issue that carries each removed capability.
+    op: ColorOpOp = Field(
+        description="Which adjustment. The enum is short on purpose -- see the $comment for what was removed and why, and for the issue that carries each removed capability.",
     )
 
-    lut_id: Slug | None = Field(default=None)
+    # Signed, normalised to [-1,1] where 0 is no change. Exposure: a * 2 stops.
+    # Saturation: a chroma scale of 1 + a. A single normalised scale keeps ops
+    # composable and makes 'is this grade aggressive' a question with an answer.
+    amount: float = Field(
+        description="Signed, normalised to [-1,1] where 0 is no change. Exposure: a * 2 stops. Saturation: a chroma scale of 1 + a. A single normalised scale keeps ops composable and makes 'is this grade aggressive' a question with an answer.",
+    )
 
-    # For match_to_reference: the clip whose look this one is being matched to. Shot-
-    # to-shot consistency inside a scene is planned, not left to the encoder.
+    # PROVENANCE ONLY -- a renderer never reads this field. The clip whose look this
+    # adjustment was derived from, recorded so a shot-matching decision stays
+    # auditable in the plan after the planner has resolved it into primitive ops. It
+    # resolves nothing at render time: the ops beside it are the whole instruction.
     reference_clip_id: Slug | None = Field(
         default=None,
-        description="For match_to_reference: the clip whose look this one is being matched to. Shot-to-shot consistency inside a scene is planned, not left to the encoder.",
+        description="PROVENANCE ONLY -- a renderer never reads this field. The clip whose look this adjustment was derived from, recorded so a shot-matching decision stays auditable in the plan after the planner has resolved it into primitive ops. It resolve...",
     )
 
 
 class ColorPipelineWorkingSpace(str, Enum):
+    LINEAR_BT709 = "linear_bt709"
+    LINEAR_BT2020 = "linear_bt2020"
+
+
+class ColorPipelineOutputEncoding(str, Enum):
     SRGB = "srgb"
-    REC709 = "rec709"
-    REC2020 = "rec2020"
-    ACES_CCT = "aces_cct"
-    LINEAR = "linear"
+    BT709 = "bt709"
+    DISPLAY_P3 = "display_p3"
+    BT2020_SDR = "bt2020_sdr"
 
 
 class ColorPipeline(ContractModel):
-    input_transform: str = Field(default="auto")
+    """
+    The colour path from every source to the delivered file. Every field is required
+    and none has a default: a colour decision a renderer supplies is invisible until
+    print.
+    """
 
-    working_space: ColorPipelineWorkingSpace = Field(default="rec709")
+    # Where colour ops and tone mapping compose. LINEAR-LIGHT RGB only, scaled so 1.0
+    # is reference white -- the earlier enum mixed transfer names ('rec709') with
+    # 'linear' and with a log space, so it could not say what an op meant. `aces_cct`
+    # went with it: no worker here implements it, and its log curve has constants
+    # nothing in this repo states.
+    working_space: ColorPipelineWorkingSpace = Field(
+        description="Where colour ops and tone mapping compose. LINEAR-LIGHT RGB only, scaled so 1.0 is reference white -- the earlier enum mixed transfer names ('rec709') with 'linear' and with a log space, so it could not say what an op meant. `aces_cct` w...",
+    )
 
-    output_transform: str = Field(default="rec709")
+    # What the delivered file's code values mean, and what its container-level colour
+    # tags must say. SDR only at v0 -- see the ColorEncoding $comment.
+    output_encoding: ColorPipelineOutputEncoding = Field(
+        description="What the delivered file's code values mean, and what its container-level colour tags must say. SDR only at v0 -- see the ColorEncoding $comment.",
+    )
 
-    # Required when any source is HLG or PQ and the target is SDR. Left implicit, HDR
-    # sources render washed out.
-    tone_map_hdr_to_sdr: bool = Field(
-        default=True,
-        description="Required when any source is HLG or PQ and the target is SDR. Left implicit, HDR sources render washed out.",
+    # Required exactly when at least one source's `color_encoding` is an HDR member
+    # (bt2100_pq, bt2100_hlg); must be null otherwise. Checked as
+    # `color_pipeline_resolves`.
+    tone_map: ToneMap | None = Field(
+        description="Required exactly when at least one source's `color_encoding` is an HDR member (bt2100_pq, bt2100_hlg); must be null otherwise. Checked as `color_pipeline_resolves`.",
     )
 
 
@@ -1673,6 +1701,7 @@ class EdlValidationChecksItemCheckId(str, Enum):
     TIME_EFFECT_EXTENT_DERIVED = "time_effect_extent_derived"
     MUSIC_CUES_PLACED_ONCE = "music_cues_placed_once"
     SPAN_CONTINUITY_VERIFIED = "span_continuity_verified"
+    COLOR_PIPELINE_RESOLVES = "color_pipeline_resolves"
     TRANSITION_HANDLES_AVAILABLE = "transition_handles_available"
     BEAT_ALIGNMENT_WITHIN_TOLERANCE = "beat_alignment_within_tolerance"
     NO_MID_WORD_CUT = "no_mid_word_cut"
@@ -2043,6 +2072,26 @@ class MediaRef(ContractModel):
     continuity: MediaRefContinuity | None = Field(
         default=None,
         description="Whether the chapters were verified gapless, copied from MediaRecord.Span.continuity. Required when is_span_assembly is true and forbidden otherwise.",
+    )
+
+    # What this source's code values mean. REQUIRED for a video or image source and
+    # null for an audio or music one. Stated by the planner from the MediaRecord
+    # ingest already probed -- never inferred at render time, which is what
+    # `ColorPipeline.input_transform: "auto"` used to ask for (contracts#58).
+    color_encoding: ColorEncoding | None = Field(
+        default=None,
+        description="What this source's code values mean. REQUIRED for a video or image source and null for an audio or music one. Stated by the planner from the MediaRecord ingest already probed -- never inferred at render time, which is what `ColorPipeline...",
+    )
+
+    # Peak luminance this source is graded to, in cd/m^2. REQUIRED when
+    # `color_encoding` is an HDR member and null otherwise. For `bt2100_hlg` it MUST
+    # be 1000, because that is the nominal display the HLG decode is defined against
+    # here -- any other value would describe a decode that did not happen. It sits on
+    # the source rather than on ToneMap because a cut can hold a 1000-nit phone clip
+    # and a 4000-nit graded one.
+    source_peak_nits: float | None = Field(
+        default=None,
+        description="Peak luminance this source is graded to, in cd/m^2. REQUIRED when `color_encoding` is an HDR member and null otherwise. For `bt2100_hlg` it MUST be 1000, because that is the nominal display the HLG decode is defined against here -- any o...",
     )
 
     expected_frame_rate: float | None = Field(default=None)
@@ -2570,6 +2619,48 @@ class TimeEffect(ContractModel):
     )
 
 
+class ToneMapOperator(str, Enum):
+    HABLE = "hable"
+    REINHARD = "reinhard"
+    MOBIUS = "mobius"
+
+
+class ToneMap(ContractModel):
+    """
+    How HDR light is fitted into the SDR output volume. Required exactly when some
+    source carries an HDR encoding; null otherwise, because a tone map over SDR
+    sources is a grade nobody asked for.
+    """
+
+    # Which curve. Formulas are written out in this def's $comment and are normative.
+    operator: ToneMapOperator = Field(
+        description="Which curve. Formulas are written out in this def's $comment and are normative.",
+    )
+
+    # The operator's single shape parameter: reinhard's contrast, mobius's linear-
+    # section end. Null for hable, which has none. There is no default -- a curve
+    # parameter a renderer supplies is a curve nobody chose. The range is OPEN AT BOTH
+    # ENDS for both parameterised operators, and 1 is excluded because it is
+    # degenerate rather than merely extreme: see the $comment.
+    operator_param: float | None = Field(
+        description="The operator's single shape parameter: reinhard's contrast, mobius's linear-section end. Null for hable, which has none. There is no default -- a curve parameter a renderer supplies is a curve nobody chose. The range is OPEN AT BOTH ENDS...",
+    )
+
+    # What 1.0 means in the working space, in cd/m^2. 100 is SDR diffuse white
+    # (BT.1886); 203 is the BT.2100 HLG graphic-white convention. Required because it
+    # is the scale every other number in this object is expressed against.
+    reference_white_nits: float = Field(
+        description="What 1.0 means in the working space, in cd/m^2. 100 is SDR diffuse white (BT.1886); 203 is the BT.2100 HLG graphic-white convention. Required because it is the scale every other number in this object is expressed against.",
+    )
+
+    # Threshold, in units of reference white, above which a pixel is pulled towards
+    # its own luminance before mapping. 0 disables it. See the $comment for the exact
+    # formula.
+    desaturation: float = Field(
+        description="Threshold, in units of reference white, above which a pixel is pulled towards its own luminance before mapping. 0 disables it. See the $comment for the exact formula.",
+    )
+
+
 class TrackKind(str, Enum):
     VIDEO = "video"
     AUDIO = "audio"
@@ -2737,6 +2828,15 @@ class EDL(ContractModel):
         description="Ordered tracks. Index 0 is the bottom video layer, matching OTIO Stack ordering.",
     )
 
+    # REQUIRED and non-null (contracts#58). It was nullable, and a null colour
+    # pipeline is a plan that declines to say what colour its own output is -- which
+    # leaves the renderer to decide, which is the whole defect. Every EDL states its
+    # colour path, including the ordinary all-SDR one, where the statement is short
+    # and the pipeline is an identity.
+    color_pipeline: ColorPipeline = Field(
+        description="REQUIRED and non-null (contracts#58). It was nullable, and a null colour pipeline is a plan that declines to say what colour its own output is -- which leaves the renderer to decide, which is the whole defect. Every EDL states its colour...",
+    )
+
     determinism: Determinism
 
     name: str | None = Field(default=None)
@@ -2761,8 +2861,6 @@ class EDL(ContractModel):
     beat_grid: BeatGrid | None = Field(default=None)
 
     story_arc: StoryArc | None = Field(default=None)
-
-    color_pipeline: ColorPipeline | None = Field(default=None)
 
     # Present when this EDL is one of several alternatives offered to the user. The
     # reel planner emits 3-5; whichever the user picks becomes a PrefEvent, and the
@@ -5920,6 +6018,7 @@ StoryArc.model_rebuild()
 StoryBeat.model_rebuild()
 SubjectLock.model_rebuild()
 TimeEffect.model_rebuild()
+ToneMap.model_rebuild()
 Track.model_rebuild()
 Transition.model_rebuild()
 VariantInfo.model_rebuild()
@@ -6108,9 +6207,11 @@ __all__ = [
     "BeatLock",
     "Clip",
     "ClipAudio",
+    "ColorEncoding",
     "ColorOpOp",
     "ColorOp",
     "ColorPipelineWorkingSpace",
+    "ColorPipelineOutputEncoding",
     "ColorPipeline",
     "DuckingRuleTarget",
     "DuckingRule",
@@ -6170,6 +6271,8 @@ __all__ = [
     "TimeEffectKind",
     "TimeEffectAudioHandling",
     "TimeEffect",
+    "ToneMapOperator",
+    "ToneMap",
     "TrackKind",
     "TrackRole",
     "Track",

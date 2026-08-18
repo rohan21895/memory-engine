@@ -49,15 +49,16 @@ describe("the gate refuses what the contract does not pin", () => {
     expect(report.gaps).toEqual([]);
   });
 
-  it("refuses every colour op, because ColorOp.amount has no transfer function", () => {
+  it("accepts a colour op, because contracts#49 gave `amount` a transfer function", () => {
     const edl = simpleEdl();
     (edl.tracks[0]!.items[0] as Clip).color_ops = [
-      { op: "exposure", amount: 0.12, lut_id: null, reference_clip_id: null },
+      { op: "exposure", amount: 0.12, reference_clip_id: null },
+      { op: "saturation", amount: -0.08, reference_clip_id: "clip-a" },
     ];
-    const { gaps } = collectGaps(edl);
-    expect(gaps).toHaveLength(1);
-    expect(gaps[0]).toMatchObject({ issue: "contracts#49" });
-    expect(() => assertRenderable(edl)).toThrow(/transfer function/);
+    const report = collectGaps(edl);
+    expect(report.gaps).toEqual([]);
+    expect(report.unimplemented).toEqual([]);
+    expect(() => assertRenderable(edl)).not.toThrow();
   });
 
   it("accepts `smooth`, because contracts#51 pinned it to a curve", () => {
@@ -89,9 +90,6 @@ describe("the gate refuses what the contract does not pin", () => {
 
   it("reports every gap at once rather than the first", () => {
     const edl = simpleEdl();
-    (edl.tracks[0]!.items[0] as Clip).color_ops = [
-      { op: "exposure", amount: 0.12, lut_id: null, reference_clip_id: null },
-    ];
     edl.reframe_tracks![0]!.keyframes[0]!.interpolation = "bezier";
     edl.reframe_tracks![0]!.keyframes[1]!.crop = {
       ...edl.reframe_tracks![0]!.keyframes[1]!.crop,
@@ -99,7 +97,6 @@ describe("the gate refuses what the contract does not pin", () => {
     };
     const { gaps } = collectGaps(edl);
     expect(gaps.map((gap) => gap.issue).sort()).toEqual([
-      "contracts#49",
       "contracts/edl: crop resampling (unfiled)",
       "contracts/edl: crop resampling (unfiled)",
     ]);
@@ -274,15 +271,21 @@ describe("beat locks are re-derived, not trusted", () => {
 });
 
 describe("the golden fixture", () => {
-  it("is refused, and the refusal names every unpinned declaration in it", async () => {
+  it("carries no unpinned declaration left, and the checklist says why", async () => {
     const edl = JSON.parse(await readFile(GOLDEN, "utf8")) as EDL;
     assertStructurallySound(edl);
     const { gaps, unacted } = collectGaps(edl);
 
     const issues = new Set(gaps.map((gap) => gap.issue));
-    // One issue left in the golden reel. This set is the checklist: a closed contract
-    // issue must leave it, and nothing may enter it without an issue behind it.
+    // EMPTY. This set is the checklist: a closed contract issue must leave it, and
+    // nothing may enter it without an issue behind it. It is deliberately an equality
+    // against the empty set rather than a length assertion, so a new gap has to be
+    // argued for here rather than appearing in a passing run.
     //
+    // #49 closed: every op in the ColorOp enum has a transfer function from `amount` to
+    //   a physical quantity, the list fuses into one matrix, and match_to_reference —
+    //   which asked the renderer to MEASURE a second clip — is resolved by the planner
+    //   into the primitive ops it produced, with the reference kept as provenance.
     // #52 closed: ease_in_out is a stated polynomial, the transition types with no
     //   enumerated parameters are out of the enum, and the beds under a transition
     //   butt-cut rather than cross-fading.
@@ -291,7 +294,10 @@ describe("the golden fixture", () => {
     // #54 closed: the ducking envelope is linear in dB with the ramps outside the range.
     // #55 closed: the assembly names its members and its verified continuity.
     // #56 closed: the encode profile is in the plan.
-    expect(issues).toEqual(new Set(["contracts#49"])); // exposure and match_to_reference on clip-07
+    // #58 closed: every source names its colour encoding, the working space is linear
+    //   and named, the delivered encoding is enumerated, and the tone map names an
+    //   operator whose curve is written out as a formula.
+    expect(issues).toEqual(new Set([]));
     // #51 closed: every reframe keyframe in the fixture is `smooth`, and `smooth` is now a
     // stated curve. #50 closed: the retime on clip-05 is pinned, and what is left is this
     // worker's, not the contract's.

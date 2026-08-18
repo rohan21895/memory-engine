@@ -4,7 +4,7 @@
   "title": "EDL",
   "description": "The deterministic edit plan for one video output. Every creative decision in the finished film or reel is expressed here; the renderer executes it and decides nothing.",
 
-  "$comment": "=====================================================================\n OPENTIMELINEIO MAPPING -- READ BEFORE CHANGING ANY FIELD IN THIS FILE\n=====================================================================\n\n Requirement: an EDL must be losslessly exportable to OpenTimelineIO, so a\n pro user can open our auto-cut in Resolve or Premiere and finish it by hand.\n 'Losslessly' here means: export to .otio, re-import, and get a byte-identical\n EDL back. Two rules make that achievable.\n\n RULE 1 -- Structure maps onto OTIO natives, never onto metadata.\n Anything OTIO models natively (clips, gaps, transitions, time, speed,\n markers, media references) uses the OTIO shape exactly, including its\n half-open TimeRange convention and its RationalTime value/rate pair. This is\n why nothing in this contract stores seconds as a float: 30000/1001 has no\n float representation that survives a round trip, and a drifting frame is a\n missed beat.\n\n RULE 2 -- Everything else round-trips through one metadata namespace.\n Beat grids, story arcs, reframe keyframe tracks and ducking rules have no\n OTIO equivalent. They are written into the OTIO `metadata` dict under the\n single key \"memory_engine\", which OTIO preserves verbatim across read/write\n and which every NLE ignores safely. An importer reconstructs the EDL from\n that namespace; an editor who never looks at it still gets a correct cut.\n\n FIELD-BY-FIELD MAPPING\n\n EDL                          -> otio.schema.Timeline\n  .name                       ->   Timeline.name\n  .global_start_time          ->   Timeline.global_start_time (RationalTime)\n  .tracks[]                   ->   Timeline.tracks (a Stack of Tracks)\n  .story_arc                  ->   Timeline.metadata.memory_engine.story_arc\n                                   (+ one Marker per act on the arc track,\n                                    for editor visibility only -- the\n                                    authoritative copy is the metadata)\n  .beat_grid                  ->   Timeline.metadata.memory_engine.beat_grid\n                                   (+ one Marker per downbeat, same rule)\n  .audio_plan.ducking         ->   Timeline.metadata.memory_engine.ducking\n  .audio_plan.mix             ->   Timeline.metadata.memory_engine.mix\n  .reframe_tracks[]           ->   Timeline.metadata.memory_engine.reframe_tracks\n  .determinism                ->   Timeline.metadata.memory_engine.determinism\n  .variant                    ->   Timeline.metadata.memory_engine.variant\n  .target                     ->   Timeline.metadata.memory_engine.target\n\n Track                        -> otio.schema.Track\n  .kind                       ->   Track.kind (\"Video\" | \"Audio\")\n  .name                       ->   Track.name\n  .items[]                    ->   Track (children list, in order)\n\n Clip (item_type=\"clip\")      -> otio.schema.Clip\n  .name                       ->   Clip.name\n  .source_range               ->   Clip.source_range (TimeRange, half-open)\n  .media_ref_id -> MediaRef   ->   Clip.media_reference (ExternalReference)\n  .enabled                    ->   Clip.enabled\n  .markers[]                  ->   Clip.markers[] (otio.schema.Marker)\n  .time_effect (linear_speed) ->   Clip.effects += otio.schema.LinearTimeWarp\n                                     (time_scalar)\n  .time_effect (freeze)       ->   Clip.effects += otio.schema.FreezeFrame\n  .color_ops[]                ->   Clip.effects += otio.schema.Effect with\n                                     effect_name \"memory_engine.color\" and the\n                                     op in its metadata\n  .moment_id, .beat_lock,\n  .reframe_track_id,\n  .source_media_id            ->   Clip.metadata.memory_engine.*\n\n Gap (item_type=\"gap\")        -> otio.schema.Gap\n  .duration                   ->   Gap.source_range.duration\n\n Transition                   -> otio.schema.Transition\n  (item_type=\"transition\")\n  .transition_type            ->   Transition.transition_type\n                                   (\"SMPTE_Dissolve\" | \"Custom\")\n  .in_offset                  ->   Transition.in_offset\n  .out_offset                 ->   Transition.out_offset\n  .easing                     ->   Transition.metadata.memory_engine.easing\n\n MediaRef                     -> otio.schema.ExternalReference\n  .available_range            ->   ExternalReference.available_range\n  .media_id (BLAKE3)          ->   ExternalReference.metadata.memory_engine\n                                     .media_id\n  (resolved local path)       ->   ExternalReference.target_url, written as a\n                                   file:// URL AT EXPORT TIME ONLY. The EDL\n                                   itself stores no paths -- it is portable\n                                   between machines precisely because it\n                                   addresses content by hash. On import the\n                                   hash in metadata wins over target_url.\n\n CONVENTIONS THAT KEEP THE ROUND TRIP EXACT\n\n - A plain cut is the ABSENCE of a Transition, matching OTIO, where adjacent\n   clips simply butt together. Never emit a zero-length Transition for a cut.\n - Transitions sit between their two neighbours in the items list and overlap\n   them by in_offset/out_offset. A TRANSITION DOES NOT CHANGE EITHER\n   NEIGHBOUR'S TIMELINE EXTENT: the blend straddles the cut, covering the\n   outgoing clip's last in_offset frames and the incoming clip's first\n   out_offset frames, and the extra frames it needs beyond each clip's\n   source_range are the HANDLES, drawn from available_range on either side.\n   (This corrected an earlier statement here that the source_ranges already\n   included the handles. They do not, in the golden fixture or in\n   workers/render-video, and under that reading the fixture's timeline does\n   not sum to the 899 frames its own validation report claims -- which is the\n   arithmetic every beat lock in it depends on. See contracts#52.)\n - `timeline_range` on a Clip is derived (it is the running sum of preceding\n   clip and gap EXTENTS -- see TimeEffect for what an extent is under a speed\n   change -- and a transition does not subtract from it) and is NOT exported -- OTIO computes\n   it. It is carried here only so a validator can catch a planner that emitted\n   an inconsistent timeline, and it is excluded from the determinism digest.\n - Every RationalTime on a video track should share the timeline `rate`.\n   Audio-track times may use the audio sample rate. OTIO permits mixed rates;\n   this contract permits them only in that one place.\n\n See docs/otio-mapping.md for the exporter/importer pseudocode and the\n round-trip test plan.",
+  "$comment": "=====================================================================\n OPENTIMELINEIO MAPPING -- READ BEFORE CHANGING ANY FIELD IN THIS FILE\n=====================================================================\n\n Requirement: an EDL must be losslessly exportable to OpenTimelineIO, so a\n pro user can open our auto-cut in Resolve or Premiere and finish it by hand.\n 'Losslessly' here means: export to .otio, re-import, and get a byte-identical\n EDL back. Two rules make that achievable.\n\n RULE 1 -- Structure maps onto OTIO natives, never onto metadata.\n Anything OTIO models natively (clips, gaps, transitions, time, speed,\n markers, media references) uses the OTIO shape exactly, including its\n half-open TimeRange convention and its RationalTime value/rate pair. This is\n why nothing in this contract stores seconds as a float: 30000/1001 has no\n float representation that survives a round trip, and a drifting frame is a\n missed beat.\n\n RULE 2 -- Everything else round-trips through one metadata namespace.\n Beat grids, story arcs, reframe keyframe tracks and ducking rules have no\n OTIO equivalent. They are written into the OTIO `metadata` dict under the\n single key \"memory_engine\", which OTIO preserves verbatim across read/write\n and which every NLE ignores safely. An importer reconstructs the EDL from\n that namespace; an editor who never looks at it still gets a correct cut.\n\n FIELD-BY-FIELD MAPPING\n\n EDL                          -> otio.schema.Timeline\n  .name                       ->   Timeline.name\n  .global_start_time          ->   Timeline.global_start_time (RationalTime)\n  .tracks[]                   ->   Timeline.tracks (a Stack of Tracks)\n  .story_arc                  ->   Timeline.metadata.memory_engine.story_arc\n                                   (+ one Marker per act on the arc track,\n                                    for editor visibility only -- the\n                                    authoritative copy is the metadata)\n  .beat_grid                  ->   Timeline.metadata.memory_engine.beat_grid\n                                   (+ one Marker per downbeat, same rule)\n  .audio_plan.ducking         ->   Timeline.metadata.memory_engine.ducking\n  .audio_plan.mix             ->   Timeline.metadata.memory_engine.mix\n  .reframe_tracks[]           ->   Timeline.metadata.memory_engine.reframe_tracks\n  .determinism                ->   Timeline.metadata.memory_engine.determinism\n  .variant                    ->   Timeline.metadata.memory_engine.variant\n  .target                     ->   Timeline.metadata.memory_engine.target\n\n Track                        -> otio.schema.Track\n  .kind                       ->   Track.kind (\"Video\" | \"Audio\")\n  .name                       ->   Track.name\n  .items[]                    ->   Track (children list, in order)\n\n Clip (item_type=\"clip\")      -> otio.schema.Clip\n  .name                       ->   Clip.name\n  .source_range               ->   Clip.source_range (TimeRange, half-open)\n  .media_ref_id -> MediaRef   ->   Clip.media_reference (ExternalReference)\n  .enabled                    ->   Clip.enabled\n  .markers[]                  ->   Clip.markers[] (otio.schema.Marker)\n  .time_effect (linear_speed) ->   Clip.effects += otio.schema.LinearTimeWarp\n                                     (time_scalar)\n  .time_effect (freeze)       ->   Clip.effects += otio.schema.FreezeFrame\n  .color_ops[]                ->   Clip.effects += otio.schema.Effect with\n                                     effect_name \"memory_engine.color\" and the\n                                     op in its metadata\n  .moment_id, .beat_lock,\n  .reframe_track_id,\n  .source_media_id            ->   Clip.metadata.memory_engine.*\n\n Gap (item_type=\"gap\")        -> otio.schema.Gap\n  .duration                   ->   Gap.source_range.duration\n\n Transition                   -> otio.schema.Transition\n  (item_type=\"transition\")\n  .transition_type            ->   Transition.transition_type\n                                   (\"SMPTE_Dissolve\" | \"Custom\")\n  .in_offset                  ->   Transition.in_offset\n  .out_offset                 ->   Transition.out_offset\n  .easing                     ->   Transition.metadata.memory_engine.easing\n\n MediaRef                     -> otio.schema.ExternalReference\n  .available_range            ->   ExternalReference.available_range\n  .member_media_ids,\n  .continuity,\n  .color_encoding,\n  .source_peak_nits           ->   ExternalReference.metadata.memory_engine.*\n                                   (no OTIO native carries any of them, and a\n                                    round trip that drops them loses the member\n                                    ORDER the assembly's identity is made of and\n                                    the statement of what the code values mean)\n  .media_id (BLAKE3)          ->   ExternalReference.metadata.memory_engine\n                                     .media_id\n  (resolved local path)       ->   ExternalReference.target_url, written as a\n                                   file:// URL AT EXPORT TIME ONLY. The EDL\n                                   itself stores no paths -- it is portable\n                                   between machines precisely because it\n                                   addresses content by hash. On import the\n                                   hash in metadata wins over target_url.\n\n CONVENTIONS THAT KEEP THE ROUND TRIP EXACT\n\n - A plain cut is the ABSENCE of a Transition, matching OTIO, where adjacent\n   clips simply butt together. Never emit a zero-length Transition for a cut.\n - Transitions sit between their two neighbours in the items list and overlap\n   them by in_offset/out_offset. A TRANSITION DOES NOT CHANGE EITHER\n   NEIGHBOUR'S TIMELINE EXTENT: the blend straddles the cut, covering the\n   outgoing clip's last in_offset frames and the incoming clip's first\n   out_offset frames, and the extra frames it needs beyond each clip's\n   source_range are the HANDLES, drawn from available_range on either side.\n   (This corrected an earlier statement here that the source_ranges already\n   included the handles. They do not, in the golden fixture or in\n   workers/render-video, and under that reading the fixture's timeline does\n   not sum to the 899 frames its own validation report claims -- which is the\n   arithmetic every beat lock in it depends on. See contracts#52.)\n - `timeline_range` on a Clip is derived (it is the running sum of preceding\n   clip and gap EXTENTS -- see TimeEffect for what an extent is under a speed\n   change -- and a transition does not subtract from it) and is NOT exported -- OTIO computes\n   it. It is carried here only so a validator can catch a planner that emitted\n   an inconsistent timeline, and it is excluded from the determinism digest.\n - Every RationalTime on a video track should share the timeline `rate`.\n   Audio-track times may use the audio sample rate. OTIO permits mixed rates;\n   this contract permits them only in that one place.\n\n See docs/otio-mapping.md for the exporter/importer pseudocode and the\n round-trip test plan.",
 
   "type": "object",
   "additionalProperties": false,
@@ -16,6 +16,7 @@
     "target",
     "media_refs",
     "tracks",
+    "color_pipeline",
     "determinism"
   ],
   "properties": {
@@ -81,7 +82,8 @@
     },
 
     "color_pipeline": {
-      "oneOf": [{ "$ref": "#/$defs/ColorPipeline" }, { "type": "null" }]
+      "description": "REQUIRED and non-null (contracts#58). It was nullable, and a null colour pipeline is a plan that declines to say what colour its own output is -- which leaves the renderer to decide, which is the whole defect. Every EDL states its colour path, including the ordinary all-SDR one, where the statement is short and the pipeline is an identity.",
+      "$ref": "#/$defs/ColorPipeline"
     },
 
     "variant": {
@@ -305,6 +307,15 @@
             { "type": "null" }
           ]
         },
+        "color_encoding": {
+          "description": "What this source's code values mean. REQUIRED for a video or image source and null for an audio or music one. Stated by the planner from the MediaRecord ingest already probed -- never inferred at render time, which is what `ColorPipeline.input_transform: \"auto\"` used to ask for (contracts#58).",
+          "$comment": "WHAT A RENDERER MAY DO WITH THIS, AND WHAT IT MUST NOT.\n\nThis field is the plan's ASSERTION about the source, and it wins. A renderer\nmust check it against whatever colour tags the container carries and REFUSE a\ncontradiction -- a plan that says bt709 over a file tagged bt2100_pq is either\nthe wrong file or a plan made before the file was re-graded, and both are\nfailures worth stopping for. An UNTAGGED source contradicts nothing, so the\ndeclaration stands; that is the whole point of moving the decision to the\nplanner, where an untagged action-camera file is looked at once instead of\nguessed at on every render.",
+          "oneOf": [{ "$ref": "#/$defs/ColorEncoding" }, { "type": "null" }]
+        },
+        "source_peak_nits": {
+          "description": "Peak luminance this source is graded to, in cd/m^2. REQUIRED when `color_encoding` is an HDR member and null otherwise. For `bt2100_hlg` it MUST be 1000, because that is the nominal display the HLG decode is defined against here -- any other value would describe a decode that did not happen. It sits on the source rather than on ToneMap because a cut can hold a 1000-nit phone clip and a 4000-nit graded one.",
+          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+        },
         "expected_frame_rate": {
           "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
         },
@@ -314,6 +325,25 @@
         }
       },
       "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              { "properties": { "media_kind": { "enum": ["video", "image", "generated"] } }, "required": ["media_kind"] },
+              { "not": { "required": ["media_kind"] } }
+            ]
+          },
+          "then": { "required": ["color_encoding"], "properties": { "color_encoding": { "type": "string" } } },
+          "else": { "properties": { "color_encoding": { "type": "null" }, "source_peak_nits": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "color_encoding": { "enum": ["bt2100_pq", "bt2100_hlg"] } }, "required": ["color_encoding"] },
+          "then": { "required": ["source_peak_nits"], "properties": { "source_peak_nits": { "type": "number" } } },
+          "else": { "properties": { "source_peak_nits": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "color_encoding": { "const": "bt2100_hlg" } }, "required": ["color_encoding"] },
+          "then": { "properties": { "source_peak_nits": { "const": 1000 } } }
+        },
         {
           "if": { "properties": { "is_span_assembly": { "const": true } }, "required": ["is_span_assembly"] },
           "then": {
@@ -545,27 +575,39 @@
 
     "ColorOp": {
       "title": "ColorOp",
-      "description": "A per-clip colour adjustment, planned by the intelligence layer and merely applied by the renderer.",
+      "description": "A per-clip colour adjustment, planned by the intelligence layer and merely applied by the renderer. `amount` is normalised to [-1,1]; what that means in light is stated in this def's $comment, per op, as a formula (contracts#49).",
+      "$comment": "THE TRANSFER FUNCTION FROM `amount` TO A PICTURE (contracts#49)\n\nBefore this, `amount` was 'signed, normalised to [-1,1] where 0 is no change',\nwhich pins the sign and the zero and nothing else. `{\"op\":\"exposure\",\n\"amount\":0.12}` could mean +0.12 stops, +1.2 stops, a 12% linear gain or a 12%\nmove towards a clipping ceiling. Two renderers that both follow the contract\nproduce visibly different pictures, and neither looks wrong in review. Colour\nis the one thing where a silent disagreement survives all the way to print.\n\nWHERE THE OPS APPLY.\nIn `color_pipeline.working_space`, which is LINEAR-LIGHT RGB scaled so that 1.0\nis reference white. Not in the source's encoding and not in the output's: an\nexposure adjustment is a multiplication of light, and a multiplication applied\nto a gamma-encoded code value is not one. Values are NOT clamped between ops --\na saturation of -1 followed by an exposure is well defined -- and are clamped\nto [0,1] exactly once, when the pipeline encodes to `output_encoding`.\n\nTHE TABLE. `a` is `amount`. R, G, B are linear working-space channels.\n\n  op          physical quantity        formula\n  ----------  -----------------------  --------------------------------------\n  exposure    +/- 2 stops              RGB' = RGB * 2^(2a)\n  saturation  0x .. 2x chroma          Y    = kr*R + kg*G + kb*B\n                                       RGB' = Y + (1 + a) * (RGB - Y)\n\n  (kr, kg, kb) are the working space's own luminance coefficients:\n    linear_bt709   0.2126, 0.7152, 0.0722   (ITU-R BT.709-6 Table 3)\n    linear_bt2020  0.2627, 0.6780, 0.0593   (ITU-R BT.2020-2 Table 4)\n  They are named rather than assumed because using BT.709's vector on BT.2020\n  primaries desaturates greens by several percent, which reads as 'the grade'.\n\n  a = 0 is the identity in both rows: 2^0 = 1, and 1 + 0 = 1.\n\nCOMPOSITION.\nOps apply in array order, left to right. Both ops are LINEAR maps of the RGB\nvector, so the whole list composes into one 3x3 matrix; a renderer MUST form\nthat matrix by multiplying the per-op matrices in array order in IEEE-754\nbinary64 and apply it once, rather than applying each op in turn. That is not\nan optimisation, it is what makes the result reproducible: applying them one at\na time rounds at every step, and the rounding depends on how many ops the\nplanner happened to emit. The chain runs at no less than binary32 per channel.\n\nWHY THIS ENUM IS SHORT, AND WHAT LEFT.\nEvery value removed here was removed because `amount: number` cannot carry what\nthe op needs, not because the look is unwanted. Each has a follow-up issue so\nthe capability is lost out loud rather than quietly:\n\n  match_to_reference, auto_white_balance -- both require the renderer to MEASURE\n    an image and derive a grade from it. That is an intelligence-layer\n    computation, it is not reproducible across builds, and hard rule 3 puts it\n    on the planner's side. The planner resolves them into the primitive ops it\n    wants applied. `reference_clip_id` survives as pure provenance.\n  temperature, tint -- a colour temperature is a chromatic adaptation BETWEEN\n    two illuminants, and this contract states only one white point. '+2000 K'\n    from what? A relative mired shift is statable, but it also needs a named\n    adaptation matrix (Bradford and CAT02 disagree), and an unnamed one is\n    exactly the invisible-until-print choice this issue is about. A\n    `white_balance` op carrying source and target white points as CIE xy plus a\n    named adaptation matrix is the right shape.\n  highlights, shadows -- need a tonal mask: a pivot and a rolloff width. One\n    scalar cannot carry a selection.\n  lift, gamma, gain -- these are the ASC CDL's offset, power and slope, and the\n    CDL defines them PER CHANNEL. Collapsed to one scalar, `gain` is `exposure`\n    under another name and `lift` and `gamma` are a grade nobody can match a\n    shot with. The right shape is an ASC CDL op (ANSI/SMPTE S-2016-001) with\n    slope/offset/power triples, which needs no invention at all.\n  contrast -- a power about a pivot is not a linear map, so it cannot fuse into\n    the matrix above; it needs its own value space and its own statement about\n    where clipping happens.\n  lut -- a LUT is an ASSET, not an amount. It needs a content hash so the plan\n    addresses it the way it addresses everything else, a cube size, a domain,\n    and an interpolation rule (trilinear and tetrahedral differ on exactly the\n    skin tones a family album is made of). `lut_id` was a slug pointing at\n    nothing resolvable and is removed with the op.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["op", "amount"],
+      "required": [
+        "op",
+        "amount"
+      ],
       "properties": {
         "op": {
+          "description": "Which adjustment. The enum is short on purpose -- see the $comment for what was removed and why, and for the issue that carries each removed capability.",
           "type": "string",
-          "enum": ["exposure", "contrast", "saturation", "temperature", "tint", "highlights", "shadows", "lift", "gamma", "gain", "lut", "auto_white_balance", "match_to_reference"]
+          "enum": [
+            "exposure",
+            "saturation"
+          ]
         },
         "amount": {
-          "description": "Signed, normalised to [-1,1] where 0 is no change. A single normalised scale keeps ops composable and makes 'is this grade aggressive' a question with an answer.",
+          "description": "Signed, normalised to [-1,1] where 0 is no change. Exposure: a * 2 stops. Saturation: a chroma scale of 1 + a. A single normalised scale keeps ops composable and makes 'is this grade aggressive' a question with an answer.",
           "type": "number",
           "minimum": -1,
           "maximum": 1
         },
-        "lut_id": {
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
-        },
         "reference_clip_id": {
-          "description": "For match_to_reference: the clip whose look this one is being matched to. Shot-to-shot consistency inside a scene is planned, not left to the encoder.",
-          "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
+          "description": "PROVENANCE ONLY -- a renderer never reads this field. The clip whose look this adjustment was derived from, recorded so a shot-matching decision stays auditable in the plan after the planner has resolved it into primitive ops. It resolves nothing at render time: the ops beside it are the whole instruction.",
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/Slug"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -1118,22 +1160,137 @@
       }
     },
 
-    "ColorPipeline": {
-      "title": "ColorPipeline",
+    "ColorEncoding": {
+      "title": "ColorEncoding",
+      "description": "What a set of code values MEANS: primaries, transfer function and matrix coefficients, as one token. The spelling is closed -- see this def's $comment for the table each token expands to.",
+      "$comment": "THE VALUE SPACE, ENUMERATED (contracts#58)\n\n`input_transform` and `output_transform` used to be bare strings, so \"rec709\",\n\"bt709\" and \"Rec. 709\" were all equally valid contract data and none of them\nnamed a primaries set. A colour encoding is three facts, not one, and all three\nchange the picture:\n\n  token         primaries                    transfer                  matrix\n  ------------  ---------------------------  ------------------------  ---------\n  srgb          BT.709 (D65)                 IEC 61966-2-1             BT.709\n  bt709         BT.709 (D65)                 ITU-R BT.709-6 OETF       BT.709\n  display_p3    SMPTE RP 431-2 (D65)         IEC 61966-2-1             BT.709\n  bt2020_sdr    ITU-R BT.2020-2 (D65)        ITU-R BT.709-6 OETF       BT.2020 non-constant\n  bt2100_pq     ITU-R BT.2020-2 (D65)        SMPTE ST 2084 (PQ)        BT.2020 non-constant\n  bt2100_hlg    ITU-R BT.2020-2 (D65)        ARIB STD-B67 (HLG)        BT.2020 non-constant\n\n`srgb` and `bt709` share primaries and differ ONLY in the transfer: sRGB's\npiecewise curve is roughly gamma 2.2 and BT.709's OETF is roughly gamma 1/0.45\nwith a different toe. They are listed separately because that difference is\nabout two code values in the shadows of every frame, which is where banding\nlives.\n\nHDR MEMBERS AND WHAT THEY DECODE TO.\n  bt2100_pq  -- ST 2084 is ABSOLUTE: a code value names a luminance in cd/m^2\n                directly, so the decode needs no assumption at all.\n  bt2100_hlg -- HLG is relative, and its EOTF is the inverse OETF followed by\n                the OOTF, whose system gamma depends on the peak luminance of\n                the display being modelled. This contract fixes that at the\n                BT.2100 nominal: PEAK 1000 cd/m^2, SYSTEM GAMMA 1.2, so HLG\n                reference white (signal 0.75) decodes to 203 cd/m^2. Stated\n                because leaving it open is what makes one HLG render look flat\n                and another look right, and `MediaRef.source_peak_nits`\n                is required to be 1000 for an HLG source for the same reason.\n\nEVERY TOKEN IS LIMITED RANGE (\"video range\", ffprobe's `tv`), for the source and\nfor the delivered file alike. Range is part of what a code value MEANS, so it\nbelongs in this table rather than in a renderer's habits: reading full-range\nlevels as limited crushes the blacks and clips the whites, reading limited as\nfull washes the picture out, and neither raises anything. A full-range source\nis therefore refused rather than guessed at. Phones do shoot full range, so a\nfull-range variant of each token is a real gap, filed as contracts#101 -- it is\nleft out here because adding a token nobody can round-trip is worse than\nrefusing.\n\nDELIVERY IS SDR AT v0. `ColorPipeline.output_encoding` accepts only the four\nSDR members. HDR delivery needs a mastering-display block (MaxCLL, MaxFALL,\nmastering primaries) that no worker writes today, and shipping the enum without\nit would let a plan ask for a file the renderer cannot label correctly.",
+      "type": "string",
+      "enum": [
+        "srgb",
+        "bt709",
+        "display_p3",
+        "bt2020_sdr",
+        "bt2100_pq",
+        "bt2100_hlg"
+      ]
+    },
+
+    "ToneMap": {
+      "title": "ToneMap",
+      "description": "How HDR light is fitted into the SDR output volume. Required exactly when some source carries an HDR encoding; null otherwise, because a tone map over SDR sources is a grade nobody asked for.",
+      "$comment": "THE OPERATOR IS NAMED AND ITS CURVE IS WRITTEN OUT (contracts#58)\n\n`tone_map_hdr_to_sdr` was a boolean, correctly justified -- left implicit, HDR\nsources render washed out -- that named no operator. Hable, Mobius and Reinhard\ndiffer substantially on exactly the material that triggers them, a bright sky\nbehind a backlit face, and the peak-luminance assumption moves the result\nagain. So the one field that existed to stop HDR rendering wrong did not\ndetermine what it rendered as.\n\nNORMALISATION, FIRST, BECAUSE EVERY NUMBER BELOW DEPENDS ON IT.\nThe working space is linear light scaled so that 1.0 is `reference_white_nits`.\nEvery source is linearised into that scale before anything else happens, so a\nPQ source graded to 1000 cd/m^2 with `reference_white_nits: 100` arrives with\nits peak at 10.0. Define\n\n    peak = MediaRef.source_peak_nits / reference_white_nits     (peak >= 1)\n\nAN SDR SOURCE HAS NO PEAK FIELD BECAUSE IT NEEDS NONE. `reference_white_nits`\nIS what an SDR code value of 1.0 means, so an SDR source always linearises with\nits diffuse white at exactly 1.0 whatever the number is set to. Setting it to\n203 therefore does not brighten the SDR footage; it asserts that this\nprogramme's diffuse white is 203 cd/m^2, which is where an HDR source's 203-nit\nlevel then lands too. That alignment is the only thing the field does, and it\nis why it is one number for the whole plan rather than one per source.\n\nIT APPLIES TO HDR SOURCES ONLY. A cut may hold an HDR clip and an SDR one; the\ntone map runs on the HDR ones and the SDR ones pass through untouched. This is\nnot a nicety: an SDR source has no `source_peak_nits`, so its `peak` would be 1,\nand every operator at peak 1 is a compression curve rather than the identity --\nhable at peak 1 darkens mid-grey by about a third. Matching an HDR clip and an\nSDR clip across a cut is a PLANNER decision, expressed as `color_ops` on one of\nthem, not something the tone map does by accident.\n\nPEAK IS PER SOURCE, NOT PER PLAN. It lives on the MediaRef beside the encoding\nit belongs to, because a cut can hold a 1000-nit phone clip and a 4000-nit\ngraded one, and fitting both from one number maps one of them wrong. Everything\nelse here -- the operator, its parameter, the reference white, the desaturation\nthreshold -- is a look, and a look is one decision for the whole programme.\n\nWHAT THE OPERATOR DOES.\nPer pixel, on linear working-space RGB, in this order:\n\n  1. DESATURATION, before mapping. With luminance coefficients (kr,kg,kb) from\n     the working space (the same vector ColorOp.saturation uses):\n\n         Y  = kr*R + kg*G + kb*B\n         ob = max(Y - desaturation, eps) / max(Y, eps)          eps = 1e-6\n         RGB <- RGB * (1 - ob) + Y * ob\n\n     `desaturation` is therefore a THRESHOLD in units of reference white, not a\n     strength: a pixel dimmer than it is untouched, and a pixel brighter than\n     it is pulled towards its own luminance in proportion to how far past it\n     is. `desaturation: 0` disables it (ob collapses to eps/Y). This is what\n     stops a 4000-nit sun turning into a flat cyan disc when its brightest\n     channel is compressed and the others are not.\n\n  2. MAPPING, on the brightest channel, applied to all three as one scale, so\n     hue is preserved by construction:\n\n         s     = max(R, G, B, eps)\n         RGB' = RGB * f(s) / s\n\n  3. f is the named operator. All three satisfy f(peak) = 1, so the source\n     peak lands exactly on output reference white and nothing above it exists:\n\n     hable     f(s) = H(s) / H(peak),  where H is the Uncharted-2 curve\n                 H(x) = (x*(A*x + C*B) + D*E) / (x*(A*x + B) + D*F) - E/F\n                 A=0.15  B=0.50  C=0.10  D=0.20  E=0.02  F=0.30\n               Takes no parameter, so `operator_param` must be null.\n     reinhard  offset = (1 - operator_param) / operator_param\n                 f(s) = s / (s + offset) * (peak + offset) / peak\n               `operator_param` is in (0,1), OPEN AT BOTH ENDS. As it\n               approaches 0 the offset grows without bound and f approaches a\n               straight scale by 1/peak; at exactly 1 the offset is 0 and f\n               collapses to the CONSTANT 1.0 -- every pixel above black\n               becomes reference white, which is a white frame, not a grade.\n               The first draft of this table said 1 was the straight scale.\n               It is the other end. Measuring the filter is what caught it.\n     mobius    j = operator_param\n                 f(s) = s                                        for s <= j\n                 a    = -j*j*(peak - 1) / (j*j - 2*j + peak)\n                 b    = (j*j - 2*j*peak + peak) / max(peak - 1, 1e-6)\n                 f(s) = (b*b + 2*b*j + j*j) / (b - a) * (s + a) / (s + b)\n               Linear below j and compressive above it, so highlights roll off\n               and everything under j is untouched.\n\nThese formulas are NORMATIVE. They were derived by measuring a renderer rather\nthan copied from one, and workers/render-video carries a test that feeds known\nlinear values through the real filter and checks the output against them --\nbecause a formula in a schema that no implementation matches is worse than the\ngap it replaced.\n\nWHAT IS NOT HERE. No target peak: every operator maps each source's `peak` to\n1.0, which IS the target, and a second number that must equal reference white\nis a second place to be wrong. No BT.2390 EETF: it is the better operator, and no\nrenderer in this repo can execute it. A specification neither side can satisfy\nis worse than the gap it was meant to close.",
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "operator",
+        "operator_param",
+        "reference_white_nits",
+        "desaturation"
+      ],
       "properties": {
-        "input_transform": { "type": "string", "default": "auto" },
-        "working_space": {
+        "operator": {
+          "description": "Which curve. Formulas are written out in this def's $comment and are normative.",
           "type": "string",
-          "enum": ["srgb", "rec709", "rec2020", "aces_cct", "linear"],
-          "default": "rec709"
+          "enum": [
+            "hable",
+            "reinhard",
+            "mobius"
+          ]
         },
-        "output_transform": { "type": "string", "default": "rec709" },
-        "tone_map_hdr_to_sdr": {
-          "description": "Required when any source is HLG or PQ and the target is SDR. Left implicit, HDR sources render washed out.",
-          "type": "boolean",
-          "default": true
+        "operator_param": {
+          "description": "The operator's single shape parameter: reinhard's contrast, mobius's linear-section end. Null for hable, which has none. There is no default -- a curve parameter a renderer supplies is a curve nobody chose. The range is OPEN AT BOTH ENDS for both parameterised operators, and 1 is excluded because it is degenerate rather than merely extreme: see the $comment.",
+          "oneOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reference_white_nits": {
+          "description": "What 1.0 means in the working space, in cd/m^2. 100 is SDR diffuse white (BT.1886); 203 is the BT.2100 HLG graphic-white convention. Required because it is the scale every other number in this object is expressed against.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "desaturation": {
+          "description": "Threshold, in units of reference white, above which a pixel is pulled towards its own luminance before mapping. 0 disables it. See the $comment for the exact formula.",
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operator": {
+                "const": "hable"
+              }
+            },
+            "required": [
+              "operator"
+            ]
+          },
+          "then": {
+            "properties": {
+              "operator_param": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "operator_param": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "ColorPipeline": {
+      "title": "ColorPipeline",
+      "description": "The colour path from every source to the delivered file. Every field is required and none has a default: a colour decision a renderer supplies is invisible until print.",
+      "$comment": "THE ORDER OF OPERATIONS, ONCE, SO NEITHER SIDE INFERS IT (contracts#58)\n\n  1. Decode each source. Geometry -- crop and scale -- is applied HERE, in the\n     source's own encoding, before any colour conversion. Stated because\n     scaling in linear light and scaling in a gamma-encoded space give\n     different edges, and 'which one' must not be a renderer's habit.\n  2. Linearise from that source's `MediaRef.color_encoding` into\n     `working_space`, converting primaries by the chromatic-adaptation-free\n     3x3 between the two primary sets, and scaling so 1.0 is reference white.\n  3. Apply the clip's `color_ops`, in array order, as one fused matrix\n     (see ColorOp).\n  4. Apply `tone_map`, if present.\n  5. Convert primaries to `output_encoding`'s and apply its transfer function.\n     THIS is where values are clamped to [0,1], exactly once.\n  6. Quantise to `EncodeProfile.video.pixel_format`.\n\nA TRANSITION BLENDS AFTER ALL OF THIS, IN `output_encoding`. Both sides of a\ndissolve or a dip have already reached step 5, so the blend weight mixes\ndelivered code values rather than linear light. Stated because the alternative\nis defensible and different: blending in linear light is brighter through the\nmiddle of every dissolve. It is also the only reading that is well defined when\nthe two sides come from sources with different encodings, since before step 5\nthey have no common value space at all.\n\nTHE IDENTITY CASE IS NORMATIVE, NOT AN OPTIMISATION.\nWhen a source's `color_encoding` equals `output_encoding`, the clip carries no\n`color_ops`, and `tone_map` is null, steps 2-5 MUST be skipped -- the code\nvalues are passed through untouched. A round trip through linear light and back\nis not lossless at 8 bits per channel; a renderer that inserted one would\nchange every frame of an ordinary SDR reel to no purpose, and the change would\nbe invisible in review and permanent in the file.\n\nWHY input_transform IS GONE.\nIt was a single global string defaulting to \"auto\", which asked the renderer to\ninfer a transform from container metadata and said nothing about what to do\nwhen that metadata was absent or wrong -- routine for action cameras and phone\nHEVC. Worse, it was global: one plan can hold a phone's HLG clip and a DSLR's\nBT.709 clip, and one string cannot describe both. The fact now lives per source\non `MediaRef.color_encoding`, stated by the planner from the MediaRecord that\ningest already probed. An untagged source is then a question the PLANNER\nanswers, once, in daylight -- not one the renderer answers per render.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "working_space",
+        "output_encoding",
+        "tone_map"
+      ],
+      "properties": {
+        "working_space": {
+          "description": "Where colour ops and tone mapping compose. LINEAR-LIGHT RGB only, scaled so 1.0 is reference white -- the earlier enum mixed transfer names ('rec709') with 'linear' and with a log space, so it could not say what an op meant. `aces_cct` went with it: no worker here implements it, and its log curve has constants nothing in this repo states.",
+          "type": "string",
+          "enum": [
+            "linear_bt709",
+            "linear_bt2020"
+          ]
+        },
+        "output_encoding": {
+          "description": "What the delivered file's code values mean, and what its container-level colour tags must say. SDR only at v0 -- see the ColorEncoding $comment.",
+          "type": "string",
+          "enum": [
+            "srgb",
+            "bt709",
+            "display_p3",
+            "bt2020_sdr"
+          ]
+        },
+        "tone_map": {
+          "description": "Required exactly when at least one source's `color_encoding` is an HDR member (bt2100_pq, bt2100_hlg); must be null otherwise. Checked as `color_pipeline_resolves`.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ToneMap"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -1190,6 +1347,7 @@
                   "time_effect_extent_derived",
                   "music_cues_placed_once",
                   "span_continuity_verified",
+              "color_pipeline_resolves",
                   "transition_handles_available",
                   "beat_alignment_within_tolerance",
                   "no_mid_word_cut",

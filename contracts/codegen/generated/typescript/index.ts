@@ -1659,84 +1659,104 @@ export interface ClipAudio {
   audio_extends_past_out?: RationalTime | null;
 }
 
-export type ColorOpOp =
-  | "exposure"
-  | "contrast"
-  | "saturation"
-  | "temperature"
-  | "tint"
-  | "highlights"
-  | "shadows"
-  | "lift"
-  | "gamma"
-  | "gain"
-  | "lut"
-  | "auto_white_balance"
-  | "match_to_reference";
+/**
+ * What a set of code values MEANS: primaries, transfer function and matrix coefficients,
+ * as one token. The spelling is closed -- see this def's $comment for the table each token
+ * expands to.
+ */
+export type ColorEncoding =
+  | "srgb"
+  | "bt709"
+  | "display_p3"
+  | "bt2020_sdr"
+  | "bt2100_pq"
+  | "bt2100_hlg";
+
+export const ColorEncodingValues = [
+  "srgb",
+  "bt709",
+  "display_p3",
+  "bt2020_sdr",
+  "bt2100_pq",
+  "bt2100_hlg",
+] as const satisfies readonly ColorEncoding[];
+
+export type ColorOpOp = "exposure" | "saturation";
 
 export const ColorOpOpValues = [
   "exposure",
-  "contrast",
   "saturation",
-  "temperature",
-  "tint",
-  "highlights",
-  "shadows",
-  "lift",
-  "gamma",
-  "gain",
-  "lut",
-  "auto_white_balance",
-  "match_to_reference",
 ] as const satisfies readonly ColorOpOp[];
 
 /**
  * A per-clip colour adjustment, planned by the intelligence layer and merely applied by
- * the renderer.
+ * the renderer. `amount` is normalised to [-1,1]; what that means in light is stated in
+ * this def's $comment, per op, as a formula (contracts#49).
  */
 export interface ColorOp {
+  /**
+   * Which adjustment. The enum is short on purpose -- see the $comment for what was
+   * removed and why, and for the issue that carries each removed capability.
+   */
   op: ColorOpOp;
 
   /**
-   * Signed, normalised to [-1,1] where 0 is no change. A single normalised scale keeps ops
-   * composable and makes 'is this grade aggressive' a question with an answer.
+   * Signed, normalised to [-1,1] where 0 is no change. Exposure: a * 2 stops. Saturation:
+   * a chroma scale of 1 + a. A single normalised scale keeps ops composable and makes 'is
+   * this grade aggressive' a question with an answer.
    */
   amount: number;
 
-  lut_id?: Slug | null;
-
   /**
-   * For match_to_reference: the clip whose look this one is being matched to. Shot-to-shot
-   * consistency inside a scene is planned, not left to the encoder.
+   * PROVENANCE ONLY -- a renderer never reads this field. The clip whose look this
+   * adjustment was derived from, recorded so a shot-matching decision stays auditable in
+   * the plan after the planner has resolved it into primitive ops. It resolves nothing at
+   * render time: the ops beside it are the whole instruction.
    */
   reference_clip_id?: Slug | null;
 }
 
-export type ColorPipelineWorkingSpace = "srgb" | "rec709" | "rec2020" | "aces_cct" | "linear";
+export type ColorPipelineWorkingSpace = "linear_bt709" | "linear_bt2020";
 
 export const ColorPipelineWorkingSpaceValues = [
-  "srgb",
-  "rec709",
-  "rec2020",
-  "aces_cct",
-  "linear",
+  "linear_bt709",
+  "linear_bt2020",
 ] as const satisfies readonly ColorPipelineWorkingSpace[];
 
+export type ColorPipelineOutputEncoding = "srgb" | "bt709" | "display_p3" | "bt2020_sdr";
+
+export const ColorPipelineOutputEncodingValues = [
+  "srgb",
+  "bt709",
+  "display_p3",
+  "bt2020_sdr",
+] as const satisfies readonly ColorPipelineOutputEncoding[];
+
+/**
+ * The colour path from every source to the delivered file. Every field is required and
+ * none has a default: a colour decision a renderer supplies is invisible until print.
+ */
 export interface ColorPipeline {
-  /** Default: "auto". */
-  input_transform?: string;
-
-  /** Default: "rec709". */
-  working_space?: ColorPipelineWorkingSpace;
-
-  /** Default: "rec709". */
-  output_transform?: string;
+  /**
+   * Where colour ops and tone mapping compose. LINEAR-LIGHT RGB only, scaled so 1.0 is
+   * reference white -- the earlier enum mixed transfer names ('rec709') with 'linear' and
+   * with a log space, so it could not say what an op meant. `aces_cct` went with it: no
+   * worker here implements it, and its log curve has constants nothing in this repo
+   * states.
+   */
+  working_space: ColorPipelineWorkingSpace;
 
   /**
-   * Required when any source is HLG or PQ and the target is SDR. Left implicit, HDR
-   * sources render washed out. Default: true.
+   * What the delivered file's code values mean, and what its container-level colour tags
+   * must say. SDR only at v0 -- see the ColorEncoding $comment.
    */
-  tone_map_hdr_to_sdr?: boolean;
+  output_encoding: ColorPipelineOutputEncoding;
+
+  /**
+   * Required exactly when at least one source's `color_encoding` is an HDR member
+   * (bt2100_pq, bt2100_hlg); must be null otherwise. Checked as `color_pipeline_resolves`.
+   */
+  tone_map: ToneMap | null;
 }
 
 export type DuckingRuleTarget = "music" | "ambient" | "sfx";
@@ -1795,6 +1815,7 @@ export type EdlValidationChecksItemCheckId =
   | "time_effect_extent_derived"
   | "music_cues_placed_once"
   | "span_continuity_verified"
+  | "color_pipeline_resolves"
   | "transition_handles_available"
   | "beat_alignment_within_tolerance"
   | "no_mid_word_cut"
@@ -1813,6 +1834,7 @@ export const EdlValidationChecksItemCheckIdValues = [
   "time_effect_extent_derived",
   "music_cues_placed_once",
   "span_continuity_verified",
+  "color_pipeline_resolves",
   "transition_handles_available",
   "beat_alignment_within_tolerance",
   "no_mid_word_cut",
@@ -2234,6 +2256,23 @@ export interface MediaRef {
    * Required when is_span_assembly is true and forbidden otherwise.
    */
   continuity?: MediaRefContinuity | null;
+
+  /**
+   * What this source's code values mean. REQUIRED for a video or image source and null for
+   * an audio or music one. Stated by the planner from the MediaRecord ingest already
+   * probed -- never inferred at render time, which is what `ColorPipeline.input_transform:
+   * "auto"` used to ask for (contracts#58).
+   */
+  color_encoding?: ColorEncoding | null;
+
+  /**
+   * Peak luminance this source is graded to, in cd/m^2. REQUIRED when `color_encoding` is
+   * an HDR member and null otherwise. For `bt2100_hlg` it MUST be 1000, because that is
+   * the nominal display the HLG decode is defined against here -- any other value would
+   * describe a decode that did not happen. It sits on the source rather than on ToneMap
+   * because a cut can hold a 1000-nit phone clip and a 4000-nit graded one.
+   */
+  source_peak_nits?: number | null;
 
   expected_frame_rate?: number | null;
 
@@ -2799,6 +2838,46 @@ export interface TimeEffect {
   audio_handling?: TimeEffectAudioHandling;
 }
 
+export type ToneMapOperator = "hable" | "reinhard" | "mobius";
+
+export const ToneMapOperatorValues = [
+  "hable",
+  "reinhard",
+  "mobius",
+] as const satisfies readonly ToneMapOperator[];
+
+/**
+ * How HDR light is fitted into the SDR output volume. Required exactly when some source
+ * carries an HDR encoding; null otherwise, because a tone map over SDR sources is a grade
+ * nobody asked for.
+ */
+export interface ToneMap {
+  /** Which curve. Formulas are written out in this def's $comment and are normative. */
+  operator: ToneMapOperator;
+
+  /**
+   * The operator's single shape parameter: reinhard's contrast, mobius's linear-section
+   * end. Null for hable, which has none. There is no default -- a curve parameter a
+   * renderer supplies is a curve nobody chose. The range is OPEN AT BOTH ENDS for both
+   * parameterised operators, and 1 is excluded because it is degenerate rather than merely
+   * extreme: see the $comment.
+   */
+  operator_param: number | null;
+
+  /**
+   * What 1.0 means in the working space, in cd/m^2. 100 is SDR diffuse white (BT.1886);
+   * 203 is the BT.2100 HLG graphic-white convention. Required because it is the scale
+   * every other number in this object is expressed against.
+   */
+  reference_white_nits: number;
+
+  /**
+   * Threshold, in units of reference white, above which a pixel is pulled towards its own
+   * luminance before mapping. 0 disables it. See the $comment for the exact formula.
+   */
+  desaturation: number;
+}
+
 export type TrackKind = "video" | "audio";
 
 export const TrackKindValues = [
@@ -2998,7 +3077,13 @@ export interface EDL {
 
   story_arc?: StoryArc | null;
 
-  color_pipeline?: ColorPipeline | null;
+  /**
+   * REQUIRED and non-null (contracts#58). It was nullable, and a null colour pipeline is a
+   * plan that declines to say what colour its own output is -- which leaves the renderer
+   * to decide, which is the whole defect. Every EDL states its colour path, including the
+   * ordinary all-SDR one, where the statement is short and the pipeline is an identity.
+   */
+  color_pipeline: ColorPipeline;
 
   /**
    * Present when this EDL is one of several alternatives offered to the user. The reel

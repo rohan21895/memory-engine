@@ -1,7 +1,7 @@
 {
   "schema_version": "v0",
-  "edl_id": "a41d37e9b3e248d9e910a229eb374887bc40e2531dbc3e1a2ebb5ec196d7e354",
-  "name": "chapters listed in the wrong order",
+  "edl_id": "5fdf20e69a46334258ed10a9fd5f7fcd98bf4d0f58647e8842698156b99554d9",
+  "name": "Uttarakhand ridge ride - 15s (HLG source)",
   "kind": "reel",
   "rate": 59.94005994005994,
   "global_start_time": {
@@ -73,12 +73,12 @@
       "expected_frame_rate": 59.94005994005994,
       "label": "GH01/GH02 1234 (assembled)",
       "member_media_ids": [
-        "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8",
-        "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013"
+        "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
+        "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8"
       ],
       "continuity": "verified_gapless",
-      "color_encoding": "bt709",
-      "source_peak_nits": null
+      "color_encoding": "bt2100_hlg",
+      "source_peak_nits": 1000
     },
     {
       "media_ref_id": "src-music",
@@ -1874,24 +1874,21 @@
     "rationale": "The jump is the only moment in 17 minutes of footage that cannot be inferred from any other shot, so the arc is built backwards from it."
   },
   "color_pipeline": {
-    "working_space": "linear_bt709",
+    "working_space": "linear_bt2020",
     "output_encoding": "bt709",
-    "tone_map": null
+    "tone_map": {
+      "operator": "hable",
+      "operator_param": 0.5,
+      "reference_white_nits": 100,
+      "desaturation": 2
+    }
   },
-  "variant": {
-    "variant_id": "var-02",
-    "variant_index": 1,
-    "sibling_edl_ids": [
-      "42cd6ba33183718575cd697f2890939b4c35189939a31429a53165064872dcd3"
-    ],
-    "strategy": "pacing_seed",
-    "description": "Faster, cuts on every bar"
-  },
+  "variant": null,
   "determinism": {
     "planner": "reel-planner",
     "planner_version": "1.0.0",
-    "seed": 20260316,
-    "inputs_digest": "ade3ed501d4b14a36ee805bf5fd036b51ffb33023ca8486f75b46d30e5865007",
+    "seed": 20260317,
+    "inputs_digest": "b2d908f3ef36efc1acbe6d9b863f53663e4e0eb683d426a96d49ad2b87fcc4e0",
     "generated_at": "2026-03-16T20:04:52+05:30"
   },
   "validation": {
@@ -1915,7 +1912,7 @@
         "check_id": "span_continuity_verified",
         "passed": true,
         "severity": "error",
-        "detail": "the two members are named in the order GH02, GH01, which hashes to a different assembly id than the one this ref declares",
+        "detail": "src-ride names 2 members in index order whose concatenated ids hash to a371bd849cc4..., and its continuity is verified_gapless",
         "clip_id": null
       },
       {
@@ -1957,7 +1954,7 @@
         "check_id": "color_pipeline_resolves",
         "passed": true,
         "severity": "error",
-        "detail": "2 ref(s) name an encoding; working space linear_bt709 -> bt709, no HDR source, no tone map"
+        "detail": "2 ref(s) name an encoding; working space linear_bt2020 -> bt709, tone map hable over 1 HDR source(s)"
       },
       {
         "check_id": "duration_within_max",

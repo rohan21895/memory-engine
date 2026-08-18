@@ -23,6 +23,7 @@ INVARIANTS, not about "it returned something":
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import sys
@@ -44,6 +45,7 @@ from memory_engine_story.reel import (  # noqa: E402
     AmbientSettings,
     Beat,
     BeatGrid,
+    ColorSettings,
     MusicLicense,
     MusicTrack,
     ReelRequest,
@@ -58,6 +60,7 @@ from memory_engine_story.reel import (  # noqa: E402
     Word,
     blake3_hex,
     canonical_json,
+    color_pipeline_check,
     encode_profile_for,
     moment_from_record,
     plan_reel,
@@ -147,6 +150,7 @@ def source_media(**kwargs) -> SourceMedia:
         is_span_assembly=True,
         member_media_ids=RIDE_MEMBER_IDS,
         continuity=RIDE_CONTINUITY,
+        color_encoding="bt709",
         expected_frame_rate=RATE,
         label="GH01/GH02 1234 (assembled)",
     )
@@ -1205,6 +1209,7 @@ class TestTransitions(unittest.TestCase):
             available_start=3055440,
             available_duration=300,
             aspect_ratio=(16, 9),
+            color_encoding="bt709",
         )
         button = SelectedMoment(
             moment_id=f"{0x2B1:064x}",
@@ -1875,6 +1880,7 @@ class TestValidationBlock(unittest.TestCase):
             "music_license_covers_destination",
             "required_story_beats_satisfied",
             "audio_loudness_target_set",
+            "color_pipeline_resolves",
             "determinism_digest_present",
         }
         plan = plan_reel(request(dissolve_frames=6))
@@ -2188,6 +2194,7 @@ class TestActSelectionTieBreaks(unittest.TestCase):
             available_start=0,
             available_duration=5000,
             aspect_ratio=(16, 9),
+            color_encoding="bt709",
         )
         first_file = moment(0x751, 3060000, motion_energy=0.9, score=0.7)
         second_file = moment(
@@ -2783,6 +2790,7 @@ class TestAudioTailBounds(unittest.TestCase):
             available_start=2000,
             available_duration=150,
             aspect_ratio=(16, 9),
+            color_encoding="bt709",
         )
         laugh = SelectedMoment(
             moment_id=f"{0x7B1:064x}",
@@ -2969,18 +2977,132 @@ class TestEmittedDecisionsAreStated(unittest.TestCase):
     the same.
     """
 
-    def test_the_colour_pipeline_tone_maps_hdr_sources(self):
-        # Left off, an HLG or PQ source renders washed out; on, an SDR source
-        # is already inside the target volume, so the transform is identity.
+    def test_an_all_sdr_plan_states_its_colour_path_and_no_tone_map(self):
+        # contracts#58. The pipeline is REQUIRED even when it is the boring
+        # case: a plan that says nothing about colour is a plan that leaves the
+        # decision to the renderer, and a wrong one is invisible until print.
+        # A tone map here would be a grade nobody asked for.
         self.assertEqual(
             {
-                "input_transform": "auto",
-                "working_space": "rec709",
-                "output_transform": "rec709",
-                "tone_map_hdr_to_sdr": True,
+                "working_space": "linear_bt709",
+                "output_encoding": "bt709",
+                "tone_map": None,
             },
             plan_reel(request()).edl["color_pipeline"],
         )
+
+    def test_an_hdr_source_pulls_a_fully_specified_tone_map_into_the_plan(self):
+        # The tone map is DERIVED from the sources, not copied from a setting:
+        # it appears exactly when a source needs it. Every field it carries is
+        # required, because the boolean it replaced named no operator, and
+        # hable and mobius differ most on exactly the shot that triggers them.
+        plan = plan_reel(
+            request(
+                media=(
+                    source_media(color_encoding="bt2100_pq", source_peak_nits=1000.0),
+                    music_media(),
+                )
+            )
+        )
+        self.assertEqual(
+            {
+                "operator": "hable",
+                "operator_param": None,
+                "reference_white_nits": 100.0,
+                "desaturation": 2.0,
+            },
+            plan.edl["color_pipeline"]["tone_map"],
+        )
+        _assert_schema_valid(self, plan.edl)
+
+    def test_a_reinhard_tone_map_carries_its_curve_parameter(self):
+        plan = plan_reel(
+            request(
+                media=(
+                    source_media(color_encoding="bt2100_hlg", source_peak_nits=1000.0),
+                    music_media(),
+                ),
+                color=ColorSettings(
+                    tone_map_operator="reinhard", tone_map_operator_param=0.5
+                ),
+            )
+        )
+        tone_map = plan.edl["color_pipeline"]["tone_map"]
+        self.assertEqual("reinhard", tone_map["operator"])
+        self.assertEqual(0.5, tone_map["operator_param"])
+        _assert_schema_valid(self, plan.edl)
+
+    def test_hlg_may_not_claim_a_peak_other_than_the_nominal_display(self):
+        # HLG's EOTF is defined against a nominal display, and this contract
+        # fixes that at 1000 cd/m^2. A source claiming 4000 is describing a
+        # decode that did not happen, and every highlight would land wrong.
+        with self.assertRaisesRegex(ValueError, "decode that did not happen"):
+            source_media(color_encoding="bt2100_hlg", source_peak_nits=4000.0)
+
+    def test_an_hdr_source_must_state_the_peak_it_is_graded_to(self):
+        with self.assertRaisesRegex(ValueError, "no stated peak"):
+            source_media(color_encoding="bt2100_pq")
+
+    def test_an_sdr_source_may_not_carry_a_peak(self):
+        with self.assertRaisesRegex(ValueError, "not HDR and declares"):
+            source_media(color_encoding="bt709", source_peak_nits=1000.0)
+
+    def test_a_music_source_has_no_primaries(self):
+        with self.assertRaisesRegex(ValueError, "sound has no primaries"):
+            music_media(color_encoding="bt709")
+
+    def test_the_colour_check_is_re_derived_from_the_emitted_plan(self):
+        # The check must read the EDL, not the ColorSettings that wrote it --
+        # a validator that reads the writer's variables cannot catch the writer
+        # being wrong. Corrupting the emitted refs after the fact must fail it.
+        plan = plan_reel(request())
+        self.assertTrue(color_pipeline_check(plan.edl)["passed"])
+
+        washed_out = copy.deepcopy(plan.edl)
+        for ref in washed_out["media_refs"]:
+            if ref["media_kind"] == "video":
+                ref["color_encoding"] = "bt2100_pq"
+                ref["source_peak_nits"] = 1000.0
+        check = color_pipeline_check(washed_out)
+        self.assertFalse(check["passed"])
+        self.assertIn("no tone_map", check["detail"])
+
+    def test_the_colour_check_catches_each_way_the_plan_can_lie(self):
+        plan = plan_reel(request())
+
+        pointless = copy.deepcopy(plan.edl)
+        pointless["color_pipeline"]["tone_map"] = {
+            "operator": "hable",
+            "operator_param": None,
+            "reference_white_nits": 100.0,
+            "desaturation": 2.0,
+        }
+        self.assertIn("nobody asked for", color_pipeline_check(pointless)["detail"])
+
+        silent = copy.deepcopy(plan.edl)
+        for ref in silent["media_refs"]:
+            if ref["media_kind"] == "video":
+                ref["color_encoding"] = None
+        self.assertIn("declaring color_encoding", color_pipeline_check(silent)["detail"])
+
+        loud_sound = copy.deepcopy(plan.edl)
+        for ref in loud_sound["media_refs"]:
+            if ref["media_kind"] == "music":
+                ref["color_encoding"] = "bt709"
+        self.assertIn("sound has no primaries", color_pipeline_check(loud_sound)["detail"])
+
+        wrong_peak = copy.deepcopy(plan.edl)
+        for ref in wrong_peak["media_refs"]:
+            if ref["media_kind"] == "video":
+                ref["color_encoding"] = "bt2100_hlg"
+                ref["source_peak_nits"] = 4000.0
+        wrong_peak["color_pipeline"]["tone_map"] = {
+            "operator": "hable",
+            "operator_param": None,
+            "reference_white_nits": 100.0,
+            "desaturation": 2.0,
+        }
+        self.assertIn("nominal display", color_pipeline_check(wrong_peak)["detail"])
 
     def test_the_timeline_starts_at_zero_even_when_the_music_does_not(self):
         # The lead-in is a Gap, never a shifted origin: `global_start_time` is

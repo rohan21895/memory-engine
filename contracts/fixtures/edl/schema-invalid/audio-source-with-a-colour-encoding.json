@@ -1,7 +1,7 @@
 {
   "schema_version": "v0",
-  "edl_id": "a41d37e9b3e248d9e910a229eb374887bc40e2531dbc3e1a2ebb5ec196d7e354",
-  "name": "chapters listed in the wrong order",
+  "edl_id": "5b72e512456945f0defac8f12798ef50660c4913473acd3dcfd4a798920cc5b4",
+  "name": "Uttarakhand ridge ride - 15s",
   "kind": "reel",
   "rate": 59.94005994005994,
   "global_start_time": {
@@ -73,8 +73,8 @@
       "expected_frame_rate": 59.94005994005994,
       "label": "GH01/GH02 1234 (assembled)",
       "member_media_ids": [
-        "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8",
-        "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013"
+        "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
+        "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8"
       ],
       "continuity": "verified_gapless",
       "color_encoding": "bt709",
@@ -99,7 +99,7 @@
       "label": "Ridgeline (instrumental)",
       "member_media_ids": [],
       "continuity": null,
-      "color_encoding": null,
+      "color_encoding": "bt709",
       "source_peak_nits": null
     }
   ],
@@ -1915,7 +1915,7 @@
         "check_id": "span_continuity_verified",
         "passed": true,
         "severity": "error",
-        "detail": "the two members are named in the order GH02, GH01, which hashes to a different assembly id than the one this ref declares",
+        "detail": "src-ride names 2 members in index order whose concatenated ids hash to a371bd849cc4..., and its continuity is verified_gapless",
         "clip_id": null
       },
       {

@@ -37,13 +37,29 @@ result and are printed by the CLI. Nothing is skipped quietly.
 
 | Declaration | Why | Issue |
 |---|---|---|
-| any `ColorOp` | `amount` is normalised to [-1,1] with no transfer function; `match_to_reference` is a planner computation | [#49](https://github.com/rohan21895/memory-engine/issues/49) |
-| `easing` other than `linear`; `wipe`/`push`/`blur_dissolve`/`match_cut`/`custom`; a transition with ambient audio under it | no curve, no parameter set, and no statement of what the beds do across the blend | [#52](https://github.com/rohan21895/memory-engine/issues/52) |
-| `noise_suppression` other than `none`; any `high_pass_hz`; a clip carrying both an ambient gain and a non-zero `ClipAudio.gain_db` | DSP specified by process rather than by outcome, and no gain composition rule | [#53](https://github.com/rohan21895/memory-engine/issues/53) |
-| ducking with non-zero `attack_ms`/`release_ms`, or any trigger but `explicit_ranges` | no envelope shape; detection triggers are not reproducible | [#54](https://github.com/rohan21895/memory-engine/issues/54) |
-| any HLG or PQ source, or `working_space` ≠ `output_transform` | `ColorPipeline` names no tone-mapping operator | [#58](https://github.com/rohan21895/memory-engine/issues/58) |
-| a non-zero `global_start_time` | no timecode track or drop-frame convention is specified for the delivered file | [#56](https://github.com/rohan21895/memory-engine/issues/56) |
+| a non-zero `global_start_time` | no timecode track or drop-frame convention is specified for the delivered file | unfiled |
+| a transition against a gap or a track edge | no handle source on one side; no planner emits one | unfiled |
 | a rotated crop, or a crop window that changes size | neither has a pinned resampling convention; [#51](https://github.com/rohan21895/memory-engine/issues/51) settled the interpolation curve and nothing else about crop geometry | unfiled |
+| a full-range source | every `ColorEncoding` token is limited range, and reading one as the other moves every code value without raising | [#101](https://github.com/rohan21895/memory-engine/issues/101) |
+
+Everything else has closed:
+[#49](https://github.com/rohan21895/memory-engine/issues/49),
+[#52](https://github.com/rohan21895/memory-engine/issues/52),
+[#53](https://github.com/rohan21895/memory-engine/issues/53),
+[#54](https://github.com/rohan21895/memory-engine/issues/54),
+[#55](https://github.com/rohan21895/memory-engine/issues/55),
+[#56](https://github.com/rohan21895/memory-engine/issues/56) and
+[#58](https://github.com/rohan21895/memory-engine/issues/58) have all closed. What each of
+them used to refuse:
+
+| Was refused | Closed by |
+|---|---|
+| any `ColorOp` | #49: every op in the enum has a transfer function from `amount` to a physical quantity — exposure buys ±2 stops, saturation a chroma scale of `1 + a` — the list fuses into one 3×3 matrix applied once in linear light, and `match_to_reference`, which asked the renderer to *measure* a second clip, is out of the enum and resolved by the planner. |
+| any HLG or PQ source | #58: every source names its `color_encoding` and its graded peak, the working space is linear and named, the delivered encoding is enumerated, and `ToneMap` names an operator whose curve is written out as a formula. |
+| `easing` other than `linear`; `wipe`/`push`/`blur_dissolve`/`match_cut`/`custom`; a transition with ambient audio under it | #52: the four easings are polynomials, the un-parameterised transition types are out of the enum, and the beds butt-cut. |
+| `high_pass_hz`, and a clip carrying two ambient levels | #53: the level is stated once, on the clip, and the high-pass names its response, order and section Q values. |
+| ducking with a non-zero attack or release | #54: linear in dB, attack ending at the range start, release beginning at the range end. |
+| an encode profile the plan did not carry | #56: `RenderTarget.encode` is contract data. |
 
 ### What is refused because this worker has not built it
 
@@ -51,21 +67,13 @@ result and are printed by the CLI. Nothing is skipped quietly.
 |---|---|
 | any `time_effect` | [#50](https://github.com/rohan21895/memory-engine/issues/50) closed: `source_range` is the media read, the timeline extent is `source_range.duration / time_scalar` (or `hold_duration` for a freeze), and output frame *k* draws source frame `start + floor(k * time_scalar)`. `program.ts` lays a retimed clip out on that extent and validates it; emitting the retimed picture needs a filter chain that neither duplicates nor drops a frame of its own accord, and that is not built. The number this would get wrong is *which frame*. |
 
-`contracts/fixtures/edl/valid/reel-beat-locked-vertical-reframe.json` is refused today on
-four contract grounds (#49, #52, #53, #54) plus the unimplemented retime on `clip-05`.
-`test/gate.test.ts` asserts the exact set, so the day the issues close the test is the
-checklist. It was six contract grounds until #50, #51, #57 and #60 closed: `smooth` is now
-a stated curve and is rendered, the music cue no longer places a second copy of the bed,
-and the retime is arithmetic this worker performs even though it does not yet draw it.
+`contracts/fixtures/edl/valid/reel-beat-locked-vertical-reframe.json` now carries **no**
+unpinned declaration at all — the only thing left is the unimplemented retime on `clip-05`.
+`test/gate.test.ts` asserts that set is empty, which makes it the checklist in both
+directions: a closed issue has to leave it, and nothing may enter it without an issue
+behind it.
 
 ### Not in the EDL at all
-
-`RenderTarget` carries no encode profile — no codec, container, pixel format, rate control,
-GOP or scaler ([#56](https://github.com/rohan21895/memory-engine/issues/56)). Rather than
-keep a destination-to-codec table inside the renderer, where it would be a delivery
-decision made invisibly, the profile arrives as a required and fully explicit
-`JobSpec.params.encode` block with no defaults and no fallbacks. This follows the
-precedent `workers/render-print` set for the ICC profile.
 
 Source paths arrive the same way, keyed by `media_id`, for the same reason: the EDL
 addresses content by hash and never carries a path. **The renderer opens exactly the files
@@ -147,7 +155,12 @@ encoded, every source is opened, hashed and measured:
   the plan believes is exactly how a clip becomes black frames, and for a chaptered
   recording a frame dropped at the split looks like this
   ([#55](https://github.com/rohan21895/memory-engine/issues/55));
-- a rotation flag, an HDR transfer, or a rate that is not the timeline rate → refused.
+- a rotation flag, or a rate that is not the timeline rate → refused;
+- an HDR transfer is **accepted** since #58, and checked instead: the plan's declared
+  `color_encoding` must not contradict the tags the container carries. The plan wins where
+  the file is silent — an untagged action-camera file is the case `input_transform: "auto"`
+  handled worst — but a plan that says BT.709 over a file tagged PQ is either the wrong
+  footage or a plan made before a regrade.
 
 Afterwards the finished file is probed again: frame count, resolution and nominal rate must
 match the program, and where there is audio the integrated loudness and true peak are
@@ -163,6 +176,9 @@ measured with `ebur128` and checked against the `MixPlan`.
   getting it wrong would silently move a cut, so it is deliberately not in v1.
 - **Crop size is fixed per track.** A crop window that changes size is a zoom, and neither
   the resampling nor the per-frame rounding of a moving crop size is pinned.
-- **`smooth` interpolation is refused**, which today means every reframe track the reel
-  planner emits is refused. That is the intended pressure on
-  [#51](https://github.com/rohan21895/memory-engine/issues/51), not an oversight.
+- **HDR delivery is not possible**, only HDR *sources*. `ColorPipeline.output_encoding`
+  accepts the four SDR encodings, because an HDR delivery needs a mastering-display block
+  (MaxCLL, MaxFALL, mastering primaries) that no worker writes and the contract does not
+  carry.
+- **The tone map applies to HDR sources only.** An SDR source in a mixed cut passes through
+  unmapped; matching the two across the cut is a planner decision, expressed as colour ops.

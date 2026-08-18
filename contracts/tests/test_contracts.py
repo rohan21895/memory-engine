@@ -470,6 +470,15 @@ def check_moment_record(record: dict) -> list[str]:
     return problems
 
 
+#: edl.schema.json#/$defs/ColorEncoding, HDR members. Written out rather than
+#: read from the schema for the same reason the canonical JSON above is: a guard
+#: that derives its expectation from the thing it guards agrees by construction.
+HDR_COLOR_ENCODINGS = frozenset({"bt2100_pq", "bt2100_hlg"})
+#: ARIB STD-B67 has no absolute scale of its own; this contract decodes it
+#: against the BT.2100 nominal display, and that display is what fixes the peak.
+HLG_NOMINAL_PEAK_NITS = 1000
+
+
 def check_edl(edl: dict) -> list[str]:
     problems: list[str] = []
     refs = {ref["media_ref_id"]: ref for ref in edl["media_refs"]}
@@ -798,6 +807,35 @@ def check_edl(edl: dict) -> list[str]:
         failed = [c for c in report["checks"] if c["severity"] == "error" and not c["passed"]]
         if failed:
             problems.append("validation claims pass while error-severity checks failed")
+
+    # contracts#58. The colour path has to resolve against the sources the plan
+    # actually names. JSON Schema can require the fields and cannot compare them
+    # across the document, and the failure it cannot see -- an HDR source with no
+    # tone map -- renders washed out rather than failing, which is the class of
+    # defect nobody catches in review.
+    hdr = [
+        ref["media_ref_id"]
+        for ref in edl["media_refs"]
+        if ref.get("color_encoding") in HDR_COLOR_ENCODINGS
+    ]
+    tone_map = edl["color_pipeline"]["tone_map"]
+    if hdr and tone_map is None:
+        problems.append(
+            f"{', '.join(hdr)} carries an HDR encoding and color_pipeline names no "
+            "tone_map; the highlights clip and the picture renders washed out"
+        )
+    if not hdr and tone_map is not None:
+        problems.append(
+            "color_pipeline carries a tone_map over sources that are all SDR, which "
+            "is a grade nobody asked for"
+        )
+    for ref in edl["media_refs"]:
+        peak = ref.get("source_peak_nits")
+        if ref.get("color_encoding") == "bt2100_hlg" and peak != HLG_NOMINAL_PEAK_NITS:
+            problems.append(
+                f"{ref['media_ref_id']} is bt2100_hlg with source_peak_nits {peak}; the "
+                f"decode is defined against a {HLG_NOMINAL_PEAK_NITS} cd/m^2 nominal display"
+            )
 
     otio = edl.get("otio")
     if otio and otio.get("round_trip_verified") and otio.get("unmapped_fields"):
@@ -1642,6 +1680,142 @@ def _canonical_json(value) -> bytes:
 
     emit(value)
     return "".join(out).encode("utf-8")
+
+
+class TestColorOpTransferFunction(unittest.TestCase):
+    """contracts#49: `amount` has to buy a number of photons, not a mood.
+
+    The schema's ColorOp $comment states one formula per op and says the list
+    composes into a single 3x3 matrix applied once. That claim is arithmetic, so
+    it is checked here rather than believed: the formulas are re-implemented from
+    the $comment's table, and the fused matrix is compared against applying the
+    ops one at a time. If the two ever disagree the table is wrong, and a wrong
+    table is worse than the gap it replaced -- it is a gap two renderers would
+    fill identically confidently and differently.
+    """
+
+    #: Working-space luminance vectors, from the $comment. BT.709-6 Table 3 and
+    #: BT.2020-2 Table 4.
+    LUMA = {
+        "linear_bt709": (0.2126, 0.7152, 0.0722),
+        "linear_bt2020": (0.2627, 0.6780, 0.0593),
+    }
+
+    @classmethod
+    def matrix(cls, op: str, amount: float, working_space: str) -> list[list[float]]:
+        if op == "exposure":
+            gain = 2.0 ** (2.0 * amount)
+            return [[gain if i == j else 0.0 for j in range(3)] for i in range(3)]
+        if op == "saturation":
+            k = cls.LUMA[working_space]
+            # RGB' = Y + (1 + a)(RGB - Y) with Y = k . RGB, which is
+            # (1 + a) I - a (1 k^T).
+            return [
+                [(1.0 + amount if i == j else 0.0) - amount * k[j] for j in range(3)]
+                for i in range(3)
+            ]
+        raise AssertionError(f"no transfer function stated for op {op!r}")
+
+    @staticmethod
+    def apply(matrix, rgb):
+        return [sum(matrix[i][j] * rgb[j] for j in range(3)) for i in range(3)]
+
+    @staticmethod
+    def multiply(left, right):
+        return [
+            [sum(left[i][k] * right[k][j] for k in range(3)) for j in range(3)]
+            for i in range(3)
+        ]
+
+    def test_the_schema_states_a_formula_for_every_op_in_the_enum(self):
+        schema = json.loads((SCHEMA_DIR / "edl.schema.json").read_text(encoding="utf-8"))
+        for op in schema["$defs"]["ColorOp"]["properties"]["op"]["enum"]:
+            with self.subTest(op=op):
+                self.matrix(op, 0.0, "linear_bt709")
+
+    def test_zero_is_the_identity_for_every_op(self):
+        for op in ("exposure", "saturation"):
+            for space in self.LUMA:
+                with self.subTest(op=op, working_space=space):
+                    matrix = self.matrix(op, 0.0, space)
+                    for i in range(3):
+                        for j in range(3):
+                            self.assertAlmostEqual(
+                                matrix[i][j], 1.0 if i == j else 0.0, places=12
+                            )
+
+    def test_exposure_amount_buys_two_stops_at_the_ends(self):
+        mid = [0.18, 0.18, 0.18]
+        self.assertAlmostEqual(self.apply(self.matrix("exposure", 1.0, "linear_bt709"), mid)[0], 0.18 * 4)
+        self.assertAlmostEqual(self.apply(self.matrix("exposure", -1.0, "linear_bt709"), mid)[0], 0.18 / 4)
+
+    def test_saturation_minus_one_is_monochrome_and_preserves_luminance(self):
+        for space, k in self.LUMA.items():
+            with self.subTest(working_space=space):
+                rgb = [0.4, 0.2, 0.05]
+                out = self.apply(self.matrix("saturation", -1.0, space), rgb)
+                self.assertAlmostEqual(out[0], out[1], places=12)
+                self.assertAlmostEqual(out[1], out[2], places=12)
+                luma = sum(k[i] * rgb[i] for i in range(3))
+                self.assertAlmostEqual(out[0], luma, places=12)
+
+    def test_the_working_space_vector_is_not_interchangeable(self):
+        """The $comment says using BT.709's vector on BT.2020 primaries reads as
+        the grade. If the two agreed, naming the space would be decoration."""
+        rgb = [0.1, 0.5, 0.2]
+        a = self.apply(self.matrix("saturation", -0.5, "linear_bt709"), rgb)
+        b = self.apply(self.matrix("saturation", -0.5, "linear_bt2020"), rgb)
+        self.assertGreater(max(abs(x - y) for x, y in zip(a, b)), 1e-3)
+
+    def test_the_golden_reels_ops_fuse_into_one_matrix(self):
+        edl = _fixture(
+            next(
+                e
+                for e in _entries("valid", "edl")
+                if e["path"].endswith("reel-beat-locked-vertical-reframe.json")
+            )
+        )
+        space = edl["color_pipeline"]["working_space"]
+        ops = [
+            item["color_ops"]
+            for track in edl["tracks"]
+            for item in track["items"]
+            if item.get("color_ops")
+        ]
+        self.assertTrue(ops, "the golden reel is supposed to carry a graded clip")
+        for chain in ops:
+            fused = [[1.0 if i == j else 0.0 for j in range(3)] for i in range(3)]
+            for op in chain:
+                fused = self.multiply(self.matrix(op["op"], op["amount"], space), fused)
+            rgb = [0.3, 0.18, 0.07]
+            stepwise = rgb
+            for op in chain:
+                stepwise = self.apply(self.matrix(op["op"], op["amount"], space), stepwise)
+            for one, many in zip(self.apply(fused, rgb), stepwise):
+                self.assertAlmostEqual(one, many, places=12)
+
+    def test_todays_two_ops_commute_which_is_why_order_costs_nothing_yet(self):
+        """Array order is normative in the schema, and with THIS enum it is not
+        observable: exposure is a scalar multiple of the identity, which commutes
+        with everything, and two saturations commute with each other because the
+        luminance vector sums to 1. Pinned deliberately. The moment a
+        non-commuting op lands -- contrast about a pivot, or an ASC CDL power --
+        this test fails, and whoever adds it has to confront the ordering rule
+        rather than discover it from a render that looks slightly wrong.
+        """
+        rgb = [0.5, 0.2, 0.1]
+        chain = [
+            self.matrix("exposure", 0.5, "linear_bt709"),
+            self.matrix("saturation", -0.6, "linear_bt709"),
+            self.matrix("saturation", 0.25, "linear_bt709"),
+        ]
+        forward = rgb
+        for matrix in chain:
+            forward = self.apply(matrix, forward)
+        backward = rgb
+        for matrix in reversed(chain):
+            backward = self.apply(matrix, backward)
+        self.assertAlmostEqual(max(abs(a - b) for a, b in zip(forward, backward)), 0.0, places=12)
 
 
 class TestEdlIdentityIsComputable(unittest.TestCase):

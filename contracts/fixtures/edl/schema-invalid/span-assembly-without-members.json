@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "edl_id": "d35e1f51e5c7321c68c2e9a5a42e8292c8a40f4e83e972cad69e6a0e02341700",
+  "edl_id": "e90286bbd3c1c5c4834b4035eaf7d0d72382f3aa3639336b6da071332daba09d",
   "name": "span assembly with nothing to expand",
   "kind": "reel",
   "rate": 59.94005994005994,
@@ -71,7 +71,9 @@
       },
       "is_span_assembly": true,
       "expected_frame_rate": 59.94005994005994,
-      "label": "GH01/GH02 1234 (assembled)"
+      "label": "GH01/GH02 1234 (assembled)",
+      "color_encoding": "bt709",
+      "source_peak_nits": null
     },
     {
       "media_ref_id": "src-music",
@@ -91,7 +93,9 @@
       "expected_frame_rate": null,
       "label": "Ridgeline (instrumental)",
       "member_media_ids": [],
-      "continuity": null
+      "continuity": null,
+      "color_encoding": null,
+      "source_peak_nits": null
     }
   ],
   "tracks": [
@@ -433,13 +437,11 @@
             {
               "op": "exposure",
               "amount": 0.12,
-              "lut_id": null,
               "reference_clip_id": null
             },
             {
-              "op": "match_to_reference",
-              "amount": 0.4,
-              "lut_id": null,
+              "op": "saturation",
+              "amount": -0.08,
               "reference_clip_id": "clip-05"
             }
           ],
@@ -1867,10 +1869,9 @@
     "rationale": "The jump is the only moment in 17 minutes of footage that cannot be inferred from any other shot, so the arc is built backwards from it."
   },
   "color_pipeline": {
-    "input_transform": "auto",
-    "working_space": "rec709",
-    "output_transform": "rec709",
-    "tone_map_hdr_to_sdr": true
+    "working_space": "linear_bt709",
+    "output_encoding": "bt709",
+    "tone_map": null
   },
   "variant": {
     "variant_id": "var-02",
@@ -1946,6 +1947,12 @@
         "severity": "error",
         "detail": "8 tracks, keyframes strictly increasing",
         "clip_id": null
+      },
+      {
+        "check_id": "color_pipeline_resolves",
+        "passed": true,
+        "severity": "error",
+        "detail": "2 ref(s) name an encoding; working space linear_bt709 -> bt709, no HDR source, no tone map"
       },
       {
         "check_id": "duration_within_max",

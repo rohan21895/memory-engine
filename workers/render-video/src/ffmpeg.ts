@@ -54,6 +54,8 @@ export interface ProbedVideoStream {
   frameCount: number;
   pixelFormat: string;
   colorTransfer: string | null;
+  /** ffprobe's `color_range`: "tv" (limited) or "pc" (full). Null when untagged. */
+  colorRange: string | null;
   rotation: number;
 }
 
@@ -103,7 +105,7 @@ export async function probe(tools: ToolPaths, path: string, options: ProbeOption
     "-show_streams",
     "-show_format",
     "-show_entries",
-    "format=duration:stream=index,codec_type,width,height,avg_frame_rate,r_frame_rate,nb_read_packets,pix_fmt,color_transfer,sample_rate,channels:stream_side_data=rotation:stream_tags=rotate",
+    "format=duration:stream=index,codec_type,width,height,avg_frame_rate,r_frame_rate,nb_read_packets,pix_fmt,color_transfer,color_range,sample_rate,channels:stream_side_data=rotation:stream_tags=rotate",
     "-of",
     "json",
     path,
@@ -142,6 +144,7 @@ export async function probe(tools: ToolPaths, path: string, options: ProbeOption
         frameCount: Number(stream.nb_read_packets ?? 0),
         pixelFormat: String(stream.pix_fmt ?? ""),
         colorTransfer: stream.color_transfer ? String(stream.color_transfer) : null,
+        colorRange: stream.color_range ? String(stream.color_range) : null,
         rotation: Number(rotationValue ?? (tagRotate ? Number(tagRotate) : 0)) || 0,
       };
     }

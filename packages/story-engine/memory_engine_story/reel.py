@@ -252,6 +252,26 @@ _SPAN_CONTINUITY = frozenset(
 )
 RENDERABLE_SPAN_CONTINUITY = "verified_gapless"
 
+#: edl.schema.json#/$defs/ColorEncoding (contracts#58). One token per
+#: (primaries, transfer, matrix) triple; the spelling is closed so "rec709",
+#: "bt709" and "Rec. 709" are no longer three equally valid ways to say one
+#: thing.
+_COLOR_ENCODINGS = frozenset(
+    {"srgb", "bt709", "display_p3", "bt2020_sdr", "bt2100_pq", "bt2100_hlg"}
+)
+#: The two encodings whose sources need a tone map to reach an SDR delivery.
+HDR_COLOR_ENCODINGS = frozenset({"bt2100_pq", "bt2100_hlg"})
+#: What ColorPipeline.output_encoding accepts: SDR only at v0.
+_SDR_COLOR_ENCODINGS = frozenset({"srgb", "bt709", "display_p3", "bt2020_sdr"})
+#: HLG's EOTF is defined against a nominal display, and the contract fixes that
+#: display at 1000 cd/m^2 with system gamma 1.2. A plan that claims some other
+#: source peak for an HLG source is describing a decode that did not happen.
+HLG_NOMINAL_PEAK_NITS = 1000.0
+#: Media kinds that carry a picture and therefore must name a colour encoding.
+_PICTORIAL_MEDIA_KINDS = frozenset({"video", "image", "generated"})
+#: edl.schema.json#/$defs/ToneMap.
+_TONE_MAP_OPERATORS = frozenset({"hable", "reinhard", "mobius"})
+
 _SNAP_IN_DIRECTIONS = frozenset({"in", "both"})
 
 _VALID_CUT_DIRECTIONS = frozenset({"in", "out", "both"})
@@ -824,6 +844,17 @@ class SourceMedia:
     # identity, so a mis-ordered list is a different recording.
     member_media_ids: tuple[str, ...] = ()
     continuity: str | None = None
+    # contracts#58. What this source's code values mean. Required for anything
+    # with a picture and forbidden on audio, because `ColorPipeline` used to
+    # carry ONE global `input_transform: "auto"` for the whole plan -- which
+    # both asked the renderer to infer a transform and could not describe a cut
+    # that mixes a phone's HLG clip with a camera's BT.709 one.
+    color_encoding: str | None = None
+    # Peak luminance this source is graded to, in cd/m^2. Required for an HDR
+    # encoding and forbidden otherwise. It sits on the SOURCE because a cut can
+    # hold a 1000-nit phone clip and a 4000-nit graded one, and fitting both
+    # from one number maps one of them wrong.
+    source_peak_nits: float | None = None
     expected_frame_rate: float | None = None
     label: str | None = None
 
@@ -871,6 +902,46 @@ class SourceMedia:
                     f"SourceMedia {self.media_ref_id} is not a span assembly and declares "
                     "a continuity"
                 )
+        if self.media_kind in _PICTORIAL_MEDIA_KINDS:
+            if self.color_encoding not in _COLOR_ENCODINGS:
+                raise ValueError(
+                    f"SourceMedia {self.media_ref_id} is a {self.media_kind} source and "
+                    f"declares color_encoding {self.color_encoding!r}; expected one of "
+                    f"{sorted(_COLOR_ENCODINGS)}. A picture with no stated encoding is a "
+                    "picture the renderer has to guess the colour of"
+                )
+        elif self.color_encoding is not None:
+            raise ValueError(
+                f"SourceMedia {self.media_ref_id} is a {self.media_kind} source and "
+                f"declares color_encoding {self.color_encoding!r}; sound has no primaries"
+            )
+        if self.color_encoding in HDR_COLOR_ENCODINGS:
+            if self.source_peak_nits is None or self.source_peak_nits <= 0:
+                raise ValueError(
+                    f"SourceMedia {self.media_ref_id} is {self.color_encoding} and "
+                    f"declares source_peak_nits {self.source_peak_nits!r}; an HDR source "
+                    "with no stated peak cannot be fitted into an SDR delivery"
+                )
+            if (
+                self.color_encoding == "bt2100_hlg"
+                and self.source_peak_nits != HLG_NOMINAL_PEAK_NITS
+            ):
+                raise ValueError(
+                    f"SourceMedia {self.media_ref_id} is bt2100_hlg with source_peak_nits "
+                    f"{self.source_peak_nits}; HLG decodes here against a "
+                    f"{HLG_NOMINAL_PEAK_NITS:g} cd/m^2 nominal display, so any other value "
+                    "describes a decode that did not happen"
+                )
+        elif self.source_peak_nits is not None:
+            raise ValueError(
+                f"SourceMedia {self.media_ref_id} is not HDR and declares "
+                f"source_peak_nits {self.source_peak_nits!r}"
+            )
+
+    @property
+    def is_hdr(self) -> bool:
+        """True when this source needs a tone map to reach an SDR delivery."""
+        return self.color_encoding in HDR_COLOR_ENCODINGS
 
     @property
     def available_end(self) -> float:
@@ -1022,6 +1093,69 @@ class AmbientSettings:
 
 
 @dataclass(frozen=True)
+class ColorSettings:
+    """The colour path this reel is planned for (contracts#58).
+
+    These are PLANNER settings and most of them appear in the EDL verbatim,
+    because ColorPipeline has no defaults: a colour decision the renderer
+    supplies is one nobody reviewed and one that is invisible until print.
+
+    The tone map is the exception. It is RESOLVED, not copied: it appears in
+    the plan exactly when some source carries an HDR encoding, and is null
+    otherwise. A tone map over SDR sources is a grade nobody asked for.
+    """
+
+    working_space: str = "linear_bt709"
+    output_encoding: str = "bt709"
+    # Used only when the plan actually holds an HDR source.
+    tone_map_operator: str = "hable"
+    tone_map_operator_param: float | None = None
+    # What 1.0 means in the working space. 100 cd/m^2 is SDR diffuse white.
+    reference_white_nits: float = 100.0
+    # Threshold, in units of reference white, above which a pixel is pulled
+    # towards its own luminance before mapping.
+    desaturation: float = 2.0
+
+    def __post_init__(self) -> None:
+        if self.working_space not in {"linear_bt709", "linear_bt2020"}:
+            raise ValueError(
+                f"ColorSettings.working_space {self.working_space!r} is not a linear "
+                "working space; colour ops are defined in linear light"
+            )
+        if self.output_encoding not in _SDR_COLOR_ENCODINGS:
+            raise ValueError(
+                f"ColorSettings.output_encoding {self.output_encoding!r} is not one of "
+                f"{sorted(_SDR_COLOR_ENCODINGS)}; delivery is SDR at v0"
+            )
+        if self.tone_map_operator not in _TONE_MAP_OPERATORS:
+            raise ValueError(
+                f"ColorSettings.tone_map_operator {self.tone_map_operator!r} is not one "
+                f"of {sorted(_TONE_MAP_OPERATORS)}"
+            )
+        if self.tone_map_operator == "hable":
+            if self.tone_map_operator_param is not None:
+                raise ValueError(
+                    "hable takes no parameter; ColorSettings.tone_map_operator_param "
+                    "must be None"
+                )
+        else:
+            param = self.tone_map_operator_param
+            if param is None or not 0 < param <= 1:
+                raise ValueError(
+                    f"ColorSettings.tone_map_operator_param must be in (0, 1] for "
+                    f"{self.tone_map_operator}, got {param!r}"
+                )
+            if self.tone_map_operator == "mobius" and param >= 1:
+                raise ValueError(
+                    "mobius's linear section must end below reference white"
+                )
+        if self.reference_white_nits <= 0:
+            raise ValueError("ColorSettings.reference_white_nits must be > 0")
+        if self.desaturation < 0:
+            raise ValueError("ColorSettings.desaturation must be >= 0")
+
+
+@dataclass(frozen=True)
 class ReframeSettings:
     """Constraints for the landscape -> vertical crop."""
 
@@ -1072,6 +1206,7 @@ class ReelRequest:
     generated_at: str | None = None
     validated_at: str | None = None
     ambient: AmbientSettings = field(default_factory=AmbientSettings)
+    color: ColorSettings = field(default_factory=ColorSettings)
     reframe: ReframeSettings = field(default_factory=ReframeSettings)
     # 0 means every cut is a hard cut, which is the OTIO convention: a hard cut
     # is the ABSENCE of a Transition, never a zero-length one. Above 0, the
@@ -2132,15 +2267,11 @@ def plan_reel(request: ReelRequest) -> ReelPlan:
         "audio_plan": audio_plan,
         "beat_grid": beat_grid_block,
         "story_arc": story_arc,
-        "color_pipeline": {
-            "input_transform": "auto",
-            "working_space": "rec709",
-            "output_transform": "rec709",
-            # Left implicit, an HLG or PQ source renders washed out. Enabling it
-            # unconditionally is safe: an SDR source is already inside the
-            # target volume, so the transform is identity.
-            "tone_map_hdr_to_sdr": True,
-        },
+        # contracts#58. Resolved, not copied: `tone_map` is present exactly when
+        # a source carries an HDR encoding, and every field it carries is
+        # required, because the boolean it replaced named no operator and the
+        # bare "auto"/"rec709" strings named no value space.
+        "color_pipeline": _color_pipeline(request),
         "variant": _variant_block(request),
         "determinism": {
             "planner": PLANNER_ID,
@@ -2178,6 +2309,32 @@ def _clip_gain_db(placement: _Placement, request: ReelRequest) -> float:
     return ambient.default_gain_db
 
 
+def _color_pipeline(request: ReelRequest) -> dict[str, Any]:
+    """edl.schema.json#/$defs/ColorPipeline for this plan (contracts#58).
+
+    The tone map is derived from the SOURCES rather than from a setting: it is
+    present exactly when some source's encoding is HDR. That is the only shape
+    that cannot drift -- a plan carrying a tone map over all-SDR sources is
+    asking for a grade nobody requested, and one carrying HDR sources without
+    a tone map renders washed out, which is the failure the field exists for.
+    """
+    colour = request.color
+    hdr = [medium for medium in request.media if medium.is_hdr]
+    tone_map: dict[str, Any] | None = None
+    if hdr:
+        tone_map = {
+            "operator": colour.tone_map_operator,
+            "operator_param": colour.tone_map_operator_param,
+            "reference_white_nits": colour.reference_white_nits,
+            "desaturation": colour.desaturation,
+        }
+    return {
+        "working_space": colour.working_space,
+        "output_encoding": colour.output_encoding,
+        "tone_map": tone_map,
+    }
+
+
 def _media_ref(medium: SourceMedia, rate: float) -> dict[str, Any]:
     return {
         "media_ref_id": medium.media_ref_id,
@@ -2190,6 +2347,8 @@ def _media_ref(medium: SourceMedia, rate: float) -> dict[str, Any]:
         "available_range": _range(
             medium.available_start, medium.available_duration, rate
         ),
+        "color_encoding": medium.color_encoding,
+        "source_peak_nits": medium.source_peak_nits,
         "is_span_assembly": medium.is_span_assembly,
         # contracts#55: the member list and the verified continuity travel WITH
         # the plan. Before this the renderer took the member order from the
@@ -2853,6 +3012,75 @@ def _check(
     }
 
 
+def color_pipeline_check(edl: Mapping[str, Any]) -> dict[str, Any]:
+    """`color_pipeline_resolves` (contracts#58).
+
+    Re-derived from the emitted media_refs and the emitted pipeline, never from
+    the `ColorSettings` that wrote them: the question is whether the PLAN is
+    internally consistent, and reading the setting that wrote it would answer a
+    different one. It is a module-level function rather than a paragraph inside
+    `_validate` so a test can corrupt an emitted EDL and watch this fail, which
+    is the only way to know the check is looking at the document.
+    """
+    pipeline = edl["color_pipeline"]
+    tone_map = pipeline.get("tone_map")
+    hdr_refs = [
+        ref["media_ref_id"]
+        for ref in edl["media_refs"]
+        if ref.get("color_encoding") in HDR_COLOR_ENCODINGS
+    ]
+    problems: list[str] = []
+    for ref in edl["media_refs"]:
+        kind = ref.get("media_kind", "video")
+        encoding = ref.get("color_encoding")
+        if kind in _PICTORIAL_MEDIA_KINDS and encoding not in _COLOR_ENCODINGS:
+            problems.append(
+                f"{ref['media_ref_id']} is a {kind} source declaring color_encoding "
+                f"{encoding!r}"
+            )
+        elif kind not in _PICTORIAL_MEDIA_KINDS and encoding is not None:
+            problems.append(
+                f"{ref['media_ref_id']} is a {kind} source declaring color_encoding "
+                f"{encoding!r}; sound has no primaries"
+            )
+        if encoding in HDR_COLOR_ENCODINGS and not ref.get("source_peak_nits"):
+            problems.append(
+                f"{ref['media_ref_id']} is {encoding} and states no source_peak_nits"
+            )
+        if (
+            encoding == "bt2100_hlg"
+            and ref.get("source_peak_nits") != HLG_NOMINAL_PEAK_NITS
+        ):
+            problems.append(
+                f"{ref['media_ref_id']} is bt2100_hlg claiming a peak of "
+                f"{ref.get('source_peak_nits')!r}; HLG decodes against a "
+                f"{HLG_NOMINAL_PEAK_NITS:g} cd/m^2 nominal display here"
+            )
+    if hdr_refs and tone_map is None:
+        problems.append(
+            f"{len(hdr_refs)} HDR source(s) ({', '.join(hdr_refs)}) and no tone_map; "
+            "an HDR source delivered to SDR without one renders washed out"
+        )
+    if not hdr_refs and tone_map is not None:
+        problems.append(
+            "a tone_map over sources that are all SDR is a grade nobody asked for"
+        )
+    if pipeline["output_encoding"] not in _SDR_COLOR_ENCODINGS:
+        problems.append(f"output_encoding {pipeline['output_encoding']!r} is not SDR")
+    detail = (
+        f"{len(edl['media_refs'])} ref(s) name an encoding; working space "
+        f"{pipeline['working_space']} -> {pipeline['output_encoding']}, "
+        + (
+            f"tone map {tone_map['operator']} over {len(hdr_refs)} HDR source(s)"
+            if tone_map
+            else "no HDR source, no tone map"
+        )
+        if not problems
+        else "; ".join(problems)
+    )
+    return _check("color_pipeline_resolves", not problems, "error", detail)
+
+
 def _validate(
     edl: Mapping[str, Any],
     request: ReelRequest,
@@ -2923,6 +3151,8 @@ def _validate(
                 else "; ".join(span_problems),
             )
         )
+
+    checks.append(color_pipeline_check(edl))
 
     # source_range_within_available
     escapes: list[tuple[str, str]] = []

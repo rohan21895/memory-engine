@@ -113,7 +113,17 @@ export_clip(clip, edl) -> otio.schema.Clip:
         "media_id":          ref.media_id,           # authoritative on import
         "media_ref_id":      ref.media_ref_id,
         "is_span_assembly":  ref.is_span_assembly,
+        # contracts#55: the member ORDER is what the assembly's identity is made
+        # of, so it has to survive the trip out and back.
+        "member_media_ids":  ref.member_media_ids,
+        "continuity":        ref.continuity,
         "media_kind":        ref.media_kind,
+        # contracts#58: what this source's code values mean, and the peak an HDR
+        # one is graded to. OTIO's ExternalReference has nowhere native to put
+        # either, and dropping them would turn a lossless round trip into a
+        # plan that no longer knows what colour its own footage is.
+        "color_encoding":    ref.color_encoding,
+        "source_peak_nits":  ref.source_peak_nits,
     }
 
     otio_clip = Clip(name=clip.name,

@@ -23,6 +23,7 @@ import {
   type LoudnessMeasurement,
   type ToolPaths,
 } from "./ffmpeg.js";
+import { outputColorArgs } from "./color.js";
 import { buildGraph, type Interpretation } from "./filtergraph.js";
 import { assertRenderable, type ContractGap, type UnactedDeclaration } from "./gate.js";
 import { buildProgram, type Program } from "./program.js";
@@ -202,6 +203,10 @@ export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promis
     `[${graph.videoLabel}]`,
     ...(audioOut ? ["-map", `[${audioOut}]`] : []),
     ...encodeArgs(encode, audioOut !== null),
+    // contracts#58: the delivered file says what its own code values mean. An untagged
+    // file is not neutral, it is ambiguous — a player picks a transfer from its habits and
+    // the same bytes look different in two of them.
+    ...outputColorArgs(edl.color_pipeline),
     "-threads:v",
     String(encode.encoder_threads),
     ...BITEXACT_ARGS,

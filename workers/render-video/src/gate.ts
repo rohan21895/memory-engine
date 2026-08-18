@@ -7,6 +7,7 @@ import type {
   Transition,
 } from "../../../contracts/codegen/generated/typescript/index.js";
 
+import { HDR_ENCODINGS, opMatrix } from "./color.js";
 import { RenderVideoError } from "./errors.js";
 
 /**
@@ -66,8 +67,6 @@ export interface GateReport {
 }
 
 export const GAP_ISSUES = Object.freeze({
-  colorOps: "contracts#49",
-  colorPipeline: "contracts#58",
   /**
    * A non-zero timeline origin is a broadcast start timecode. contracts#56 settled the
    * encode profile and deliberately did not settle this: a delivered file's timecode
@@ -241,6 +240,48 @@ export function assertStructurallySound(edl: EDL): void {
         "different recording.",
     );
   }
+  /**
+   * contracts#58. The colour path is CONTRACT data now, so what is left here is checking
+   * that the plan agrees with itself. Both directions matter and only one of them is
+   * loud: an HDR source with no tone map renders washed out and exits zero, and a tone map
+   * over all-SDR sources is a grade nobody asked for applied to every frame.
+   */
+  const pipeline = edl.color_pipeline;
+  const hdrRefs = edl.media_refs.filter(
+    (ref) => ref.color_encoding != null && HDR_ENCODINGS.has(ref.color_encoding),
+  );
+  if (hdrRefs.length > 0 && !pipeline.tone_map) {
+    fail(
+      `media_ref(s) ${hdrRefs.map((ref) => ref.media_ref_id).join(", ")} carry an HDR encoding ` +
+        `and color_pipeline names no tone_map. Fitting HDR light into ${pipeline.output_encoding} ` +
+        "without an operator clips the highlights and washes the picture out — and succeeds, " +
+        "which is why the contract requires the operator rather than a boolean.",
+    );
+  }
+  if (hdrRefs.length === 0 && pipeline.tone_map) {
+    fail(
+      `color_pipeline carries a ${pipeline.tone_map.operator} tone map and no source is HDR. ` +
+        "Every operator maps a source's peak onto reference white, so applying one to footage " +
+        "that is already inside the output volume compresses it for nothing.",
+    );
+  }
+  for (const ref of hdrRefs) {
+    if (ref.source_peak_nits == null || !(ref.source_peak_nits > 0)) {
+      fail(
+        `media_ref ${ref.media_ref_id} is ${ref.color_encoding} and states no source_peak_nits. ` +
+          "The tone map fits THAT source's peak onto reference white; without it the renderer " +
+          "would be choosing how bright the brightest thing in the shot is.",
+      );
+    }
+  }
+  if (!validation.checks.some((c) => c.check_id === "color_pipeline_resolves" && c.passed)) {
+    fail(
+      "validation has no passing color_pipeline_resolves finding. Every EDL states its colour " +
+        "path, including the ordinary all-SDR one, and the renderer requires the validator's " +
+        "verdict rather than re-deriving it (contracts#58).",
+    );
+  }
+
   const retimed = edl.tracks.some((track) =>
     track.items.some((item) => isClip(item) && item.time_effect != null),
   );
@@ -254,20 +295,17 @@ export function assertStructurallySound(edl: EDL): void {
 }
 
 function gapsFromClip(clip: Clip, out: ContractGap[]): void {
-  for (const op of clip.color_ops ?? []) {
-    out.push({
-      field: `clips.${clip.clip_id}.color_ops[${op.op}]`,
-      declared: `amount ${op.amount}`,
-      detail:
-        "ColorOp.amount is normalised to [-1,1] with no transfer function, so the renderer " +
-        "would have to invent the physical size of the adjustment.",
-      issue: GAP_ISSUES.colorOps,
-    });
-  }
-
-  // The gain conflict that used to be refused here is gone: contracts#53 removed
+  // contracts#49 gave every op in the enum a transfer function from `amount` to a physical
+  // quantity — exposure buys +/- 2 stops, saturation a chroma scale of 1 + a — and stated
+  // that the list fuses into one matrix applied once. Nothing left to refuse: color.ts
+  // executes the contract's own formulas. An op the enum grows and this worker has not
+  // implemented is a WORKER gap, and is reported as one below.
+  //
+  // The gain conflict that used to be refused here is gone too: contracts#53 removed
   // AmbientPlan's own gains, so a clip's bed has exactly one level, on the clip, and
   // `muted` outranks it — both now stated in ClipAudio.
+  void clip;
+  void out;
 }
 
 function gapsFromTransitions(edl: EDL, out: ContractGap[]): void {
@@ -358,22 +396,7 @@ function gapsFromAudioPlan(edl: EDL, out: ContractGap[]): void {
   void out;
 }
 
-function gapsFromColorPipeline(edl: EDL, out: ContractGap[]): void {
-  const pipeline = edl.color_pipeline;
-  if (!pipeline) return;
-  const working = pipeline.working_space ?? "rec709";
-  const output = pipeline.output_transform ?? "rec709";
-  if (working !== output) {
-    out.push({
-      field: "color_pipeline",
-      declared: `working ${working} -> output ${output}`,
-      detail:
-        "A working-to-output conversion needs a named transform, and the transform value " +
-        "space is not enumerated in the contract.",
-      issue: GAP_ISSUES.colorPipeline,
-    });
-  }
-}
+
 
 function unactedDeclarations(edl: EDL): UnactedDeclaration[] {
   const unacted: UnactedDeclaration[] = [];
@@ -448,6 +471,30 @@ function unactedDeclarations(edl: EDL): UnactedDeclaration[] {
  */
 function unimplementedDeclarations(edl: EDL): UnimplementedDeclaration[] {
   const unimplemented: UnimplementedDeclaration[] = [];
+  /**
+   * A colour op the contract has given a transfer function and this worker has no matrix
+   * for. Today the two lists are the same two ops, so this reports nothing — it exists so
+   * that GROWING the enum fails here, loudly and as a worker gap, instead of falling
+   * through to a render that quietly skipped an adjustment.
+   */
+  for (const track of edl.tracks) {
+    for (const item of track.items) {
+      if (!isClip(item)) continue;
+      for (const op of item.color_ops ?? []) {
+        try {
+          opMatrix(op, edl.color_pipeline.working_space);
+        } catch {
+          unimplemented.push({
+            field: `clips.${item.clip_id}.color_ops[${op.op}]`,
+            declared: `amount ${op.amount}`,
+            detail:
+              "The contract states a transfer function for this op and this worker has no " +
+              "matrix for it. Nothing here is waiting on the planner side.",
+          });
+        }
+      }
+    }
+  }
   for (const track of edl.tracks) {
     for (const item of track.items) {
       if (!isClip(item) || !item.time_effect) continue;
@@ -504,7 +551,6 @@ export function collectGaps(edl: EDL): GateReport {
   gapsFromTransitions(edl, gaps);
   gapsFromReframe(edl, gaps);
   gapsFromAudioPlan(edl, gaps);
-  gapsFromColorPipeline(edl, gaps);
 
   return {
     gaps,

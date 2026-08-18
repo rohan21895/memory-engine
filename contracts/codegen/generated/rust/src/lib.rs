@@ -1773,100 +1773,104 @@ pub struct ClipAudio {
     pub audio_extends_past_out: Option<RationalTime>,
 }
 
+/// What a set of code values MEANS: primaries, transfer function and matrix
+/// coefficients, as one token. The spelling is closed -- see this def's $comment for
+/// the table each token expands to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ColorEncoding {
+    #[serde(rename = "srgb")]
+    Srgb,
+
+    #[serde(rename = "bt709")]
+    Bt709,
+
+    #[serde(rename = "display_p3")]
+    DisplayP3,
+
+    #[serde(rename = "bt2020_sdr")]
+    Bt2020Sdr,
+
+    #[serde(rename = "bt2100_pq")]
+    Bt2100Pq,
+
+    #[serde(rename = "bt2100_hlg")]
+    Bt2100Hlg,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ColorOpOp {
     #[serde(rename = "exposure")]
     Exposure,
 
-    #[serde(rename = "contrast")]
-    Contrast,
-
     #[serde(rename = "saturation")]
     Saturation,
-
-    #[serde(rename = "temperature")]
-    Temperature,
-
-    #[serde(rename = "tint")]
-    Tint,
-
-    #[serde(rename = "highlights")]
-    Highlights,
-
-    #[serde(rename = "shadows")]
-    Shadows,
-
-    #[serde(rename = "lift")]
-    Lift,
-
-    #[serde(rename = "gamma")]
-    Gamma,
-
-    #[serde(rename = "gain")]
-    Gain,
-
-    #[serde(rename = "lut")]
-    Lut,
-
-    #[serde(rename = "auto_white_balance")]
-    AutoWhiteBalance,
-
-    #[serde(rename = "match_to_reference")]
-    MatchToReference,
 }
 
 /// A per-clip colour adjustment, planned by the intelligence layer and merely applied
-/// by the renderer.
+/// by the renderer. `amount` is normalised to [-1,1]; what that means in light is
+/// stated in this def's $comment, per op, as a formula (contracts#49).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColorOp {
+    /// Which adjustment. The enum is short on purpose -- see the $comment for what was
+    /// removed and why, and for the issue that carries each removed capability.
     pub op: ColorOpOp,
 
-    /// Signed, normalised to [-1,1] where 0 is no change. A single normalised scale keeps
-    /// ops composable and makes 'is this grade aggressive' a question with an answer.
+    /// Signed, normalised to [-1,1] where 0 is no change. Exposure: a * 2 stops.
+    /// Saturation: a chroma scale of 1 + a. A single normalised scale keeps ops composable
+    /// and makes 'is this grade aggressive' a question with an answer.
     pub amount: f64,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lut_id: Option<Slug>,
-
-    /// For match_to_reference: the clip whose look this one is being matched to. Shot-to-
-    /// shot consistency inside a scene is planned, not left to the encoder.
+    /// PROVENANCE ONLY -- a renderer never reads this field. The clip whose look this
+    /// adjustment was derived from, recorded so a shot-matching decision stays auditable in
+    /// the plan after the planner has resolved it into primitive ops. It resolves nothing
+    /// at render time: the ops beside it are the whole instruction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference_clip_id: Option<Slug>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ColorPipelineWorkingSpace {
+    #[serde(rename = "linear_bt709")]
+    LinearBt709,
+
+    #[serde(rename = "linear_bt2020")]
+    LinearBt2020,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ColorPipelineOutputEncoding {
     #[serde(rename = "srgb")]
     Srgb,
 
-    #[serde(rename = "rec709")]
-    Rec709,
+    #[serde(rename = "bt709")]
+    Bt709,
 
-    #[serde(rename = "rec2020")]
-    Rec2020,
+    #[serde(rename = "display_p3")]
+    DisplayP3,
 
-    #[serde(rename = "aces_cct")]
-    AcesCct,
-
-    #[serde(rename = "linear")]
-    Linear,
+    #[serde(rename = "bt2020_sdr")]
+    Bt2020Sdr,
 }
 
+/// The colour path from every source to the delivered file. Every field is required and
+/// none has a default: a colour decision a renderer supplies is invisible until print.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColorPipeline {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_transform: Option<String>,
+    /// Where colour ops and tone mapping compose. LINEAR-LIGHT RGB only, scaled so 1.0 is
+    /// reference white -- the earlier enum mixed transfer names ('rec709') with 'linear'
+    /// and with a log space, so it could not say what an op meant. `aces_cct` went with it:
+    /// no worker here implements it, and its log curve has constants nothing in this repo
+    /// states.
+    pub working_space: ColorPipelineWorkingSpace,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub working_space: Option<ColorPipelineWorkingSpace>,
+    /// What the delivered file's code values mean, and what its container-level colour tags
+    /// must say. SDR only at v0 -- see the ColorEncoding $comment.
+    pub output_encoding: ColorPipelineOutputEncoding,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_transform: Option<String>,
-
-    /// Required when any source is HLG or PQ and the target is SDR. Left implicit, HDR
-    /// sources render washed out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tone_map_hdr_to_sdr: Option<bool>,
+    /// Required exactly when at least one source's `color_encoding` is an HDR member
+    /// (bt2100_pq, bt2100_hlg); must be null otherwise. Checked as
+    /// `color_pipeline_resolves`.
+    pub tone_map: Option<ToneMap>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1942,6 +1946,9 @@ pub enum EdlValidationChecksItemCheckId {
 
     #[serde(rename = "span_continuity_verified")]
     SpanContinuityVerified,
+
+    #[serde(rename = "color_pipeline_resolves")]
+    ColorPipelineResolves,
 
     #[serde(rename = "transition_handles_available")]
     TransitionHandlesAvailable,
@@ -2451,6 +2458,21 @@ pub struct MediaRef {
     /// Required when is_span_assembly is true and forbidden otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuity: Option<MediaRefContinuity>,
+
+    /// What this source's code values mean. REQUIRED for a video or image source and null
+    /// for an audio or music one. Stated by the planner from the MediaRecord ingest already
+    /// probed -- never inferred at render time, which is what
+    /// `ColorPipeline.input_transform: "auto"` used to ask for (contracts#58).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_encoding: Option<ColorEncoding>,
+
+    /// Peak luminance this source is graded to, in cd/m^2. REQUIRED when `color_encoding`
+    /// is an HDR member and null otherwise. For `bt2100_hlg` it MUST be 1000, because that
+    /// is the nominal display the HLG decode is defined against here -- any other value
+    /// would describe a decode that did not happen. It sits on the source rather than on
+    /// ToneMap because a cut can hold a 1000-nit phone clip and a 4000-nit graded one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_peak_nits: Option<f64>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_frame_rate: Option<f64>,
@@ -3053,6 +3075,43 @@ pub struct TimeEffect {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ToneMapOperator {
+    #[serde(rename = "hable")]
+    Hable,
+
+    #[serde(rename = "reinhard")]
+    Reinhard,
+
+    #[serde(rename = "mobius")]
+    Mobius,
+}
+
+/// How HDR light is fitted into the SDR output volume. Required exactly when some
+/// source carries an HDR encoding; null otherwise, because a tone map over SDR sources
+/// is a grade nobody asked for.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToneMap {
+    /// Which curve. Formulas are written out in this def's $comment and are normative.
+    pub operator: ToneMapOperator,
+
+    /// The operator's single shape parameter: reinhard's contrast, mobius's linear-section
+    /// end. Null for hable, which has none. There is no default -- a curve parameter a
+    /// renderer supplies is a curve nobody chose. The range is OPEN AT BOTH ENDS for both
+    /// parameterised operators, and 1 is excluded because it is degenerate rather than
+    /// merely extreme: see the $comment.
+    pub operator_param: Option<f64>,
+
+    /// What 1.0 means in the working space, in cd/m^2. 100 is SDR diffuse white (BT.1886);
+    /// 203 is the BT.2100 HLG graphic-white convention. Required because it is the scale
+    /// every other number in this object is expressed against.
+    pub reference_white_nits: f64,
+
+    /// Threshold, in units of reference white, above which a pixel is pulled towards its
+    /// own luminance before mapping. 0 disables it. See the $comment for the exact formula.
+    pub desaturation: f64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TrackKind {
     #[serde(rename = "video")]
     Video,
@@ -3269,8 +3328,12 @@ pub struct EDL {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub story_arc: Option<StoryArc>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_pipeline: Option<ColorPipeline>,
+    /// REQUIRED and non-null (contracts#58). It was nullable, and a null colour pipeline is
+    /// a plan that declines to say what colour its own output is -- which leaves the
+    /// renderer to decide, which is the whole defect. Every EDL states its colour path,
+    /// including the ordinary all-SDR one, where the statement is short and the pipeline is
+    /// an identity.
+    pub color_pipeline: ColorPipeline,
 
     /// Present when this EDL is one of several alternatives offered to the user. The reel
     /// planner emits 3-5; whichever the user picks becomes a PrefEvent, and the losers are

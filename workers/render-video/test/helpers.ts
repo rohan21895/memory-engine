@@ -60,6 +60,14 @@ export interface Fixture {
   chapterAssemblyId: string;
   musicPath: string;
   musicMediaId: string;
+  /**
+   * The same picture, graded and tagged as BT.2100 HLG (contracts#58). Written by
+   * converting the SDR source through zscale, so the file really carries ARIB STD-B67 and
+   * BT.2020 primaries rather than merely claiming to in its metadata — a mislabelled file
+   * would make the tone-map tests pass while proving nothing.
+   */
+  hlgPath: string;
+  hlgMediaId: string;
 }
 
 let fixturePromise: Promise<Fixture> | null = null;
@@ -106,11 +114,46 @@ async function makeVideo(path: string, startFrame: number, frames: number): Prom
   ]);
 }
 
+async function makeHlgVideo(source: string, path: string): Promise<void> {
+  await run(TOOLS.ffmpeg, [
+    "-nostdin",
+    "-hide_banner",
+    "-nostats",
+    "-fflags",
+    "+bitexact",
+    "-flags",
+    "+bitexact",
+    "-i",
+    source,
+    "-an",
+    "-vf",
+    "zscale=tin=bt709:pin=bt709:min=bt709:rin=tv:t=arib-std-b67:p=bt2020:m=bt2020nc:r=tv:npl=1000," +
+      "format=yuv420p10le",
+    "-c:v",
+    "ffv1",
+    "-colorspace",
+    "bt2020nc",
+    "-color_primaries",
+    "bt2020",
+    "-color_trc",
+    "arib-std-b67",
+    "-map_metadata",
+    "-1",
+    "-f",
+    "matroska",
+    "-y",
+    path,
+  ]);
+}
+
 export async function fixture(): Promise<Fixture> {
   fixturePromise ??= (async () => {
     const directory = await mkdtemp(join(tmpdir(), "render-video-fixture-"));
     const videoPath = join(directory, "source.mkv");
     await makeVideo(videoPath, 0, SOURCE_FRAMES);
+
+    const hlgPath = join(directory, "source-hlg.mkv");
+    await makeHlgVideo(videoPath, hlgPath);
 
     const chapterPaths = [join(directory, "chapter-01.mkv"), join(directory, "chapter-02.mkv")];
     await makeVideo(chapterPaths[0]!, 0, SOURCE_FRAMES / 2);
@@ -147,6 +190,8 @@ export async function fixture(): Promise<Fixture> {
       chapterAssemblyId: spanAssemblyId(chapterDigests),
       musicPath,
       musicMediaId: await digestFile(musicPath),
+      hlgPath,
+      hlgMediaId: await digestFile(hlgPath),
     };
   })();
   return fixturePromise;
@@ -171,6 +216,7 @@ const ALL_PASSING: EdlValidationChecksItemCheckId[] = [
   "time_effect_extent_derived",
   "beat_alignment_within_tolerance",
   "span_continuity_verified",
+  "color_pipeline_resolves",
   "determinism_digest_present",
 ];
 
@@ -202,11 +248,21 @@ export const FFV1_MKV: EncodeProfile = {
   },
 };
 
-export function videoRef(mediaId: string, isSpan = false, memberMediaIds: string[] = []): MediaRef {
+export function videoRef(
+  mediaId: string,
+  isSpan = false,
+  memberMediaIds: string[] = [],
+  colour: Partial<Pick<MediaRef, "color_encoding" | "source_peak_nits">> = {},
+): MediaRef {
   return {
     media_ref_id: isSpan ? "src-span" : "src-a",
     media_id: mediaId,
     media_kind: "video",
+    // contracts#58: what this source's code values mean is a planner assertion, and
+    // every pictorial ref carries one.
+    color_encoding: "bt709",
+    source_peak_nits: null,
+    ...colour,
     available_range: range(SOURCE_ORIGIN, SOURCE_FRAMES),
     is_span_assembly: isSpan,
     // contracts#55: an assembly carries its members and its verified continuity.
@@ -222,6 +278,8 @@ export function musicRef(mediaId: string): MediaRef {
     media_ref_id: "src-music",
     media_id: mediaId,
     media_kind: "music",
+    color_encoding: null,
+    source_peak_nits: null,
     available_range: range(0, 560),
     is_span_assembly: false,
     member_media_ids: [],
@@ -302,6 +360,7 @@ export interface EdlOptions {
   aspect?: { numerator: number; denominator: number };
   maxDurationFrames?: number;
   encode?: EncodeProfile;
+  colorPipeline?: EDL["color_pipeline"];
 }
 
 export function makeEdl(options: EdlOptions): EDL {
@@ -329,11 +388,10 @@ export function makeEdl(options: EdlOptions): EDL {
     audio_plan: options.audioPlan ?? null,
     beat_grid: options.beatGrid ?? null,
     story_arc: null,
-    color_pipeline: {
-      input_transform: "auto",
-      working_space: "rec709",
-      output_transform: "rec709",
-      tone_map_hdr_to_sdr: true,
+    color_pipeline: options.colorPipeline ?? {
+      working_space: "linear_bt709",
+      output_encoding: "bt709",
+      tone_map: null,
     },
     variant: null,
     determinism: {

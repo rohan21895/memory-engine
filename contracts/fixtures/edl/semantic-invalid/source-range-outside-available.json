@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "edl_id": "a5b85a15d815ef6abb662c1bdc5147cc19ae3801b1c48a671c387c4e35d3b5b4",
+  "edl_id": "8b1f2c187ccb62ac4581826caadbb85bfe7ed66b388367fc979eef58e08a0ddf",
   "name": "clip reaches past the end of its source",
   "kind": "reel",
   "rate": 59.94005994005994,
@@ -61,7 +61,9 @@
         "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
         "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8"
       ],
-      "continuity": "verified_gapless"
+      "continuity": "verified_gapless",
+      "color_encoding": "bt709",
+      "source_peak_nits": null
     }
   ],
   "tracks": [
@@ -111,7 +113,18 @@
         "severity": "error",
         "detail": "clip-01 ends at 3086900, past the source end at 3086673",
         "clip_id": "clip-01"
+      },
+      {
+        "check_id": "color_pipeline_resolves",
+        "passed": true,
+        "severity": "error",
+        "detail": "2 ref(s) name an encoding; working space linear_bt709 -> bt709, no HDR source, no tone map"
       }
     ]
+  },
+  "color_pipeline": {
+    "working_space": "linear_bt709",
+    "output_encoding": "bt709",
+    "tone_map": null
   }
 }

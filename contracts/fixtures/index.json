@@ -60,6 +60,21 @@
       ]
     },
     {
+      "path": "edl/schema-invalid/audio-source-with-a-colour-encoding.json",
+      "schema": "edl",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "media_refs",
+        1,
+        "color_encoding"
+      ],
+      "purpose": "contracts#58. The music source claiming to be BT.709. Sound has no primaries, and a colour encoding on it is either a copy-paste or a media_kind that is wrong -- both worth failing on, because the field is what tells the renderer which sources it has to linearise.",
+      "exercises": [
+        "color_encoding is required for a pictorial media_kind and forbidden for an audio one"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
       "path": "edl/schema-invalid/encode-crf-without-quality.json",
       "schema": "edl",
       "expectation": "schema-invalid",
@@ -91,12 +106,35 @@
       "rejected_by": "schema_conditional"
     },
     {
+      "path": "edl/schema-invalid/tone-map-hable-with-a-parameter.json",
+      "schema": "edl",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "color_pipeline",
+        "tone_map"
+      ],
+      "purpose": "contracts#58. Hable carrying a curve parameter. The Uncharted-2 curve's six constants are fixed, so the number is not a setting the renderer could honour and it is not one it should ignore: a plan that carries it was written against some other operator's shape and would render as a curve nobody asked for.",
+      "exercises": [
+        "operator hable requires operator_param to be null; the other two operators require a number"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
       "path": "edl/semantic-invalid/ducking-range-past-the-timeline.json",
       "schema": "edl",
       "expectation": "semantic-invalid",
       "purpose": "contracts#54. A duck whose range runs 175 frames past the end of the 899-frame timeline. A gain envelope over frames that do not exist is not a mix decision that can be executed, and the renderer should never be the first thing to discover it.",
       "exercises": [
         "a DuckingRule range must lie inside the timeline the plan lays out"
+      ]
+    },
+    {
+      "path": "edl/semantic-invalid/hdr-source-without-a-tone-map.json",
+      "schema": "edl",
+      "expectation": "semantic-invalid",
+      "purpose": "contracts#58. An HLG source delivered to BT.709 with tone_map null. Structurally perfect, and it is the exact failure the old tone_map_hdr_to_sdr boolean existed to prevent: the highlights clip and the whole picture renders washed out. A render that succeeds and looks slightly wrong is the failure nobody catches in review, so it has to be caught in the plan.",
+      "exercises": [
+        "color_pipeline_resolves: a tone map is required exactly when some source's encoding is HDR"
       ]
     },
     {
@@ -135,6 +173,17 @@
         "clip-04 spans the GH01/GH02 chapter boundary at source frame 3067485, proving a cut can cross a chaptered file split via the span assembly",
         "every reframe keyframe uses `smooth`, which is the clamped uniform Catmull-Rom spline the schema states (contracts#51) and the only mode the reel planner emits",
         "an edl_id that recomputes from the plan under the stated canonicalisation, checked rather than asserted"
+      ]
+    },
+    {
+      "path": "edl/valid/reel-hlg-source-tone-mapped.json",
+      "schema": "edl",
+      "expectation": "valid",
+      "purpose": "contracts#58. The same ridge ride, shot in HLG on the action camera rather than in BT.709 -- the case the contract could not describe before, because ColorPipeline carried one global input_transform of \"auto\" and a tone_map boolean that named no operator. Every colour decision is now in the plan: the source's encoding and its graded peak, the linear working space, the delivered encoding, and the operator with its parameters. It is the only fixture that exercises the tone-map path, so it is the one a renderer's HDR support is testable against.",
+      "exercises": [
+        "MediaRef.color_encoding bt2100_hlg with source_peak_nits pinned to the 1000 cd/m^2 nominal display its decode is defined against",
+        "ColorPipeline.tone_map present exactly because a source is HDR, with hable's operator_param null",
+        "working_space linear_bt2020 delivering to bt709, so the luminance coefficients that drive desaturation are BT.2020's and not BT.709's"
       ]
     },
     {

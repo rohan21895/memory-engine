@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 
 import type { EDL, MediaRef } from "../../../contracts/codegen/generated/typescript/index.js";
 
+import { assertColorDeclarationMatchesFile } from "./color.js";
 import { digestFile, spanAssemblyId } from "./digest.js";
 import { RenderVideoError } from "./errors.js";
 import { probe, type ProbedAudioStream, type ProbedVideoStream, type ToolPaths } from "./ffmpeg.js";
@@ -77,8 +78,6 @@ async function writeConcatList(directory: string, mediaRefId: string, paths: rea
   await writeFile(listPath, body, { mode: 0o600 });
   return listPath;
 }
-
-const HDR_TRANSFERS = new Set(["arib-std-b67", "smpte2084", "smpte428", "bt2020-10", "bt2020-12"]);
 
 export async function resolveSources(
   edl: EDL,
@@ -169,14 +168,15 @@ export async function resolveSources(
               "here would need a convention the contract does not state.",
           );
         }
-        if (stream.colorTransfer && HDR_TRANSFERS.has(stream.colorTransfer)) {
-          fail(
-            "validation_failed",
-            `A source for ${ref.media_ref_id} is ${stream.colorTransfer}. ColorPipeline names no ` +
-              "tone-mapping operator, so an HDR source cannot be rendered to SDR without the " +
-              "renderer choosing the look (contracts#58).",
-          );
-        }
+        /**
+         * contracts#58. An HDR source is no longer refused: the plan names the encoding,
+         * the graded peak and the tone-mapping operator, so the renderer has everything it
+         * needs. What it checks instead is that the plan and the file AGREE. The plan wins
+         * where the file is silent — an untagged action-camera file is exactly the case
+         * `input_transform: "auto"` handled worst — but a plan that says bt709 over a file
+         * tagged PQ is either the wrong footage or a plan made before a regrade.
+         */
+        assertColorDeclarationMatchesFile(ref, stream.colorTransfer, stream.colorRange);
         frameCount += stream.frameCount;
       }
       video = first;
