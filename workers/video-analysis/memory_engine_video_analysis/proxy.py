@@ -59,6 +59,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+from blake3 import blake3
+
 __all__ = [
     "FrameIndex",
     "FrameIndexEntry",
@@ -295,6 +297,37 @@ class Proxy:
     width: int | None = None
     height: int | None = None
     generator_version: str | None = None
+
+    def verify_content(self) -> None:
+        """Fail unless the bytes at `path` have the declared content address.
+
+        `proxy_id` is ingest's BLAKE3 over the encoded proxy bytes. Every model
+        run and aggregate job uses it as the identity of the pixels analysed,
+        so trusting the string from a record would let replaced bytes inherit
+        old features and resumable-job results.
+        """
+        expected = self.proxy_id.lower()
+        if len(expected) != 64 or any(
+            character not in "0123456789abcdef" for character in expected
+        ):
+            raise ProxyError(
+                f"{self.path.name} declares invalid proxy_id={self.proxy_id!r}; "
+                "a video proxy id must be a 64-character BLAKE3 hex digest"
+            )
+        digest = blake3()
+        try:
+            with self.path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+        except OSError as error:
+            raise ProxyError(f"proxy bytes are unreadable: {self.path}") from error
+        actual = digest.hexdigest()
+        if actual != expected:
+            raise ProxyError(
+                f"{self.path.name} content hash does not match proxy_id: "
+                f"declared {expected}, actual {actual}. The proxy was replaced "
+                "or corrupted and no features may be attributed to the old id."
+            )
 
     @property
     def proxy_grid(self) -> SourceGrid:

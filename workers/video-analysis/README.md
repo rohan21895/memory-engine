@@ -30,8 +30,8 @@ halfway through:
 | what | how | if missing |
 |---|---|---|
 | FFmpeg + FFprobe | any 6.x/7.x build | `decode.ToolMissing`, naming `MEMORY_ENGINE_FFMPEG` |
-| a 480p proxy per video | `workers/ingest`'s `generate_video_proxy` job | that video is skipped and counted; exit code 1 if none has one |
-| `blake3` | `moment_id` is a BLAKE3 content address | `plan_moments` raises rather than substituting another hash |
+| a 480p proxy per video | `workers/ingest`'s `generate_video_proxy` job | that video is skipped and counted; the run exits 1 even when other videos succeed |
+| `blake3` | proxy bytes and `moment_id` are content-addressed | analysis refuses proxy bytes that do not hash to their declared `proxy_id`; `plan_moments` never substitutes another hash |
 
 The end-to-end run that produced moments from video, exactly as executed:
 
@@ -61,7 +61,14 @@ MEMORY_ENGINE_FFPROBE=/opt/homebrew/bin/ffprobe \
 Exit codes follow `services/pipeline`'s vocabulary: **0** every requested video
 produced moments; **1** nothing to analyse or a prerequisite a person must
 supply; **2** analysis ran and broke. A run that finds forty videos and
-analyses none of them exits 1.
+analyses none of them exits 1. So does a partial run: one successful video
+cannot hide another requested video's missing proxy.
+
+Every run that reaches record selection writes
+`<workdir>/video-analysis-report.json` (or `--report`) atomically. It records
+the exit code and `discovered`, `analysed`, `skipped`, `failed`, and `deferred`
+video counts, so automation never has to infer completeness from the presence
+of some MomentRecord files.
 
 ## What is measured, and what is not
 
@@ -166,7 +173,7 @@ find . -name __pycache__ -type d -exec rm -rf {} +
 python3 -m unittest discover -s tests
 ```
 
-98 tests, about a minute. **There are no skips.** Every test needs FFmpeg,
+The full suite takes about a minute. **There are no skips.** Every test needs FFmpeg,
 because every line of the production path is "get pixels or samples out of a
 video", and a suite that skipped its way to green when the decoder is missing
 would report a working video analyser on a machine that cannot open a video.

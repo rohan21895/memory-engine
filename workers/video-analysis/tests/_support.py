@@ -327,6 +327,17 @@ def write_sidecar(clip: Path, destination: Path) -> Path:
 MEDIA_ID = "a" * 64
 
 
+def file_blake3(path: Path) -> str:
+    """The content id ingest would assign to these generated proxy bytes."""
+    from blake3 import blake3  # noqa: PLC0415
+
+    digest = blake3()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def make_proxy(clip: Path, *, media_id: str = MEDIA_ID):
     """A `proxy.Proxy` over a generated clip, with its sidecar written."""
     from memory_engine_video_analysis.proxy import Proxy, read_frame_index
@@ -336,6 +347,6 @@ def make_proxy(clip: Path, *, media_id: str = MEDIA_ID):
         media_id=media_id,
         path=clip,
         frame_index=read_frame_index(sidecar),
-        proxy_id="b" * 64,
+        proxy_id=file_blake3(clip),
         generator_version="tests",
     )
