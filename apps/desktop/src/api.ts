@@ -47,6 +47,16 @@ export async function loadLibrary(
   return invoke<LibraryPage>("library_page", { query, cursor, limit });
 }
 
+export async function loadBestMoments(
+  cursor: string | null = null,
+  limit = 120,
+): Promise<LibraryPage> {
+  if (!inDesktopApp()) {
+    return { items: [], total: 0, nextCursor: null, hasMore: false };
+  }
+  return invoke<LibraryPage>("best_moments_page", { cursor, limit });
+}
+
 export async function loadProxyAsset(proxyId: string): Promise<ProxyAsset> {
   if (!inDesktopApp()) throw new Error("Private previews are available in the desktop app.");
   return invoke<ProxyAsset>("proxy_asset", { proxyId });

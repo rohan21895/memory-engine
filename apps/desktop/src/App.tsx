@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import onboardingArtwork from "./assets/onboarding-memory-table.jpg";
 import {
   cancelScan,
   chooseFolders,
+  loadBestMoments,
   loadLibrary,
   loadLibraryStats,
   loadPeoplePage,
@@ -16,6 +18,7 @@ import {
   durationLabel,
   formatCount,
   friendlyFolderName,
+  measuredDurationLabel,
   monthLabel,
   scanPercent,
 } from "./format";
@@ -27,6 +30,7 @@ import {
   PeopleIcon,
   PlayIcon,
   SearchIcon,
+  SparkleIcon,
 } from "./icons";
 import type {
   FaceBox,
@@ -37,8 +41,13 @@ import type {
   ScanUpdate,
 } from "./types";
 import { GRID_GAP, GRID_OVERSCAN_ROWS, gridMetrics } from "./virtual-grid";
+import {
+  qualityCoverage,
+  summarizeCullingSelection,
+  toggleCullingSelection,
+} from "./culling";
 
-type Screen = "welcome" | "folders" | "scanning" | "library" | "people";
+type Screen = "welcome" | "folders" | "scanning" | "library" | "best" | "people";
 
 const emptyPage: LibraryPage = { items: [], total: 0, nextCursor: null, hasMore: false };
 const emptyPeople: PeoplePage = { people: [], reviewItems: [] };
@@ -54,12 +63,15 @@ function App() {
     message: "Getting your library ready…",
   });
   const [library, setLibrary] = useState<LibraryPage>(emptyPage);
+  const [bestMoments, setBestMoments] = useState<LibraryPage>(emptyPage);
+  const [culledIds, setCulledIds] = useState<Set<string>>(() => new Set());
   const [stats, setStats] = useState<LibraryStats | null>(null);
   const [people, setPeople] = useState<PeoplePage>(emptyPeople);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const libraryRequest = useRef(0);
+  const bestMomentsRequest = useRef(0);
 
   const refreshStats = useCallback(async () => {
     const next = await loadLibraryStats();
@@ -72,6 +84,16 @@ function App() {
     const page = await loadLibrary(search, cursor);
     if (request !== libraryRequest.current) return page;
     setLibrary((current) =>
+      cursor === null ? page : { ...page, items: [...current.items, ...page.items] },
+    );
+    return page;
+  }, []);
+
+  const refreshBestMoments = useCallback(async (cursor: string | null = null) => {
+    const request = cursor === null ? ++bestMomentsRequest.current : bestMomentsRequest.current;
+    const page = await loadBestMoments(cursor);
+    if (request !== bestMomentsRequest.current) return page;
+    setBestMoments((current) =>
       cursor === null ? page : { ...page, items: [...current.items, ...page.items] },
     );
     return page;
@@ -123,6 +145,8 @@ function App() {
         return;
       }
       setScreen("library");
+      setBestMoments(emptyPage);
+      setCulledIds(new Set());
       try {
         await Promise.all([refreshLibrary(), refreshStats()]);
       } catch {
@@ -157,6 +181,20 @@ function App() {
     }
   }
 
+  async function showBestMoments() {
+    setScreen("best");
+    setError(null);
+    if (bestMoments.items.length > 0) return;
+    setLoading(true);
+    try {
+      await refreshBestMoments();
+    } catch {
+      setError("Your best moments could not be ranked just now. The library itself is still safe.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function loadMoreMemories() {
     if (loading || !library.nextCursor) return;
     setLoading(true);
@@ -165,6 +203,19 @@ function App() {
       await refreshLibrary(query, library.nextCursor);
     } catch {
       setError("More memories could not be loaded just now. Your place in the library is saved.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadMoreBestMoments() {
+    if (loading || !bestMoments.nextCursor) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await refreshBestMoments(bestMoments.nextCursor);
+    } catch {
+      setError("More ranked moments could not be loaded just now. Your current selection is unchanged.");
     } finally {
       setLoading(false);
     }
@@ -180,8 +231,27 @@ function App() {
         error={error}
         onQueryChange={setQuery}
         onAddFolders={pickFolders}
+        onShowBest={() => void showBestMoments()}
         onShowPeople={() => void showPeople()}
         onLoadMore={() => void loadMoreMemories()}
+      />
+    );
+  }
+
+  if (screen === "best") {
+    return (
+      <BestMomentsScreen
+        page={bestMoments}
+        selectedIds={culledIds}
+        loading={loading}
+        error={error}
+        onToggle={(mediaId) => setCulledIds((current) => toggleCullingSelection(current, mediaId))}
+        onClear={() => setCulledIds(new Set())}
+        onShowLibrary={() => setScreen("library")}
+        onShowPeople={() => void showPeople()}
+        onAddFolders={pickFolders}
+        onRetry={() => void showBestMoments()}
+        onLoadMore={() => void loadMoreBestMoments()}
       />
     );
   }
@@ -193,6 +263,7 @@ function App() {
         loading={loading}
         error={error}
         onShowLibrary={() => setScreen("library")}
+        onShowBest={() => void showBestMoments()}
         onAddFolders={pickFolders}
       />
     );
@@ -324,13 +395,14 @@ function ScanProgress({ update, onPause }: { update: ScanUpdate; onPause: () => 
 }
 
 type RailProps = {
-  active: "library" | "people";
+  active: "library" | "best" | "people";
   onShowLibrary: () => void;
+  onShowBest: () => void;
   onShowPeople: () => void;
   onAddFolders: () => void;
 };
 
-function LibraryRail({ active, onShowLibrary, onShowPeople, onAddFolders }: RailProps) {
+function LibraryRail({ active, onShowLibrary, onShowBest, onShowPeople, onAddFolders }: RailProps) {
   return (
     <aside className="library-rail">
       <Brand />
@@ -342,6 +414,14 @@ function LibraryRail({ active, onShowLibrary, onShowPeople, onAddFolders }: Rail
           onClick={onShowLibrary}
         >
           <ArchiveIcon /> Library
+        </button>
+        <button
+          className={`rail-link ${active === "best" ? "is-active" : ""}`}
+          type="button"
+          aria-current={active === "best" ? "page" : undefined}
+          onClick={onShowBest}
+        >
+          <SparkleIcon /> Best moments
         </button>
         <span className="rail-link is-disabled" aria-disabled="true"><HeartIcon /> Favorites <small>Later</small></span>
         <button
@@ -369,6 +449,7 @@ type LibraryScreenProps = {
   error: string | null;
   onQueryChange: (value: string) => void;
   onAddFolders: () => void;
+  onShowBest: () => void;
   onShowPeople: () => void;
   onLoadMore: () => void;
 };
@@ -381,6 +462,7 @@ function LibraryScreen({
   error,
   onQueryChange,
   onAddFolders,
+  onShowBest,
   onShowPeople,
   onLoadMore,
 }: LibraryScreenProps) {
@@ -392,6 +474,7 @@ function LibraryScreen({
       <LibraryRail
         active="library"
         onShowLibrary={() => undefined}
+        onShowBest={onShowBest}
         onShowPeople={onShowPeople}
         onAddFolders={onAddFolders}
       />
@@ -451,7 +534,225 @@ function LibraryScreen({
   );
 }
 
+type BestMomentsScreenProps = {
+  page: LibraryPage;
+  selectedIds: ReadonlySet<string>;
+  loading: boolean;
+  error: string | null;
+  onToggle: (mediaId: string) => void;
+  onClear: () => void;
+  onShowLibrary: () => void;
+  onShowPeople: () => void;
+  onAddFolders: () => void;
+  onRetry: () => void;
+  onLoadMore: () => void;
+};
+
+function BestMomentsScreen({
+  page,
+  selectedIds,
+  loading,
+  error,
+  onToggle,
+  onClear,
+  onShowLibrary,
+  onShowPeople,
+  onAddFolders,
+  onRetry,
+  onLoadMore,
+}: BestMomentsScreenProps) {
+  const selection = useMemo(
+    () => summarizeCullingSelection(page.items, selectedIds),
+    [page.items, selectedIds],
+  );
+  const coverage = useMemo(() => qualityCoverage(page.items), [page.items]);
+  const rankedTotal = page.total < 0
+    ? "Ranked moments"
+    : `${formatCount(page.total)} ${page.total === 1 ? "moment" : "moments"} in this view`;
+  const measuredDuration = selection.measuredVideoCount > 0
+    ? measuredDurationLabel(selection.measuredVideoDurationMs)
+    : selection.videos > 0 ? "Not measured" : "—";
+
+  return (
+    <main className="library-shell">
+      <LibraryRail
+        active="best"
+        onShowLibrary={onShowLibrary}
+        onShowBest={() => undefined}
+        onShowPeople={onShowPeople}
+        onAddFolders={onAddFolders}
+      />
+      <section className="library-main culling-main">
+        <header className="culling-header">
+          <div>
+            <p className="eyebrow">A quieter first pass</p>
+            <h1>Best moments</h1>
+            <p className="culling-lead">
+              Highest comparable quality appears first. Choose a working set for your next
+              album or film; nothing here deletes or changes an original.
+            </p>
+          </div>
+          <aside className="selection-meter" aria-label="Current culling selection" aria-live="polite">
+            <div className="selection-meter-title">
+              <span>Working selection</span>
+              <strong>{formatCount(selection.total)}</strong>
+            </div>
+            <div className="selection-facts">
+              <span><strong>{formatCount(selection.photos)}</strong> photos</span>
+              <span><strong>{formatCount(selection.videos)}</strong> videos</span>
+              <span><strong>{measuredDuration}</strong> measured video</span>
+            </div>
+            <p>
+              {selection.videos === 0 && "Select a video to measure its known running time."}
+              {selection.videos === 1 && selection.measuredVideoCount === 0 &&
+                "The selected video length is not known yet."}
+              {selection.videos > 1 && selection.measuredVideoCount === 0 &&
+                `None of the ${formatCount(selection.videos)} selected video lengths are known yet.`}
+              {selection.videos === 1 && selection.measuredVideoCount === 1 &&
+                "The selected video has a measured length."}
+              {selection.videos > 1 && selection.measuredVideoCount > 0 &&
+                `${formatCount(selection.measuredVideoCount)} of ${formatCount(selection.videos)} selected videos have a measured length.`}
+              {selection.unknownDurationVideos > 0 &&
+                ` ${formatCount(selection.unknownDurationVideos)} unknown ${selection.unknownDurationVideos === 1 ? "length is" : "lengths are"} not included in the total.`}
+            </p>
+            {selection.other > 0 && (
+              <p>{formatCount(selection.other)} selected non-photo item {selection.other === 1 ? "is" : "are"} counted separately.</p>
+            )}
+            <button type="button" disabled={selection.total === 0} onClick={onClear}>Clear selection</button>
+          </aside>
+        </header>
+
+        <div className="culling-status">
+          <div>
+            <strong>{rankedTotal}</strong>
+            <span>Rejected and sensitive items are excluded.</span>
+          </div>
+          <QualityCoverageNote coverage={coverage} />
+        </div>
+
+        {error && <p className="inline-error library-error" role="alert">{error}</p>}
+        {error && page.items.length === 0 && (
+          <button className="secondary-action culling-retry" type="button" onClick={onRetry}>
+            Try ranking again
+          </button>
+        )}
+        {loading && page.items.length === 0 && (
+          <p className="organizing-note" role="status"><span className="organizing-pulse" /> Ranking the moments measured so far…</p>
+        )}
+
+        {!loading && !error && page.items.length === 0 ? (
+          <div className="library-empty culling-empty">
+            <span className="empty-sun" aria-hidden="true" />
+            <h2>No ranked moments are ready yet.</h2>
+            <p>Add a folder, or return after private quality analysis has more to compare.</p>
+            <button className="primary-action" type="button" onClick={onAddFolders}>Choose a folder</button>
+          </div>
+        ) : page.items.length > 0 ? (
+          <>
+            <p className="culling-instruction" id="culling-instruction">
+              Select any moment to add or remove it from this session’s working set.
+            </p>
+            <VirtualMediaGrid
+              items={page.items}
+              ariaLabel="Best moments grid"
+              className="culling-grid-window"
+              renderItem={(item) => (
+                <CullingTile
+                  item={item}
+                  selected={selectedIds.has(item.mediaId)}
+                  onToggle={() => onToggle(item.mediaId)}
+                />
+              )}
+            />
+            {page.hasMore && page.nextCursor && (
+              <button className="load-more" type="button" disabled={loading} onClick={onLoadMore}>
+                {loading ? "Ranking more moments…" : "Show more ranked moments"}
+              </button>
+            )}
+          </>
+        ) : null}
+      </section>
+    </main>
+  );
+}
+
+function QualityCoverageNote({ coverage }: { coverage: ReturnType<typeof qualityCoverage> }) {
+  if (coverage.total === 0) {
+    return <p className="quality-coverage">Quality coverage will appear as moments load.</p>;
+  }
+  if (coverage.comparable === coverage.total) {
+    return (
+      <p className="quality-coverage">
+        <strong>All {formatCount(coverage.total)} loaded moments</strong> can be compared directly.
+      </p>
+    );
+  }
+  return (
+    <p className="quality-coverage">
+      <strong>{formatCount(coverage.comparable)} of {formatCount(coverage.total)} loaded</strong> can be compared directly.
+      {coverage.differentlyMeasured > 0 &&
+        ` ${formatCount(coverage.differentlyMeasured)} ${coverage.differentlyMeasured === 1 ? "has" : "have"} a differently measured score and stays grouped.`}
+      {coverage.unmeasured > 0 &&
+        ` ${formatCount(coverage.unmeasured)} ${coverage.unmeasured === 1 ? "is" : "are"} still being measured.`}
+    </p>
+  );
+}
+
+function CullingTile({
+  item,
+  selected,
+  onToggle,
+}: {
+  item: LibraryItem;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  const duration = durationLabel(item.durationMs);
+  const date = captureLabel(item.capturedUnix, item.capturePrecision);
+  const qualityLabel = item.quality === null || !Number.isFinite(item.quality)
+    ? "Quality pending"
+    : item.qualityIsComparable ? "Comparable quality" : "Measured separately";
+  return (
+    <button
+      className={`memory-tile culling-tile ${selected ? "is-selected" : ""}`}
+      type="button"
+      aria-pressed={selected}
+      aria-label={`${selected ? "Remove" : "Select"} ${item.kind.replaceAll("_", " ")} captured ${date}`}
+      onClick={onToggle}
+    >
+      <PrivateProxyImage proxyId={item.thumbnailProxyId} alt="" />
+      <span className="culling-quality">{qualityLabel}</span>
+      <span className="culling-check" aria-hidden="true"><CheckIcon /></span>
+      <span className="memory-shade culling-shade">
+        <span>{date}</span>
+        {item.kind === "video" && <span className="video-badge"><PlayIcon /> {duration ?? "Length unknown"}</span>}
+      </span>
+      {item.safetyUnknown && <span className="safety-pending">Checking</span>}
+    </button>
+  );
+}
+
 function VirtualMemoryGrid({ items }: { items: LibraryItem[] }) {
+  return (
+    <VirtualMediaGrid
+      items={items}
+      ariaLabel="Memory grid"
+      renderItem={(item) => <MemoryTile item={item} />}
+    />
+  );
+}
+
+function VirtualMediaGrid({
+  items,
+  ariaLabel,
+  className = "",
+  renderItem,
+}: {
+  items: LibraryItem[];
+  ariaLabel: string;
+  className?: string;
+  renderItem: (item: LibraryItem) => ReactNode;
+}) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(900);
   useLayoutEffect(() => {
@@ -471,7 +772,7 @@ function VirtualMemoryGrid({ items }: { items: LibraryItem[] }) {
     overscan: GRID_OVERSCAN_ROWS,
   });
   return (
-    <div className="memory-grid-window" ref={scrollerRef} aria-label="Memory grid">
+    <div className={`memory-grid-window ${className}`} ref={scrollerRef} aria-label={ariaLabel}>
       <div className="memory-grid-spacer" style={{ height: virtualizer.getTotalSize() }}>
         {virtualizer.getVirtualItems().map((row) => (
           <div
@@ -484,7 +785,7 @@ function VirtualMemoryGrid({ items }: { items: LibraryItem[] }) {
             }}
           >
             {items.slice(row.index * columns, row.index * columns + columns).map((item) => (
-              <MemoryTile item={item} key={item.mediaId} />
+              <div className="memory-grid-cell" key={item.mediaId}>{renderItem(item)}</div>
             ))}
           </div>
         ))}
@@ -514,10 +815,11 @@ type PeopleScreenProps = {
   loading: boolean;
   error: string | null;
   onShowLibrary: () => void;
+  onShowBest: () => void;
   onAddFolders: () => void;
 };
 
-function PeopleScreen({ page, loading, error, onShowLibrary, onAddFolders }: PeopleScreenProps) {
+function PeopleScreen({ page, loading, error, onShowLibrary, onShowBest, onAddFolders }: PeopleScreenProps) {
   const names = useMemo(
     () => new Map(page.people.map((person) => [person.personId, person.displayName || "Unnamed person"])),
     [page.people],
@@ -527,6 +829,7 @@ function PeopleScreen({ page, loading, error, onShowLibrary, onAddFolders }: Peo
       <LibraryRail
         active="people"
         onShowLibrary={onShowLibrary}
+        onShowBest={onShowBest}
         onShowPeople={() => undefined}
         onAddFolders={onAddFolders}
       />

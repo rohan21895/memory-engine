@@ -49,6 +49,18 @@ export function durationLabel(value: number | null): string | null {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+export function measuredDurationLabel(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "Not measured";
+  if (value > 0 && value < 500) return "Less than 1 sec";
+  const totalSeconds = Math.round(value / 1_000);
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours} hr ${minutes} min ${seconds} sec`;
+  if (minutes > 0) return `${minutes} min ${seconds} sec`;
+  return `${seconds} sec`;
+}
+
 export function scanPercent(done: number, total: number | null): number | null {
   if (!total || total <= 0) return null;
   return Math.min(100, Math.max(0, Math.round((done / total) * 100)));
