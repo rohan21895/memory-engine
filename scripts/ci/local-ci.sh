@@ -27,6 +27,7 @@ run() {
 # Freshness first: on CI this is a separate job with its own checkout, so it
 # never sees the Cargo.lock that running cargo in the same tree produces.
 run "codegen freshness"      node scripts/ci/check-codegen-freshness.mjs
+run "shadow guard tests"     node --test scripts/ci/check-no-shadow-files.test.mjs
 run "shadow files"           node scripts/ci/check-no-shadow-files.mjs
 run "lint (workspace)"       node scripts/ci/run-workspace-check.mjs lint
 run "test (workspace)"       node scripts/ci/run-workspace-check.mjs test
