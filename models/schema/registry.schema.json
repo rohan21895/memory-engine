@@ -35,9 +35,101 @@
       "items": {
         "$ref": "#/$defs/Entry"
       }
+    },
+    "classical_steps": {
+      "description": "Executable pipeline steps that are NOT models: no weights, no host, no runtime target -- classical arithmetic over a proxy. They appear in `pipelines[].steps` beside model ids, and before this section existed they were accounted for by a hard-coded allowlist inside a test file (issue #42). That is the wrong place for it twice over: the registry could not say what `classical_quality` was, and every unrecognised step name -- including a typo'd model id -- fell through the licence and pin checks as 'probably classical'. A step is now either a registered model or a declared classical step, and anything else is a registry error.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ClassicalStep"
+      },
+      "default": {}
     }
   },
   "$defs": {
+    "ClassicalStep": {
+      "title": "ClassicalStep",
+      "description": "A weights-less step, pinned the same way a model is: an entry point, a version, the inputs it is calibrated for, the fields it writes, and the constants that set its calibration.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_point",
+        "version",
+        "task",
+        "input_proxy_kinds",
+        "writes",
+        "calibration",
+        "license"
+      ],
+      "properties": {
+        "entry_point": {
+          "description": "`module:callable`, importable from the pipeline's environment. A step named in a pipeline with nowhere to dispatch it is the state issue #42 opened against.",
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "version": {
+          "description": "The pinned algorithm version, bumped whenever any formula or constant below changes. Scores from two versions are NOT comparable and must not be ranked against each other; the value is written into each score's run_id so a record says which arithmetic produced it.",
+          "type": "string",
+          "minLength": 1
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "input_proxy_kinds": {
+          "description": "The renditions this step is calibrated for. Laplacian variance is resolution-dependent -- the same photo measured at 6000px and at 512px gives different numbers -- so a step measured against a rendition it was not calibrated for produces a plausible number that cannot be ranked against the rest of the library. The executor refuses rather than rescaling.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "writes": {
+          "description": "Contract paths this step is responsible for filling. `photo_analysis` names it first because these are the fields MediaRecord marks required; a step that silently wrote none of them would leave records that look analysed and carry no measurements.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "calibration": {
+          "description": "The constants that set each mapping's half-way point. Listed here, not only in the source, so that a recalibration is a reviewable diff in the registry and can be gated by the eval harness the same way a model swap is.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "minProperties": 1
+        },
+        "license": {
+          "description": "Classical arithmetic written in this repo. Recorded rather than assumed, because CLAUDE.md hard rule 4 says every registry entry carries a licence audit, and 'it is only arithmetic' is exactly the reasoning that lets a copied implementation in.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "spdx",
+            "blocks_commercial_release",
+            "verified",
+            "note"
+          ],
+          "properties": {
+            "spdx": {
+              "type": "string",
+              "minLength": 1
+            },
+            "blocks_commercial_release": {
+              "type": "boolean"
+            },
+            "verified": {
+              "type": "boolean"
+            },
+            "note": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
     "Entry": {
       "title": "Entry",
       "type": "object",

@@ -50,6 +50,7 @@ __all__ = [
     "EXECUTOR_ID",
     "EXECUTOR_VERSION",
     "ClassicalQuality",
+    "HISTOGRAM_BINS",
     "SUPPORTED_PROXY_KINDS",
     "measure",
 ]
@@ -86,7 +87,11 @@ BLACK_LUMA_MAX = 0.02
 POCKET_LUMA_MAX = 0.08
 POCKET_SHARPNESS_MAX = 0.06
 
-_HISTOGRAM_BINS = 64
+# Histogram resolution for the exposure term. Public, and declared in the
+# registry with the rest of the calibration: changing the bin count changes
+# the entropy normalisation and therefore every exposure score, so it is a
+# calibration constant rather than an implementation detail.
+HISTOGRAM_BINS = 64
 
 
 class ClassicalQualityError(ValueError):
@@ -210,13 +215,13 @@ def _noise_sigma(luma: Any) -> float:
 def _entropy(luma: Any) -> float:
     import numpy  # noqa: PLC0415
 
-    counts, _ = numpy.histogram(luma, bins=_HISTOGRAM_BINS, range=(0.0, 1.0))
+    counts, _ = numpy.histogram(luma, bins=HISTOGRAM_BINS, range=(0.0, 1.0))
     total = counts.sum()
     if total == 0:
         return 0.0
     probabilities = counts[counts > 0] / total
     entropy = float(-(probabilities * numpy.log2(probabilities)).sum())
-    return entropy / math.log2(_HISTOGRAM_BINS)
+    return entropy / math.log2(HISTOGRAM_BINS)
 
 
 def measure(proxy_path: str | Path, *, proxy_kind: str = "thumbnail_512") -> ClassicalQuality:

@@ -105,10 +105,40 @@ def quantise_box_component(value: Any) -> int:
     return floor + 1 if scaled - floor >= 0.5 else floor
 
 
+def _canonical_numbers(value: Any) -> Any:
+    """Rewrite every number in a tree into its RFC 8785 rendering.
+
+    `json.dumps` alone is NOT canonical across languages: it writes `1.0` where
+    JavaScript writes `1`, which is the difference that once made every model
+    report a config-digest mismatch. `edl_id` and the story engine already use
+    the RFC 8785 rule; this brings params_digest onto the same one instead of
+    leaving two canonicalisers in one repository.
+
+    Rendering the number and reading it back is what makes the two agree: an
+    integral float becomes an int and therefore serialises without a fractional
+    part, and a value that would need exponent notation raises rather than being
+    written in a form the two languages pad differently.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        rendered = ecmascript_number(value)
+        return int(rendered) if "." not in rendered else value
+    if isinstance(value, Mapping):
+        return {key: _canonical_numbers(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_numbers(item) for item in value]
+    return value
+
+
 def canonical_json(value: Any) -> bytes:
     """Sorted-key, separator-tight, UTF-8 JSON. The only serialisation hashed."""
     return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        _canonical_numbers(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
     ).encode("utf-8")
 
 

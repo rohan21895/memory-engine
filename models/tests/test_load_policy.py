@@ -466,13 +466,32 @@ class TestRegistryAgainstPolicy(unittest.TestCase):
         swap rather than an archaeology exercise.
         """
         configs = self._configs()
+        classical = set(REGISTRY.get("classical_steps", {}))
         for name, spec in REGISTRY["pipelines"].items():
             if spec["min_load_mode"] != "release":
                 continue
             for step in spec["steps"]:
                 config = configs.get(step)
                 if config is None:
-                    continue  # classical, non-model step
+                    # A step with no model config is a classical step, or it is
+                    # a name nobody can dispatch. Before issue #42 declared them
+                    # in the registry these two were indistinguishable here, so
+                    # a typo'd model id skipped the licence gate silently -- the
+                    # gate reads as passing when it never ran.
+                    with self.subTest(pipeline=name, step=step):
+                        self.assertIn(
+                            step,
+                            classical,
+                            f"{step} has no model config and is not a declared "
+                            "classical step, so this licence check cannot see it",
+                        )
+                        self.assertFalse(
+                            REGISTRY["classical_steps"][step]["license"][
+                                "blocks_commercial_release"
+                            ],
+                            f"{step} blocks a commercial release but sits in {name}",
+                        )
+                    continue
                 with self.subTest(pipeline=name, step=step):
                     self.assertFalse(
                         config["license"]["blocks_commercial_release"],

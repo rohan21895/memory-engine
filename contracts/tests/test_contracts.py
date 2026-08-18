@@ -1903,6 +1903,131 @@ class TestFaceIdVectors(unittest.TestCase):
                 )
 
 
+class TestJobIdentityIsComputable(unittest.TestCase):
+    """`job_id` and `params_digest` must RECOMPUTE, on every job fixture.
+
+    They did not. Four of the six job fixtures carried digests that matched no
+    implementation of the rule their own descriptions state, because they had
+    been typed rather than computed -- the third time this repo has found that
+    (issue #26's span_id, issue #34's face_id, here). It matters more for a job
+    than for a record: `job_id` IS the idempotency key, so a fixture pinning a
+    made-up one is a fixture that cannot detect the failure it exists for,
+    which is a worker redoing completed work or skipping work it never did.
+
+    The encoding is stated on `job_id` and `params_digest` in the schema, and
+    reimplemented here rather than imported from the runner -- a guard that
+    calls the producer agrees with the producer by construction.
+    """
+
+    def _jobs(self):
+        return [(entry["path"], _fixture(entry)) for entry in _entries(schema="job-spec")]
+
+    def _params_digest(self, job: dict) -> str:
+        from blake3 import blake3
+
+        return blake3(_canonical_json(job.get("params") or {})).hexdigest()
+
+    def _job_id(self, job: dict) -> str:
+        from blake3 import blake3
+
+        inputs = job["inputs"]
+        ids = sorted(
+            list(inputs.get("media_ids") or []) + list(inputs.get("moment_ids") or [])
+        )
+        joined = _UNIT_SEPARATOR.join(
+            [
+                job["job_type"],
+                ",".join(ids),
+                inputs.get("source_locator_digest") or "",
+                job["params_digest"],
+                job.get("scope") or "",
+            ]
+        )
+        return blake3(joined.encode("utf-8")).hexdigest()
+
+    def test_there_are_jobs_to_check(self):
+        self.assertTrue(self._jobs(), "this guard has nothing to guard")
+
+    def test_every_params_digest_recomputes(self):
+        try:
+            import blake3  # noqa: F401
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        for path, job in self._jobs():
+            with self.subTest(fixture=path):
+                self.assertEqual(self._params_digest(job), job["params_digest"])
+
+    def test_every_job_id_recomputes(self):
+        try:
+            import blake3  # noqa: F401
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        for path, job in self._jobs():
+            with self.subTest(fixture=path):
+                self.assertEqual(self._job_id(job), job["job_id"])
+
+    def test_a_null_locator_and_an_empty_one_are_the_same_bytes(self):
+        """Stated in the schema because it is the field most likely to be
+        rendered two ways, and a job with no locator getting two ids means the
+        same work runs twice."""
+        try:
+            import blake3  # noqa: F401
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        base = {
+            "job_type": "rank_media",
+            "inputs": {"media_ids": [], "moment_ids": [], "source_locator_digest": None},
+            "params_digest": "0" * 64,
+            "scope": "library:default",
+        }
+        empty = json.loads(json.dumps(base))
+        empty["inputs"]["source_locator_digest"] = ""
+        self.assertEqual(self._job_id(base), self._job_id(empty))
+
+    def test_the_model_pins_that_affect_identity_are_the_pins_recorded(self):
+        """`inputs.models` is provenance; `params["model_pins"]` is identity.
+        A pin in one and not the other is a model swap that reuses the previous
+        result -- the fixture is where that stays visible."""
+        for path, job in self._jobs():
+            declared = job["inputs"].get("models") or []
+            pinned = (job.get("params") or {}).get("model_pins")
+            if not declared and pinned is None:
+                continue
+            with self.subTest(fixture=path):
+                self.assertEqual(pinned or [], declared)
+
+    def test_the_analyze_image_job_exists_and_is_resumable_mid_pipeline(self):
+        """Issue #42 named this exact scenario: killed after image embeddings
+        are stored. Without a fixture for it, nothing pins what resumption is
+        supposed to look like."""
+        found = [
+            job for _path, job in self._jobs() if job["job_type"] == "analyze_image"
+        ]
+        self.assertTrue(found, "no golden analyze_image job (issue #42)")
+        job = found[0]
+        self.assertTrue(job["checkpoint"]["resumable"])
+        cursor = json.loads(job["checkpoint"]["cursor"])
+        self.assertIn(cursor["step"], job["params"]["steps"])
+        self.assertEqual(
+            [],
+            job["checkpoint"]["completed_input_ids"],
+            "completion for this job lives in MediaRecord.processing.stages; a "
+            "second answer here could disagree with the records",
+        )
+        self.assertTrue(job["checkpoint"]["partial_output_ids"])
+        self.assertEqual(
+            "classical_quality",
+            job["params"]["steps"][0],
+            "the cheap measure that makes the required quality fields exist runs first",
+        )
+        self.assertTrue(job["params"]["model_pins"], "no model pins in the identity")
+        self.assertEqual({"media_record", "face_record"},
+                         {output["kind"] for output in job["outputs"]})
+
+
 class TestScanIdentity(unittest.TestCase):
     """Two scans of different roots must be two jobs.
 

@@ -219,6 +219,23 @@
       "rejected_by": "schema_conditional"
     },
     {
+      "path": "job-spec/valid/job-analyze-image-resumed.json",
+      "schema": "job-spec",
+      "expectation": "valid",
+      "purpose": "The golden analyze_image job issue #42 asked for, and the one shape the issue named as untestable: killed after image embeddings are stored. Every field is COMPUTED by services/pipeline's own build_job rather than typed, so it describes the job the runner actually creates. It answers the four things the issue said a worker could not freeze -- pipeline selection, model pins, checkpoint semantics and content-addressed output ids.",
+      "exercises": [
+        "job_type analyze_image, with params naming the pipeline and its four steps in order",
+        "classical_quality carried as an executor id AND a pinned version, because scores from two versions are not comparable",
+        "model_pins in params -- so editing a model config changes job_id and the analysis is redone rather than a stale one reused",
+        "inputs.models carrying the same three pins for provenance, weights_blake3 null because nothing in the registry is pinned yet",
+        "library_digest = digest_of(sorted media ids of the six analysable media fixtures)",
+        "checkpoint.completed_input_ids DELIBERATELY EMPTY: completion is per record in MediaRecord.processing.stages, because rewriting a 300,000-element array per image is quadratic and gives a second answer that can disagree with the records",
+        "an opaque cursor naming the step and the last media id, which is the coarse half of resumption",
+        "outputs as content addresses -- a MediaRecord id and a FaceRecord id that both exist in this fixture set",
+        "job_id and params_digest recompute under the encodings the schema states"
+      ]
+    },
+    {
       "path": "job-spec/valid/job-scan-source-root-a.json",
       "schema": "job-spec",
       "expectation": "valid",

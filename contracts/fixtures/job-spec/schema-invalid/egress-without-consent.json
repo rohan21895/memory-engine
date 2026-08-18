@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "job_id": "fcf14c811b6fed5e097668247abcad3c3ee2c586c4fa4200accbe31bf1b186af",
+  "job_id": "3317565bf2368e174d5edfdc377d9e1ab0eccdca041a110d1cfb712f3c1feaad",
   "job_type": "tier3_request",
   "inputs": {
     "media_ids": [],
@@ -13,7 +13,7 @@
     "models": []
   },
   "params": { "prompt_id": "reel-arc-v3" },
-  "params_digest": "445523e5b31e98dfc311e6691b8debd78d9f9c6925a7eb1fb2d1f6bd7d6b1e99",
+  "params_digest": "939a9aeb2de575350334bab00a733caa224d6c6741cce502c5c656ad0bef9bdc",
   "scope": "project:reel-ridge-15s",
   "priority": 400,
   "egress": {

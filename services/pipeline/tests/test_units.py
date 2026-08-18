@@ -239,6 +239,74 @@ class Inventory(unittest.TestCase):
         self.assertEqual(1, len(walked.entries))
 
 
+class ClassicalStepRegistration(unittest.TestCase):
+    """The registry entry has to describe the code, or it is decoration.
+
+    Issue #42's first line: `classical_quality` was step one of `photo_analysis`
+    with no registry entry, no entry point and no pinned version. It now has all
+    three — and this is what stops them drifting from the module that actually
+    runs. A calibration constant tuned in `classical.py` and left stale in
+    `registry.json` is worse than no entry at all, because the registry is where
+    the eval harness would look to decide whether two runs are comparable.
+    """
+
+    REGISTRY = json.loads(
+        (REPO_ROOT / "models" / "registry.json").read_text(encoding="utf-8")
+    )
+
+    def setUp(self):
+        self.entry = self.REGISTRY["classical_steps"]["classical_quality"]
+
+    def test_the_entry_point_imports_and_is_the_executor(self):
+        import importlib
+
+        module_name, _, attribute = self.entry["entry_point"].partition(":")
+        module = importlib.import_module(module_name)
+        self.assertIs(getattr(module, attribute), classical.measure)
+
+    def test_the_pinned_version_is_the_executor_version(self):
+        self.assertEqual(classical.EXECUTOR_VERSION, self.entry["version"])
+
+    def test_the_declared_proxy_kinds_are_the_supported_ones(self):
+        self.assertEqual(
+            sorted(classical.SUPPORTED_PROXY_KINDS),
+            sorted(self.entry["input_proxy_kinds"]),
+        )
+
+    def test_every_declared_calibration_constant_matches_the_module(self):
+        declared = self.entry["calibration"]
+        for name, value in declared.items():
+            with self.subTest(constant=name):
+                self.assertEqual(
+                    getattr(classical, name.upper()),
+                    value,
+                    f"{name} was tuned in one place and not the other",
+                )
+
+    def test_no_calibration_constant_is_missing_from_the_declaration(self):
+        """The direction that actually rots: a constant added to the module and
+        never declared, so a recalibration is invisible in the registry."""
+        module_constants = {
+            name
+            for name in vars(classical)
+            if name.isupper()
+            and isinstance(getattr(classical, name), (int, float))
+            and not isinstance(getattr(classical, name), bool)
+            and not name.startswith("_")
+        }
+        self.assertEqual(
+            module_constants,
+            {name.upper() for name in self.entry["calibration"]},
+            "a calibration constant exists in exactly one of the module and the registry",
+        )
+
+    def test_the_step_is_the_first_step_of_photo_analysis(self):
+        for name, spec in self.REGISTRY["pipelines"].items():
+            if "classical_quality" in spec["steps"]:
+                with self.subTest(pipeline=name):
+                    self.assertEqual("classical_quality", spec["steps"][0])
+
+
 class ClassicalQuality(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="mep-cq-"))

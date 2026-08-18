@@ -88,13 +88,40 @@ class TestRegistryIndex(unittest.TestCase):
         )
 
     def test_pipelines_reference_known_models(self):
+        """Every step is a registered model or a DECLARED classical step.
+
+        The allowlist used to be the literal `{"classical_quality"}` written in
+        this file, which meant the registry itself could not say what that step
+        was — issue #42's first line. Reading it from the registry is also what
+        makes the load-policy checks safe: they skip steps with no model config,
+        and while "no config" and "classical" were indistinguishable, a typo'd
+        model id skipped the licence gate as well.
+        """
         known = {e["model_id"] for e in REGISTRY["entries"]}
-        # Non-model steps (classical CV) are allowed in a pipeline and have no config.
-        non_model = {"classical_quality"}
+        classical = set(REGISTRY.get("classical_steps", {}))
+        self.assertTrue(classical, "no classical step is declared; issue #42 is back")
         for pipeline, spec in REGISTRY["pipelines"].items():
             for step in spec["steps"]:
                 with self.subTest(pipeline=pipeline, step=step):
-                    self.assertIn(step, known | non_model)
+                    self.assertIn(step, known | classical)
+
+    def test_a_classical_step_is_not_also_a_model(self):
+        """One name, one dispatch. A step that is both would be run twice or
+        run by whichever lookup happened first."""
+        known = {e["model_id"] for e in REGISTRY["entries"]}
+        overlap = known & set(REGISTRY.get("classical_steps", {}))
+        self.assertEqual(set(), overlap)
+
+    def test_every_declared_classical_step_is_actually_used(self):
+        """A declaration nothing runs is documentation, and drifts."""
+        used = {
+            step
+            for spec in REGISTRY["pipelines"].values()
+            for step in spec["steps"]
+        }
+        for name in REGISTRY.get("classical_steps", {}):
+            with self.subTest(step=name):
+                self.assertIn(name, used)
 
 
 class TestPreprocessingIsFullySpecified(unittest.TestCase):

@@ -3767,6 +3767,23 @@ export interface JobSpec {
    * params_digest, scope). Doubles as the idempotency key -- there is deliberately no
    * second field for that, because two sources of truth for identity is how duplicate work
    * gets in.
+   *
+   * CANONICAL ENCODING, for the same reason face_id and span_id have one: a named tuple is
+   * not a byte string, and two workers that separate the fields differently compute
+   * different ids for identical work -- which means the second one redoes it, or worse, a
+   * genuinely different job collides with a completed one and is skipped. The hashed bytes
+   * are:
+   *
+   * job_id = BLAKE3( utf8( job_type US IDS US LOCATOR US params_digest US scope ) )
+   *
+   * where US is U+001F INFORMATION SEPARATOR ONE. IDS is the media ids followed by the
+   * moment ids, sorted as one list and joined with a single comma; empty when there are
+   * none. LOCATOR is source_locator_digest, or the EMPTY STRING when it is null -- absent
+   * and empty must render the same way, or a job with no locator gets two ids. scope
+   * renders as the empty string when null.
+   *
+   * The fields are all fixed-alphabet (hex digests, an enumerated job_type, a slug-shaped
+   * scope), so the separator is sufficient and no length prefix is needed.
    */
   job_id: Blake3Hash;
 
@@ -3789,6 +3806,19 @@ export interface JobSpec {
    * BLAKE3 over the canonical JSON of `params`. Part of job_id, which is what makes 'same
    * job with different settings' a genuinely different job rather than a silent overwrite
    * of the first result.
+   *
+   * Canonical JSON here is the same rule `edl_id` states: keys sorted, no insignificant
+   * whitespace, numbers in RFC 8785 / ECMAScript Number::toString form so that 1.0 and 1
+   * are one value, UTF-8 bytes. One canonicalisation for the whole contract, deliberately
+   * -- a second one is how a digest starts disagreeing with itself across languages.
+   *
+   * EVERYTHING THAT CHANGES THE RESULT MUST BE IN `params`. In particular the MODEL PINS:
+   * naming a model by id alone meant that editing its config -- a detection threshold, an
+   * NMS IoU -- left job_id unchanged, so the completed job was found and every already-
+   * analysed record skipped. The library kept an analysis produced by settings it was no
+   * longer configured with, and nothing said so. `inputs.models` carries the same pins for
+   * provenance; the copy in `params` is the one that affects identity, and a writer that
+   * fills one and not the other has a bug.
    */
   params_digest: Blake3Hash;
 
