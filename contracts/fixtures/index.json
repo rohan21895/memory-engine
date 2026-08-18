@@ -178,6 +178,20 @@
       ]
     },
     {
+      "path": "face-record/valid/face-video-track-crossing-chapters.json",
+      "schema": "face-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE added for issue #34: the only face fixture with a NON-NULL frame_time, so the half of the face_id encoding that renders a RationalTime is covered by a golden record rather than only by vectors. Its media_id is the GoPro assembly and its track spans the chapter boundary at 3067485, which is the shape moment scoring has to work against.",
+      "exercises": [
+        "frame_time rendered into face_id as value/rate at the NTSC 60000/1001 rate",
+        "face_id recomputes under the canonical encoding, in Python and in TypeScript",
+        "media_id is the virtual assembly, so a track can cross a chapter boundary",
+        "track membership with is_track_representative -- identity is decided once per track",
+        "assignment auto_high_confidence, the only eligible state no other fixture covered",
+        "detected_on video_proxy_480p, against the member chapter's own proxy"
+      ]
+    },
+    {
       "path": "job-spec/schema-invalid/egress-without-consent.json",
       "schema": "job-spec",
       "expectation": "schema-invalid",
@@ -203,6 +217,23 @@
         "scan_source requires source_paths and source_locator_digest"
       ],
       "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "job-spec/valid/job-analyze-image-resumed.json",
+      "schema": "job-spec",
+      "expectation": "valid",
+      "purpose": "The golden analyze_image job issue #42 asked for, and the one shape the issue named as untestable: killed after image embeddings are stored. Every field is COMPUTED by services/pipeline's own build_job rather than typed, so it describes the job the runner actually creates. It answers the four things the issue said a worker could not freeze -- pipeline selection, model pins, checkpoint semantics and content-addressed output ids.",
+      "exercises": [
+        "job_type analyze_image, with params naming the pipeline and its four steps in order",
+        "classical_quality carried as an executor id AND a pinned version, because scores from two versions are not comparable",
+        "model_pins in params -- so editing a model config changes job_id and the analysis is redone rather than a stale one reused",
+        "inputs.models carrying the same three pins for provenance, weights_blake3 null because nothing in the registry is pinned yet",
+        "library_digest = digest_of(sorted media ids of the six analysable media fixtures)",
+        "checkpoint.completed_input_ids DELIBERATELY EMPTY: completion is per record in MediaRecord.processing.stages, because rewriting a 300,000-element array per image is quadratic and gives a second answer that can disagree with the records",
+        "an opaque cursor naming the step and the last media id, which is the coarse half of resumption",
+        "outputs as content addresses -- a MediaRecord id and a FaceRecord id that both exist in this fixture set",
+        "job_id and params_digest recompute under the encodings the schema states"
+      ]
     },
     {
       "path": "job-spec/valid/job-scan-source-root-a.json",

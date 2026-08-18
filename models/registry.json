@@ -58,6 +58,44 @@
       "note": "Development-only for the same reason."
     }
   },
+  "classical_steps": {
+    "classical_quality": {
+      "entry_point": "memory_engine_pipeline.classical:measure",
+      "version": "1.0.0",
+      "task": "technical_iqa_classical",
+      "description": "The cheap first pass: Laplacian variance for sharpness, histogram entropy discounted by clipping for exposure, Immerkaer's estimator for noise, luma standard deviation for contrast, plus the black-frame and lens-obstruction flags. No weights, no host, no network, no GPU. It runs first in photo_analysis because it is nearly free and because it is what makes MediaRecord's required quality fields exist at all -- treating it as a no-op would produce records that look analysed and carry no measurements, which is worse than leaving the step missing.",
+      "input_proxy_kinds": [
+        "thumbnail_512"
+      ],
+      "writes": [
+        "quality.sharpness",
+        "quality.exposure",
+        "quality.noise",
+        "quality.contrast",
+        "quality.is_black_frame",
+        "quality.is_lens_obstructed"
+      ],
+      "calibration": {
+        "sharpness_half_point": 0.002,
+        "noise_half_point": 0.012,
+        "contrast_full_scale": 0.3,
+        "clip_free_fraction": 0.02,
+        "clip_full_penalty_fraction": 0.35,
+        "highlight_level": 0.98,
+        "shadow_level": 0.02,
+        "black_luma_max": 0.02,
+        "pocket_luma_max": 0.08,
+        "pocket_sharpness_max": 0.06,
+        "histogram_bins": 64
+      },
+      "license": {
+        "spdx": "NOASSERTION",
+        "blocks_commercial_release": false,
+        "verified": true,
+        "note": "Written in this repository. The two named algorithms are published methods, not licensed artifacts: the discrete 4-neighbour Laplacian is textbook, and Immerkaer's fast noise estimator (Computer Vision and Image Understanding, 1996) is described in a paper rather than distributed as code. No third-party implementation was copied, which is the thing worth recording -- 'it is only arithmetic' is exactly the reasoning that lets a GPL implementation in unnoticed."
+      }
+    }
+  },
   "entries": [
     {
       "model_id": "siglip2-so400m-384",

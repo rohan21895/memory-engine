@@ -43,9 +43,11 @@ __all__ = [
     "canonical_json",
     "canonical_source_roots",
     "digest_of",
+    "ecmascript_number",
     "face_identity",
     "job_identity",
     "params_digest",
+    "quantise_box_component",
     "source_locator_digest",
 ]
 
@@ -61,10 +63,82 @@ _UNIT_SEPARATOR = "\x1f"
 BBOX_QUANTUM = 10_000
 
 
+def ecmascript_number(value: Any) -> str:
+    """Render a number the way RFC 8785 and JavaScript's `String()` do.
+
+    `repr()` is not this. `repr(1.0)` is `'1.0'` where `String(1)` is `'1'`, and
+    a digest built on `repr` therefore disagrees with a JavaScript writer over
+    the same value -- which is exactly how every model once reported a config
+    digest mismatch. An exponent form is REFUSED rather than written: it is the
+    one range where Python's shortest-round-trip formatting and ECMAScript's
+    differ in padding, and no RationalTime component needs it.
+    """
+    if isinstance(value, bool):
+        raise TypeError("a boolean is not a number here")
+    if isinstance(value, int):
+        rendered = str(value)
+    else:
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):
+            raise ValueError(f"{value!r} is not finite and cannot enter an id")
+        rendered = str(int(number)) if number.is_integer() else repr(number)
+    if "e" in rendered or "E" in rendered:
+        raise ValueError(
+            f"{value!r} needs exponent notation, where Python and JavaScript "
+            "formatting stop agreeing; refused rather than written"
+        )
+    return rendered
+
+
+def quantise_box_component(value: Any) -> int:
+    """`value * BBOX_QUANTUM`, rounded HALF AWAY FROM ZERO.
+
+    Deliberately not `round()`, which rounds half to even. See face_identity.
+    """
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ValueError(f"{value!r} is not finite and cannot enter an id")
+    if number < 0:
+        raise ValueError(f"{value!r} is negative; a normalised box component is not")
+    scaled = number * BBOX_QUANTUM
+    floor = int(scaled // 1)
+    return floor + 1 if scaled - floor >= 0.5 else floor
+
+
+def _canonical_numbers(value: Any) -> Any:
+    """Rewrite every number in a tree into its RFC 8785 rendering.
+
+    `json.dumps` alone is NOT canonical across languages: it writes `1.0` where
+    JavaScript writes `1`, which is the difference that once made every model
+    report a config-digest mismatch. `edl_id` and the story engine already use
+    the RFC 8785 rule; this brings params_digest onto the same one instead of
+    leaving two canonicalisers in one repository.
+
+    Rendering the number and reading it back is what makes the two agree: an
+    integral float becomes an int and therefore serialises without a fractional
+    part, and a value that would need exponent notation raises rather than being
+    written in a form the two languages pad differently.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        rendered = ecmascript_number(value)
+        return int(rendered) if "." not in rendered else value
+    if isinstance(value, Mapping):
+        return {key: _canonical_numbers(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_numbers(item) for item in value]
+    return value
+
+
 def canonical_json(value: Any) -> bytes:
     """Sorted-key, separator-tight, UTF-8 JSON. The only serialisation hashed."""
     return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        _canonical_numbers(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -142,14 +216,42 @@ def face_identity(
       * detector id AND version -- a detector upgrade moves boxes by a pixel or
         two. Keeping the old ids would attach v2's box to v1's embedding, which
         is arithmetic on two different faces with nothing to reveal it.
+
+    Two things this function got wrong before the encoding was frozen in the
+    schema (issue #34), both silent, both found by computing the fixtures:
+
+      * `round()` is BANKER'S rounding. It sends 3002.5 to 3002 where
+        JavaScript's Math.round and Rust's f64::round send it to 3003, and 8855
+        of the 10000 half-quantum positions in [0,1] are exactly representable
+        as doubles -- so this was not theoretical. Half away from zero now,
+        spelled out rather than delegated to a builtin whose tie-breaking
+        differs by language.
+      * `!r` on the RationalTime components is Python's repr, so a frame time
+        that parsed as 1001.0 hashed differently from the same time parsed as
+        1001 -- two ids for one frame, from one language, depending only on how
+        the JSON had been typed. Numbers are rendered in ECMAScript
+        Number::toString form now, which is what edl_id already uses.
     """
     if len(bbox) != 4:
         raise ValueError(f"bbox must be (x, y, w, h), got {list(bbox)!r}")
-    quantised = ",".join(str(round(float(value) * BBOX_QUANTUM)) for value in bbox)
+    quantised = ",".join(str(quantise_box_component(value)) for value in bbox)
     if frame_time is None:
         time_part = ""
     else:
-        time_part = f"{frame_time['value']!r}/{frame_time['rate']!r}"
+        time_part = (
+            f"{ecmascript_number(frame_time['value'])}"
+            f"/{ecmascript_number(frame_time['rate'])}"
+        )
+    for name, field in (
+        ("model_id", detector_model_id),
+        ("version", detector_version),
+    ):
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in field):
+            raise ValueError(
+                f"detector {name} {field!r} contains a control character; the "
+                "face_id encoding joins fields with U+001F and a field carrying "
+                "it would let two different detectors share one id"
+            )
     joined = _UNIT_SEPARATOR.join(
         [
             "face:v1",

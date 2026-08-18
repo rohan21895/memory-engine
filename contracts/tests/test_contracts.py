@@ -1631,6 +1631,403 @@ class TestEdlIdentityIsComputable(unittest.TestCase):
         self.assertNotEqual(before, digest(edl), "a source range change did not move the id")
 
 
+#: contracts/vectors/face-id.json -- golden input -> face_id pairs, the artifact
+#: issue #34 asked for. Kept outside fixtures/ because it is not an instance of
+#: any schema, and fixtures/index.json is required to account for every file
+#: under fixtures/.
+FACE_ID_VECTORS = json.loads(
+    (CONTRACTS / "vectors" / "face-id.json").read_text(encoding="utf-8")
+)
+
+_UNIT_SEPARATOR = "\x1f"
+_FACE_ID_DOMAIN = "face:v1"
+_BBOX_QUANTUM = 10_000
+
+
+def _ecmascript_number(value) -> str:
+    """RFC 8785 number rendering, or a refusal.
+
+    Deliberately not `repr` and not `str`: `repr(1.0)` is `1.0` where
+    JavaScript's `String(1)` is `1`, and that single difference is what made
+    every model report a config-digest mismatch once already. An exponent form
+    is refused rather than written, because that is the one range where
+    Python's shortest-round-trip formatting and ECMAScript's stop agreeing on
+    padding -- and no real frame rate needs one.
+    """
+    if isinstance(value, bool):
+        raise TypeError("a boolean is not a number")
+    if isinstance(value, int):
+        rendered = str(value)
+    else:
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):
+            raise ValueError(f"{value!r} is not finite")
+        rendered = str(int(number)) if number.is_integer() else repr(number)
+    if "e" in rendered or "E" in rendered:
+        raise ValueError(f"{value!r} needs exponent notation and is refused")
+    return rendered
+
+
+def _quantise(value) -> int:
+    """v * 10000, rounded HALF AWAY FROM ZERO.
+
+    Not `round()`. Python rounds half to even, JavaScript's `Math.round` and
+    Rust's `f64::round` round half away from zero, and 8855 of the 10000
+    half-quantum positions in [0,1] are exactly representable as doubles -- so
+    `round()` here means the same detection gets two ids depending on which
+    language wrote it.
+    """
+    number = float(value)
+    if number < 0:
+        raise ValueError(f"{value!r} is negative; a normalised box component is not")
+    scaled = number * _BBOX_QUANTUM
+    floor = int(scaled // 1)
+    return floor + 1 if scaled - floor >= 0.5 else floor
+
+
+def _face_id_preimage(
+    *, media_id: str, frame_time, bbox: dict, model_id: str, version: str
+) -> bytes:
+    """The exact bytes face_id is BLAKE3 of, per face-record.schema.json.
+
+    Independent of every producer in the repo, on purpose. A guard that
+    imported the producer's encoder would agree with the producer by
+    construction, which is the one property that must not be assumed.
+    """
+    time_part = (
+        ""
+        if frame_time is None
+        else f"{_ecmascript_number(frame_time['value'])}/{_ecmascript_number(frame_time['rate'])}"
+    )
+    box_part = ",".join(str(_quantise(bbox[axis])) for axis in ("x", "y", "w", "h"))
+    for field in (model_id, version):
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in field):
+            raise ValueError("a detector id or version carries the field separator")
+    joined = _UNIT_SEPARATOR.join(
+        [_FACE_ID_DOMAIN, media_id, time_part, box_part, model_id, version]
+    )
+    return joined.encode("utf-8")
+
+
+def _preimage_of_record(record: dict) -> bytes:
+    detection = record["detection"]
+    return _face_id_preimage(
+        media_id=record["media_id"],
+        frame_time=record.get("frame_time"),
+        bbox=detection["bbox"],
+        model_id=detection["detector"]["model_id"],
+        version=detection["detector"]["version"],
+    )
+
+
+class TestFaceIdentityIsComputable(unittest.TestCase):
+    """`face_id` must RECOMPUTE from the detection, not be asserted beside it.
+
+    Issue #34: the schema named a tuple and never said how it becomes bytes, so
+    every writer picked its own separators, its own bbox rounding and its own
+    number formatting -- and the three golden fixtures carried ids that matched
+    none of them, because they had been typed by hand. That is issue #26's
+    invented span_id happening a second time, one schema over, and the same
+    remedy applies: state the byte string, then compute every fixture from it.
+    """
+
+    def _face_entries(self):
+        return _entries(schema="face-record")
+
+    def test_there_are_face_fixtures_to_check(self):
+        self.assertTrue(self._face_entries(), "this guard has nothing to guard")
+
+    def test_every_face_id_recomputes_from_its_detection(self):
+        try:
+            from blake3 import blake3
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        for entry in self._face_entries():
+            with self.subTest(fixture=entry["path"]):
+                record = _fixture(entry)
+                self.assertEqual(
+                    blake3(_preimage_of_record(record)).hexdigest(),
+                    record["face_id"],
+                    "face_id does not recompute under the canonical encoding "
+                    "stated on face_id in face-record.schema.json; see issue #34",
+                )
+
+    def test_the_same_detection_recorded_twice_keeps_one_id(self):
+        """Four fixtures describe two detections. Two identity blocks over one
+        box is one face, and it must stay one row."""
+        by_preimage: dict[bytes, set[str]] = {}
+        for entry in self._face_entries():
+            record = _fixture(entry)
+            by_preimage.setdefault(_preimage_of_record(record), set()).add(
+                record["face_id"]
+            )
+        shared = {k: v for k, v in by_preimage.items() if len(v) > 1}
+        self.assertEqual({}, shared, "one detection carries more than one id")
+        self.assertLess(
+            len(by_preimage),
+            len(self._face_entries()),
+            "no fixture pair shares a detection, so this guard proves nothing",
+        )
+
+    def test_a_still_and_a_video_face_are_both_covered(self):
+        times = [_fixture(e).get("frame_time") for e in self._face_entries()]
+        self.assertTrue(any(t is None for t in times), "no still-image face fixture")
+        self.assertTrue(
+            any(t is not None for t in times),
+            "no face fixture with a frame_time, so the half of the encoding that "
+            "renders a RationalTime is never exercised against a real record",
+        )
+
+    def test_the_null_frame_time_field_cannot_be_confused_with_a_real_one(self):
+        """A still contributes an empty field. That is unambiguous only because
+        a rendered time always contains a '/', so assert it does."""
+        for entry in self._face_entries():
+            record = _fixture(entry)
+            fields = _preimage_of_record(record).decode("utf-8").split(_UNIT_SEPARATOR)
+            self.assertEqual(6, len(fields), entry["path"])
+            if record.get("frame_time") is None:
+                self.assertEqual("", fields[2], entry["path"])
+            else:
+                self.assertIn("/", fields[2], entry["path"])
+
+    def test_rotation_does_not_silently_collapse_two_boxes(self):
+        """`rotation_deg` is outside the tuple, so the schema has to keep it at
+        zero. Without that constraint two different boxes share one id."""
+        validator = _validator("face-record")
+        record = _fixture(_entries("valid", "face-record")[0])
+        record["detection"]["bbox"]["rotation_deg"] = 30
+        errors = list(validator.iter_errors(record))
+        self.assertTrue(
+            errors, "a rotated detection box validated; face_id cannot distinguish it"
+        )
+
+
+class TestFaceIdVectors(unittest.TestCase):
+    """The golden input -> face_id table issue #34 asked for.
+
+    Both columns are checked: the exact UTF-8 pre-image and the digest over it.
+    The pre-image is the useful one on a failure -- a digest mismatch says only
+    that something diverged, while a pre-image mismatch names the field.
+    """
+
+    def test_the_table_declares_the_constants_the_schema_states(self):
+        self.assertEqual(31, FACE_ID_VECTORS["separator"]["codepoint"])
+        self.assertEqual(_FACE_ID_DOMAIN, FACE_ID_VECTORS["domain_tag"])
+        self.assertEqual(_BBOX_QUANTUM, FACE_ID_VECTORS["bbox_quantum"])
+        self.assertEqual("half away from zero", FACE_ID_VECTORS["bbox_rounding"])
+
+    def test_every_vector_states_what_it_is_for(self):
+        self.assertTrue(FACE_ID_VECTORS["vectors"])
+        for vector in FACE_ID_VECTORS["vectors"]:
+            with self.subTest(vector=vector["name"]):
+                self.assertTrue(vector.get("why"), "a vector needs a stated purpose")
+
+    def test_every_vector_reproduces_its_preimage(self):
+        """Compared as decoded text, not as hex.
+
+        A hex diff of two 100-byte strings tells a reader nothing about which
+        field moved; the decoded form shows the separators and the changed
+        field directly."""
+        self.maxDiff = None
+        for vector in FACE_ID_VECTORS["vectors"]:
+            with self.subTest(vector=vector["name"]):
+                got = _face_id_preimage(
+                    media_id=vector["input"]["media_id"],
+                    frame_time=vector["input"]["frame_time"],
+                    bbox=vector["input"]["bbox"],
+                    model_id=vector["input"]["detector"]["model_id"],
+                    version=vector["input"]["detector"]["version"],
+                )
+                self.assertEqual(
+                    bytes.fromhex(vector["preimage_utf8_hex"]).decode("utf-8"),
+                    got.decode("utf-8"),
+                    "the committed pre-image is not what this encoding produces",
+                )
+
+    def test_every_vector_reproduces_its_digest(self):
+        try:
+            from blake3 import blake3
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        for vector in FACE_ID_VECTORS["vectors"]:
+            with self.subTest(vector=vector["name"]):
+                self.assertEqual(
+                    vector["face_id"],
+                    blake3(bytes.fromhex(vector["preimage_utf8_hex"])).hexdigest(),
+                )
+
+    def test_an_integral_time_written_as_a_float_gives_the_same_id(self):
+        """The failure this encoding exists to prevent: Python writes 1.0 where
+        JavaScript writes 1, and the same frame gets two ids."""
+        vectors = {v["name"]: v for v in FACE_ID_VECTORS["vectors"]}
+        as_int = vectors["video-integral-time-as-int"]
+        as_float = vectors["video-integral-time-as-float"]
+        self.assertIsInstance(as_float["input"]["frame_time"]["value"], float)
+        self.assertNotIsInstance(as_int["input"]["frame_time"]["value"], float)
+        self.assertEqual(as_int["face_id"], as_float["face_id"])
+        self.assertEqual(as_int["preimage_utf8_hex"], as_float["preimage_utf8_hex"])
+
+    def test_the_half_quantum_vector_disagrees_with_bankers_rounding(self):
+        """If it did not, the vector would not be testing the rounding rule."""
+        vector = {v["name"]: v for v in FACE_ID_VECTORS["vectors"]}[
+            "bbox-on-the-half-quantum"
+        ]
+        box = vector["input"]["bbox"]
+        canonical = [_quantise(box[axis]) for axis in ("x", "y", "w", "h")]
+        bankers = [round(float(box[axis]) * _BBOX_QUANTUM) for axis in ("x", "y", "w", "h")]
+        self.assertNotEqual(
+            canonical,
+            bankers,
+            "this vector rounds the same way under both rules, so it does not "
+            "pin the rule it was added to pin",
+        )
+
+    def test_a_detector_change_moves_the_id(self):
+        vectors = {v["name"]: v for v in FACE_ID_VECTORS["vectors"]}
+        base = vectors["still-frame-time-null"]["face_id"]
+        self.assertNotEqual(base, vectors["detector-version-bump-issues-a-new-id"]["face_id"])
+        self.assertNotEqual(base, vectors["detector-swap-issues-a-new-id"]["face_id"])
+
+    def test_provenance_that_is_outside_the_tuple_stays_outside_it(self):
+        """weights_blake3, config_blake3, runtime and precision are recorded on
+        the detector but must not reach the id. The fixtures are the evidence:
+        two of them carry different runtimes for one detection and must still
+        share an id, so assert the vector inputs simply have nowhere to put
+        them."""
+        for vector in FACE_ID_VECTORS["vectors"]:
+            with self.subTest(vector=vector["name"]):
+                self.assertEqual(
+                    {"model_id", "version"}, set(vector["input"]["detector"])
+                )
+
+
+class TestJobIdentityIsComputable(unittest.TestCase):
+    """`job_id` and `params_digest` must RECOMPUTE, on every job fixture.
+
+    They did not. Four of the six job fixtures carried digests that matched no
+    implementation of the rule their own descriptions state, because they had
+    been typed rather than computed -- the third time this repo has found that
+    (issue #26's span_id, issue #34's face_id, here). It matters more for a job
+    than for a record: `job_id` IS the idempotency key, so a fixture pinning a
+    made-up one is a fixture that cannot detect the failure it exists for,
+    which is a worker redoing completed work or skipping work it never did.
+
+    The encoding is stated on `job_id` and `params_digest` in the schema, and
+    reimplemented here rather than imported from the runner -- a guard that
+    calls the producer agrees with the producer by construction.
+    """
+
+    def _jobs(self):
+        return [(entry["path"], _fixture(entry)) for entry in _entries(schema="job-spec")]
+
+    def _params_digest(self, job: dict) -> str:
+        from blake3 import blake3
+
+        return blake3(_canonical_json(job.get("params") or {})).hexdigest()
+
+    def _job_id(self, job: dict) -> str:
+        from blake3 import blake3
+
+        inputs = job["inputs"]
+        ids = sorted(
+            list(inputs.get("media_ids") or []) + list(inputs.get("moment_ids") or [])
+        )
+        joined = _UNIT_SEPARATOR.join(
+            [
+                job["job_type"],
+                ",".join(ids),
+                inputs.get("source_locator_digest") or "",
+                job["params_digest"],
+                job.get("scope") or "",
+            ]
+        )
+        return blake3(joined.encode("utf-8")).hexdigest()
+
+    def test_there_are_jobs_to_check(self):
+        self.assertTrue(self._jobs(), "this guard has nothing to guard")
+
+    def test_every_params_digest_recomputes(self):
+        try:
+            import blake3  # noqa: F401
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        for path, job in self._jobs():
+            with self.subTest(fixture=path):
+                self.assertEqual(self._params_digest(job), job["params_digest"])
+
+    def test_every_job_id_recomputes(self):
+        try:
+            import blake3  # noqa: F401
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        for path, job in self._jobs():
+            with self.subTest(fixture=path):
+                self.assertEqual(self._job_id(job), job["job_id"])
+
+    def test_a_null_locator_and_an_empty_one_are_the_same_bytes(self):
+        """Stated in the schema because it is the field most likely to be
+        rendered two ways, and a job with no locator getting two ids means the
+        same work runs twice."""
+        try:
+            import blake3  # noqa: F401
+        except ImportError:
+            self.skipTest("blake3 is not installed")
+
+        base = {
+            "job_type": "rank_media",
+            "inputs": {"media_ids": [], "moment_ids": [], "source_locator_digest": None},
+            "params_digest": "0" * 64,
+            "scope": "library:default",
+        }
+        empty = json.loads(json.dumps(base))
+        empty["inputs"]["source_locator_digest"] = ""
+        self.assertEqual(self._job_id(base), self._job_id(empty))
+
+    def test_the_model_pins_that_affect_identity_are_the_pins_recorded(self):
+        """`inputs.models` is provenance; `params["model_pins"]` is identity.
+        A pin in one and not the other is a model swap that reuses the previous
+        result -- the fixture is where that stays visible."""
+        for path, job in self._jobs():
+            declared = job["inputs"].get("models") or []
+            pinned = (job.get("params") or {}).get("model_pins")
+            if not declared and pinned is None:
+                continue
+            with self.subTest(fixture=path):
+                self.assertEqual(pinned or [], declared)
+
+    def test_the_analyze_image_job_exists_and_is_resumable_mid_pipeline(self):
+        """Issue #42 named this exact scenario: killed after image embeddings
+        are stored. Without a fixture for it, nothing pins what resumption is
+        supposed to look like."""
+        found = [
+            job for _path, job in self._jobs() if job["job_type"] == "analyze_image"
+        ]
+        self.assertTrue(found, "no golden analyze_image job (issue #42)")
+        job = found[0]
+        self.assertTrue(job["checkpoint"]["resumable"])
+        cursor = json.loads(job["checkpoint"]["cursor"])
+        self.assertIn(cursor["step"], job["params"]["steps"])
+        self.assertEqual(
+            [],
+            job["checkpoint"]["completed_input_ids"],
+            "completion for this job lives in MediaRecord.processing.stages; a "
+            "second answer here could disagree with the records",
+        )
+        self.assertTrue(job["checkpoint"]["partial_output_ids"])
+        self.assertEqual(
+            "classical_quality",
+            job["params"]["steps"][0],
+            "the cheap measure that makes the required quality fields exist runs first",
+        )
+        self.assertTrue(job["params"]["model_pins"], "no model pins in the identity")
+        self.assertEqual({"media_record", "face_record"},
+                         {output["kind"] for output in job["outputs"]})
+
+
 class TestScanIdentity(unittest.TestCase):
     """Two scans of different roots must be two jobs.
 

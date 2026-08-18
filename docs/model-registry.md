@@ -117,6 +117,21 @@ Every model in the registry carries, per build plan §3:
 
 `ModelRef` in `contracts/schemas/common.schema.json` already pins `model_id`, `version`, `weights_blake3`, `runtime` and `precision` on every score the system produces, so "why is this photo ranked 0.82" stays answerable after a model swap. `ModelPin` in `contracts/proto/ml_runtime.proto` is that same record plus `config_blake3`, and `contracts/tests/test_ml_runtime_proto.py` asserts the two stay field-for-field identical rather than leaving it to be maintained by hand.
 
+### Steps that are not models
+
+`photo_analysis` starts with `classical_quality`, which has no weights, no host and no runtime target — Laplacian variance, histogram entropy, Immerkaer noise, luma standard deviation, computed on the 512px thumbnail. It is still a registry entry, in `registry.classical_steps`, and it carries the same kind of pins a model does:
+
+| Field | Why |
+|---|---|
+| `entry_point` | `module:callable`. Issue #42 was opened because a pipeline named a step that nothing could dispatch. |
+| `version` | The pinned algorithm version. Scores from two versions are **not comparable** and must not be ranked against each other, so it is written into each score's `run_id`. |
+| `input_proxy_kinds` | Laplacian variance is resolution-dependent: the same photo at 6000px and at 512px gives different numbers, and a library measured at a mix of both cannot be ranked. The executor refuses a rendition it was not calibrated for rather than rescaling. |
+| `writes` | The contract paths it is responsible for. `MediaRecord` marks these required, so a step that silently wrote none of them would leave records that look analysed and hold no measurements. |
+| `calibration` | Every constant that sets a half-way point, so a recalibration is a reviewable diff in the registry and can be gated the way a model swap is. `services/pipeline`'s tests fail if the module and this list disagree **in either direction** — including a constant added to the code and never declared. |
+| `license` | Recorded rather than assumed. "It is only arithmetic" is exactly the reasoning that lets a copied GPL implementation in unnoticed. |
+
+Declaring them also closed a fail-open. The licence and pin checks skip any step with no model config, and while "no model config" and "classical step" were indistinguishable, a **typo'd model id** in a release pipeline skipped the licence gate silently — the gate read as passing when it had never run. A step is now either a registered model or a declared classical step, and anything else is a registry error.
+
 ### Why the config digest is not optional provenance
 
 This is not hypothetical. The SCRFD/ArcFace preprocessing defect Codex found applied the `1/128` scale twice — once as `scalefactor` and again via `mean`/`std` — collapsing the whole 0–255 input range into a 0.016-wide sliver where black mapped to −0.9961 and white to −0.9805. It touched no weights byte, it never raised, and it would have produced quietly wrong embeddings for as long as nobody looked. A provenance record that could not have distinguished before from after is not a provenance record.

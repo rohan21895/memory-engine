@@ -1108,6 +1108,13 @@ pub enum ModelRefPrecision {
 pub struct ModelRef {
     pub model_id: Slug,
 
+    /// The registry's version string for this model. Free-form apart from one exclusion: no
+    /// C0 control character and no DEL. FaceRecord.face_id joins model_id and version with
+    /// U+001F, and a version containing that separator would let two different (model,
+    /// version) pairs produce one identical byte string and therefore one identical face
+    /// id. Excluding the separator structurally is what lets that encoding skip length
+    /// prefixes; leaving it to convention is how the collision gets found in a family album
+    /// instead of here.
     pub version: String,
 
     /// BLAKE3 of the weights file, or null when the entry is unpinned. Null is permitted
@@ -3375,10 +3382,68 @@ pub struct SensitiveFlags {
 pub struct FaceRecord {
     pub schema_version: SchemaVersion,
 
-    /// BLAKE3 over (media_id, frame_time, quantised bbox, detector model_id+version).
+    /// BLAKE3 over (media_id, frame_time, quantised bbox, detector model_id + version).
     /// Content-addressed, so re-running the same detector on the same frame produces the
     /// same id and re-detection is idempotent. Changing detector version deliberately
     /// produces new ids rather than silently mutating old ones.
+    ///
+    /// CANONICAL ENCODING (issue #34), because 'BLAKE3 over the tuple' does not determine
+    /// the bytes and every writer picked its own. The hashed byte string is exactly:
+    ///
+    /// face_id = BLAKE3( utf8( DOMAIN US media_id US TIME US BBOX US MODEL_ID US VERSION )
+    /// )
+    ///
+    /// where US is U+001F INFORMATION SEPARATOR ONE, written once between adjacent fields
+    /// and nowhere else, and the six fields are:
+    ///
+    /// DOMAIN -- the literal ASCII string 'face:v1'. This versions THIS ENCODING, not the
+    /// detector. Changing the encoding means bumping it, so a re-encoding produces new ids
+    /// on purpose rather than colliding with old ones by accident.
+    ///
+    /// media_id -- the 64 lowercase hex characters, verbatim.
+    ///
+    /// TIME -- the EMPTY STRING when frame_time is null, i.e. for a still. Otherwise
+    /// `<value>/<rate>`, each number rendered in RFC 8785 / ECMAScript Number::toString
+    /// form, which is the same numeric rule edl_id already uses. So 1001 and 1001.0 both
+    /// render as `1001`, and a rate of 30000/1001 renders as `29.97002997002997`. THIS IS
+    /// THE FIELD THAT BREAKS FIRST ACROSS LANGUAGES: Python's repr writes `1.0` where
+    /// JavaScript writes `1`, and the same frame then gets two ids. A number that cannot be
+    /// rendered without an exponent is REJECTED rather than written, because exponent
+    /// formatting is where the two languages stop agreeing and no real frame rate needs
+    /// one. The still case cannot be confused with the video case: a rendered time always
+    /// contains a `/`, and the empty string never does.
+    ///
+    /// BBOX -- `<qx>,<qy>,<qw>,<qh>` where q(v) = round_half_away_from_zero(v * 10000),
+    /// rendered as a base-10 integer with no padding and no sign (every component is non-
+    /// negative by schema, so half-away-from-zero and half-up coincide). NOT banker's
+    /// rounding: Python's round() sends 3002.5 to 3002 while JavaScript's Math.round and
+    /// Rust's f64::round both send it to 3003, and 8855 of the 10000 half-quantum positions
+    /// in [0,1] are exactly representable as doubles, so this is reachable rather than
+    /// theoretical. The quantum is 1e-4 of the frame -- 0.6px on a 6000px original, finer
+    /// than any detector's own precision and coarse enough that the last-bit disagreement
+    /// between two execution providers cannot turn one face into two. `rotation_deg` does
+    /// NOT participate, which is why Detection pins it to 0.
+    ///
+    /// MODEL_ID, VERSION -- detection.detector.model_id and .version, verbatim. model_id is
+    /// a Slug and cannot contain the separator; ModelRef.version is pattern-constrained to
+    /// exclude control characters for exactly this reason, so the join is injective and
+    /// needs no length prefix.
+    ///
+    /// DELIBERATELY NOT IN THE TUPLE: weights_blake3, config_blake3, runtime, precision,
+    /// detected_on, detection_score, landmarks and embedding. All of them are still
+    /// RECORDED, on the detector ModelRef and in model_runs, so provenance is not lost --
+    /// but none of them may move the id. weights_blake3 is nullable in development mode, so
+    /// including it would rename every face the moment the same detection is re-recorded
+    /// against a pinned registry: duplicated rows where deduplication was the point.
+    /// config_blake3 moves when a score threshold moves, which changes WHICH faces are
+    /// found rather than the identity of one that was found -- and a config change that
+    /// really does move a box further than the quantum already changes BBOX. `version` is
+    /// the deliberate, human-controlled switch for 'issue new ids'.
+    ///
+    /// contracts/tests recomputes this for every face fixture and for
+    /// contracts/vectors/face-id.json, in Python and again in TypeScript against the
+    /// generated bindings. An identity that is asserted rather than computed is how issue
+    /// #26's invented span_id happened, and this is the same failure one schema over.
     pub face_id: Blake3Hash,
 
     /// The MediaRecord this face was found in. For spanned video this is the assembly
@@ -4059,6 +4124,23 @@ pub struct JobSpec {
     /// params_digest, scope). Doubles as the idempotency key -- there is deliberately no
     /// second field for that, because two sources of truth for identity is how duplicate
     /// work gets in.
+    ///
+    /// CANONICAL ENCODING, for the same reason face_id and span_id have one: a named tuple
+    /// is not a byte string, and two workers that separate the fields differently compute
+    /// different ids for identical work -- which means the second one redoes it, or worse,
+    /// a genuinely different job collides with a completed one and is skipped. The hashed
+    /// bytes are:
+    ///
+    /// job_id = BLAKE3( utf8( job_type US IDS US LOCATOR US params_digest US scope ) )
+    ///
+    /// where US is U+001F INFORMATION SEPARATOR ONE. IDS is the media ids followed by the
+    /// moment ids, sorted as one list and joined with a single comma; empty when there are
+    /// none. LOCATOR is source_locator_digest, or the EMPTY STRING when it is null --
+    /// absent and empty must render the same way, or a job with no locator gets two ids.
+    /// scope renders as the empty string when null.
+    ///
+    /// The fields are all fixed-alphabet (hex digests, an enumerated job_type, a slug-
+    /// shaped scope), so the separator is sufficient and no length prefix is needed.
     pub job_id: Blake3Hash,
 
     /// What kind of work. Enumerated rather than free-form so that a worker cannot be
@@ -4076,6 +4158,20 @@ pub struct JobSpec {
     /// BLAKE3 over the canonical JSON of `params`. Part of job_id, which is what makes
     /// 'same job with different settings' a genuinely different job rather than a silent
     /// overwrite of the first result.
+    ///
+    /// Canonical JSON here is the same rule `edl_id` states: keys sorted, no insignificant
+    /// whitespace, numbers in RFC 8785 / ECMAScript Number::toString form so that 1.0 and 1
+    /// are one value, UTF-8 bytes. One canonicalisation for the whole contract,
+    /// deliberately -- a second one is how a digest starts disagreeing with itself across
+    /// languages.
+    ///
+    /// EVERYTHING THAT CHANGES THE RESULT MUST BE IN `params`. In particular the MODEL
+    /// PINS: naming a model by id alone meant that editing its config -- a detection
+    /// threshold, an NMS IoU -- left job_id unchanged, so the completed job was found and
+    /// every already-analysed record skipped. The library kept an analysis produced by
+    /// settings it was no longer configured with, and nothing said so. `inputs.models`
+    /// carries the same pins for provenance; the copy in `params` is the one that affects
+    /// identity, and a writer that fills one and not the other has a bug.
     pub params_digest: Blake3Hash,
 
     /// Namespace separating otherwise-identical work: a library id, a project id, or a user

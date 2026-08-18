@@ -268,6 +268,25 @@ def run(ctx: StageContext) -> StageResult:
             stage=STAGE, status=StageStatus.FAILED, detail=str(error)
         )
 
+    # Model pins, in `inputs.models` AND in the params digest. The digest is the
+    # part that matters: naming the models by id alone meant that editing a
+    # config -- a detection threshold, an NMS IoU -- produced the same job_id,
+    # found the completed row and skipped every record already marked `done`.
+    # The library kept the previous analysis and nothing anywhere said so.
+    try:
+        pins = [
+            modelconfigs.registry_pin(ctx.repo_root, model_id)
+            for model_id in sorted(
+                {
+                    settings.embedding_model,
+                    settings.face_model,
+                    settings.face_embedding_model,
+                }
+            )
+        ]
+    except modelconfigs.ModelConfigError as error:
+        return StageResult(stage=STAGE, status=StageStatus.FAILED, detail=str(error))
+
     params = {
         "pipeline": "photo_analysis",
         "steps": list(ALL_STEPS),
@@ -284,11 +303,13 @@ def run(ctx: StageContext) -> StageResult:
         "landmark_scheme": face_stack.landmark_scheme,
         "batch": settings.infer_batch,
         "library_digest": library_digest,
+        "model_pins": pins,
     }
     job = build_job(
         job_type=JOB_TYPE,
         scope=settings.scope,
         params=params,
+        models=pins,
         priority=400,
     )
     job = ctx.jobs.get(job["job_id"]) or ctx.jobs.ensure(job)

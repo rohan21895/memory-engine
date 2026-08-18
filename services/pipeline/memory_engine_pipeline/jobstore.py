@@ -100,6 +100,7 @@ def build_job(
     params: Mapping[str, Any],
     media_ids: Sequence[str] = (),
     moment_ids: Sequence[str] = (),
+    models: Sequence[Mapping[str, Any]] = (),
     source_paths: Sequence[str] = (),
     locator_digest: str | None = None,
     depends_on: Sequence[str] = (),
@@ -139,7 +140,16 @@ def build_job(
             "source_locator_digest": locator_digest,
             "parent_job_id": None,
             "depends_on_job_ids": sorted(depends_on),
-            "models": [],
+            # Model pins, in a stable order. They are ALSO the caller's job to
+            # put in `params` -- `job_id` is a digest over the params, not over
+            # `inputs.models`, so a pin recorded here and nowhere else would be
+            # provenance that does not affect identity. Editing a model config
+            # would then reuse the completed job and keep the old analysis,
+            # silently. `_models_and_params_agree` asserts the two match.
+            "models": sorted(
+                (dict(model) for model in models),
+                key=lambda model: model["model_id"],
+            ),
         },
         "params": dict(params),
         "params_digest": digest,
@@ -196,8 +206,32 @@ def build_job(
             "estimated_duration_ms": None,
             **dict(requirements),
         }
+    _models_and_params_agree(job)
     validate_job(job)
     return job
+
+
+def _models_and_params_agree(job: Mapping[str, Any]) -> None:
+    """`inputs.models` must be exactly what `params["model_pins"]` says.
+
+    Provenance and identity have to be the same list. If `inputs.models` names
+    a pin that the params digest never saw, then the pin is decoration: two
+    jobs differing only in that pin share a job_id, the second finds the first
+    completed, and the library keeps an analysis produced by a model it is no
+    longer configured to use. Raising here rather than reconciling, because a
+    caller that filled one and not the other has a bug that reconciliation
+    would hide.
+    """
+    declared = job["inputs"]["models"]
+    pinned = (job.get("params") or {}).get("model_pins")
+    if not declared and pinned is None:
+        return
+    if [dict(model) for model in (pinned or [])] != declared:
+        raise JobValidationError(
+            "inputs.models and params['model_pins'] disagree; a pin outside the "
+            "params digest does not affect job identity, so a model swap would "
+            "silently reuse the previous result"
+        )
 
 
 @dataclass(slots=True)

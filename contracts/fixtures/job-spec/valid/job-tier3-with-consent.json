@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "job_id": "fcf14c811b6fed5e097668247abcad3c3ee2c586c4fa4200accbe31bf1b186af",
+  "job_id": "4bcc3450772a19d7d7575935537582b1f955afd12c078561dbd1e496805da8ac",
   "job_type": "tier3_request",
   "inputs": {
     "media_ids": [],
@@ -26,11 +26,24 @@
   },
   "params": {
     "prompt_id": "reel-arc-v3",
-    "contact_sheet": { "tile_px": 256, "columns": 6, "include_transcript": true },
+    "contact_sheet": {
+      "tile_px": 256,
+      "columns": 6,
+      "include_transcript": true
+    },
     "response_format": "structured_json",
-    "max_output_tokens": 2048
+    "max_output_tokens": 2048,
+    "model_pins": [
+      {
+        "model_id": "frontier-multimodal",
+        "version": "2026-02",
+        "weights_blake3": "93e2abe19030b118a176b0bca42fb173a34eb175c32903a1cec731a1f02fd659",
+        "runtime": null,
+        "precision": null
+      }
+    ]
   },
-  "params_digest": "445523e5b31e98dfc311e6691b8debd78d9f9c6925a7eb1fb2d1f6bd7d6b1e99",
+  "params_digest": "902483867e2d7a015b8d413a734a2e1c9b44158333186e540a8af9d10543a049",
   "scope": "project:reel-ridge-15s",
   "priority": 400,
   "requirements": {

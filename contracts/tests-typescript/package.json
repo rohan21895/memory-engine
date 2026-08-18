@@ -1,0 +1,11 @@
+{
+  "name": "@memory-engine/contracts-tests-typescript",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-language checks that the generated TypeScript bindings and the contract's identity encodings agree with the Python side",
+  "scripts": {
+    "lint": "tsc -p tsconfig.json --noEmit --pretty false",
+    "test": "tsc -p tsconfig.json && node --test dist/contracts/tests-typescript/*.test.js"
+  }
+}

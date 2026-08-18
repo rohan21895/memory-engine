@@ -1,0 +1,154 @@
+{
+  "schema_version": "v0",
+  "job_id": "a9f771cf308efb5ead44a30da8495b09b0925f627bfe8f7e5614e08d7e0b5f8c",
+  "job_type": "analyze_image",
+  "inputs": {
+    "media_ids": [],
+    "moment_ids": [],
+    "face_ids": [],
+    "edl_id": null,
+    "album_id": null,
+    "source_paths": [],
+    "source_locator_digest": null,
+    "parent_job_id": null,
+    "depends_on_job_ids": [],
+    "models": [
+      {
+        "model_id": "arcface-buffalo-l",
+        "version": "1.0.0",
+        "weights_blake3": null,
+        "config_blake3": "9234010d69e405e8d964eddd6b8e75b38c35969f944c0e30aac51c1ab65fc775"
+      },
+      {
+        "model_id": "scrfd-10g-bnkps",
+        "version": "1.0.0",
+        "weights_blake3": null,
+        "config_blake3": "ce906d0bf032dc1640ebb16a28bc667fd3b95b5daf12b148fe95d22cef138ead"
+      },
+      {
+        "model_id": "siglip2-so400m-384",
+        "version": "2.0.0",
+        "weights_blake3": null,
+        "config_blake3": "65c9cf13138fd4b63e953e58fd970a46a959a38ddbc6aa82ee38b759cdf37a00"
+      }
+    ]
+  },
+  "params": {
+    "pipeline": "photo_analysis",
+    "steps": [
+      "classical_quality",
+      "image_embedding",
+      "face_detection",
+      "face_embedding"
+    ],
+    "classical_quality": {
+      "executor": "classical-quality",
+      "version": "1.0.0"
+    },
+    "embedding_model": "siglip2-so400m-384",
+    "embedding_space": "siglip2_so400m_1152",
+    "face_model": "scrfd-10g-bnkps",
+    "face_score_floor": 0.5,
+    "face_embedding_model": "arcface-buffalo-l",
+    "face_embedding_space": "arcface_buffalo_l_512",
+    "landmark_scheme": "insightface_5",
+    "batch": 16,
+    "library_digest": "7410dfff64a4e0e3acfc6fcb200fd3c6d5752528dcecb149db0ccbb996cea24b",
+    "model_pins": [
+      {
+        "model_id": "arcface-buffalo-l",
+        "version": "1.0.0",
+        "weights_blake3": null,
+        "config_blake3": "9234010d69e405e8d964eddd6b8e75b38c35969f944c0e30aac51c1ab65fc775"
+      },
+      {
+        "model_id": "scrfd-10g-bnkps",
+        "version": "1.0.0",
+        "weights_blake3": null,
+        "config_blake3": "ce906d0bf032dc1640ebb16a28bc667fd3b95b5daf12b148fe95d22cef138ead"
+      },
+      {
+        "model_id": "siglip2-so400m-384",
+        "version": "2.0.0",
+        "weights_blake3": null,
+        "config_blake3": "65c9cf13138fd4b63e953e58fd970a46a959a38ddbc6aa82ee38b759cdf37a00"
+      }
+    ]
+  },
+  "params_digest": "e09efa6b0d3bc880dd26578ba9dc0a726b2011e7c342115feb7be72a25fc46be",
+  "scope": "library:default",
+  "priority": 400,
+  "egress": {
+    "requires_egress": false,
+    "consent": null,
+    "destination": null,
+    "payload_kind": null,
+    "estimated_bytes": null
+  },
+  "state": {
+    "status": "running",
+    "attempts": 1,
+    "worker_id": "analysis-worker-01",
+    "started_at": "2026-03-14T09:11:53+05:30",
+    "heartbeat_at": "2026-03-14T09:13:44+05:30",
+    "finished_at": null,
+    "progress": {
+      "units_done": 4.0,
+      "units_total": 6.0,
+      "unit": "images",
+      "bytes_processed": null,
+      "message": "image_embedding: 4 of 6"
+    }
+  },
+  "checkpoint": {
+    "resumable": true,
+    "cursor": "{\"done\":4,\"last_media_id\":\"9149e85b907d9b3e5c76c1dfb91ec944120cf8adaba81eb8e31c3ceb09c4e226\",\"step\":\"image_embedding\"}",
+    "checkpoint_version": 1,
+    "updated_at": "2026-03-14T09:13:44+05:30",
+    "completed_input_ids": [],
+    "partial_output_ids": [
+      "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+      "4086a6f2bc6cc368bbcdf98be7ce7cf39b8b1ddb5ebd3e26d91e86fb56bba93c",
+      "50180f0ce32808e24d48b05dce8eb8e95ca7530ca65c7f9706a3c3079e5d90b0",
+      "9149e85b907d9b3e5c76c1dfb91ec944120cf8adaba81eb8e31c3ceb09c4e226"
+    ]
+  },
+  "outputs": [
+    {
+      "kind": "media_record",
+      "id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+      "path": null,
+      "byte_size": null,
+      "produced_at": "2026-03-14T09:12:41+05:30"
+    },
+    {
+      "kind": "face_record",
+      "id": "73144a960912f3a6d60227c32803bb1e95171f3e59ae784bad5448d815413474",
+      "path": null,
+      "byte_size": null,
+      "produced_at": "2026-03-14T09:13:41+05:30"
+    }
+  ],
+  "error": null,
+  "journal": {
+    "entries": []
+  },
+  "created_at": "2026-03-14T09:11:52+05:30",
+  "deadline": null,
+  "requirements": {
+    "compute": "any",
+    "min_vram_mb": null,
+    "min_ram_mb": 4096,
+    "min_disk_mb": null,
+    "hardware_decode": false,
+    "requires_source_file": false,
+    "estimated_duration_ms": 42000.0
+  },
+  "retry_policy": {
+    "max_attempts": 3,
+    "backoff": "exponential",
+    "initial_delay_ms": 1000.0,
+    "max_delay_ms": 60000.0,
+    "quarantine_after_max": false
+  }
+}

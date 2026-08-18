@@ -38,6 +38,7 @@ __all__ = [
     "embedder_alignment_scheme",
     "embedder_vector_space",
     "read_model_config",
+    "registry_pin",
 ]
 
 
@@ -63,6 +64,49 @@ def read_model_config(repo_root: Path, model_id: str) -> Mapping[str, Any]:
             "preprocessing lives, and guessing it produces silently wrong input"
         )
     return _load(str(path))
+
+
+def registry_pin(repo_root: Path, model_id: str) -> dict[str, Any]:
+    """The ModelRef a job should carry for this model, read off disk.
+
+    WHY A JOB HAS TO CARRY IT
+    `job_id` is a BLAKE3 over the job type, inputs, params and scope, and the
+    params named the models by *id*. So editing `models/configs/<id>.json` --
+    lowering a detection threshold, changing an NMS IoU -- produced the same
+    job_id, found a completed row, and skipped every record that was already
+    `done`. The library kept the old analysis and nothing said so, which is
+    exactly the shape of failure CLAUDE.md hard rule 7 names.
+
+    `config_blake3` comes from the registry rather than from the config file
+    because that is the value the host is required to agree with: it refuses to
+    serve a config whose digest disagrees with the registry pin. Recomputing it
+    here would be a second opinion, and two opinions about a pin is how a
+    mismatch becomes invisible.
+
+    `weights_blake3` is nullable, and null is a real answer today (no checkpoint
+    in the registry is pinned). Null does not disqualify the pin; it is simply
+    the honest content of it, and release mode is what refuses to run on one.
+    """
+    registry_path = repo_root / "models" / "registry.json"
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ModelConfigError(f"{registry_path}: {error}") from error
+    for entry in registry.get("entries", []):
+        if entry.get("model_id") != model_id:
+            continue
+        config = read_model_config(repo_root, model_id)
+        return {
+            "model_id": model_id,
+            "version": str(config.get("version") or ""),
+            "weights_blake3": (config.get("weights") or {}).get("blake3"),
+            "config_blake3": entry.get("config_blake3"),
+        }
+    raise ModelConfigError(
+        f"{model_id!r} is not in models/registry.json, so no pin can be recorded for "
+        "it. A record produced by an unregistered model is unreproducible, and a job "
+        "that cannot state what produced it cannot be replayed"
+    )
 
 
 def detector_landmark_scheme(config: Mapping[str, Any]) -> str | None:
