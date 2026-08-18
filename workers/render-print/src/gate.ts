@@ -96,8 +96,15 @@ export function assertRenderGate(spec: AlbumSpec): void {
       ) {
         fail(`${placement.placement_id} contains an unsafe face placement.`);
       }
-      if ((placement.enhancement_ops ?? []).some((operation) => !operation.license_cleared)) {
+      const enhancements = placement.enhancement_ops ?? [];
+      if (enhancements.some((operation) => !operation.license_cleared)) {
         fail(`${placement.placement_id} contains an enhancement without commercial clearance.`);
+      }
+      if (enhancements.length > 0) {
+        fail(
+          `${placement.placement_id} declares ${enhancements.length} enhancement operation(s), but ` +
+            "enhancement execution is not implemented; rendering would silently use the original source.",
+        );
       }
     }
   });

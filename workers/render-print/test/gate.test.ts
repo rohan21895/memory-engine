@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import type { AlbumSpec } from "../../../contracts/codegen/generated/typescript/index.js";
+import {
+  EnhancementOpKindValues,
+  type AlbumSpec,
+} from "../../../contracts/codegen/generated/typescript/index.js";
 
 import { describe, expect, it } from "vitest";
 
@@ -11,10 +14,14 @@ import { loadAndCheckIccProfile } from "../src/icc.js";
 import { makeAlbum } from "./helpers.js";
 
 describe("the non-overridable print gate", () => {
-  it("accepts the contract golden AlbumSpec as its validation oracle", async () => {
+  it("accepts the golden validation report only when its unsupported enhancement plan is empty", async () => {
     const fixture = JSON.parse(
       await readFile(resolve("../../contracts/fixtures/album-spec/valid/album-thailand-validated.json"), "utf8"),
     ) as AlbumSpec;
+    expect(() => assertRenderGate(fixture)).toThrow(/enhancement execution is not implemented/);
+    for (const page of fixture.pages) {
+      for (const placement of page.placements) placement.enhancement_ops = [];
+    }
     expect(() => assertRenderGate(fixture)).not.toThrow();
   });
 
@@ -66,6 +73,15 @@ describe("the non-overridable print gate", () => {
     const wrongCount = makeAlbum();
     wrongCount.pages.pop();
     expect(() => assertRenderGate(wrongCount)).toThrow(/19 pages/);
+  });
+
+  it.each(EnhancementOpKindValues)("refuses a licensed %s plan until enhancement execution is wired", (kind) => {
+    const spec = makeAlbum();
+    spec.pages[0]!.placements[0]!.enhancement_ops = [
+      { op_id: `licensed-${kind}`, kind, order: 0, license_cleared: true },
+    ];
+
+    expect(() => assertRenderGate(spec)).toThrow(/enhancement execution is not implemented/);
   });
 
   it("loads and identifies Sharp's deterministic CMYK profile", async () => {

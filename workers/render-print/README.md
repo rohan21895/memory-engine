@@ -9,6 +9,12 @@ Export is a hard gate. The worker requires a passing validation report with evid
 the contract's five required checks, rejects contradictory findings and unsafe/licence
 state, enforces page increments again, and never exposes an override.
 
+Any non-empty `enhancement_ops` plan also blocks export. The enhancement worker and an
+executed-asset provenance manifest are not wired into print rendering yet, so accepting a
+licensed operation would silently compose the original source. Once that path exists, the
+gate can admit only an enhanced asset whose digest and ordered operation provenance match
+the placement plan.
+
 The executable accepts a persisted `JobSpec` and `AlbumSpec`:
 
 ```text
