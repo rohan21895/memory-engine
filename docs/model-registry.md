@@ -351,6 +351,46 @@ is the input (pinned by digest) and the procedure (in the repository). This
 artifact was built with torch 2.13.0 (TorchScript exporter, `dynamo=False`),
 transformers 5.15.0, ONNX opset 17, on macOS arm64.
 
+### Where the artifact lives — and why `blake3` stays null
+
+Nowhere. That is the honest answer and it has a cost worth stating plainly.
+
+857MB is not committed (`models/weights/.gitignore`) and this project hosts no
+artifact server, so **what is distributed is the recipe, not the file**: the
+input pinned by SHA-256, and the script that turns it into the graph. A fresh
+clone runs one command and gets its own copy.
+
+The consequence, measured rather than reasoned about —
+`python3 scripts/models/fetch_weights.py --only siglip2-so400m-384`:
+
+```
+siglip2-so400m-384  NEEDS_PIN   already installed, config has no pin
+                    blake3 e4d1e5d0…  (856897226 bytes)
+                    load gate: development=LOADABLE release=UNLOADABLE_REASON_HASH_UNPINNED
+```
+
+**So the embedder runs under the development gate and is refused by the release
+gate.** Album planning on real embeddings is real, and it is not yet a thing a
+shipped build would do.
+
+The obvious fix — paste the digest into `weights.blake3` — would be *actively
+wrong* today, and not merely premature. The export is not byte-reproducible
+across PyTorch versions (above), so a pin describes exactly one machine's
+output; every other machine's correct re-export would then hit
+`HASH_MISMATCH`, which `load_policy.hash_mismatch_is_always_fatal` makes fatal
+in **every** mode, including development. Pinning an artifact nobody can
+download converts "unverified" into "unloadable".
+
+What the next person needs, in order:
+
+1. host the built artifact somewhere immutable (a release asset is enough);
+2. point `weights.source_url` at that **file** — the fetcher will then download
+   and verify it instead of reporting CONVERTIBLE;
+3. paste the digest **of the hosted bytes** into `weights.blake3` and
+   `byte_size`, and re-run `python3 models/policy/digest.py --write`;
+4. keep `weights.conversion` regardless. It is what makes the hosted file
+   auditable rather than merely available.
+
 ### What was measured, by execution
 
 | measurement | result |
@@ -361,7 +401,28 @@ transformers 5.15.0, ONNX opset 17, on macOS arm64.
 | artifact | 856,897,226 bytes, BLAKE3 `e4d1e5d0b294c25bb02cefc560326a6c9d9caaf4fce156ba80a0a3fabf4e2df7` — **measured, NOT pinned** |
 | fp16 vs the fp32 PyTorch reference | cosine **0.99999765**, max abs diff 0.02145 on values averaging 0.30522 |
 | batch of 8 | `(8, 1152)`; row 0 matches the same image run alone to cosine 1.0000000; a mirrored row differs at 0.9969 |
-| `--verify` on the CI interpreter | passes on system python3 with onnxruntime 1.28.0 — no PyTorch needed to re-check |
+| `--verify` on the CI interpreter | every graph check passes on system python3 with onnxruntime 1.28.0 — no PyTorch needed to re-check. It **exits 3, not 0**: system python3 has no `onnx` package, so the initializer-dtype check above could not run, and a check that did not run is not a pass |
+
+**Re-verified independently on 2026-08-18, onnxruntime 1.29.0**, because the
+numbers above were taken by the session that produced the artifact and this
+repository has never had a defect found by the author of the code. Every row
+reproduced — same digest, same 448 float16 initializers, same graph bindings,
+parity **0.99999779** — with one correction:
+
+- **`row 0 == single image` is the runtime's property, not the graph's.** On
+  onnxruntime 1.29.0 the same comparison is cosine **0.99999625**, max abs diff
+  0.0112: ORT picks different kernels for a batch of 8 than for a batch of 1.
+  Both figures clear the 0.9999 floor `verify()` asserts, which is why it
+  asserts a floor and not equality. Reading 1.0000000 as *exact* would be
+  wrong. What is exact, and was measured: repeated runs of one input in one
+  session are **bitwise identical**, and eight identical rows in one batch
+  return eight **bitwise identical** embeddings — no state leaks across rows.
+- One thing the original account did not check, now checked: the config's
+  declared preprocessing (stretch to 384×384, PIL BILINEAR, `/255`, mean/std
+  0.5) produces a tensor **byte-identical** (max abs diff 0.0) to the one the
+  publisher's own `SiglipProcessor` produces for the same photograph. The
+  interpolation correction below is confirmed against the publisher's code and
+  not only against its `preprocessor_config.json`.
 
 **The check that makes it more than a plausible file.** Numerical parity proves
 the ONNX matches the safetensors; the SHA-256 pin proves the safetensors are
@@ -448,15 +509,40 @@ failure was loud here and need not be next time.
 a real `workers/ml-runtime` host serving all four installed checkpoints:
 
 ```
-ok analysis   analysis complete  embedded=201 embedding_failed=0
-                                 faces_scanned=201 faces_found=0 still_pending=0
-ok ranking    ranking complete   embeddings_loaded=86 scored=201
-                                 duplicate_groups=3 duplicates=11
-ok album      album planned and validated  candidates=71 pages=26 selected=24
+ok  analysis      analysis complete  embedded=201 embedding_failed=0
+                                     faces_scanned=201 faces_found=0 still_pending=0
+ok  ranking       ranking complete   embeddings_loaded=86 scored=201
+                                     duplicate_groups=3 duplicates=11 unmeasured=18
+ok  album         album planned and validated  candidates=71 pages=26 selected=24
+ok  render-print  PDF/X-4 written
+ok  story         reel EDL 42b6d1723d24: 5 clips, 8.27s at 30 fps
+ok  render-video  reel written
+
+[14/15] print artifact — opened and measured        ok
+        76,041,832 bytes; 26 page objects, /Count [26]
+        AlbumSpec declares 26 pages, validation pass (0 errors, 26 warnings)
+        output condition: FOGRA39 Coated; TrimBox on every page
+        checks: 7/7 passed
+[15/15] video artifact — probed and sampled         ok
+        h264 854x480 @ 30/1 8.266s; decoded 248 frames; checks: 5/5 passed
 ```
 
-**Album planning now runs on real SigLIP 2 embeddings.** Before this it did not
-run at all. Two of those numbers deserve reading rather than ticking:
+**Album planning now runs on real SigLIP 2 embeddings, and the PDF it produced
+was opened and measured.** Before this it did not run at all.
+
+**Re-run independently on 2026-08-18** in a clean worktree at this commit, to
+the same numbers: `embedded=201 embedding_failed=0`, `duplicate_groups=3`,
+`candidates=71 pages=26 selected=24`, a 76,041,832-byte PDF/X-4 passing 7/7
+artifact checks and an 8.27s reel passing 5/5. The one thing the run above could
+not settle — that the vectors the album read came from *this graph* and not from
+a stand-in — was then settled directly: a vector pulled out of the pipeline's
+own `library.db` (space `siglip2_so400m_1152`, 1152 float32, L2 exactly 1.0)
+matches an independent onnxruntime run of the exported artifact over the same
+proxy file at **cosine 0.994579**, where a different photograph's stored vector
+sits at 0.809. The residual is the `cv2` versus PIL resize gap recorded above,
+measured here a second time from the other end of the pipeline.
+
+Two of those numbers deserve reading rather than ticking:
 
 - `duplicate_groups` went from 2 to 3 and `duplicates` from 9 to 11 once the
   embedding refinement pass had vectors to read. pHash alone found two bursts;
@@ -473,6 +559,15 @@ This establishes that the embedding path executes end to end. It establishes
 **nothing about retrieval or aesthetic quality** — the library is synthetic, and
 those numbers have to come from `packages/eval-harness/` against a consented
 benchmark library.
+
+Cost, so nobody is surprised by it: 201 images took ~13 minutes of the 787s
+pipeline run — 1,162.7s for the same eight stages on the independent re-run,
+which also had video proxies to build — and the CoreML provider is a *pessimisation*
+for this graph — it claims 62 of 1337 nodes across 32 partitions and comes out
+at 4.79s per image against the CPU provider's 2.62s. `runtime_targets` lists
+CoreML first, so the host picks it. Worth revisiting; not changed here, because
+reordering execution providers on one laptop's measurement is how a preference
+gets baked in for hardware nobody tested.
 
 ---
 

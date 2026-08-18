@@ -69,6 +69,21 @@ The config declares `quantization: fp16`, and this export honours that: every
 initializer in the graph is float16 (428M parameters, ~857MB, against ~1.71GB
 for the same tower in fp32).
 
+That sentence used to be a measurement somebody took once and wrote down.
+`check_precision()` now reads the stored dtype of every FLOAT-KIND initializer
+off the graph and compares it against `weights.quantization`, so a declaration
+and an artifact that disagree fail instead of being believed -- an export whose
+dtype was changed, or a future transformers that leaves a block in float32, is
+caught by the same check that caught nothing before. Integer and boolean
+initializers are graph plumbing rather than weights and are counted and
+reported, not failed: this graph carries none today, and a rule that demanded
+they be float16 too would fail the next legitimate re-export for a reason with
+nothing to do with precision. It needs the `onnx` package,
+which is always present when `torch.onnx.export` runs and is often absent on a
+machine that only verifies; on export it is REQUIRED, and on `--verify` a
+missing `onnx` makes the run exit 3 (incomplete) rather than report a pass over
+a check that never ran.
+
 The graph's INPUT AND OUTPUT are float32 by deliberate choice. `weights.
 quantization` describes the stored weights, and the boundary is a separate
 question: the host's preprocessing produces float32 and the embedding store
@@ -102,7 +117,8 @@ USAGE
     # export (needs torch + transformers + onnx; see docs/model-registry.md)
     python3 scripts/models/export_siglip2_vision_onnx.py
 
-    # verify an artifact that is already installed (onnxruntime + numpy + PIL)
+    # verify an artifact that is already installed (onnxruntime + numpy + PIL;
+    # add onnx to check the stored precision too, or the run exits 3)
     python3 scripts/models/export_siglip2_vision_onnx.py --verify
 
     # export, then additionally compare against the PyTorch reference
@@ -112,7 +128,8 @@ EXIT CODES
 
     0  the artifact exists and passed every check
     3  every check that ran passed, and one was asked for that could not run
-       (today: `--parity` alongside `--verify`, which has no source snapshot)
+       (`--parity` alongside `--verify`, which has no source snapshot; or the
+       precision check on a machine without the `onnx` package)
     4  a check FAILED -- the artifact is wrong, and is not installed
     5  the script could not run at all: a dependency is missing, the config is
        unreadable, or the destination already exists and --force was not given
@@ -400,6 +417,112 @@ def preprocess(image_path: Path, declared: Declared, config: dict):
     return np.ascontiguousarray(array.transpose(2, 0, 1)[None])
 
 
+# `weights.quantization` describes the dtype the WEIGHTS are stored in, which
+# is what an initializer carries. The graph's input and output dtype is a
+# separate decision (float32, deliberately -- see the module docstring), so
+# this maps only the float precisions an export of this model can produce.
+QUANTIZATION_DTYPE = {"fp32": "FLOAT", "fp16": "FLOAT16"}
+
+# Which initializers are WEIGHTS. An ONNX graph also carries integer and
+# boolean initializers -- `Reshape` shapes, `Slice` bounds, `Gather` indices --
+# and those are plumbing, not parameters: they have no precision to declare and
+# `quantization: fp16` says nothing about them. This export happens to fold all
+# of its shape constants into `Constant` nodes and carry none, so a rule of
+# "every initializer must be float16" passes today by luck and would fail the
+# next legitimate re-export for a reason that has nothing to do with precision.
+# The rule is therefore: every FLOAT-KIND initializer must be the declared
+# dtype. That still catches the failure this check exists for -- a tower
+# silently exported in fp32 -- because those weights arrive as FLOAT.
+FLOAT_DTYPES = frozenset(
+    {
+        "FLOAT",
+        "FLOAT16",
+        "DOUBLE",
+        "BFLOAT16",
+        "FLOAT8E4M3FN",
+        "FLOAT8E4M3FNUZ",
+        "FLOAT8E5M2",
+        "FLOAT8E5M2FNUZ",
+    }
+)
+
+
+def check_precision(path: Path, declared: Declared, log, *, required: bool) -> bool:
+    """Does the graph store its weights in the precision the config declares?
+
+    Returns True when the check ran. The caller decides what a check that
+    could not run means; nothing here reports a pass it did not measure.
+
+    Reads every initializer's `data_type` off the protobuf. `onnxruntime` will
+    not answer this -- it reports the dtype of inputs and outputs, which are
+    float32 here by design, so a graph whose weights were silently exported in
+    fp32 looks identical through the session API and is twice the size on disk
+    with nobody checking the number.
+    """
+    expected = QUANTIZATION_DTYPE.get(declared.quantization)
+    if expected is None:
+        raise Precondition(
+            f"the config declares quantization {declared.quantization!r}; this "
+            f"script knows how to check {sorted(QUANTIZATION_DTYPE)}. Extend the "
+            "map deliberately rather than skipping the check."
+        )
+    try:
+        import onnx
+        from onnx import TensorProto
+    except ImportError as error:
+        if required:
+            raise Precondition(
+                "the onnx package is required to check that the artifact's "
+                "stored precision matches the config: pip install onnx"
+            ) from error
+        log(
+            "precision: NOT CHECKED -- the onnx package is not installed, so "
+            f"the config's quantization {declared.quantization!r} was taken on "
+            "trust. pip install onnx to check it."
+        )
+        return False
+
+    # load_external_data=False: this artifact keeps its tensors inline, and a
+    # future one that did not would otherwise be read twice over.
+    model = onnx.load(str(path), load_external_data=False)
+    counts: dict[str, int] = {}
+    other: dict[str, int] = {}
+    elements = 0
+    for initializer in model.graph.initializer:
+        name = TensorProto.DataType.Name(initializer.data_type)
+        if name not in FLOAT_DTYPES:
+            other[name] = other.get(name, 0) + 1
+            continue
+        counts[name] = counts.get(name, 0) + 1
+        if name == expected:
+            size = 1
+            for dimension in initializer.dims:
+                size *= dimension
+            elements += size
+    if not counts:
+        raise CheckFailed(
+            f"{path.name} carries no floating-point initializers at all "
+            f"(non-float initializers: {other or 'none'}) -- that is not a model "
+            "with weights in it"
+        )
+    wrong = {name: count for name, count in counts.items() if name != expected}
+    if wrong:
+        raise CheckFailed(
+            f"the config declares quantization {declared.quantization!r} "
+            f"({expected}), and the graph stores {wrong} alongside "
+            f"{counts.get(expected, 0)} {expected} initializers. Match the "
+            "artifact to the declaration or change the declaration; do not "
+            "leave them disagreeing."
+        )
+    log(
+        f"precision: {counts[expected]} weight initializers, all {expected}, "
+        f"{elements:,} parameters -- agrees with quantization "
+        f"{declared.quantization!r}"
+        + (f"; {sum(other.values())} non-float initializers {other}" if other else "")
+    )
+    return True
+
+
 def cosine(a, b) -> float:
     import numpy as np
 
@@ -636,6 +759,10 @@ def run(args: argparse.Namespace, *, stream=sys.stdout) -> int:
             staged = Path(workspace) / declared.filename
             export(snapshot, declared, staged, log)
             verify(staged, declared, config, args.image, log)
+            # Required here: onnx is installed wherever torch.onnx.export ran,
+            # so an export that cannot check its own precision is a broken
+            # environment rather than a limited one.
+            check_precision(staged, declared, log, required=True)
             if args.parity:
                 parity(staged, snapshot, declared, config, args.image, log)
             shutil.move(str(staged), str(installed))
@@ -644,6 +771,11 @@ def run(args: argparse.Namespace, *, stream=sys.stdout) -> int:
 
     if args.verify:
         verify(target, declared, config, args.image, log)
+        # Best-effort here, and loud about it: a machine with only onnxruntime
+        # can re-check every binding but not the stored dtype, and a check that
+        # did not run is exit 3, not a pass.
+        if not check_precision(target, declared, log, required=False):
+            incomplete = True
         if args.parity:
             log(
                 "--parity needs the source snapshot; run without --verify to "

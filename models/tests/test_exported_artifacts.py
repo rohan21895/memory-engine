@@ -19,6 +19,7 @@ import importlib.util
 import json
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 MODELS_ROOT = Path(__file__).resolve().parent.parent
@@ -169,6 +170,199 @@ class TheExportedGraphMatchesTheConfig(unittest.TestCase):
             self.exporter.verify(
                 self.artifact, wrong, config, self.exporter.DEFAULT_IMAGE,
                 log=lambda _message: None,
+            )
+
+
+class TheStoredPrecisionMatchesTheDeclaration(unittest.TestCase):
+    """`weights.quantization` against the dtype of the graph's initializers.
+
+    Separate from the class above because it needs a different dependency:
+    onnxruntime answers questions about inputs and outputs, which are float32
+    here by design, and cannot see what dtype the WEIGHTS are stored in. A
+    tower silently exported in fp32 is identical through the session API, twice
+    the size on disk, and agrees with a config declaring fp16 unless something
+    reads the initializers.
+    """
+
+    def setUp(self) -> None:
+        self.exporter = _load_exporter()
+        self.declared = self.exporter.Declared.read()
+        self.artifact = MODELS_ROOT / "weights" / self.declared.filename
+        if not self.artifact.is_file():
+            self.skipTest("the SigLIP 2 vision tower has not been exported here")
+        try:
+            import onnx  # noqa: F401
+        except ImportError:  # pragma: no cover - environment dependent
+            self.skipTest("the onnx package is needed to read initializer dtypes")
+
+    def test_the_artifact_stores_the_precision_the_config_declares(self):
+        ran = self.exporter.check_precision(
+            self.artifact, self.declared, log=lambda _message: None, required=True
+        )
+        self.assertTrue(ran, "the check reported that it did not run")
+
+    def test_a_declaration_the_artifact_contradicts_is_caught(self):
+        """Tested by breaking it: fp16 weights against a config claiming fp32.
+
+        A check that passes on a correct artifact proves nothing about whether
+        it would fail on a wrong one -- which is how the interpolation field sat
+        wrong in this same config for weeks.
+        """
+        wrong = self.exporter.Declared(
+            filename=self.declared.filename,
+            input_name=self.declared.input_name,
+            width=self.declared.width,
+            height=self.declared.height,
+            output_names=self.declared.output_names,
+            dimensions=self.declared.dimensions,
+            quantization="fp32",
+        )
+        with self.assertRaises(self.exporter.CheckFailed) as caught:
+            self.exporter.check_precision(
+                self.artifact, wrong, log=lambda _message: None, required=True
+            )
+        self.assertIn("FLOAT16", str(caught.exception))
+
+
+class ThePrecisionCheckSeparatesWeightsFromPlumbing(unittest.TestCase):
+    """Built graphs, not the artifact: 857MB cannot express these two cases.
+
+    The real export folds all of its shape constants into `Constant` nodes and
+    carries no integer initializers, so "every initializer is float16" and
+    "every float initializer is float16" are indistinguishable on it. They are
+    not the same rule, and the difference decides whether the next legitimate
+    re-export passes.
+    """
+
+    def setUp(self) -> None:
+        self.exporter = _load_exporter()
+        try:
+            import onnx  # noqa: F401
+        except ImportError:  # pragma: no cover - environment dependent
+            self.skipTest("the onnx package is needed to build a graph to check")
+        self.declared = self.exporter.Declared.read()
+
+    def _graph(self, weight_dtype: int, *, with_int64: bool) -> Path:
+        import onnx
+        from onnx import helper, numpy_helper
+        import numpy as np
+        import tempfile
+
+        weights = numpy_helper.from_array(
+            np.zeros((2, 2), dtype=onnx.helper.tensor_dtype_to_np_dtype(weight_dtype)),
+            name="weights",
+        )
+        initializers = [weights]
+        if with_int64:
+            initializers.append(
+                numpy_helper.from_array(np.array([2, 2], dtype=np.int64), name="shape")
+            )
+        graph = helper.make_graph(
+            [helper.make_node("Identity", ["weights"], ["out"])],
+            "tiny",
+            [],
+            [helper.make_tensor_value_info("out", weight_dtype, [2, 2])],
+            initializer=initializers,
+        )
+        handle = tempfile.NamedTemporaryFile(suffix=".onnx", delete=False)
+        handle.close()
+        path = Path(handle.name)
+        self.addCleanup(path.unlink, missing_ok=True)
+        onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)]),
+                  str(path))
+        return path
+
+    def _declared(self, quantization: str):
+        return self.exporter.Declared(
+            filename=self.declared.filename,
+            input_name=self.declared.input_name,
+            width=self.declared.width,
+            height=self.declared.height,
+            output_names=self.declared.output_names,
+            dimensions=self.declared.dimensions,
+            quantization=quantization,
+        )
+
+    def test_int64_plumbing_alongside_fp16_weights_passes(self):
+        """Shapes and indices are int64 in every ONNX graph that has any."""
+        from onnx import TensorProto
+
+        messages: list[str] = []
+        ran = self.exporter.check_precision(
+            self._graph(TensorProto.FLOAT16, with_int64=True),
+            self._declared("fp16"),
+            log=messages.append,
+            required=True,
+        )
+        self.assertTrue(ran)
+        self.assertTrue(
+            any("INT64" in message for message in messages),
+            f"the non-float initializers must be reported, not hidden: {messages}",
+        )
+
+    def test_fp32_weights_against_an_fp16_declaration_still_fail(self):
+        """The relaxation must not have relaxed the check it exists for."""
+        from onnx import TensorProto
+
+        with self.assertRaises(self.exporter.CheckFailed):
+            self.exporter.check_precision(
+                self._graph(TensorProto.FLOAT, with_int64=True),
+                self._declared("fp16"),
+                log=lambda _message: None,
+                required=True,
+            )
+
+
+class ThePrecisionCheckIsHonestAboutNotRunning(unittest.TestCase):
+    """No artifact and no onnx needed: these are about the check's own contract.
+
+    They run on CI, where neither exists.
+    """
+
+    def setUp(self) -> None:
+        self.exporter = _load_exporter()
+        self.declared = self.exporter.Declared.read()
+
+    def test_without_onnx_it_reports_not_run_rather_than_a_pass(self):
+        absent = MODELS_ROOT / "weights" / "there-is-no-such-artifact.onnx"
+        messages: list[str] = []
+        with unittest.mock.patch.dict(sys.modules, {"onnx": None}):
+            ran = self.exporter.check_precision(
+                absent, self.declared, log=messages.append, required=False
+            )
+        self.assertFalse(ran)
+        self.assertTrue(
+            any("NOT CHECKED" in message for message in messages),
+            f"a skipped check must say so; it logged {messages}",
+        )
+
+    def test_on_export_a_missing_onnx_is_a_precondition_not_a_skip(self):
+        """Exporting without being able to check the result is a broken
+        environment: `torch.onnx.export` cannot run without `onnx` either."""
+        absent = MODELS_ROOT / "weights" / "there-is-no-such-artifact.onnx"
+        with unittest.mock.patch.dict(sys.modules, {"onnx": None}):
+            with self.assertRaises(self.exporter.Precondition):
+                self.exporter.check_precision(
+                    absent, self.declared, log=lambda _message: None, required=True
+                )
+
+    def test_an_unknown_quantization_is_refused_rather_than_skipped(self):
+        """A precision this script cannot check must not read as checked."""
+        unknown = self.exporter.Declared(
+            filename=self.declared.filename,
+            input_name=self.declared.input_name,
+            width=self.declared.width,
+            height=self.declared.height,
+            output_names=self.declared.output_names,
+            dimensions=self.declared.dimensions,
+            quantization="int8",
+        )
+        with self.assertRaises(self.exporter.Precondition):
+            self.exporter.check_precision(
+                MODELS_ROOT / "weights" / "irrelevant.onnx",
+                unknown,
+                log=lambda _message: None,
+                required=False,
             )
 
 
