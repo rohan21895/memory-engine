@@ -1,0 +1,55 @@
+{
+  "suite_id": "model-registry-graphs",
+  "description": "The only thing the real ONNX checkpoints can be honestly benchmarked on in this repository: whether the registry config describes the checkpoint that is actually on disk. Model weights are fetched, never committed, so this suite cannot run in CI. It is a PLUMBING claim -- a graph whose tensors are named what the config says they are named is a graph the runtime can load, and nothing more. No accuracy, precision or recall number appears here or can, because there are no photographs to measure one on.",
+  "as_of": "2026-08-18",
+  "runs_in_ci": false,
+  "ci_exclusion_reason": "needs models/weights populated by scripts/models/fetch_weights.py (190MB+, gitignored) and onnxruntime installed. Run: python3 -m memory_engine_eval.runner run --weights models/weights benchmarks/model-registry-graphs.suite.json",
+  "policy": {
+    "categories": [
+      "model_registry"
+    ],
+    "category_floors": {
+      "model_registry": 1.0
+    },
+    "min_repeats": 2,
+    "min_cases_per_category": 1,
+    "nondeterminism_tolerance": 0.0,
+    "enforce_expected": true
+  },
+  "cases": [
+    {
+      "case_id": "registry_configs_describe_their_checkpoints",
+      "category": "model_registry",
+      "claim_class": "plumbing",
+      "probe": "registry_graph_contract",
+      "expected": 1.0,
+      "repeats": 2,
+      "measures": "the fraction of claims the registry configs make about their ONNX graphs -- input tensor name, pinned spatial input size, every declared output name -- that the graph on disk agrees with, over only those checkpoints actually present",
+      "does_not_measure": "whether any of these models detects a face, embeds an image or scores quality; a correctly named tensor says the config matches the file and says nothing else",
+      "falsifications": [
+        {
+          "mode": "claim_wrong_input_name",
+          "max_goodness": 0.95,
+          "why": "claiming an input tensor the graph does not have is exactly the drift this case exists to catch -- a config edited past its checkpoint -- and it must not agree"
+        },
+        {
+          "mode": "claim_wrong_output_names",
+          "max_goodness": 0.9,
+          "why": "issue #36 was SCRFD with the wrong output names in its config, which produced a detector that merely seemed mediocre; renaming every declared output must collapse the agreement. The bound is 0.9 rather than the 0.23 measured against four checkpoints because which checkpoints are on a machine decides how many claims there are, and a bound tuned to one machine's weights directory is a bound that fails on another"
+        }
+      ],
+      "baseline": {
+        "samples": [
+          1.0,
+          1.0
+        ],
+        "inputs_digest": "3e684c68947b0779505e55206e52dea7e68f93d4aec299946c47f5ba5aed9a1e",
+        "measured_at": "2026-08-18T14:51:47+00:00",
+        "measured_by": "claude-code (feat/eval-benchmarks)"
+      }
+    }
+  ],
+  "baseline_sources": {
+    "registry_graph_contract": "f98a1c3d28cde50bc8966d6b519d770517e9efcafbaa6874b4578aa04c3141c7"
+  }
+}

@@ -2,7 +2,14 @@
 name = "memory-engine-eval"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = []
+# blake3, and only for the benchmark half. `harness.py` -- the comparator CI
+# runs over the gate files -- imports nothing outside the standard library, so a
+# machine without blake3 can still run the gate. `library.py`, `probes.py` and
+# `runner.py` raise on import without it rather than falling back to blake2b: a
+# field named `weights_blake3` holding another hash would validate, compare
+# equal to itself, and be a lie in the one place this repository uses to decide
+# whether two runs are the same run.
+dependencies = ["blake3>=0.4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

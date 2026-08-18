@@ -1,5 +1,17 @@
 # Gate files
 
+**These are the comparator's own inputs, not benchmarks.** A gate file carries a
+`candidate` array of literals, so it compares one committed list against another
+committed list: useful for proving the comparator behaves, useless as evidence
+about a model, because two files that only ever change together compare equal
+forever.
+
+The benchmarks that are actually *measured* live in `../benchmarks/`, and are
+run by `python3 -m memory_engine_eval.runner`. That command measures the
+candidate side against the code on disk and compares it to the baseline recorded
+in the suite file. Both steps run in CI; this one is the weaker of the two by
+construction.
+
 Every `*.gate.json` in this directory is executed by CI:
 
 ```

@@ -86,6 +86,19 @@ jobs:
       - name: Eval harness regression gate
         working-directory: packages/eval-harness
         run: python3 -m memory_engine_eval.harness gates/*.gate.json
+      # The other half of rule 7. The step above runs the COMPARATOR over
+      # committed gate files, whose candidate arrays are literals -- two files
+      # that only ever change together compare equal forever. This step MEASURES
+      # the candidate side here, now, against the code in this commit, and
+      # compares it to the baseline recorded in the suite file.
+      #
+      # `--ci` runs the suites declaring runs_in_ci and prints the others as
+      # EXCLUDED with what they need. It does not skip them quietly: a suite CI
+      # cannot run has to be visible in CI's output or it becomes a suite nobody
+      # runs. Same three exit codes, and 2 means nothing was measured.
+      - name: Benchmark suites
+        working-directory: packages/eval-harness
+        run: python3 -m memory_engine_eval.runner run --ci benchmarks/*.suite.json
 
   windows-ingest:
     name: Windows Ingest

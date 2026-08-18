@@ -229,6 +229,30 @@ Green on `main`: contracts + codegen + fixtures, media-db, ranking-engine
 (dedupe + fusion), model registry + load policy, both protos, ingest (stills,
 macOS/Windows video proxies, HEIC), desktop shell v1.
 
+**The eval harness now measures something.** It was a real gate with three exit
+codes wired into CI and no benchmark content, which made rule 7 vacuous: both
+committed gate files carried a `candidate` array of literals, and two files that
+only change together compare equal forever. `memory_engine_eval.runner` now
+MEASURES the candidate side against the code in the commit and compares it to a
+baseline recorded beside each case. Seven determinism cases run in CI — dedupe
+recovers exactly the declared bursts, ids survive any input order, each of the
+five hard print gates fires on a layout built to violate it and stays silent on
+a clean one, the validation report and the reel EDL are byte-identical under
+shuffled inputs. Two more need inputs CI does not have (the generated library;
+the fetched ONNX checkpoints) and are printed as EXCLUDED rather than skipped.
+Every case was run against a deliberately broken input before it was kept, and
+`tests/test_falsification.py` re-runs every break; a probe's declared breaks
+must be bounded by the case that uses it, all of them, or the suite does not
+compile. Measured end to end: changing `DEFAULT_HAMMING_DECISIVE_THRESHOLD` from
+4 to 1 turns the CI suite red with five named failures.
+
+Two things it still cannot do, stated so nobody quotes it wrongly: **no case
+here is a quality claim** — a `synthetic_generated` library cannot declare a
+`quality` ceiling and a case claiming one does not load — and the ONNX cases
+measure whether the registry config describes the graph, not whether the model
+is any good. `docs/benchmark-libraries.md` is the checklist for what must exist
+before either changes.
+
 **Real inference works.** YuNet detected a face on a real photograph with CPU and
 CoreML agreeing at ~0.9135; SCRFD at 0.790975, exercising the two-anchor decoder.
 That is the first time anything here has touched real imagery rather than

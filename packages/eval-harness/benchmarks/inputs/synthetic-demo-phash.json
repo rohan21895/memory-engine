@@ -1,0 +1,1231 @@
+{
+  "_comment": "Recorded by memory_engine_eval.record_inputs from a real workers/ingest run over the synthetic library. Do not hand-edit: phash_hex is the Rust phash::dct_64 output, and a value typed in here would pin bits no shipped code produces. `quality` is an arbitrary fixed ordering derived from the media_id, NOT a measurement of anything.",
+  "library_id": "synthetic-demo",
+  "library_version": "2",
+  "generator_seed": 20260817,
+  "algorithm": "phash-dct-64",
+  "quality_is_a_measurement": false,
+  "items": [
+    {
+      "media_id": "829f7a1a158283ab371e589e89dafc2e3ec9b479a046572cbfce17fe8cbd66e9",
+      "relpath": "2019-03 Goa/IMG_GOA0002.JPG",
+      "phash_hex": "9979c631c6cc9c63",
+      "quality": 0.510246
+    },
+    {
+      "media_id": "92a0e325aaa0cf6e3e8bb7f28c4dcbd10619a32ad6fee080f1df5e753566e909",
+      "relpath": "2019-03 Goa/IMG_GOA0003.JPG",
+      "phash_hex": "b6d9332633cc8c99",
+      "quality": 0.572767
+    },
+    {
+      "media_id": "cc1b14180133e51044c18fe4383830b6fd6d7f34902de1b6aa6ed9df905492a1",
+      "relpath": "2019-03 Goa/IMG_GOA0004.JPG",
+      "phash_hex": "b16eda1331cccc33",
+      "quality": 0.797288
+    },
+    {
+      "media_id": "e9da063dca5ec116754bcb90b57c4f810b4ed6bc1f1fd7100c751e8a165d3b61",
+      "relpath": "2019-03 Goa/IMG_GOA0005.JPG",
+      "phash_hex": "930e737184b539b5",
+      "quality": 0.913483
+    },
+    {
+      "media_id": "88a2b66c813583a7e1ffe92fe636470808740dff1808e1cb760d52c13ce46786",
+      "relpath": "2019-03 Goa/IMG_GOA0006.JPG",
+      "phash_hex": "8c1e616995bc9697",
+      "quality": 0.533733
+    },
+    {
+      "media_id": "247f5e5440a8771a097fbd5fa16f90846478d5cb2332848994f96880347ca901",
+      "relpath": "2019-03 Goa/IMG_GOA0007.JPG",
+      "phash_hex": "843666d939939376",
+      "quality": 0.142568
+    },
+    {
+      "media_id": "ce7727016a2ae60d75c568e5ff67967f6e1e56f8b824f5a2b115b52eea2d24fa",
+      "relpath": "2019-03 Goa/IMG_GOA0008.JPG",
+      "phash_hex": "9333afec1ccd3031",
+      "quality": 0.806506
+    },
+    {
+      "media_id": "50155f90e66ff5e4f765aeedde110f0d74134220ac209146a022cea0c4bbaaa3",
+      "relpath": "2019-03 Goa/IMG_GOA0009.JPG",
+      "phash_hex": "b6ac626662738cd9",
+      "quality": 0.312826
+    },
+    {
+      "media_id": "dcb51cd9ca49bed0d7b21ef31f986e014abbe24deb30e971cad55f557f6fdbcc",
+      "relpath": "2019-03 Goa/IMG_GOA0010.JPG",
+      "phash_hex": "918ec31d3933c679",
+      "quality": 0.862139
+    },
+    {
+      "media_id": "2c92b5dcfbf84a1eedffdf87eec95b2bc71210eb93f46faf626abaeddcee000a",
+      "relpath": "2019-03 Goa/IMG_GOA0011.JPG",
+      "phash_hex": "9131373939cedc31",
+      "quality": 0.174114
+    },
+    {
+      "media_id": "b923e534a78d319b1c7f8ce34df6d2f2c8c8a0875a390d122a89a10529a1514a",
+      "relpath": "2019-03 Goa/IMG_GOA0012.JPG",
+      "phash_hex": "933332d733c8cccc",
+      "quality": 0.723204
+    },
+    {
+      "media_id": "8b44cfb8a4321d47dc75a1b0e4503bf2855fa34919435fe5f8d8dea97c4af285",
+      "relpath": "2019-03 Goa/IMG_GOA0013.JPG",
+      "phash_hex": "9c3ccacc3ce319cc",
+      "quality": 0.544019
+    },
+    {
+      "media_id": "56f2a6ce4faabe6719c2222045798e2c3b51beeea130915dff736e7fb868992b",
+      "relpath": "2019-03 Goa/IMG_GOA0014.JPG",
+      "phash_hex": "93ce1b363139c6c6",
+      "quality": 0.33964
+    },
+    {
+      "media_id": "8dc61aabdcc6d4c9d128dbd58ef951bbe1c155c13a4e8624e0b0f5c0952f34e8",
+      "relpath": "2019-03 Goa/IMG_GOA0015.JPG",
+      "phash_hex": "93cccec766333132",
+      "quality": 0.553804
+    },
+    {
+      "media_id": "8f31318d8f93f92ac48340a0f131bf6381d77ea7beaef14da07ddeec8c81e15b",
+      "relpath": "2019-03 Goa/IMG_GOA0016.JPG",
+      "phash_hex": "8699c999f1996666",
+      "quality": 0.559344
+    },
+    {
+      "media_id": "02a4f71e926a242bf7c9805ceb09ba6e8b0b7d3776c5fa782beb6f4de14557f2",
+      "relpath": "2019-03 Goa/IMG_GOA0017.JPG",
+      "phash_hex": "869234cdce6d9695",
+      "quality": 0.01033
+    },
+    {
+      "media_id": "582790a1d50519748e9a68a54010de0957a349b31b1366d385bdb4127e864116",
+      "relpath": "2019-03 Goa/IMG_GOA0018.JPG",
+      "phash_hex": "82d933338c936a7b",
+      "quality": 0.344354
+    },
+    {
+      "media_id": "05f209e343bea76393c464204325ed3d7d71ce4f9370592fa89219ef8fde2596",
+      "relpath": "2019-03 Goa/IMG_GOA0019.JPG",
+      "phash_hex": "91199e6d989867e6",
+      "quality": 0.023224
+    },
+    {
+      "media_id": "9069b435ae57f674a0c697f4e835d825695f130a6042aa1b543073d6804883e1",
+      "relpath": "2019-03 Goa/IMG_GOA0020.JPG",
+      "phash_hex": "84b9e22679d964d9",
+      "quality": 0.564113
+    },
+    {
+      "media_id": "3efd9f30e3a457fa42278b88e8c657a25ca6ce709f7242c909c8aaa17c2a810c",
+      "relpath": "2019-03 Goa/IMG_GOA0021.JPG",
+      "phash_hex": "939d9321637a954b",
+      "quality": 0.246057
+    },
+    {
+      "media_id": "246abe465ffdfc60ddbbd3d4f1e910e60d56c4cbf9ef9b216afe7dcbfd6c8914",
+      "relpath": "2019-03 Goa/IMG_GOA0022.JPG",
+      "phash_hex": "98e3e1e36e1e3c11",
+      "quality": 0.142254
+    },
+    {
+      "media_id": "b8cfad8329342245991ea757fd1fb51aaff79309a2d6f79691dcf4d7be047286",
+      "relpath": "2019-03 Goa/IMG_GOA0023.JPG",
+      "phash_hex": "98c393e36c3c963c",
+      "quality": 0.721919
+    },
+    {
+      "media_id": "7999d746f835bf1adf0c9b2ee63abfca6fa0bc598da26e364962871b3ff15fef",
+      "relpath": "2019-03 Goa/IMG_GOA0024.JPG",
+      "phash_hex": "981f933c64c41ee7",
+      "quality": 0.475004
+    },
+    {
+      "media_id": "24f42beac8b595217d1cc2b0bc40a9ac13bc11ab0bbe9fb40be0a79ac15115e0",
+      "relpath": "2019-03 Goa/IMG_GOA0025.JPG",
+      "phash_hex": "913939ce703ccbc6",
+      "quality": 0.144351
+    },
+    {
+      "media_id": "bc86c90597efcc4b902299e42a83b13727cea374bd83141cd62b58816c755f63",
+      "relpath": "2019-03 Goa/IMG_GOA0026.JPG",
+      "phash_hex": "a25bb69498696b65",
+      "quality": 0.736432
+    },
+    {
+      "media_id": "82a2d5471febca2052bf8eb35fc7bf9b222bb3b3dec1df7421d2f9dd67808cab",
+      "relpath": "2019-03 Goa/IMG_GOA0027.JPG",
+      "phash_hex": "834a1f9cac33cd33",
+      "quality": 0.510297
+    },
+    {
+      "media_id": "25c6f3663c738c42264084cb034d0de6cbdc1b5f1409d84763d7233df9988938",
+      "relpath": "2019-03 Goa/IMG_GOA0028.JPG",
+      "phash_hex": "985c342cc3691fd7",
+      "quality": 0.147567
+    },
+    {
+      "media_id": "d128129d084cf38122abf9824748ee3c26edca1b7034e995c97f60ce0bee13e9",
+      "relpath": "2019-03 Goa/IMG_GOA0029.JPG",
+      "phash_hex": "93e643cc33cc3933",
+      "quality": 0.817018
+    },
+    {
+      "media_id": "104cba4fd559538b37306aa5ae184703360ec522699c3c7f2c684b068f8583c4",
+      "relpath": "2019-03 Goa/IMG_GOA0030.JPG",
+      "phash_hex": "935d73a2338c9c96",
+      "quality": 0.063671
+    },
+    {
+      "media_id": "79bfc863ac40107a7a8caaa6b4c9130ff6febdc1722611bd49045e085236e18d",
+      "relpath": "2019-03 Goa/IMG_GOA0031.JPG",
+      "phash_hex": "82cc9eb3686b34b6",
+      "quality": 0.475583
+    },
+    {
+      "media_id": "e9621fd3026a081126281519ffb6a416fc873ca7272cb741f7481aafffd65dfb",
+      "relpath": "2019-03 Goa/IMG_GOA0032.JPG",
+      "phash_hex": "9138c64ecfc333cc",
+      "quality": 0.911654
+    },
+    {
+      "media_id": "4b55adc79f29f562769577520761881b1777fd29838d18213078789304d7f0a6",
+      "relpath": "2019-03 Goa/IMG_GOA0033.JPG",
+      "phash_hex": "b666668cad8c919b",
+      "quality": 0.294276
+    },
+    {
+      "media_id": "bd0b6250f757ca426e32f24a9b09052ffde3e8944d33c9a8d1985f924a292168",
+      "relpath": "2019-03 Goa/IMG_GOA0034.JPG",
+      "phash_hex": "93a54e71339a46cd",
+      "quality": 0.738455
+    },
+    {
+      "media_id": "04322bace3898e0e7ebbdaa6ec14cf255c3f7a0efed5b2cbd9305d45340c9c8f",
+      "relpath": "2019-03 Goa/IMG_GOA0035.JPG",
+      "phash_hex": "9c3cc6e339f11c86",
+      "quality": 0.016391
+    },
+    {
+      "media_id": "af7d480681ba4a2151dc9105b5a87b97a51f14e9847f9f8f6c486c558f2db229",
+      "relpath": "2019-03 Goa/IMG_GOA0036.JPG",
+      "phash_hex": "983c3ce1e307e3cc",
+      "quality": 0.685505
+    },
+    {
+      "media_id": "01c4c2b03547cc26bf9f41de6685d08051c6eec07c7ed16e0639c0b03a0b93a1",
+      "relpath": "2019-03 Goa/IMG_GOA0037.JPG",
+      "phash_hex": "9838cbe325a5a778",
+      "quality": 0.006909
+    },
+    {
+      "media_id": "36ef50602b1db779eca15429bf762115cbff98f7c49fe19633237cc831de5d46",
+      "relpath": "2019-03 Goa/IMG_GOA0038.JPG",
+      "phash_hex": "883cc393356537d3",
+      "quality": 0.214589
+    },
+    {
+      "media_id": "57b5b7be60fa9c4784d4c475ce76525bb085d57fb9014d9114b2c285d5858728",
+      "relpath": "2019-03 Goa/IMG_GOA0039.JPG",
+      "phash_hex": "8ce1e19c3e071e1f",
+      "quality": 0.342617
+    },
+    {
+      "media_id": "78c12b1d9626f26517cbb5ca57f666129a7ba23e261aad3e6de487298900ba7a",
+      "relpath": "2019-03 Goa/IMG_GOA0040.JPG",
+      "phash_hex": "a262959c36d37b62",
+      "quality": 0.471698
+    },
+    {
+      "media_id": "07aafda20365fa5bfed975934baea08ce2ba62dfca2a48a7206de73392c2a204",
+      "relpath": "2019-03 Goa/IMG_GOA0041.JPG",
+      "phash_hex": "a6c99d99266662d9",
+      "quality": 0.029953
+    },
+    {
+      "media_id": "cb5ac1d5f793325d48a5f6fa5e15ef8f82efe7116ad5d58e919933abad9a2370",
+      "relpath": "2019-03 Goa/IMG_GOA0042.JPG",
+      "phash_hex": "91cd3919cb64ce33",
+      "quality": 0.794354
+    },
+    {
+      "media_id": "d35c0ca6676ea4de8df0db2bcc39641e3ccf8086c4a3e6636ffc15e729294cb3",
+      "relpath": "2019-03 Goa/IMG_GOA0043.JPG",
+      "phash_hex": "9672e4c96663e626",
+      "quality": 0.825623
+    },
+    {
+      "media_id": "94944e598b65e60c65b9b0bda2380520ba8a0c359f9d60422535e35f6ccec857",
+      "relpath": "2019-03 Goa/IMG_GOA0044.JPG",
+      "phash_hex": "a6256bdb329a3263",
+      "quality": 0.580388
+    },
+    {
+      "media_id": "99cf539f9def6a1c21009cdc54df1e68dfafc0d01e9fd7f2ff40a037a76d0c38",
+      "relpath": "2019-03 Goa/IMG_GOA0045.JPG",
+      "phash_hex": "869b766691cc936c",
+      "quality": 0.60082
+    },
+    {
+      "media_id": "e1d5b2105db181155f6d07ef12ef86c5a4eeb410456961ce31e945ab94d9f962",
+      "relpath": "2019-03 Goa/IMG_GOA0046.JPG",
+      "phash_hex": "86664a9332a7adad",
+      "quality": 0.882167
+    },
+    {
+      "media_id": "bb842ad9923807f40b7baded1177d30af022867d27a94428a8b97bc4ba2c2c0b",
+      "relpath": "2019-03 Goa/IMG_ROTATED_90.JPG",
+      "phash_hex": "b196e61919b6e709",
+      "quality": 0.732485
+    },
+    {
+      "media_id": "b2f2853a6cfdb27fafb6b3b43a78f26dfd060618f93e3fc704d7490dfb886ee2",
+      "relpath": "2019-03 Goa/IMG_SUN0006.JPG",
+      "phash_hex": "c0c0c71f1f1f1bd8",
+      "quality": 0.699013
+    },
+    {
+      "media_id": "92a7e9548f04477c256a7c3c23d4d5558cb006908fe27b4ac879cdbc7c5f61a1",
+      "relpath": "2019-03 Goa/IMG_SUN0007.JPG",
+      "phash_hex": "8c99c84e363737d8",
+      "quality": 0.572875
+    },
+    {
+      "media_id": "a7e6c26083f690aa64296c1765dad12df90eeecd0a5d6ab7513d2a82f8da3fff",
+      "relpath": "2019-03 Goa/IMG_SUN0008.JPG",
+      "phash_hex": "c6c63d30cc99566d",
+      "quality": 0.655865
+    },
+    {
+      "media_id": "40aa852e322e9aab1b40c63ecf69c199f8954525f2c564fa3a949d20dd566c55",
+      "relpath": "2019-03 Goa/IMG_SUN0009.JPG",
+      "phash_hex": "83c739303996c7cb",
+      "quality": 0.252602
+    },
+    {
+      "media_id": "bf069a43ba934825b73de044c20ca683eaaee53487dc13eec5fd59e595f33813",
+      "relpath": "2019-03 Goa/IMG_SUN0010.JPG",
+      "phash_hex": "83ce39313931cdce",
+      "quality": 0.746194
+    },
+    {
+      "media_id": "cd45650245659529a0d880c83a9db0fbe838879b57e9c8b710c181476ac64663",
+      "relpath": "2019-03 Goa/IMG_SUN0011.JPG",
+      "phash_hex": "83b33119cecd3179",
+      "quality": 0.80184
+    },
+    {
+      "media_id": "7125b2dd4c32fca73c1f2d27031612ca72b259d7aeaace35d562ce97eff92958",
+      "relpath": "2019-03 Goa/IMG_SUN0012.JPG",
+      "phash_hex": "838439393cdbc6ce",
+      "quality": 0.441981
+    },
+    {
+      "media_id": "8eeb1fe008f3cba16976c3129a7b2d723a5ebdb96b2250f91a315f829423079d",
+      "relpath": "2019-03 Goa/IMG_SUN0013.JPG",
+      "phash_hex": "8294276353bdccce",
+      "quality": 0.558275
+    },
+    {
+      "media_id": "024da35540e72b17c7303ad92f00b128e07af334b5760f4c1dcd6dc55b4aabac",
+      "relpath": "2019-03 Goa/IMG_SUN0014.JPG",
+      "phash_hex": "8ecb3263cccd3326",
+      "quality": 0.008997
+    },
+    {
+      "media_id": "16731a5cfb0610769f14d9b86651bf3b66d4741ef2974897fa8e704fb370dab4",
+      "relpath": "2019-03 Goa/IMG_SUN0015.JPG",
+      "phash_hex": "80643c7bc31b3ce7",
+      "quality": 0.087694
+    },
+    {
+      "media_id": "3b446d0a4c498e2420dea95bcac0bd311de86769a3c2e58aa87e2305d17036da",
+      "relpath": "2019-03 Goa/IMG_SUN0016.JPG",
+      "phash_hex": "c33b3dc6123cec38",
+      "quality": 0.231513
+    },
+    {
+      "media_id": "e195810fd3821b1c2dffb6215ba1110e99072e97fdd5da111be2128de828b84b",
+      "relpath": "2019-03 Goa/IMG_SUN0017.JPG",
+      "phash_hex": "813838e6c33d3ec7",
+      "quality": 0.881188
+    },
+    {
+      "media_id": "42a10fe96018b90bc8680039129b4d9958e4cd592dffb92c2d0da9394f70f716",
+      "relpath": "2019-03 Goa/IMG_SUN0018.JPG",
+      "phash_hex": "867233cbca358dca",
+      "quality": 0.26027
+    },
+    {
+      "media_id": "c261dfcd7063713039c7acc64ec2962f1d0c03067fff768f7bae58c545bd22f2",
+      "relpath": "2019-03 Goa/IMG_SUN0019.JPG",
+      "phash_hex": "832d3cc2ce3d92d3",
+      "quality": 0.759306
+    },
+    {
+      "media_id": "bd3dda403ddb47054bc593aa4ce96b979c2560cadce864b99bc9544ad7adc359",
+      "relpath": "2019-03 Goa/IMG_SUN0020.JPG",
+      "phash_hex": "80e11c4fc3873df6",
+      "quality": 0.739225
+    },
+    {
+      "media_id": "387a3442d649dcd69a5402da2d74a50a1b9b57cefbe851d210cc8586b6b16278",
+      "relpath": "2019-03 Goa/IMG_SUN0021.JPG",
+      "phash_hex": "c3cf58313cc7c7c0",
+      "quality": 0.220615
+    },
+    {
+      "media_id": "9f690f9e92859e03538116c8c2e3581a18292548b1d473d711faab7b87cb2ef1",
+      "relpath": "2019-03 Goa/IMG_SUN0022.JPG",
+      "phash_hex": "c0cd3c0e6dd2ed23",
+      "quality": 0.622697
+    },
+    {
+      "media_id": "a76656405d077b9ee5af72a21253054abf34edcbfa8cf26ae34c37c6980d29b5",
+      "relpath": "2019-03 Goa/IMG_SUN0023.JPG",
+      "phash_hex": "81c7c2c5db1a3d3c",
+      "quality": 0.653905
+    },
+    {
+      "media_id": "c3c2ab4f8884277ab9657b54a10cfa739ba1d58c743115524b3d64c29375a8a8",
+      "relpath": "2019-03 Goa/IMG_SUN0024.JPG",
+      "phash_hex": "83ce313131cece73",
+      "quality": 0.764689
+    },
+    {
+      "media_id": "aa29f5ae57e4d388ab85b1e40df9a63702147434edb44417164b097e976b0053",
+      "relpath": "2019-03 Goa/IMG_SUN0025.JPG",
+      "phash_hex": "86996666cc997366",
+      "quality": 0.664703
+    },
+    {
+      "media_id": "2f463e2bb614945d298288c3e17dddc8beb2406bf18d1bf2ce607d39e507c477",
+      "relpath": "2019-03 Goa/IMG_SUN0026.JPG",
+      "phash_hex": "c33b50c43cc7b738",
+      "quality": 0.184666
+    },
+    {
+      "media_id": "31f3fdd81f99b15105c2396018e242d68b1196ef289e9ccb3c2799ef0746ef28",
+      "relpath": "2019-03 Goa/IMG_SUN0027.JPG",
+      "phash_hex": "83c76c3938389bc7",
+      "quality": 0.195129
+    },
+    {
+      "media_id": "faca0753621b5681322bbc09ef677fd1c2f2a5931bcdce5248f28505faf66481",
+      "relpath": "2019-03 Goa/IMG_SUN0028.JPG",
+      "phash_hex": "c3c03f34c7c63569",
+      "quality": 0.979645
+    },
+    {
+      "media_id": "69ddb51d7a332a0ec720b77e5fc74a634fe45959044f4106c4a39f29087aee11",
+      "relpath": "2019-03 Goa/IMG_SUN0029.JPG",
+      "phash_hex": "8333e6cc33cc6633",
+      "quality": 0.413539
+    },
+    {
+      "media_id": "548a416aeabf53a8748ca46b1644f3edad1a31eeeb9ed9af2c437c25afde377d",
+      "relpath": "2019-03 Goa/IMG_SUN0030.JPG",
+      "phash_hex": "807e3cc3c23c7dc3",
+      "quality": 0.330235
+    },
+    {
+      "media_id": "cf07d1722e10ac598928f75cd97e26eb03c3d60e17eb7745894517f164204915",
+      "relpath": "2019-03 Goa/IMG_SUN0031.JPG",
+      "phash_hex": "8cd94666cd999999",
+      "quality": 0.808713
+    },
+    {
+      "media_id": "30d51ceb1884f81eba363de8927122be7b9193220407c881b3227b3d8f92109d",
+      "relpath": "2019-03 Goa/IMG_SUN0032.JPG",
+      "phash_hex": "8c66669a996699ce",
+      "quality": 0.190752
+    },
+    {
+      "media_id": "4151ea18c5c702b02e54d4b2a53bcc0f6579fb66e7aa419c37a3e546443ffbca",
+      "relpath": "2019-03 Goa/IMG_SUNSET_BURST_1.JPG",
+      "phash_hex": "838e79618e96656d",
+      "quality": 0.255156
+    },
+    {
+      "media_id": "c09fc6cf165629a2bd0bbdc4c79678839fdc015fd09b750554baeffac5a674b1",
+      "relpath": "2019-03 Goa/IMG_SUNSET_BURST_2.JPG",
+      "phash_hex": "838e79618e96656d",
+      "quality": 0.752438
+    },
+    {
+      "media_id": "fe88124250f5707d37e9b781b2ef8d52d419a51a470f666a600b48b4bab23c71",
+      "relpath": "2019-03 Goa/IMG_SUNSET_BURST_3.JPG",
+      "phash_hex": "838e79618e96656d",
+      "quality": 0.994264
+    },
+    {
+      "media_id": "f5c22251d719116f2b7fa8f5f53a6797604ba15b65a22ec135870790979d27d5",
+      "relpath": "2019-03 Goa/IMG_SUNSET_BURST_4.JPG",
+      "phash_hex": "838e79618e96656d",
+      "quality": 0.959994
+    },
+    {
+      "media_id": "8c8a1b280ad60bd0099fdfb58c37bed81409ce1bb3987c906b3983b81c9c6632",
+      "relpath": "2019-03 Goa/IMG_SUNSET_BURST_5.JPG",
+      "phash_hex": "838e79618e96656d",
+      "quality": 0.548982
+    },
+    {
+      "media_id": "2df2bb127a39685c9766fd0e9e4b4245759714a0b573a859bb2ab0ee2e0a348c",
+      "relpath": "2021-11 Diwali/IMG-20211104-WA0009.jpg",
+      "phash_hex": "c6c31d1e33c4c733",
+      "quality": 0.179485
+    },
+    {
+      "media_id": "d4dc2ba1d059898250ddb4b67349d2db15dbacbc8c02c1e637459ddcc902eddb",
+      "relpath": "2021-11 Diwali/IMG_DIW0006.JPG",
+      "phash_hex": "873a39c74239e4cb",
+      "quality": 0.831485
+    },
+    {
+      "media_id": "fe435ded8a748c636bd6e9d9c40cd8809597e1b114f75d71fc5b68d24e86fdcc",
+      "relpath": "2021-11 Diwali/IMG_DIW0007.JPG",
+      "phash_hex": "8de63259cc663999",
+      "quality": 0.993215
+    },
+    {
+      "media_id": "276b976d9d05e9383701d09c9acdfb359b953383ecfae3c0f93a13986357171b",
+      "relpath": "2021-11 Diwali/IMG_DIW0008.JPG",
+      "phash_hex": "c63839c78c3cc733",
+      "quality": 0.153985
+    },
+    {
+      "media_id": "f580f269f5f68c597a4965b51d12ee905f63ac3c2187bc74f88fba096cce50e5",
+      "relpath": "2021-11 Diwali/IMG_DIW0009.JPG",
+      "phash_hex": "9976c94a36996699",
+      "quality": 0.958999
+    },
+    {
+      "media_id": "45791cb295101c256ff89ecd50b75b57832c561a35b988cbe30d43743df24c8d",
+      "relpath": "2021-11 Diwali/IMG_DIW0010.JPG",
+      "phash_hex": "8999b56666666699",
+      "quality": 0.271379
+    },
+    {
+      "media_id": "f537144ba5d0a67cbc3fb861f282473b9bf2c21bd3589c17e810ebfae9127362",
+      "relpath": "2021-11 Diwali/IMG_DIW0011.JPG",
+      "phash_hex": "c1c13e1e3ec7c1c3",
+      "quality": 0.957872
+    },
+    {
+      "media_id": "d7a66d341b4390b446fc3f16620b206beddfa9643cdd33f4c88df856ea3c2b47",
+      "relpath": "2021-11 Diwali/IMG_DIW0012.JPG",
+      "phash_hex": "c639c6c638c739c3",
+      "quality": 0.842383
+    },
+    {
+      "media_id": "f3dfdcb421f6e578191c3fd9d3fdde7713d7a15bf064aaf28925eb826b5f24d6",
+      "relpath": "2021-11 Diwali/IMG_DIW0013.JPG",
+      "phash_hex": "87a53c38c7c35a3a",
+      "quality": 0.952635
+    },
+    {
+      "media_id": "f2fdff01f86a8e10e2c2074a1fd0aa8efa885c6c1d405b76a3b887e0efdc537a",
+      "relpath": "2021-11 Diwali/IMG_DIW0014.JPG",
+      "phash_hex": "c5cc1c3c33637333",
+      "quality": 0.949188
+    },
+    {
+      "media_id": "b57afe7b639154b52cd0252f104f46fb30a303cb75056087617de20e3a9e8956",
+      "relpath": "2021-11 Diwali/IMG_DIW0015.JPG",
+      "phash_hex": "9a676d92b36d2292",
+      "quality": 0.708908
+    },
+    {
+      "media_id": "3c2260287746d633101aabb8f150ab0f1200abab5823edef574b7e9c627395ce",
+      "relpath": "2021-11 Diwali/IMG_DIW0016.JPG",
+      "phash_hex": "c0e11e1f33ccf1cc",
+      "quality": 0.2349
+    },
+    {
+      "media_id": "bc2339e5c021da5826bc8961782142687302c5b4cef0669ee807a4eb6463671d",
+      "relpath": "2021-11 Diwali/IMG_DIW0017.JPG",
+      "phash_hex": "c33a1cc5e53c32d3",
+      "quality": 0.734913
+    },
+    {
+      "media_id": "488f6daf7d40c3a7b56cfa40ca44568c57ad5cfee55968a22f0b553d2dbb3fe0",
+      "relpath": "2021-11 Diwali/IMG_DIW0018.JPG",
+      "phash_hex": "8c3373cc3333cc72",
+      "quality": 0.283439
+    },
+    {
+      "media_id": "c9c732b2eef0d585d3377cbe60f72e2f483f752ccd56448e1feb74a0650c1da7",
+      "relpath": "2021-11 Diwali/IMG_DIW0019.JPG",
+      "phash_hex": "c53cc2c33ae335a5",
+      "quality": 0.788196
+    },
+    {
+      "media_id": "e035d44c95f822b7f9fe6973be46de6a84995e9781935e4a430d83a81bda5cdb",
+      "relpath": "2021-11 Diwali/IMG_DIW0020.JPG",
+      "phash_hex": "8c33ccce33cc33cc",
+      "quality": 0.875821
+    },
+    {
+      "media_id": "86baca7f58c373ef35a5cb197e0678e820729f48a0d253843f788aa84873fa68",
+      "relpath": "2021-11 Diwali/IMG_DIW0021.JPG",
+      "phash_hex": "912ec9a66c6eb549",
+      "quality": 0.526288
+    },
+    {
+      "media_id": "1fc6c7bd4bab08522c496fe8d15d5bff2a4707a5279c13f0911b6940da4144d1",
+      "relpath": "2021-11 Diwali/IMG_DIW0022.JPG",
+      "phash_hex": "c23e3dc16d3cc2d2",
+      "quality": 0.124127
+    },
+    {
+      "media_id": "72f331b34e5152fd263b0437429bde82f56d38c562a9ec18690b720b1ba365e6",
+      "relpath": "2021-11 Diwali/IMG_DIW0023.JPG",
+      "phash_hex": "84cccccc5f333333",
+      "quality": 0.449023
+    },
+    {
+      "media_id": "27723247b4c1d81ebb4f5275e556349e2f14ef41f2cc4d33e10aff7cb1808446",
+      "relpath": "2021-11 Diwali/IMG_DIW0024.JPG",
+      "phash_hex": "9c96227bc9c96137",
+      "quality": 0.154086
+    },
+    {
+      "media_id": "b77d44c465b8ed7312fc880e861164eb37b139e2986eae2223dbfa40bdedeefc",
+      "relpath": "2021-11 Diwali/IMG_DIW0025.JPG",
+      "phash_hex": "98ac6273ccdc3366",
+      "quality": 0.716755
+    },
+    {
+      "media_id": "efd6cf6950ffbdef01d6b5e628db1e78dd7e6172c4ce848c2ce6aed667282b32",
+      "relpath": "2021-11 Diwali/IMG_DIW0026.JPG",
+      "phash_hex": "99b964669b99a564",
+      "quality": 0.936871
+    },
+    {
+      "media_id": "113733583aff88b346382ead8e956d936b2cfceb21baa2e0ab69b1e548a1af05",
+      "relpath": "2021-11 Diwali/IMG_DIW0027.JPG",
+      "phash_hex": "86cfb9b079303666",
+      "quality": 0.067249
+    },
+    {
+      "media_id": "3fa4e0ac39f40e06ae1e3a289b5da87ae13b33b0cefc6d378b1a4e3643c29872",
+      "relpath": "2021-11 Diwali/IMG_DIW0028.JPG",
+      "phash_hex": "8671c60b4c9b6dce",
+      "quality": 0.24861
+    },
+    {
+      "media_id": "94d0d31a7a7aec1cd881f46b8f8bb892d7623e5770322e45b5584aa0e0b8f829",
+      "relpath": "2021-11 Diwali/IMG_DIW0029.JPG",
+      "phash_hex": "8ea6691993cece31",
+      "quality": 0.581311
+    },
+    {
+      "media_id": "a41f492646ab208d09caddb4768f835d8d324fb4f349570e74b35991ba8ff077",
+      "relpath": "2021-11 Diwali/IMG_DIW0030.JPG",
+      "phash_hex": "8fcfcbd938303434",
+      "quality": 0.641102
+    },
+    {
+      "media_id": "e483a0670e1b6fda239fae723dd3973d80cdff1ad1a5da81998066ce63d591ab",
+      "relpath": "2021-11 Diwali/IMG_DIW0031.JPG",
+      "phash_hex": "8c8c337363ccccdc",
+      "quality": 0.892633
+    },
+    {
+      "media_id": "9e82de93526ddb01eef2443ae979fbe052d66b4f1735c65194ebaba9f2120e01",
+      "relpath": "2021-11 Diwali/IMG_DIW0032.JPG",
+      "phash_hex": "c1e2e2d02f3e9c27",
+      "quality": 0.619184
+    },
+    {
+      "media_id": "1d40eed7e1b860d6641997367a9e8de0d602d8b6558dc62c0a0997ec1767341a",
+      "relpath": "2021-11 Diwali/IMG_DIW0033.JPG",
+      "phash_hex": "8338e7463cc399cd",
+      "quality": 0.114272
+    },
+    {
+      "media_id": "38ce7fbf0732ecdfcbe01ca5e86b1122b3eae9d0bccef75797fc0a96f73ea4c0",
+      "relpath": "2021-11 Diwali/IMG_DIW0034.JPG",
+      "phash_hex": "c63c696139c3ccce",
+      "quality": 0.221901
+    },
+    {
+      "media_id": "03c35316c40cda2f5aa208e5ab9d122643b7ff51746325d4afb07865d069c8bc",
+      "relpath": "2021-11 Diwali/IMG_DIW0035.JPG",
+      "phash_hex": "8d5b6a36b44995b4",
+      "quality": 0.014699
+    },
+    {
+      "media_id": "d67d184f119c5e298a4090d500b0062ff1e010f9800f865d378f125dad2ef40e",
+      "relpath": "2021-11 Diwali/IMG_DIW0036.JPG",
+      "phash_hex": "c71c38c73138f173",
+      "quality": 0.837846
+    },
+    {
+      "media_id": "dbf1b8b9ffcae0517290bf1208c8abe097648ec3fdd18bcd080c17abc637726d",
+      "relpath": "2021-11 Diwali/IMG_DIW0037.JPG",
+      "phash_hex": "8ccececc4d697132",
+      "quality": 0.859157
+    },
+    {
+      "media_id": "4853a2bef031aab891a76768df7be0fa908f7f9edc66ff8044afb5aeb734b15a",
+      "relpath": "2021-11 Diwali/IMG_DIW0038.JPG",
+      "phash_hex": "8ccc66733393cccc",
+      "quality": 0.282526
+    },
+    {
+      "media_id": "27b0a72a5a6570d90525d900102cd888a6121d85f3f24bacfb6da1793c710cd3",
+      "relpath": "2021-11 Diwali/IMG_DIW0039.JPG",
+      "phash_hex": "cd8a3635c88c367b",
+      "quality": 0.155039
+    },
+    {
+      "media_id": "ab2090f590794084990cb667a1c7cd5d38313c25c0c3f1fc39aa3ea8c2b6ac4a",
+      "relpath": "2021-11 Diwali/IMG_DIW0040.JPG",
+      "phash_hex": "c3c3e7383c3c3c38",
+      "quality": 0.668466
+    },
+    {
+      "media_id": "f706c879720266a1fa8a8c5f146ef3a6599dac05fe0a42c905a9b98c71680e02",
+      "relpath": "2021-11 Diwali/IMG_DIW0041.JPG",
+      "phash_hex": "9c33e38c6395c873",
+      "quality": 0.964947
+    },
+    {
+      "media_id": "02e453dbbccebe776676a44c0a30a9819714ce6cf5bb77c222468e9e2b740d51",
+      "relpath": "2021-11 Diwali/IMG_DIW0042.JPG",
+      "phash_hex": "996699d86699645b",
+      "quality": 0.011297
+    },
+    {
+      "media_id": "c203d2c51ce5a37f8a39bd8789e140de689998cb7a91aa0d2cdf36ad376b2c9e",
+      "relpath": "2021-11 Diwali/IMG_DIW0043.JPG",
+      "phash_hex": "99993266666ccd99",
+      "quality": 0.757871
+    },
+    {
+      "media_id": "8c437da62c4bb1547cd96625b3cfe1d07d184fe744a5aa880eadb08bfa1b04d4",
+      "relpath": "2021-11 Diwali/IMG_DIW0044.JPG",
+      "phash_hex": "9cca89b46b37346a",
+      "quality": 0.547905
+    },
+    {
+      "media_id": "d09fbde5e46df7797f31809dfbea1d347a5746a509e3640ceefdfcf38d48c877",
+      "relpath": "2021-11 Diwali/IMG_DIW0045.JPG",
+      "phash_hex": "8c73738c356ace25",
+      "quality": 0.814937
+    },
+    {
+      "media_id": "9e96e248aaf5c11948bd6ab288ed9719a057b61578c1b6475fda533af97f729a",
+      "relpath": "2021-11 Diwali/IMG_DIW0046.JPG",
+      "phash_hex": "c73838c77838c796",
+      "quality": 0.61949
+    },
+    {
+      "media_id": "434fe3581d97f4cdb435c74897ecd429fda61cd002bcc4668c279920e4279ae1",
+      "relpath": "2021-11 Diwali/IMG_DIW0047.JPG",
+      "phash_hex": "9c90636b4cce7663",
+      "quality": 0.262938
+    },
+    {
+      "media_id": "4746e73642f7c47878889f543a31f1b710a1201a8906406efa7303744ab2a7e1",
+      "relpath": "2021-11 Diwali/IMG_DIW0048.JPG",
+      "phash_hex": "c5c21a1db5ca4bb5",
+      "quality": 0.278426
+    },
+    {
+      "media_id": "c60c54c823349ee72e753f24e8522c37c0de997f2ae8fd345cc2418888c1166c",
+      "relpath": "2021-11 Diwali/IMG_DIW0049.JPG",
+      "phash_hex": "8c33cc739cd932cc",
+      "quality": 0.773626
+    },
+    {
+      "media_id": "780def6844652ad7bb7ee072a7cf52881298515324fb17b19e57c731226a6aa5",
+      "relpath": "2021-11 Diwali/IMG_DIW0050.JPG",
+      "phash_hex": "8c7325cc7398da33",
+      "quality": 0.468963
+    },
+    {
+      "media_id": "9ba35a13aa2901e68d54fe21b14e12c10e0bbe0876305b9d39aff88ea5a5deec",
+      "relpath": "2021-11 Diwali/IMG_DIYA_BURST_1.JPG",
+      "phash_hex": "861836e719c96d6d",
+      "quality": 0.607961
+    },
+    {
+      "media_id": "791e1112811332ad274afbbbea320c7bbd3c67ce986690e451c240941f2fb69d",
+      "relpath": "2021-11 Diwali/IMG_DIYA_BURST_2.JPG",
+      "phash_hex": "861836e719c96d6d",
+      "quality": 0.473115
+    },
+    {
+      "media_id": "5d08eff404f63da3a196f92016fd768d364f61042920e9751d4be99373795dc8",
+      "relpath": "2021-11 Diwali/IMG_DIYA_BURST_3.JPG",
+      "phash_hex": "861836e719c96d3d",
+      "quality": 0.363418
+    },
+    {
+      "media_id": "d0d9b96214c500138720e265da0896bc6cc93a7ed79ea333743905ea4f9c89e0",
+      "relpath": "2021-11 Diwali/IMG_DIYA_BURST_4.JPG",
+      "phash_hex": "861836e719c96d6d",
+      "quality": 0.815822
+    },
+    {
+      "media_id": "aa322fc24b81d8c03da6423c22af4d712518cdd21fc62d11812e7f69a3cab9f4",
+      "relpath": "2023-06 Hills/IMG_COPIED_01.JPG",
+      "phash_hex": "e3306649397c27cb",
+      "quality": 0.664828
+    },
+    {
+      "media_id": "4756d4e4ca3ccc4a1cd083d980ba7783ad3ad2c8d694efd25115ce0f06614254",
+      "relpath": "2023-06 Hills/IMG_COPIED_02.JPG",
+      "phash_hex": "e33966ce0fc6c611",
+      "quality": 0.278669
+    },
+    {
+      "media_id": "9478cae07b6df70255591e9f380afc3eece4183d9533d8130ef6e059625bb510",
+      "relpath": "2023-06 Hills/IMG_COPIED_03.JPG",
+      "phash_hex": "ce72a41b33669399",
+      "quality": 0.579968
+    },
+    {
+      "media_id": "9cfaf0d757333a165d62b965e48350bcd1234984f56adc9148f0078966b5b6a0",
+      "relpath": "2023-06 Hills/IMG_COPIED_04.JPG",
+      "phash_hex": "cc8b9936d9496666",
+      "quality": 0.613204
+    },
+    {
+      "media_id": "265c365e4c91f1ef9c974f0f635b91b651c0adb021981328e79ee6f59fb8d7f0",
+      "relpath": "2023-06 Hills/IMG_COPIED_05.JPG",
+      "phash_hex": "cd9b6964bd264a49",
+      "quality": 0.149845
+    },
+    {
+      "media_id": "f45622663b38b48154bee36b0dceab114a0958ab856a0e9a05da7b1dc84922aa",
+      "relpath": "2023-06 Hills/IMG_COPIED_06.JPG",
+      "phash_hex": "cc192d996b6786d8",
+      "quality": 0.954439
+    },
+    {
+      "media_id": "60b952a5f80737a7a0637281a1d7ce3e33aed0ec8fba5f51ebc0720ad4187585",
+      "relpath": "2023-06 Hills/IMG_COPIED_07.JPG",
+      "phash_hex": "cc89db91cd666499",
+      "quality": 0.377828
+    },
+    {
+      "media_id": "feedf237c2a2559f6a0bc2b689cd54e55e3d38e40a803e77f3462279ec5e1cfb",
+      "relpath": "2023-06 Hills/IMG_COPIED_08.JPG",
+      "phash_hex": "f138c43ec3f838c3",
+      "quality": 0.995818
+    },
+    {
+      "media_id": "ad08ff000830a15bde2e6920e9e249a94f13ca745879aa927d3ddb80bd916ff3",
+      "relpath": "2023-06 Hills/IMG_HIL0010.JPG",
+      "phash_hex": "cc2d6c9b66669266",
+      "quality": 0.675919
+    },
+    {
+      "media_id": "10e7e40865bd7b6abfc12a4e46ebdc04c6d141a61f61563e2f72e4ae31813948",
+      "relpath": "2023-06 Hills/IMG_HIL0011.JPG",
+      "phash_hex": "e3cb973023c731cc",
+      "quality": 0.066038
+    },
+    {
+      "media_id": "a827395306a1ddc8d195f6ed79a63cfb5db8afed883c94c55c2903b2d8126eac",
+      "relpath": "2023-06 Hills/IMG_HIL0012.JPG",
+      "phash_hex": "cccb49949d996ab4",
+      "quality": 0.656849
+    },
+    {
+      "media_id": "b223fcf95bc2c6f3cc81d3a83c34dcd87f4f81186f739c18de6add6e5b513107",
+      "relpath": "2023-06 Hills/IMG_HIL0013.JPG",
+      "phash_hex": "f15a69853a38c769",
+      "quality": 0.695862
+    },
+    {
+      "media_id": "1c3c597acf7e9e1a82af42f57cc7fb4681f2d3d3b4c39d744d0231eab0cd88d5",
+      "relpath": "2023-06 Hills/IMG_HIL0014.JPG",
+      "phash_hex": "cc9bd9d3229da426",
+      "quality": 0.110296
+    },
+    {
+      "media_id": "f702f82d7db6c98c234f687b9e5b09b65af86f2181df902860c37afcf9c46d69",
+      "relpath": "2023-06 Hills/IMG_HIL0015.JPG",
+      "phash_hex": "cdc9449b99996699",
+      "quality": 0.964889
+    },
+    {
+      "media_id": "58b0c3d272f69dbd07023b38f9fdf89ccf7ff2b3604f0ef5494ace296857e291",
+      "relpath": "2023-06 Hills/IMG_HIL0016.JPG",
+      "phash_hex": "e7d026634d6cc98b",
+      "quality": 0.346447
+    },
+    {
+      "media_id": "d3907cefb7b9d3e2898a2c52c3659077c9d4728f61f8efd238795443bb5bd28f",
+      "relpath": "2023-06 Hills/IMG_HIL0017.JPG",
+      "phash_hex": "e3cc33383838cece",
+      "quality": 0.826423
+    },
+    {
+      "media_id": "89e238acf022d5c9272684739cdf9e278637eb21ea8143516f16736817cc592f",
+      "relpath": "2023-06 Hills/IMG_HIL0018.JPG",
+      "phash_hex": "c673618fcc313399",
+      "quality": 0.538608
+    },
+    {
+      "media_id": "724079b6997489842061c735d5c662c3d880703f11373d103b473b60c428d1d4",
+      "relpath": "2023-06 Hills/IMG_HIL0019.JPG",
+      "phash_hex": "c69c36646633cdc9",
+      "quality": 0.446296
+    },
+    {
+      "media_id": "06367ef94f5fdfd7549c98d6190714bf0b27d890ff5d2f6ce04b86cf3b566c5d",
+      "relpath": "2023-06 Hills/IMG_HIL0020.JPG",
+      "phash_hex": "c4c9c40f3e3337cc",
+      "quality": 0.024269
+    },
+    {
+      "media_id": "1435934ce3f468482d78d93545743425cbf5ec3df7aa3be1ec77dc538bdd0ec9",
+      "relpath": "2023-06 Hills/IMG_HIL0021.JPG",
+      "phash_hex": "e11b37c731d89c38",
+      "quality": 0.078942
+    },
+    {
+      "media_id": "bae1d042f2574ed630d0b5a6f91863828de0a0d04b70edab068988c0234bde0b",
+      "relpath": "2023-06 Hills/IMG_HIL0022.JPG",
+      "phash_hex": "cc644a9d9dd962b1",
+      "quality": 0.730008
+    },
+    {
+      "media_id": "61d409c75ea73c67ded3bc4ab938fa944fda4dff8def90e40edfd733b8c0ee99",
+      "relpath": "2023-06 Hills/IMG_HIL0023.JPG",
+      "phash_hex": "c68ddc9c33332633",
+      "quality": 0.382142
+    },
+    {
+      "media_id": "7405a4329acbcd2e77e97598963be2321120a88ee2eb8f8e31fb7ac48ba8ad9a",
+      "relpath": "2023-06 Hills/IMG_HIL0024.JPG",
+      "phash_hex": "f0c3710e3f31c11f",
+      "quality": 0.453211
+    },
+    {
+      "media_id": "47e79bc0bfd286981ea2dcd27a80277486b88084e7ee2851843f7846191e2911",
+      "relpath": "2023-06 Hills/IMG_HIL0025.JPG",
+      "phash_hex": "cd6ec5922c26669d",
+      "quality": 0.280878
+    },
+    {
+      "media_id": "cfc3426838bae9ae85e00464045ba91009d3ae5f5748ffee54791ff7a9b4b1ae",
+      "relpath": "2023-06 Hills/IMG_HIL0026.JPG",
+      "phash_hex": "c6993636c9cccc66",
+      "quality": 0.811573
+    },
+    {
+      "media_id": "d22ca759727ca64b66603f20055e9c63c2fde162de7f1d8efc53719111d64e73",
+      "relpath": "2023-06 Hills/IMG_HIL0027.JPG",
+      "phash_hex": "e13878ce4379ce38",
+      "quality": 0.820994
+    },
+    {
+      "media_id": "0c0078f153f72f41c2dd4c36598913cae4098fb07f86148d259902319a7e9a43",
+      "relpath": "2023-06 Hills/IMG_HIL0028.JPG",
+      "phash_hex": "ce4d2633999a6533",
+      "quality": 0.046882
+    },
+    {
+      "media_id": "74ee42d24c4d7facd399cfb804c10d88f11610673b4c75a6b7b7a20f0a4bfc86",
+      "relpath": "2023-06 Hills/IMG_HIL0029.JPG",
+      "phash_hex": "f1e5081bc7c73c38",
+      "quality": 0.456761
+    },
+    {
+      "media_id": "fc65c4dda7fbabca65c20a607f5701ab154a3cc549381703e7eee5100de85500",
+      "relpath": "2023-06 Hills/IMG_HIL0030.JPG",
+      "phash_hex": "f019bcc331e42b3e",
+      "quality": 0.985928
+    },
+    {
+      "media_id": "6cedc6e407305649c3c49e6e97e6884c294e4c20181673bb9155e89886f97256",
+      "relpath": "2023-06 Hills/IMG_HIL0031.JPG",
+      "phash_hex": "e3bc3138ce383933",
+      "quality": 0.425503
+    },
+    {
+      "media_id": "ae809532989c814c8b95d22010dfcbdc5277faa9aff5d1cef45a15541787917b",
+      "relpath": "2023-06 Hills/IMG_HIL0032.JPG",
+      "phash_hex": "e3d031783cc731ce",
+      "quality": 0.68165
+    },
+    {
+      "media_id": "738d03c38b9a47a06634959d2b5b815045905b7806dd13291307dbf67f6b6291",
+      "relpath": "2023-06 Hills/IMG_HIL0033.JPG",
+      "phash_hex": "cc5e74d966649b90",
+      "quality": 0.45137
+    },
+    {
+      "media_id": "394d4257a8ab4adfdb2599617773681eb59606314ffde5eafcaabab73395de44",
+      "relpath": "2023-06 Hills/IMG_HIL0034.JPG",
+      "phash_hex": "f187b1813c3e1ce3",
+      "quality": 0.223835
+    },
+    {
+      "media_id": "a80f590d45aff274826858d56bba1c23928a65b07acbd20c3b6e48a8fe787871",
+      "relpath": "2023-06 Hills/IMG_HIL0035.JPG",
+      "phash_hex": "cd442ddb99669293",
+      "quality": 0.656484
+    },
+    {
+      "media_id": "7ea9f83ee3776d596eb4a0f5719e703e394e38d0e327edf823bf88ce8bc17769",
+      "relpath": "2023-06 Hills/IMG_HIL0036.JPG",
+      "phash_hex": "e371c6383838c7c7",
+      "quality": 0.494781
+    },
+    {
+      "media_id": "e05ffc9030c76e7e4b008c521de3c83b07fb567a44228b114054c6cac1353071",
+      "relpath": "2023-06 Hills/IMG_HIL0037.JPG",
+      "phash_hex": "cc9b93666c66668c",
+      "quality": 0.876465
+    },
+    {
+      "media_id": "0f87928f88b3c4c4bf891bcf324052cf734ff70d47171359e2eac2f18341b8e8",
+      "relpath": "2023-06 Hills/IMG_HIL0038.JPG",
+      "phash_hex": "cc666673926626d9",
+      "quality": 0.060662
+    },
+    {
+      "media_id": "eb71d0fbcd84f199afb846d0c62ccb6f94a1ede8442caed5298e7737f9e04a7b",
+      "relpath": "2023-06 Hills/IMG_HIL0039.JPG",
+      "phash_hex": "cc932666669bc999",
+      "quality": 0.919705
+    },
+    {
+      "media_id": "584cac9235197ffe63ca3a2ba8aca18f91a7e391434182803cfc1712b1d4f798",
+      "relpath": "2023-06 Hills/IMG_HIL0040.JPG",
+      "phash_hex": "f0e7f138391c1ce4",
+      "quality": 0.34492
+    },
+    {
+      "media_id": "48190f5644fc21efe0db9669d31db7664fc51519f142857e2ace34e02d0f7945",
+      "relpath": "2023-06 Hills/IMG_HIL0041.JPG",
+      "phash_hex": "c6cc322ccfcc3333",
+      "quality": 0.281632
+    },
+    {
+      "media_id": "58fcbf54f70520399c8904956d90021c81d6286ee08845094b14efa8851a581f",
+      "relpath": "2023-06 Hills/IMG_HIL0042.JPG",
+      "phash_hex": "e3493633ce9469b4",
+      "quality": 0.347607
+    },
+    {
+      "media_id": "448972c9e9cd1d12214a275a56b82b329fb3d27d2ecc2a27edccb8da0f86158e",
+      "relpath": "2023-06 Hills/IMG_HIL0043.JPG",
+      "phash_hex": "cc676d6666499293",
+      "quality": 0.267722
+    },
+    {
+      "media_id": "567a00e449e0c2d7de858aba6f276176dde09f023af374dfb7500516cb1b343d",
+      "relpath": "2023-06 Hills/IMG_HIL0044.JPG",
+      "phash_hex": "e72133ce7131ccc6",
+      "quality": 0.337799
+    },
+    {
+      "media_id": "a498d00102004c9cb728dad7f47f120d61ad97db9f0a7aedb6b4e3cc5afbd48c",
+      "relpath": "2023-06 Hills/IMG_HIL0045.JPG",
+      "phash_hex": "f19739e5c3383838",
+      "quality": 0.642957
+    },
+    {
+      "media_id": "058889b5affc1a1f811ea0f106c9d4c62fe254f3352ef2cb3ea748c8b63f1fa6",
+      "relpath": "2023-06 Hills/IMG_HIL0046.JPG",
+      "phash_hex": "e7ccccc639313833",
+      "quality": 0.021615
+    },
+    {
+      "media_id": "e90db3ed7d44615e2ba3f9a4f25a7f625e3b554357a3364cf144adffb3642f29",
+      "relpath": "2023-06 Hills/IMG_HIL0047.JPG",
+      "phash_hex": "e7293269ce3331cc",
+      "quality": 0.910365
+    },
+    {
+      "media_id": "c22500f9100b4e898c5afd398f5cad4bf0f59684b3e52e8a0028234f9941f943",
+      "relpath": "2023-06 Hills/IMG_HIL0048.JPG",
+      "phash_hex": "ce6466c8996d3393",
+      "quality": 0.758377
+    },
+    {
+      "media_id": "9887c99db6019200dcc9366d22817a5f82034d78f50b4cab960b682ff98a50a6",
+      "relpath": "2023-06 Hills/IMG_HIL0049.JPG",
+      "phash_hex": "e68e9d89668c8e33",
+      "quality": 0.595822
+    },
+    {
+      "media_id": "c4839f7ca0a049643eb0ca9f1267f0970d2884879ee1f74c7da7bab2f7e2dc5a",
+      "relpath": "2023-06 Hills/IMG_HIL0050.JPG",
+      "phash_hex": "f13418c63e3cc771",
+      "quality": 0.767633
+    },
+    {
+      "media_id": "4ff29bbe665f5198a6e7e4c4237ab88ea0ff05ed1c77101f94c65710f1d5aa88",
+      "relpath": "2023-06 Hills/IMG_HIL0051.JPG",
+      "phash_hex": "e1c6c738c7393938",
+      "quality": 0.312296
+    },
+    {
+      "media_id": "4d9d5dd382d02285b1c426d312b47fe82760c0481a6d1a26371629bd678ac930",
+      "relpath": "2023-06 Hills/IMG_HIL0052.JPG",
+      "phash_hex": "e1c6c6cfc3381939",
+      "quality": 0.303182
+    },
+    {
+      "media_id": "8d03c568678b9b8f185f8ecd5f078f3e11be6a184f2439c723f5026cefec8185",
+      "relpath": "2023-06 Hills/IMG_HIL0053.JPG",
+      "phash_hex": "e3b83270c3cf25c6",
+      "quality": 0.550839
+    },
+    {
+      "media_id": "f5f2d6bdf5256e0838abd1d724514f279ba41195c550d15a4203ff9281e9986d",
+      "relpath": "2023-06 Hills/IMG_HIL0054.JPG",
+      "phash_hex": "e73351a133ce3331",
+      "quality": 0.960737
+    },
+    {
+      "media_id": "1566cce27d98b951b28851e0848aa07f79f4f76b16061914979072052eee33e2",
+      "relpath": "2023-06 Hills/IMG_KIT0003.JPG",
+      "phash_hex": "86c3383ccfc7b138",
+      "quality": 0.0836
+    },
+    {
+      "media_id": "d25151b170789daff97ccf1fb841562e245da8a83aa4a81e7d349728c6347d63",
+      "relpath": "2023-06 Hills/IMG_KIT0004.JPG",
+      "phash_hex": "877171cc3333ce31",
+      "quality": 0.821553
+    },
+    {
+      "media_id": "23a93918bdf71e8fe232d138140f342ada3463f3e2dad4e513ee7e6c948e38f0",
+      "relpath": "2023-06 Hills/IMG_KIT0005.JPG",
+      "phash_hex": "8d7267ca36b54a25",
+      "quality": 0.139301
+    },
+    {
+      "media_id": "0ce8064f29a32b8c7e8858779fe803b7128053545e90ef21eaaff40cef5a4cb3",
+      "relpath": "2023-06 Hills/IMG_KIT0006.JPG",
+      "phash_hex": "873131cece3331ce",
+      "quality": 0.050415
+    },
+    {
+      "media_id": "85281f917840802f579b7b2fa976222500121826b4155fb7edbc1c8a377a1954",
+      "relpath": "2023-06 Hills/IMG_KIT0007.JPG",
+      "phash_hex": "87ce30313963c7cd",
+      "quality": 0.520143
+    },
+    {
+      "media_id": "a90548b099181e87357f483c196bfc5e1cfbec8c373cde4f26467c9c163b3edb",
+      "relpath": "2023-06 Hills/IMG_KIT0008.JPG",
+      "phash_hex": "813cc1f12ec63ef1",
+      "quality": 0.660237
+    },
+    {
+      "media_id": "6b2213d32de98f3a088e1266cc02a9befab0d69b54eaa0b50dee1fdc4e4bb8e5",
+      "relpath": "2023-06 Hills/IMG_KIT0009.JPG",
+      "phash_hex": "c01f3de2e01d3ee2",
+      "quality": 0.418489
+    },
+    {
+      "media_id": "0b311cb70190da7e4ffe6267d9c9052b2f4895d58120fcbde317b965e0dba5f1",
+      "relpath": "2023-06 Hills/IMG_KIT0010.JPG",
+      "phash_hex": "86cccdcc4eb57231",
+      "quality": 0.043718
+    },
+    {
+      "media_id": "66fc01ad78f0e595b99aa3c037b09e646d03d8cdcc352de398a50b4f604eae46",
+      "relpath": "2023-06 Hills/IMG_KIT0011.JPG",
+      "phash_hex": "8c6289d966dc63cd",
+      "quality": 0.402283
+    },
+    {
+      "media_id": "8f83b5ea7e5a2890f749ad162e0c5cced63e350ad093ebb28f85a22c0fd50ca6",
+      "relpath": "2023-06 Hills/IMG_KIT0012.JPG",
+      "phash_hex": "8acc6cc9d9267333",
+      "quality": 0.560603
+    },
+    {
+      "media_id": "9aa402e1b8c7817227a97f1c7e23e2884df1ed9f6f3568c1c8739b20c29a2ba9",
+      "relpath": "2023-06 Hills/IMG_KIT0013.JPG",
+      "phash_hex": "863231cd3333cecd",
+      "quality": 0.604065
+    },
+    {
+      "media_id": "3ebb47064adab3dd9c8ea0deafbc8b307c333c792eb9069c52b973b24ccbd1c4",
+      "relpath": "2023-06 Hills/IMG_KIT0014.JPG",
+      "phash_hex": "87cfce7031313378",
+      "quality": 0.245045
+    },
+    {
+      "media_id": "640dce2a1f6c3f87b0a013f0736ac86c8bf3000963c2045a08026c4246288f9d",
+      "relpath": "2023-06 Hills/IMG_KIT0015.JPG",
+      "phash_hex": "8c99999db6666466",
+      "quality": 0.390836
+    },
+    {
+      "media_id": "12633c359d6995142dd3e34cac987067129bc3bc18533f0e4e9b9886d9d2da2e",
+      "relpath": "2023-06 Hills/IMG_KIT0016.JPG",
+      "phash_hex": "9c1d3636c99b6266",
+      "quality": 0.071827
+    },
+    {
+      "media_id": "195e1aa5ecc41d5d037467684f7473fc480c954e43070373f6d86dcc20c77234",
+      "relpath": "2023-06 Hills/IMG_KIT0017.JPG",
+      "phash_hex": "86df3121cec73931",
+      "quality": 0.099092
+    },
+    {
+      "media_id": "23db675fba48e685fbaeacfe12eb38eb4aed8edb9e94cfad8e09610203b2c30e",
+      "relpath": "2023-06 Hills/IMG_KIT0018.JPG",
+      "phash_hex": "848f7666c9994e66",
+      "quality": 0.140067
+    },
+    {
+      "media_id": "dedc9b7f24eea496e4000296f1b3fddf5aa072ba5e72e9a03173997d039c555b",
+      "relpath": "2023-06 Hills/IMG_LOWQ_01.JPG",
+      "phash_hex": "86cc33333395ccce",
+      "quality": 0.870554
+    },
+    {
+      "media_id": "46927796dae65874a709e467754d218b9586870105a232a61cd137f0f1a271c3",
+      "relpath": "2023-06 Hills/IMG_PORTRAIT_01.JPG",
+      "phash_hex": "831b31ecce3398ce",
+      "quality": 0.275672
+    },
+    {
+      "media_id": "269df52caf691f5bf74110cca8c41dc1db6fe6b8d4a3058805f691807f08f883",
+      "relpath": "2023-06 Hills/scan_0043.jpg",
+      "phash_hex": "e3c40d383363c7c7",
+      "quality": 0.150848
+    },
+    {
+      "media_id": "5b9b82d150c21deaf8f98b8a718fb7df3cd47f1b94fab5833c38aa2bdaf448cd",
+      "relpath": "Broken/IMG_TRUNCATED.JPG",
+      "phash_hex": "8c077ce007e707e7",
+      "quality": 0.357842
+    }
+  ],
+  "bursts": {
+    "burst_diwali_diya": [
+      "5d08eff404f63da3a196f92016fd768d364f61042920e9751d4be99373795dc8",
+      "791e1112811332ad274afbbbea320c7bbd3c67ce986690e451c240941f2fb69d",
+      "9ba35a13aa2901e68d54fe21b14e12c10e0bbe0876305b9d39aff88ea5a5deec",
+      "d0d9b96214c500138720e265da0896bc6cc93a7ed79ea333743905ea4f9c89e0"
+    ],
+    "burst_goa_sunset": [
+      "4151ea18c5c702b02e54d4b2a53bcc0f6579fb66e7aa419c37a3e546443ffbca",
+      "8c8a1b280ad60bd0099fdfb58c37bed81409ce1bb3987c906b3983b81c9c6632",
+      "c09fc6cf165629a2bd0bbdc4c79678839fdc015fd09b750554baeffac5a674b1",
+      "f5c22251d719116f2b7fa8f5f53a6797604ba15b65a22ec135870790979d27d5",
+      "fe88124250f5707d37e9b781b2ef8d52d419a51a470f666a600b48b4bab23c71"
+    ]
+  }
+}

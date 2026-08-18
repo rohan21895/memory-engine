@@ -26,6 +26,16 @@ run "codegen freshness"   node scripts/ci/check-codegen-freshness.mjs
 run "lint (workspace)"    node scripts/ci/run-workspace-check.mjs lint
 run "test (workspace)"    node scripts/ci/run-workspace-check.mjs test
 [ -f workers/ml-runtime/tests/run_required_suite.py ] && run "ml-runtime required" python3 workers/ml-runtime/tests/run_required_suite.py
+# The two eval-harness steps CI runs. Both are commands with exit codes rather
+# than test suites, so `run-workspace-check.mjs test` above does not cover them:
+# it discovers pyproject.toml and runs unittest, and a gate that only fails as a
+# command would pass here in silence.
+#
+# Run through `bash -c` rather than a `( cd ... )` subshell on purpose: `run`
+# sets `fail=1` in THIS shell, and a subshell would swallow it, leaving a red
+# gate reported as LOCAL CI GREEN.
+run "eval gate files"    bash -c 'cd packages/eval-harness && python3 -m memory_engine_eval.harness gates/*.gate.json'
+run "benchmark suites"   bash -c 'cd packages/eval-harness && python3 -m memory_engine_eval.runner run --ci benchmarks/*.suite.json'
 echo "----"
 [ $fail -eq 0 ] && echo "LOCAL CI GREEN" || echo "LOCAL CI RED"
 exit $fail

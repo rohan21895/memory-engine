@@ -1,0 +1,266 @@
+{
+  "suite_id": "deterministic-properties",
+  "description": "The properties this repository can measure honestly with no photographs and no model weights: that dedupe recovers exactly the bursts the generator drew, that the same library yields the same ids under any input order, that each of the print validator's five hard gates fires on a layout built to violate exactly it and stays silent on a clean one, and that the same request produces a byte-identical validation report and a byte-identical EDL. Every number here is a DETERMINISM claim about code. None of them is a quality claim about photographs, and none of them may be quoted as one.",
+  "as_of": "2026-08-18",
+  "runs_in_ci": true,
+  "policy": {
+    "categories": [
+      "dedupe",
+      "print_validator",
+      "render_plan"
+    ],
+    "category_floors": {
+      "dedupe": 1.0,
+      "print_validator": 1.0,
+      "render_plan": 1.0
+    },
+    "min_repeats": 3,
+    "min_cases_per_category": 1,
+    "nondeterminism_tolerance": 0.0,
+    "enforce_expected": true
+  },
+  "cases": [
+    {
+      "case_id": "dedupe_bursts_recovered_exactly",
+      "category": "dedupe",
+      "claim_class": "determinism",
+      "probe": "dedupe_burst_recovery",
+      "expected": 1.0,
+      "repeats": 3,
+      "measures": "the fraction of the generator's declared near-duplicate bursts that dedupe recovers as EXACTLY that set of photos, no member missing and no stranger added",
+      "does_not_measure": "whether the Hamming thresholds are right for real photographs; these hashes come from procedurally drawn images with no sensor noise, no motion blur and no JPEG generation loss",
+      "falsifications": [
+        {
+          "mode": "phash_bit_rot",
+          "max_goodness": 0.0,
+          "why": "rotting 24 bits of the last frame of every burst must break every burst; a probe still reporting 1.0 is not reading the hashes it claims to read"
+        },
+        {
+          "mode": "decisive_threshold_zero",
+          "max_goodness": 0.5,
+          "why": "demanding byte-identical hashes must lose the burst whose frames differ by 2 bits; the other burst hashes identically across all five frames and survives, which is why the bound is 0.5 and not 0"
+        }
+      ],
+      "baseline": {
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "inputs_digest": "048c2e71d740bd1166bafdfda7c863adbed1c9789b84e0e439437de6e5b802a2",
+        "measured_at": "2026-08-18T14:51:27+00:00",
+        "measured_by": "claude-code (feat/eval-benchmarks)"
+      }
+    },
+    {
+      "case_id": "dedupe_bursts_stay_pure",
+      "category": "dedupe",
+      "claim_class": "determinism",
+      "probe": "dedupe_burst_separation",
+      "expected": 1.0,
+      "repeats": 3,
+      "measures": "the fraction of burst members whose duplicate group contains only their own siblings, so no photo outside a burst is merged into it",
+      "does_not_measure": "the false-merge rate on real photographs, where two different scenes genuinely land close in pHash; that is the failure dedupe.py's asymmetric threshold exists for and it cannot be observed on drawn images",
+      "falsifications": [
+        {
+          "mode": "collapse_to_one_hash",
+          "max_goodness": 0.0,
+          "why": "giving every photo the same hash must contaminate every burst; a probe still scoring 1.0 is counting something other than what it says"
+        },
+        {
+          "mode": "foreign_frames_injected",
+          "max_goodness": 0.6,
+          "why": "copying one burst's hash onto three photos outside it must contaminate that burst and only that burst, so the score falls by that burst's share of the members and no further"
+        }
+      ],
+      "baseline": {
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "inputs_digest": "048c2e71d740bd1166bafdfda7c863adbed1c9789b84e0e439437de6e5b802a2",
+        "measured_at": "2026-08-18T14:51:27+00:00",
+        "measured_by": "claude-code (feat/eval-benchmarks)"
+      }
+    },
+    {
+      "case_id": "dedupe_ids_stable_under_permutation",
+      "category": "dedupe",
+      "claim_class": "determinism",
+      "probe": "dedupe_id_stability",
+      "params": {
+        "permutations": 8
+      },
+      "expected": 1.0,
+      "repeats": 3,
+      "measures": "the fraction of shuffled input orderings that reproduce the first ordering's group ids, primaries and membership exactly",
+      "does_not_measure": "whether the chosen primary is the best photo in its group; it measures only that the same one is chosen every time",
+      "falsifications": [
+        {
+          "mode": "group_ids_by_arrival",
+          "max_goodness": 0.0,
+          "why": "numbering groups by where their anchor appears in the input is the classic version of this defect, and it must disagree with the first ordering on every permutation"
+        },
+        {
+          "mode": "primary_by_arrival",
+          "max_goodness": 0.2,
+          "why": "taking the member that arrived first instead of the one select_primary chose silently changes which photo reaches the album, and must disagree on almost every permutation"
+        }
+      ],
+      "baseline": {
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "inputs_digest": "048c2e71d740bd1166bafdfda7c863adbed1c9789b84e0e439437de6e5b802a2",
+        "measured_at": "2026-08-18T14:51:27+00:00",
+        "measured_by": "claude-code (feat/eval-benchmarks)"
+      }
+    },
+    {
+      "case_id": "print_hard_gates_fire",
+      "category": "print_validator",
+      "claim_class": "determinism",
+      "probe": "album_hard_gates_fire",
+      "expected": 1.0,
+      "repeats": 3,
+      "measures": "the fraction of the five hard print gates that emit a counting ERROR finding on a layout built to violate exactly that gate and nothing else",
+      "does_not_measure": "whether the exported PDF obeys the AlbumSpec; docs/architecture.md records a validator that passed every PDF because the renderer did not execute the plan it validated, and that gap is closed in workers/render-print's own tests, not here",
+      "falsifications": [
+        {
+          "mode": "violations_removed",
+          "max_goodness": 0.0,
+          "why": "handing the validator a clean album where a violating one belongs must silence every gate; a probe still scoring 1.0 is not reading the report"
+        },
+        {
+          "mode": "warnings_without_errors",
+          "max_goodness": 0.0,
+          "why": "a clean album under an unreachable PREFERRED dpi emits a warning on every page and no error; a warning does not block an export, so a probe counting any non-passing finding would wrongly score 1.0 here"
+        }
+      ],
+      "baseline": {
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "inputs_digest": "c4748f9542ab250026e99445da172394d282ade22c3e3a244d94200ee01f5ed8",
+        "measured_at": "2026-08-18T14:51:27+00:00",
+        "measured_by": "claude-code (feat/eval-benchmarks)"
+      }
+    },
+    {
+      "case_id": "print_clean_layout_passes",
+      "category": "print_validator",
+      "claim_class": "determinism",
+      "probe": "album_clean_layout_passes",
+      "expected": 1.0,
+      "repeats": 3,
+      "measures": "that a layout violating none of the vendor profile's rules passes with zero errors -- the negative control without which a validator that failed everything would score a perfect 1.0 on print_hard_gates_fire",
+      "does_not_measure": "whether the vendor profile's thresholds match what the printer actually needs; those numbers come from a real spec sheet and only a real print run tests them",
+      "falsifications": [
+        {
+          "mode": "impossible_dpi_floor",
+          "max_goodness": 0.0,
+          "why": "no album can clear a 100000 DPI floor, so the clean layout must stop passing"
+        },
+        {
+          "mode": "mismatched_document_profile",
+          "max_goodness": 0.0,
+          "why": "the same clean pages published in the wrong colour space must stop passing"
+        }
+      ],
+      "baseline": {
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "inputs_digest": "c4748f9542ab250026e99445da172394d282ade22c3e3a244d94200ee01f5ed8",
+        "measured_at": "2026-08-18T14:51:27+00:00",
+        "measured_by": "claude-code (feat/eval-benchmarks)"
+      }
+    },
+    {
+      "case_id": "print_report_is_byte_identical",
+      "category": "print_validator",
+      "claim_class": "determinism",
+      "probe": "album_report_determinism",
+      "params": {
+        "repeats": 4
+      },
+      "expected": 1.0,
+      "repeats": 3,
+      "measures": "that shuffling the pages and reversing the placements within them leaves the validation report byte-identical, which is the half of CLAUDE.md rule 3 that album-engine owns",
+      "does_not_measure": "PDF determinism; the bytes of the exported file are produced by workers/render-print and are outside this package",
+      "falsifications": [
+        {
+          "mode": "clock_read_per_run",
+          "max_goodness": 0.0,
+          "why": "a validator stamping its own now would differ on every run, and validate_album takes validated_at as an argument precisely so it cannot"
+        },
+        {
+          "mode": "perturb_source_resolution",
+          "max_goodness": 0.0,
+          "why": "one source a pixel wider moves every effective DPI in the report, so the digest must move with it"
+        }
+      ],
+      "baseline": {
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "inputs_digest": "c4748f9542ab250026e99445da172394d282ade22c3e3a244d94200ee01f5ed8",
+        "measured_at": "2026-08-18T14:51:27+00:00",
+        "measured_by": "claude-code (feat/eval-benchmarks)"
+      }
+    },
+    {
+      "case_id": "reel_edl_is_byte_identical",
+      "category": "render_plan",
+      "claim_class": "determinism",
+      "probe": "reel_edl_determinism",
+      "params": {
+        "permutations": 6
+      },
+      "expected": 1.0,
+      "repeats": 3,
+      "measures": "that shuffling the moments and the media in a reel request leaves the planned EDL byte-identical, which is where CLAUDE.md rule 3 starts: if the plan moves, the render moves with it and nothing downstream can notice",
+      "does_not_measure": "that the renderer produces identical output from an identical EDL, and nothing about whether the cut is any good; the request here carries no music and no beat grid",
+      "falsifications": [
+        {
+          "mode": "perturb_one_moment",
+          "max_goodness": 0.0,
+          "why": "moving one moment eleven frames later is a real difference in the plan, and the digest must reflect it"
+        },
+        {
+          "mode": "drop_one_moment",
+          "max_goodness": 0.0,
+          "why": "planning from a smaller pool must produce a different EDL"
+        }
+      ],
+      "baseline": {
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "inputs_digest": "69d00ec363cdb5867b0cd16c238b2202de9f84df8c7919e2886525b92901725b",
+        "measured_at": "2026-08-18T14:51:27+00:00",
+        "measured_by": "claude-code (feat/eval-benchmarks)"
+      }
+    }
+  ],
+  "baseline_sources": {
+    "dedupe_burst_recovery": "a4cd29ffac4b6ce2c5aa2edcee85d3e1ea1600675dec7ff0ad5bd04e05e17a00",
+    "dedupe_burst_separation": "a4cd29ffac4b6ce2c5aa2edcee85d3e1ea1600675dec7ff0ad5bd04e05e17a00",
+    "dedupe_id_stability": "a4cd29ffac4b6ce2c5aa2edcee85d3e1ea1600675dec7ff0ad5bd04e05e17a00",
+    "album_hard_gates_fire": "9eccdd8720a251b46e0e2d209404842d8d0573bfb1ff3fe5633649012f8fc1e1",
+    "album_clean_layout_passes": "9eccdd8720a251b46e0e2d209404842d8d0573bfb1ff3fe5633649012f8fc1e1",
+    "album_report_determinism": "9eccdd8720a251b46e0e2d209404842d8d0573bfb1ff3fe5633649012f8fc1e1",
+    "reel_edl_determinism": "8a350334c929de3f76c09b42481ae90a2558413fd3201ff16a0218bbe6aae346"
+  }
+}

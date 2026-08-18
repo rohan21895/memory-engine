@@ -1,0 +1,26 @@
+{
+  "library_id": "synthetic-demo",
+  "library_version": "2",
+  "provenance": "synthetic_generated",
+  "claim_ceiling": "plumbing",
+  "description": "Nothing in this library is a photograph. Every still is drawn procedurally with PIL from a seeded RNG and the faces are cartoon ovals, so no recall, precision, quality or aesthetic number measured on it means anything about photographs. It exists so determinism and plumbing can be measured without pointing the pipeline at anybody's real photo folder. See scripts/demo/make_library.py.",
+  "file_count": 216,
+  "inventory_digest": "0c04ff1145acdc22b3a7a713cb084b8ccaeceda098946b4500822b0d10cd2925",
+  "generator": {
+    "command": [
+      "python3",
+      "scripts/demo/make_library.py",
+      "--out",
+      "<ROOT>",
+      "--seed",
+      "20260817",
+      "--stills",
+      "200",
+      "--clips",
+      "10"
+    ],
+    "generator_version": 2,
+    "seed": 20260817
+  },
+  "consent": null
+}
