@@ -102,6 +102,7 @@ class ModelAvailability:
     present: bool
     loadable: bool
     reason: str
+    pin: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +122,15 @@ class RuntimeStatus:
     def missing_models(self) -> tuple[str, ...]:
         return tuple(item.model_id for item in self.models if not (item.present and item.loadable))
 
+    @property
+    def model_pins(self) -> dict[str, dict[str, str]]:
+        """Exact host pins established by ListModels for subsequent inference."""
+        return {
+            item.model_id: dict(item.pin)
+            for item in self.models
+            if item.present and item.loadable and item.pin is not None
+        }
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "available": self.available,
@@ -130,6 +140,7 @@ class RuntimeStatus:
             "load_mode": self.load_mode,
             "loaded": list(self.loaded),
             "missing_models": list(self.missing_models),
+            "model_pins": self.model_pins,
             "warnings": list(self.warnings),
         }
 
@@ -355,9 +366,10 @@ def _model_availability(
         if info is None:
             result.append(
                 ModelAvailability(model_id, present=False, loadable=False,
-                                  reason="not offered by this host")
+                                  reason="not offered by this host", pin=None)
             )
             continue
+        pin = _model_pin(info.pin)
         if not info.loadable:
             reason = (
                 pb.UnloadableReason.Name(info.unloadable_reason)
@@ -365,11 +377,25 @@ def _model_availability(
                 .lower()
             )
             result.append(
-                ModelAvailability(model_id, present=True, loadable=False, reason=reason)
+                ModelAvailability(
+                    model_id, present=True, loadable=False, reason=reason, pin=pin
+                )
             )
             continue
-        result.append(ModelAvailability(model_id, present=True, loadable=True, reason="ok"))
+        result.append(
+            ModelAvailability(model_id, present=True, loadable=True, reason="ok", pin=pin)
+        )
     return tuple(result)
+
+
+def _model_pin(pin: Any) -> dict[str, str]:
+    """Copy the generated protobuf ModelPin into a detached manifest mapping."""
+    return {
+        "model_id": pin.model_id,
+        "version": pin.version,
+        "weights_blake3": pin.weights_blake3,
+        "config_blake3": pin.config_blake3,
+    }
 
 
 # ------------------------------------------------------------------- client --
@@ -399,10 +425,31 @@ class MlRuntimeClient:
     # seconds, which is the price of the model being large.
     PER_ITEM_DEADLINE_S = 20.0
 
-    def __init__(self, endpoint: str | None = None, *, timeout_s: float = 60.0) -> None:
+    def __init__(
+        self,
+        endpoint: str | None = None,
+        *,
+        timeout_s: float = 60.0,
+        expected_pins: Mapping[str, Mapping[str, str]] | None = None,
+    ) -> None:
         self._grpc, self._pb, pb_grpc = _load_stubs()
         self.endpoint = endpoint_from_env(endpoint)
         self._timeout_s = timeout_s
+        self._expected_pins = {
+            model_id: {
+                "model_id": str(pin.get("model_id", "")),
+                "version": str(pin.get("version", "")),
+                "weights_blake3": str(pin.get("weights_blake3", "")),
+                "config_blake3": str(pin.get("config_blake3", "")),
+            }
+            for model_id, pin in (expected_pins or {}).items()
+        }
+        for requested_id, pin in self._expected_pins.items():
+            if pin["model_id"] != requested_id:
+                raise MlRuntimeError(
+                    f"expected pin key {requested_id!r} contains model_id "
+                    f"{pin['model_id']!r}"
+                )
         self._channel = self._grpc.insecure_channel(self.endpoint)
         self._stub = pb_grpc.MlRuntimeStub(self._channel)
 
@@ -601,6 +648,28 @@ class MlRuntimeClient:
                 f"Infer({model_id}) was refused whole: {code}: {response.error.message}"
             )
 
+        actual_pin = _model_pin(response.pin)
+        if actual_pin["model_id"] != model_id:
+            raise MlRuntimeError(
+                f"Infer({model_id}) response pin model_id expected {model_id!r}, "
+                f"got {actual_pin['model_id']!r}"
+            )
+        expected_pin = self._expected_pins.get(model_id)
+        if expected_pin is not None:
+            for field_name in (
+                "model_id",
+                "version",
+                "weights_blake3",
+                "config_blake3",
+            ):
+                if actual_pin[field_name] != expected_pin[field_name]:
+                    raise MlRuntimeError(
+                        f"Infer({model_id}) response pin {field_name} expected "
+                        f"{expected_pin[field_name]!r}, got "
+                        f"{actual_pin[field_name]!r}; ListModels and Infer disagree "
+                        "about what ran"
+                    )
+
         tensors: dict[str, tuple[float, ...]] = {}
         detections: dict[str, tuple[Detection, ...]] = {}
         failures: list[ItemFailure] = []
@@ -654,12 +723,7 @@ class MlRuntimeClient:
             )
 
         return InferOutcome(
-            pin={
-                "model_id": response.pin.model_id,
-                "version": response.pin.version,
-                "weights_blake3": response.pin.weights_blake3,
-                "config_blake3": response.pin.config_blake3,
-            },
+            pin=actual_pin,
             runtime_used=pb.RuntimeTarget.Name(response.runtime_used)
             .removeprefix("RUNTIME_TARGET_")
             .lower(),

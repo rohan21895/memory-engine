@@ -159,6 +159,27 @@ class MissingModelHost(unittest.TestCase):
         self.assertIn("weights_missing", counts)
         self.assertIn(FACE_MODEL, counts)
 
+    def test_infer_pin_skew_fails_the_whole_analysis_stage(self):
+        with FakeMlRuntime(
+            infer_pin_overrides={EMBEDDING_MODEL: {"version": "wrong-version"}}
+        ) as host:
+            report = self._run(host.endpoint)
+
+        analysis = _stage(report, "analysis")
+        self.assertEqual(StageStatus.FAILED, analysis.status, analysis.detail)
+        self.assertIn("version", analysis.detail)
+        self.assertIn("ListModels and Infer disagree", analysis.detail)
+        self.assertEqual(2, report.exit_code)
+        with sqlite3.connect(self.workdir / "library.db") as connection:
+            rows = connection.execute(
+                "SELECT processing_state, record_json FROM media"
+            ).fetchall()
+        self.assertTrue(rows)
+        for state, raw in rows:
+            self.assertNotEqual("analyzed", state)
+            record = json.loads(raw)
+            self.assertIsNone((record.get("content") or {}).get("embedding"))
+
     def test_the_block_is_recoverable_and_costs_nothing_twice(self):
         """Starting the host and re-running finishes the job it left.
 

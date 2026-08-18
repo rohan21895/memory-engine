@@ -561,6 +561,40 @@ class RuntimeClient(unittest.TestCase):
                     items={"media-c": "ab" * 32},
                 )
 
+    def test_infer_is_bound_to_the_exact_pin_advertised_by_list_models(self):
+        advertised = {
+            "model_id": "siglip2-so400m-384",
+            "version": "test",
+            "weights_blake3": "00" * 32,
+            "config_blake3": "11" * 32,
+        }
+        mismatches = {
+            "model_id": "different-model",
+            "version": "different-version",
+            "weights_blake3": "22" * 32,
+            "config_blake3": "33" * 32,
+        }
+        for field, wrong in mismatches.items():
+            with self.subTest(field=field):
+                overrides = {"siglip2-so400m-384": {field: wrong}}
+                with FakeMlRuntime(infer_pin_overrides=overrides) as host:
+                    status = mlruntime.probe(
+                        endpoint=host.endpoint,
+                        required_models=["siglip2-so400m-384"],
+                    )
+                    self.assertTrue(status.available, status.detail)
+                    with mlruntime.MlRuntimeClient(
+                        host.endpoint, expected_pins=status.model_pins
+                    ) as client, self.assertRaises(mlruntime.MlRuntimeError) as caught:
+                        client.infer_proxies(
+                            model_id="siglip2-so400m-384",
+                            request_id=f"pin-{field}",
+                            items={"media": "ab" * 32},
+                        )
+
+                self.assertIn(field, str(caught.exception))
+                self.assertIn(advertised[field], str(caught.exception))
+
 
 def _short_response(host, item_ids):
     """An InferResponse that answers fewer items than were asked for."""

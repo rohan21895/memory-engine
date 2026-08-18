@@ -389,7 +389,13 @@ def run(ctx: StageContext) -> StageResult:
 
     # 3. The model steps.
     try:
-        model_counts = _run_models(ctx, job, space=space, face_stack=face_stack)
+        model_counts = _run_models(
+            ctx,
+            job,
+            space=space,
+            face_stack=face_stack,
+            expected_pins=status.model_pins,
+        )
     except mlruntime.MlRuntimeError as error:
         ctx.jobs.fail(
             job,
@@ -704,6 +710,7 @@ def _run_models(
     *,
     space: tuple[str, int],
     face_stack: FaceStack,
+    expected_pins: Mapping[str, Mapping[str, str]],
 ) -> dict[str, Any]:
     settings = ctx.settings
     space_name, dimensions = space
@@ -723,7 +730,9 @@ def _run_models(
         "faces_without_landmarks": 0,
     }
 
-    with mlruntime.MlRuntimeClient(settings.ml_runtime_endpoint) as client:
+    with mlruntime.MlRuntimeClient(
+        settings.ml_runtime_endpoint, expected_pins=expected_pins
+    ) as client:
         # Warm every model this pass will use before any batch carries a
         # deadline. Loading SigLIP 2 from disk costs more than a whole batch of
         # inference does; letting the first Infer call pay for it made the
