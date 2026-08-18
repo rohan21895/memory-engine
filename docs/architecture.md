@@ -334,6 +334,23 @@ Open, and honest about it:
   cross-fade with the picture or hard-cut at the cut point. The default is
   therefore hard cuts, and the refusal is announced in the plan's notes the
   moment a caller turns dissolves on.
+- **The Tier 3 taste layer is wired and has made real calls.** `prompt-engine`'s
+  three modules — contact sheet, transport, structured parser — were each built
+  and tested alone and had never been called by anything. `album_taste.py` joins
+  them and `services/pipeline`'s `taste` stage drives them, OFF unless three
+  things are separately true: `--tier3`, a key, and a consent record. Two live
+  calls to `claude-sonnet-5` over the synthetic library returned a validated
+  8-of-22 selection for $0.027 total. Three things the runs established that
+  reading could not: the selection is **not reproducible** (byte-identical
+  requests, 6 of 8 the same in a different order — which is why the decision is
+  content-addressed and stored rather than re-asked); the model's returned
+  ORDER contradicts capture chronology, because the sheet carries no timestamps
+  by design; and an egress refusal was being reported as a missing SDK, because
+  the sender was constructed before consent was checked. See
+  `docs/tier3-album-taste.md`. **`album` deliberately does not consume the
+  selection**: `AlbumSpec.SelectionReport` has no field that can say a cloud
+  model chose these photographs, and a book that cannot state where its
+  selection came from is the silent thing rule 7 forbids.
 - **No safety classifier is selected** (issue #21), so the release pipeline has
   no sensitive-content gate. That is a release blocker in its own right.
 - **SCRFD's letterbox padding value is unresolved** (issue #33). Two upstream

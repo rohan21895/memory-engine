@@ -66,6 +66,26 @@ def build_parser() -> argparse.ArgumentParser:
                         help="how long the reel is asked to be; it ends on a cut "
                              "point, so the realised length is usually shorter and "
                              "the plan says by how much")
+    parser.add_argument("--tier3", action="store_true",
+                        help="run the Tier 3 taste pass: upload a low-resolution "
+                             "contact sheet of the album shortlist to a frontier "
+                             "model and record its selection. OFF by default. Also "
+                             "needs ANTHROPIC_API_KEY and a consent record; each "
+                             "absence is reported separately")
+    parser.add_argument("--tier3-dry-run", action="store_true",
+                        help="compose the sheet and write the exact request body to "
+                             "the workdir WITHOUT sending it. Implies --tier3. Use "
+                             "this to see what would be transmitted before "
+                             "authorising a real upload")
+    parser.add_argument("--tier3-model", default=_DEFAULTS.tier3_model,
+                        help="which frontier model answers; recorded in the run "
+                             "report, and a reply from a different model fails the "
+                             "stage rather than being accepted")
+    parser.add_argument("--tier3-consent", default=None,
+                        help="path to a ConsentRef JSON authorising the upload "
+                             "(default <workdir>/tier3-consent.json). Absence blocks")
+    parser.add_argument("--tier3-pool", type=int, default=_DEFAULTS.tier3_pool_multiplier,
+                        help="candidates shown per album slot wanted")
     parser.add_argument("--no-render-print", action="store_true")
     parser.add_argument("--no-render-video", action="store_true")
     parser.add_argument("--quiet", action="store_true",
@@ -90,6 +110,14 @@ def main(argv: list[str] | None = None) -> int:
         reel_seconds=args.reel_seconds,
         render_print=not args.no_render_print,
         render_video=not args.no_render_video,
+        # --tier3-dry-run implies --tier3: asking to see what would be sent is
+        # asking for the pass to run, and requiring both flags would mean the
+        # inspection mode silently does nothing for anyone who forgot one.
+        tier3_enabled=args.tier3 or args.tier3_dry_run,
+        tier3_dry_run=args.tier3_dry_run,
+        tier3_model=args.tier3_model,
+        tier3_consent_path=args.tier3_consent,
+        tier3_pool_multiplier=args.tier3_pool,
     )
     stages = [name.strip() for name in args.stages.split(",") if name.strip()] or None
 
