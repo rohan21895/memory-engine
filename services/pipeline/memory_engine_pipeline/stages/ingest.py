@@ -57,7 +57,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..ids import source_locator_digest
+from ..ids import blake3_hex, source_locator_digest
 from ..inventory import Inventory, diff, walk
 from ..jobstore import build_job
 from .base import (
@@ -349,18 +349,26 @@ def _execute(
         )
     job = persisted
 
-    loaded, skipped, unreadable = _load_records(ctx, job)
+    loaded, skipped, unreadable, imported_media_ids = _load_records(ctx, job)
     elapsed = time.monotonic() - started
 
     media_outputs = _media_outputs(job)
     unexpected_outputs = len(job.get("outputs") or []) - len(media_outputs)
     duplicate_ids = len(media_outputs) - len({output["id"] for output in media_outputs})
-    missing_from_database = _missing_media_ids(ctx, media_outputs)
-    if unreadable or unexpected_outputs or duplicate_ids or missing_from_database:
+    duplicate_media_ids = len(imported_media_ids) - len(set(imported_media_ids))
+    missing_from_database = _missing_media_ids(ctx, imported_media_ids)
+    if (
+        unreadable
+        or unexpected_outputs
+        or duplicate_ids
+        or duplicate_media_ids
+        or missing_from_database
+    ):
         detail = (
             "ingest outputs were not durably imported: "
             f"unreadable={unreadable}, unexpected={unexpected_outputs}, "
-            f"duplicate_ids={duplicate_ids}, missing_from_media_db={len(missing_from_database)}"
+            f"duplicate_ids={duplicate_ids}, duplicate_media_ids={duplicate_media_ids}, "
+            f"missing_from_media_db={len(missing_from_database)}"
         )
         ctx.jobs.fail(
             _scan_job_for_store(job),
@@ -379,6 +387,7 @@ def _execute(
                 "unreadable": unreadable,
                 "unexpected_outputs": unexpected_outputs,
                 "duplicate_output_ids": duplicate_ids,
+                "duplicate_media_ids": duplicate_media_ids,
                 "missing_from_media_db": len(missing_from_database),
             },
         )
@@ -498,7 +507,9 @@ def _with_tracking_state(job: dict[str, Any], tracking: dict[str, Any]) -> dict[
     return worker
 
 
-def _load_records(ctx: StageContext, job: dict[str, Any]) -> tuple[int, int, int]:
+def _load_records(
+    ctx: StageContext, job: dict[str, Any]
+) -> tuple[int, int, int, tuple[str, ...]]:
     """Load this job's MediaRecords into media-db.
 
     `put_media` is an idempotent upsert, so re-loading is safe; the membership
@@ -509,16 +520,37 @@ def _load_records(ctx: StageContext, job: dict[str, Any]) -> tuple[int, int, int
     """
     outputs = _media_outputs(job)
     if not outputs:
-        return 0, 0, 0
+        return 0, 0, 0, ()
 
     loaded = 0
     skipped = 0
     unreadable = 0
+    media_ids: list[str] = []
     connection = ctx.database.connection
     chunk = 500
     for start in range(0, len(outputs), chunk):
         window = outputs[start : start + chunk]
-        ids = [output["id"] for output in window]
+        verified: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+        for output in window:
+            record = _verified_media_record(output)
+            if record is None:
+                unreadable += 1
+                ctx.reporter.event(
+                    STAGE,
+                    "note",
+                    "a record the worker reported failed size, digest, or JSON "
+                    "verification; it is left out of the library rather than guessed at",
+                )
+                continue
+            media_id = record.get("media_id")
+            if not isinstance(media_id, str) or not media_id:
+                unreadable += 1
+                continue
+            verified.append((output, record, media_id))
+            media_ids.append(media_id)
+        ids = [media_id for _output, _record, media_id in verified]
+        if not ids:
+            continue
         placeholders = ",".join("?" for _ in ids)
         present = {
             row[0]
@@ -526,19 +558,9 @@ def _load_records(ctx: StageContext, job: dict[str, Any]) -> tuple[int, int, int
                 f"SELECT media_id FROM media WHERE media_id IN ({placeholders})", ids
             )
         }
-        for output in window:
-            if output["id"] in present:
+        for _output, record, media_id in verified:
+            if media_id in present:
                 skipped += 1
-                continue
-            record = read_json(Path(output["path"]))
-            if record is None:
-                unreadable += 1
-                ctx.reporter.event(
-                    STAGE,
-                    "note",
-                    "a record the worker reported could not be read back; "
-                    "it is left out of the library rather than guessed at",
-                )
                 continue
             ctx.database.put_media(record)
             loaded += 1
@@ -557,18 +579,35 @@ def _load_records(ctx: StageContext, job: dict[str, Any]) -> tuple[int, int, int
         message="stored",
         force=True,
     )
-    return loaded, skipped, unreadable
+    return loaded, skipped, unreadable, tuple(media_ids)
 
 
-def _missing_media_ids(
-    ctx: StageContext, outputs: list[dict[str, Any]]
-) -> tuple[str, ...]:
-    """Output ids absent from media-db after import, in bounded queries."""
+def _verified_media_record(output: dict[str, Any]) -> dict[str, Any] | None:
+    """Read one JobOutput only when its exact artifact still matches the contract."""
+    try:
+        raw = Path(output["path"]).read_bytes()
+    except (KeyError, OSError, TypeError):
+        return None
+    expected_size = output.get("byte_size")
+    if not isinstance(expected_size, int) or expected_size != len(raw):
+        return None
+    expected_digest = output.get("id")
+    if not isinstance(expected_digest, str) or blake3_hex(raw) != expected_digest:
+        return None
+    try:
+        record = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _missing_media_ids(ctx: StageContext, media_ids: tuple[str, ...]) -> tuple[str, ...]:
+    """Decoded MediaRecord ids absent from media-db after import, in bounded queries."""
     missing: list[str] = []
     connection = ctx.database.connection
     chunk = 500
-    for start in range(0, len(outputs), chunk):
-        ids = [output["id"] for output in outputs[start : start + chunk]]
+    for start in range(0, len(media_ids), chunk):
+        ids = list(media_ids[start : start + chunk])
         placeholders = ",".join("?" for _ in ids)
         present = {
             row[0]
