@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { beforeAll, describe, expect, it } from "vitest";
@@ -7,7 +7,12 @@ import type { AudioPlan, EDL, ReframeTrack, Track } from "../../../contracts/cod
 
 import { digestFile } from "../src/digest.js";
 import { run } from "../src/ffmpeg.js";
-import { decodedFrameDigest, renderVideo, type RenderVideoResult } from "../src/renderer.js";
+import {
+  decodedFrameDigest,
+  renderVideo,
+  verifyPublishedRender,
+  type RenderVideoResult,
+} from "../src/renderer.js";
 import {
   clip,
   FFV1_MKV,
@@ -514,5 +519,116 @@ describe("resumption", () => {
     expect(resumed.id).toBe(first.id);
     expect(resumed.verification.frameCount).toBe(110);
     expect(await digestFile(resumed.path)).toBe(first.id);
+  }, 240_000);
+
+  it("rejects a same-shaped partial containing a different EDL's picture", async () => {
+    const work = await workspace("resume-wrong-picture");
+    const edl = videoOnlyEdl();
+    const options = {
+      sources: { [source.videoMediaId]: { paths: [source.videoPath] } },
+      encode: encode(FFV1_MKV, false),
+      workDirectory: work,
+      tools: TOOLS,
+    };
+    const first = await renderVideo(edl, options);
+    const otherEdl = videoOnlyEdl();
+    otherEdl.tracks[0]!.items[2] = clip("clip-02", "src-a", SOURCE_ORIGIN + 101, 40);
+    const other = await render(otherEdl, { prefix: "resume-wrong-picture-other" });
+    expect(other.verification).toEqual(first.verification);
+    expect(other.id).not.toBe(first.id);
+
+    await writeFile(first.path, await readFile(other.path));
+    const resumed = await renderVideo(edl, options);
+
+    expect(resumed.id).toBe(first.id);
+    expect(await digestFile(resumed.path)).toBe(first.id);
+  }, 240_000);
+
+  it("rejects a probe-valid same-size partial whose BLAKE3 changed", async () => {
+    const work = await workspace("resume-same-size-digest");
+    const edl = videoOnlyEdl();
+    const options = {
+      sources: { [source.videoMediaId]: { paths: [source.videoPath] } },
+      encode: encode(FFV1_MKV, false),
+      workDirectory: work,
+      tools: TOOLS,
+    };
+    const first = await renderVideo(edl, options);
+    const changed = await readFile(first.path);
+    const writingApplication = changed.indexOf(Buffer.from("Lavf"));
+    expect(writingApplication).toBeGreaterThanOrEqual(0);
+    changed[writingApplication] = "M".charCodeAt(0);
+    await writeFile(first.path, changed);
+    expect((await readFile(first.path)).byteLength).toBe(first.byteSize);
+    await expect(verifyPublishedRender(edl, first.path, TOOLS)).resolves.toEqual(first.verification);
+    expect(await digestFile(first.path)).not.toBe(first.id);
+
+    const resumed = await renderVideo(edl, options);
+
+    expect(resumed.id).toBe(first.id);
+    expect(await digestFile(resumed.path)).toBe(first.id);
+  }, 240_000);
+
+  it("invalidates a sidecar bound to a different command graph before structural verification", async () => {
+    const work = await workspace("resume-foreign-graph");
+    const edl = videoOnlyEdl();
+    const options = {
+      sources: { [source.videoMediaId]: { paths: [source.videoPath] } },
+      encode: encode(FFV1_MKV, false),
+      workDirectory: work,
+      tools: TOOLS,
+    };
+    const first = await renderVideo(edl, options);
+    const manifestPath = `${first.path}.resume.json`;
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.command_graph_digest = "f".repeat(64);
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+
+    await expect(
+      renderVideo(edl, {
+        ...options,
+        tools: { ...TOOLS, ffmpeg: join(work, "missing-ffmpeg") },
+      }),
+    ).rejects.toThrow(/could not start its media tool/);
+  }, 240_000);
+
+  it("treats a pre-sidecar partial as untrusted interrupted output", async () => {
+    const work = await workspace("resume-no-sidecar");
+    const edl = videoOnlyEdl();
+    const options = {
+      sources: { [source.videoMediaId]: { paths: [source.videoPath] } },
+      encode: encode(FFV1_MKV, false),
+      workDirectory: work,
+      tools: TOOLS,
+    };
+    const first = await renderVideo(edl, options);
+    await unlink(`${first.path}.resume.json`);
+
+    await expect(
+      renderVideo(edl, {
+        ...options,
+        tools: { ...TOOLS, ffmpeg: join(work, "missing-ffmpeg") },
+      }),
+    ).rejects.toThrow(/could not start its media tool/);
+  }, 240_000);
+
+  it("treats an interrupted sidecar write as untrusted", async () => {
+    const work = await workspace("resume-interrupted-sidecar");
+    const edl = videoOnlyEdl();
+    const options = {
+      sources: { [source.videoMediaId]: { paths: [source.videoPath] } },
+      encode: encode(FFV1_MKV, false),
+      workDirectory: work,
+      tools: TOOLS,
+    };
+    const first = await renderVideo(edl, options);
+    await writeFile(`${first.path}.resume.json`, '{"version":1,"command_graph_digest":');
+
+    await expect(
+      renderVideo(edl, {
+        ...options,
+        tools: { ...TOOLS, ffmpeg: join(work, "missing-ffmpeg") },
+      }),
+    ).rejects.toThrow(/could not start its media tool/);
   }, 240_000);
 });

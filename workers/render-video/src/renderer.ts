@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, link, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { access, link, lstat, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import type { EDL, JobErrorCode } from "../../../contracts/codegen/generated/typescript/index.js";
@@ -66,6 +67,21 @@ export interface RenderVideoResult {
 }
 
 const DEFAULT_TOOLS: ToolPaths = { ffmpeg: "ffmpeg", ffprobe: "ffprobe" };
+const PARTIAL_MANIFEST_VERSION = 1;
+const PARTIAL_MANIFEST_SUFFIX = ".resume.json";
+const PARTIAL_MANIFEST_MAX_BYTES = 4 * 1024;
+
+interface PartialManifest {
+  version: typeof PARTIAL_MANIFEST_VERSION;
+  command_graph_digest: string;
+  artifact_digest: string;
+  byte_size: number;
+}
+
+interface BoundPartial {
+  id: string;
+  byteSize: number;
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -74,6 +90,118 @@ async function exists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function pathEntryExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function isBlake3(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function parsePartialManifest(value: unknown): PartialManifest | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.version !== PARTIAL_MANIFEST_VERSION ||
+    !isBlake3(candidate.command_graph_digest) ||
+    !isBlake3(candidate.artifact_digest) ||
+    !Number.isSafeInteger(candidate.byte_size) ||
+    (candidate.byte_size as number) <= 0
+  ) {
+    return null;
+  }
+  return candidate as unknown as PartialManifest;
+}
+
+async function readBoundPartial(
+  partial: string,
+  manifestPath: string,
+  commandGraphDigest: string,
+): Promise<BoundPartial | null> {
+  try {
+    const manifestInfo = await lstat(manifestPath);
+    if (!manifestInfo.isFile() || manifestInfo.size <= 0 || manifestInfo.size > PARTIAL_MANIFEST_MAX_BYTES) return null;
+    const manifest = parsePartialManifest(JSON.parse(await readFile(manifestPath, "utf8")));
+    if (!manifest || manifest.command_graph_digest !== commandGraphDigest) return null;
+
+    const artifactInfo = await lstat(partial);
+    if (
+      !artifactInfo.isFile() ||
+      !Number.isSafeInteger(artifactInfo.size) ||
+      artifactInfo.size <= 0 ||
+      artifactInfo.size !== manifest.byte_size
+    ) return null;
+    const artifactDigest = await digestFile(partial);
+    if (artifactDigest !== manifest.artifact_digest) return null;
+    return { id: artifactDigest, byteSize: artifactInfo.size };
+  } catch {
+    return null;
+  }
+}
+
+async function invalidatePartial(partial: string, manifestPath: string): Promise<void> {
+  const remove = async (path: string): Promise<void> => {
+    try {
+      await unlink(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  };
+  await Promise.all([remove(partial), remove(manifestPath)]);
+}
+
+async function syncArtifact(path: string): Promise<void> {
+  const handle = await open(path, "r+");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function bindPartial(
+  partial: string,
+  manifestPath: string,
+  commandGraphDigest: string,
+): Promise<BoundPartial> {
+  let artifactInfo = await lstat(partial);
+  if (!artifactInfo.isFile() || !Number.isSafeInteger(artifactInfo.size) || artifactInfo.size <= 0) {
+    fail("internal_error", "The renderer did not produce a regular non-empty partial artifact.");
+  }
+  await syncArtifact(partial);
+  artifactInfo = await lstat(partial);
+  if (!artifactInfo.isFile() || !Number.isSafeInteger(artifactInfo.size) || artifactInfo.size <= 0) {
+    fail("internal_error", "The finalized partial artifact changed before it could be bound.");
+  }
+  const artifactDigest = await digestFile(partial);
+  const manifest: PartialManifest = {
+    version: PARTIAL_MANIFEST_VERSION,
+    command_graph_digest: commandGraphDigest,
+    artifact_digest: artifactDigest,
+    byte_size: artifactInfo.size,
+  };
+  const temporary = `${manifestPath}.tmp-${process.pid}-${randomUUID()}`;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(temporary, "wx", 0o600);
+    await handle.writeFile(`${canonicalJson(manifest)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await rename(temporary, manifestPath);
+  } finally {
+    if (handle) await handle.close().catch(() => undefined);
+    await unlink(temporary).catch(() => undefined);
+  }
+  return { id: artifactDigest, byteSize: artifactInfo.size };
 }
 
 function fail(code: JobErrorCode, detail: string): never {
@@ -248,17 +376,26 @@ export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promis
   });
 
   /**
-   * The partial is named by the command-graph digest, which makes resumption content
-   * addressed and free: a job killed after the encode finished finds its own output on
-   * relaunch, re-verifies it, and does not decode a frame. A job killed mid-encode finds a
-   * file that fails verification and renders again.
+   * The partial is named by the command-graph digest and bound by a durable sidecar to the
+   * full graph digest, artifact BLAKE3, and size. A relaunch reuses it only after both that
+   * byte binding and the structural media checks pass. Missing pre-fix sidecars, interrupted
+   * encodes, and structurally valid but foreign artifacts all invalidate and render again.
    */
   const partial = join(workDirectory, `render-${commandGraphDigest.slice(0, 16)}.${options.encode.container}`);
+  const partialManifest = `${partial}${PARTIAL_MANIFEST_SUFFIX}`;
   await mkdir(dirname(partial), { recursive: true });
   let verification: RenderVerification | null = null;
-  if (await exists(partial)) {
-    verification = await verifyOutput(tools, edl, program, partial, stage).catch(() => null);
-    if (!verification) await unlink(partial).catch(() => undefined);
+  let boundPartial: BoundPartial | null = null;
+  if ((await pathEntryExists(partial)) || (await pathEntryExists(partialManifest))) {
+    boundPartial = await readBoundPartial(partial, partialManifest, commandGraphDigest);
+    if (boundPartial) {
+      verification = await verifyOutput(tools, edl, program, partial, stage).catch(() => null);
+    }
+    if (!boundPartial || !verification) {
+      await invalidatePartial(partial, partialManifest);
+      boundPartial = null;
+      verification = null;
+    }
   }
   if (!verification) {
     const runOptions: RunOptions = { stdoutLimitBytes: 0 };
@@ -273,14 +410,14 @@ export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promis
     }
     await run(tools.ffmpeg, [...command, partial], runOptions);
     verification = await verifyOutput(tools, edl, program, partial, stage);
+    boundPartial = await bindPartial(partial, partialManifest, commandGraphDigest);
   }
-  const id = await digestFile(partial);
-  const info = await stat(partial);
+  if (!boundPartial) fail("internal_error", "The renderer could not bind its finalized partial artifact.");
 
   return {
-    id,
+    id: boundPartial.id,
     path: partial,
-    byteSize: info.size,
+    byteSize: boundPartial.byteSize,
     commandGraphDigest,
     command: [...command, partial],
     filterGraph: filter,
