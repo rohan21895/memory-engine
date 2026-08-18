@@ -8,11 +8,27 @@ Everything that crosses the boundary between *deciding* and *shipping* is descri
 
 ```
 contracts/
-  schemas/     JSON Schema draft 2020-12. The source of truth.
-  codegen/     Generator + committed bindings for Python, TypeScript, Rust.
-  fixtures/    Golden test data, with index.json declaring what each one proves.
-  tests/       Golden tests both agents run.
+  schemas/           JSON Schema draft 2020-12. The source of truth.
+  codegen/           Generator + committed bindings for Python, TypeScript, Rust.
+  fixtures/          Golden test data, with index.json declaring what each one proves.
+  vectors/           Golden input -> id tables for the content-addressed identities.
+  tests/             Golden tests both agents run (Python).
+  tests-typescript/  The same identities, recomputed in TypeScript.
 ```
+
+`vectors/` is separate from `fixtures/` on purpose: a fixture is an instance of
+a schema and `fixtures/index.json` is required to account for every file under
+`fixtures/`, while a vector is an *input tuple* and the id it must produce. Each
+vector carries the exact UTF-8 pre-image as hex alongside the digest, because a
+digest mismatch says only that something diverged and a pre-image mismatch names
+the field that did.
+
+`tests-typescript/` is what makes "language-independent" a measured claim rather
+than an intention. It reads the same vectors and the same fixtures and
+recomputes the same ids against the generated TypeScript bindings. One
+implementation can only show a contract is self-consistent; the failure this
+guards against — Python writing `1.0` where JavaScript writes `1` — is invisible
+to any single language.
 
 ## The seven schemas
 
@@ -40,6 +56,11 @@ Two places where "the bytes" is not the whole story, both handled explicitly rat
 
 - **`MediaRecord.asset_kind`** distinguishes a `physical_file` (identity is the BLAKE3 of its bytes; at least one source; its own proxies) from a `virtual_assembly` (a GoPro chapter set or DSLR split; identity is the `span_id` over its ordered members; `byte_size` 0; no sources and no proxies, because the members own both). Conditional validation enforces the difference. An assembly carrying the *sum* of its members' sizes would be a number matching no file on disk, which breaks anything verifying a record against the filesystem.
 - **`JobSpec.inputs.source_locator_digest`** exists because `scan_source` runs *before* any content hash exists. Without it, two scans of different drives with the same parameters share a `job_id`, and the second is skipped as already-done — a whole drive silently never imported.
+
+**A content address is a byte string, and the byte string is written down.** Naming the tuple is not enough: `span_id` (issue #26), `edl_id` and `face_id` (issue #34) each had a description that named the inputs and left the serialisation to whoever implemented it, and each ended up with a golden fixture that matched no implementation because it had been typed rather than computed. Every one of them now states its exact bytes — separators, field order, number formatting, rounding rule — in the schema, and `contracts/tests` recomputes it. Two rules are load-bearing across all three, and both exist because they were broken:
+
+- **Numbers render in RFC 8785 / ECMAScript `Number::toString` form.** Python's `repr` writes `1.0` where JavaScript writes `1`. That difference alone once made every model report a config-digest mismatch.
+- **Rounding is stated, never delegated to a builtin.** Python's `round` rounds half to even; JavaScript's `Math.round` and Rust's `f64::round` round half away from zero. `face_id` quantises a box to 1e-4 of the frame, and 8855 of the 10000 half-quantum positions in [0,1] are exactly representable — so "just call round" means one detection with two ids.
 
 **Nothing here carries pixel data.** Images are referenced by proxy id, embeddings by index key.
 

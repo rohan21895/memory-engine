@@ -116,6 +116,81 @@ class JobIdentity(unittest.TestCase):
             build_job(job_type="not_a_real_job_type", scope="s", params={})
 
 
+class FaceIdentity(unittest.TestCase):
+    """The producer must agree with the contract, byte for byte.
+
+    Issue #34 froze the face_id encoding in face-record.schema.json and shipped
+    contracts/vectors/face-id.json alongside it. This is the one test that says
+    the code in this repo actually implements that document: it reads the
+    vectors rather than restating them, so a change to either side that is not
+    a change to both fails here.
+
+    Two things it caught when the vectors were first computed, both silent:
+    `round()` rounds half to even where the contract (and JavaScript, and Rust)
+    round half away from zero, and `repr()` writes `1001.0` where the contract
+    writes `1001` -- which meant one frame time got two ids inside Python alone,
+    depending only on whether the JSON had a decimal point in it.
+    """
+
+    VECTORS = json.loads(
+        (REPO_ROOT / "contracts" / "vectors" / "face-id.json").read_text(encoding="utf-8")
+    )
+
+    def _face_id(self, vector):
+        given = vector["input"]
+        return ids.face_identity(
+            media_id=given["media_id"],
+            frame_time=given["frame_time"],
+            bbox=[given["bbox"][axis] for axis in ("x", "y", "w", "h")],
+            detector_model_id=given["detector"]["model_id"],
+            detector_version=given["detector"]["version"],
+        )
+
+    def test_there_are_vectors_to_check(self):
+        self.assertTrue(self.VECTORS["vectors"], "this guard has nothing to guard")
+
+    def test_every_contract_vector_reproduces(self):
+        for vector in self.VECTORS["vectors"]:
+            with self.subTest(vector=vector["name"]):
+                self.assertEqual(vector["face_id"], self._face_id(vector))
+
+    def test_the_shipped_constants_are_the_contract_constants(self):
+        self.assertEqual(self.VECTORS["bbox_quantum"], ids.BBOX_QUANTUM)
+
+    def test_an_integral_time_written_as_a_float_gives_the_same_id(self):
+        integral = {"value": 1001, "rate": 30}
+        floating = {"value": 1001.0, "rate": 30.0}
+        common = dict(
+            media_id="a" * 64,
+            bbox=[0.25, 0.25, 0.5, 0.5],
+            detector_model_id="scrfd-10g-bnkps",
+            detector_version="1.0.0",
+        )
+        self.assertEqual(
+            ids.face_identity(frame_time=integral, **common),
+            ids.face_identity(frame_time=floating, **common),
+            "repr() is back: one frame time is producing two ids",
+        )
+
+    def test_the_bbox_rounds_half_away_from_zero_not_to_even(self):
+        # 0.30025 * 10000 is exactly 3002.5 as a double.
+        self.assertEqual(3003, ids.quantise_box_component(0.30025))
+        self.assertEqual(3002, round(0.30025 * ids.BBOX_QUANTUM))
+
+    def test_a_number_needing_an_exponent_is_refused_rather_than_written(self):
+        with self.assertRaises(ValueError):
+            ids.ecmascript_number(1e-7)
+
+    def test_a_separator_inside_a_detector_field_is_refused(self):
+        with self.assertRaises(ValueError):
+            ids.face_identity(
+                media_id="a" * 64,
+                bbox=[0.1, 0.1, 0.1, 0.1],
+                detector_model_id="scrfd\x1f10g",
+                detector_version="1.0.0",
+            )
+
+
 class Inventory(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="mep-inv-"))

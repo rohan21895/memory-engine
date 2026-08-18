@@ -1,0 +1,115 @@
+{
+  "schema_version": "v0",
+  "face_id": "8d9bdeb028243920fde92633cdc42acddf241739b54d3fe84fe28961b3db17ff",
+  "media_id": "a371bd849cc440490b2013581e0e77ff53db9a984fd9d37ceddbeaffefb96cf2",
+  "frame_time": {
+    "value": 3067485,
+    "rate": 59.94005994005994
+  },
+  "track": {
+    "track_id": "6c1d9a47-58e3-4f02-b7a6-0d9f31c8e254",
+    "track_range": {
+      "start_time": {
+        "value": 3067380,
+        "rate": 59.94005994005994
+      },
+      "duration": {
+        "value": 240,
+        "rate": 59.94005994005994
+      }
+    },
+    "position_in_track": 105,
+    "track_length": 240,
+    "is_track_representative": true
+  },
+  "detection": {
+    "bbox": { "x": 0.4102, "y": 0.3311, "w": 0.0864, "h": 0.1536 },
+    "detection_score": 0.9613,
+    "detector": {
+      "model_id": "scrfd-10g-bnkps",
+      "version": "1.0.0",
+      "weights_blake3": "c450fc2acdb89952121a46dc9afb23f0bbfe2d875be8accaf1edb2eb69749330",
+      "runtime": "onnxruntime_coreml",
+      "precision": "fp16"
+    },
+    "detected_on": "video_proxy_480p",
+    "face_area_ratio": 0.0133
+  },
+  "landmarks": {
+    "scheme": "insightface_5",
+    "points": [
+      { "x": 0.4291, "y": 0.3798 },
+      { "x": 0.4702, "y": 0.3781 },
+      { "x": 0.4508, "y": 0.4062 },
+      { "x": 0.4334, "y": 0.4331 },
+      { "x": 0.4676, "y": 0.4317 }
+    ],
+    "score": 0.907
+  },
+  "embedding": {
+    "space": "arcface_buffalo_l_512",
+    "dimensions": 512,
+    "storage": "index",
+    "index_key": "vec:face:8d9bdeb0:arcface_buffalo_l_512",
+    "values": null,
+    "quantization": "float32",
+    "normalized": true
+  },
+  "attributes": {
+    "yaw_deg": 12.7,
+    "pitch_deg": -4.9,
+    "roll_deg": 2.8,
+    "eyes_open": 0.934,
+    "smile": 0.221,
+    "mouth_open": 0.688,
+    "gaze_on_camera": 0.104,
+    "sharpness": 0.62,
+    "occlusion": 0.11,
+    "wearing_sunglasses": 0.97,
+    "wearing_mask": 0.0,
+    "quality": { "value": 0.58, "run_id": "run-facequality-0417" }
+  },
+  "cluster": {
+    "cluster_id": "8b3c2e51-9f47-4d6a-a018-5c72d4e9b1f6",
+    "method": "hdbscan_cosine",
+    "membership_strength": 0.891,
+    "is_noise": false,
+    "distance_to_centroid": 0.263,
+    "clustering_run_id": "cluster-run-0042"
+  },
+  "identity": {
+    "person_id": "b8e5c710-2d94-4f36-8a71-6c03d9e2b4a5",
+    "assignment": "auto_high_confidence",
+    "confidence": 0.9437,
+    "threshold_profile": "automated_output",
+    "threshold_used": 0.92,
+    "eligible_for_automated_output": true,
+    "candidates": [],
+    "review_reason": null,
+    "decided_by": "model",
+    "decided_at": "2026-03-15T12:26:09+05:30"
+  },
+  "sensitive": {
+    "minor_status": "confirmed_adult",
+    "labeling_consent": null,
+    "excluded_from_sharing": false
+  },
+  "model_runs": [
+    {
+      "run_id": "run-scrfd-0416",
+      "model": {
+        "model_id": "scrfd-10g-bnkps",
+        "version": "1.0.0",
+        "weights_blake3": "c450fc2acdb89952121a46dc9afb23f0bbfe2d875be8accaf1edb2eb69749330",
+        "runtime": "onnxruntime_coreml",
+        "precision": "fp16"
+      },
+      "ran_at": "2026-03-15T12:25:52+05:30",
+      "input_proxy_id": "34a6b292e2c4565718bb6522bc3dbaa7ab9486f62650da24c8a0376231f3dda2",
+      "duration_ms": 8.9,
+      "job_id": null
+    }
+  ],
+  "created_at": "2026-03-15T12:25:52+05:30",
+  "updated_at": "2026-03-15T12:26:09+05:30"
+}

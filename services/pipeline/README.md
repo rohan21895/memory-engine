@@ -277,6 +277,29 @@ as a probe that failed before the fix and passes after it.
    remediation (`--reanalyze-faces`) that reproduces the state exactly.
    Detections are now de-duplicated by face_id before the summary is written.
 
+4. **`face_id` was computed two ways, in one language.** The contract named the
+   tuple and never said how it became bytes, so `ids.face_identity` picked its
+   own — and picked twice. `round()` rounds half to even where JavaScript's
+   `Math.round` and Rust's `f64::round` round half away from zero, and 8855 of
+   the 10000 half-quantum positions in [0,1] are exactly representable, so a
+   box landing on one got different ids from different writers. Worse, `!r` on
+   the RationalTime components is Python's `repr`: a frame time that parsed as
+   `1001.0` hashed differently from the same time parsed as `1001`, which is
+   one frame with two ids *inside Python alone*, decided by whether the JSON
+   had a decimal point. Issue #34 froze the encoding in
+   `contracts/schemas/face-record.schema.json`, and this module now implements
+   it and is pinned against `contracts/vectors/face-id.json` by
+   `tests/test_units.py::FaceIdentity`.
+
+   **Operational consequence, stated rather than left to be discovered:** a
+   library analysed before this change holds face ids for the *old* rounding.
+   They differ only where a box component landed exactly on a half-quantum, so
+   the drift is partial rather than total — which is the worse kind. Re-run
+   with `--reanalyze-faces`; the stored minor-safety envelope and human answers
+   survive it (see 2 above). The `face:v1` domain tag was deliberately NOT
+   bumped: v1 is what the contract now defines, and what shipped before it was
+   not a different version, it was an undefined one.
+
 ### Known gaps, named rather than worked around
 
 * **The demo library produces no album.** `scripts/demo/make_library.py` writes

@@ -178,6 +178,20 @@
       ]
     },
     {
+      "path": "face-record/valid/face-video-track-crossing-chapters.json",
+      "schema": "face-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE added for issue #34: the only face fixture with a NON-NULL frame_time, so the half of the face_id encoding that renders a RationalTime is covered by a golden record rather than only by vectors. Its media_id is the GoPro assembly and its track spans the chapter boundary at 3067485, which is the shape moment scoring has to work against.",
+      "exercises": [
+        "frame_time rendered into face_id as value/rate at the NTSC 60000/1001 rate",
+        "face_id recomputes under the canonical encoding, in Python and in TypeScript",
+        "media_id is the virtual assembly, so a track can cross a chapter boundary",
+        "track membership with is_track_representative -- identity is decided once per track",
+        "assignment auto_high_confidence, the only eligible state no other fixture covered",
+        "detected_on video_proxy_480p, against the member chapter's own proxy"
+      ]
+    },
+    {
       "path": "job-spec/schema-invalid/egress-without-consent.json",
       "schema": "job-spec",
       "expectation": "schema-invalid",

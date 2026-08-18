@@ -602,8 +602,10 @@
           "$ref": "#/$defs/Slug"
         },
         "version": {
+          "description": "The registry's version string for this model. Free-form apart from one exclusion: no C0 control character and no DEL. FaceRecord.face_id joins model_id and version with U+001F, and a version containing that separator would let two different (model, version) pairs produce one identical byte string and therefore one identical face id. Excluding the separator structurally is what lets that encoding skip length prefixes; leaving it to convention is how the collision gets found in a family album instead of here.",
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
         },
         "weights_blake3": {
           "description": "BLAKE3 of the weights file, or null when the entry is unpinned. Null is permitted ONLY because development mode permits loading unpinned weights; a null here is exactly what makes a record non-reproducible, and release mode refuses to produce one.",

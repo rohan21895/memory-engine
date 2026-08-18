@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "face_id": "a6950386f5ecb6d5a4213465de36a550058a26299eb44b4b87a86a5dd968f39f",
+  "face_id": "73144a960912f3a6d60227c32803bb1e95171f3e59ae784bad5448d815413474",
   "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
   "frame_time": null,
   "track": null,
@@ -32,7 +32,7 @@
     "space": "arcface_buffalo_l_512",
     "dimensions": 512,
     "storage": "index",
-    "index_key": "vec:face:a6950386:arcface_buffalo_l_512",
+    "index_key": "vec:face:73144a96:arcface_buffalo_l_512",
     "values": null,
     "quantization": "float32",
     "normalized": true

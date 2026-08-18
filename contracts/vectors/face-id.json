@@ -1,0 +1,204 @@
+{
+  "encoding_version": "face:v1",
+  "description": "Golden input -> face_id vectors for the canonical encoding frozen in contracts/schemas/face-record.schema.json (issue #34). Every implementation in every language must reproduce both columns. `preimage_utf8_hex` is the hex of the exact UTF-8 bytes that get hashed; it is here rather than only the digest because a digest mismatch says nothing about WHICH field diverged, and the pre-image says exactly.",
+  "separator": {
+    "codepoint": 31,
+    "name": "U+001F INFORMATION SEPARATOR ONE"
+  },
+  "domain_tag": "face:v1",
+  "bbox_quantum": 10000,
+  "bbox_rounding": "half away from zero",
+  "number_format": "RFC 8785 / ECMAScript Number::toString; exponent notation is refused, not written",
+  "hash": "BLAKE3-256, lowercase hex",
+  "vectors": [
+    {
+      "name": "still-frame-time-null",
+      "why": "The still case. frame_time is null and contributes the EMPTY field, so the byte string carries two separators in a row. Nothing else in the tuple can produce an empty field, and a rendered time always contains a '/', so the two cases can never be confused.",
+      "input": {
+        "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+        "frame_time": null,
+        "bbox": {
+          "x": 0.4128,
+          "y": 0.3016,
+          "w": 0.1042,
+          "h": 0.1563
+        },
+        "detector": {
+          "model_id": "scrfd-10g-bnkps",
+          "version": "1.0.0"
+        }
+      },
+      "preimage_utf8_hex": "666163653a76311f313936373961316130613532663262323534656265633961633631383964633230666630363236386665653530616362663832633665353262646437636137321f1f343132382c333031362c313034322c313536331f73637266642d3130672d626e6b70731f312e302e30",
+      "face_id": "73144a960912f3a6d60227c32803bb1e95171f3e59ae784bad5448d815413474"
+    },
+    {
+      "name": "video-ntsc-rate",
+      "why": "60000/1001 has no exact float form. It renders as the shortest decimal that round-trips -- identical under Python's repr and JavaScript's String -- and NOT as a rounded 59.94, which would collide two different rates.",
+      "input": {
+        "media_id": "a371bd849cc440490b2013581e0e77ff53db9a984fd9d37ceddbeaffefb96cf2",
+        "frame_time": {
+          "value": 3067485,
+          "rate": 59.94005994005994
+        },
+        "bbox": {
+          "x": 0.4102,
+          "y": 0.3311,
+          "w": 0.0864,
+          "h": 0.1536
+        },
+        "detector": {
+          "model_id": "scrfd-10g-bnkps",
+          "version": "1.0.0"
+        }
+      },
+      "preimage_utf8_hex": "666163653a76311f613337316264383439636334343034393062323031333538316530653737666635336462396139383466643964333763656464626561666665666239366366321f333036373438352f35392e39343030353939343030353939341f343130322c333331312c3836342c313533361f73637266642d3130672d626e6b70731f312e302e30",
+      "face_id": "8d9bdeb028243920fde92633cdc42acddf241739b54d3fe84fe28961b3db17ff"
+    },
+    {
+      "name": "video-integral-time-as-int",
+      "why": "THE PAIR THAT MATTERS. This vector and the next differ only in whether the JSON writes the time as an integer or as a float with a zero fraction. They MUST produce the same id: it is the exact shape that broke the model config digest, where Python wrote 1.0 and JavaScript wrote 1.",
+      "input": {
+        "media_id": "a371bd849cc440490b2013581e0e77ff53db9a984fd9d37ceddbeaffefb96cf2",
+        "frame_time": {
+          "value": 1001,
+          "rate": 30
+        },
+        "bbox": {
+          "x": 0.25,
+          "y": 0.25,
+          "w": 0.5,
+          "h": 0.5
+        },
+        "detector": {
+          "model_id": "scrfd-10g-bnkps",
+          "version": "1.0.0"
+        }
+      },
+      "preimage_utf8_hex": "666163653a76311f613337316264383439636334343034393062323031333538316530653737666635336462396139383466643964333763656464626561666665666239366366321f313030312f33301f323530302c323530302c353030302c353030301f73637266642d3130672d626e6b70731f312e302e30",
+      "face_id": "7491ffd459904677883eeb08090a41064c236ec0b60bd412b955409b744e621b"
+    },
+    {
+      "name": "video-integral-time-as-float",
+      "why": "The twin of video-integral-time-as-int, written as 1001.0 and 30.0. Same id, or the encoding is not language-independent.",
+      "input": {
+        "media_id": "a371bd849cc440490b2013581e0e77ff53db9a984fd9d37ceddbeaffefb96cf2",
+        "frame_time": {
+          "value": 1001.0,
+          "rate": 30.0
+        },
+        "bbox": {
+          "x": 0.25,
+          "y": 0.25,
+          "w": 0.5,
+          "h": 0.5
+        },
+        "detector": {
+          "model_id": "scrfd-10g-bnkps",
+          "version": "1.0.0"
+        }
+      },
+      "preimage_utf8_hex": "666163653a76311f613337316264383439636334343034393062323031333538316530653737666635336462396139383466643964333763656464626561666665666239366366321f313030312f33301f323530302c323530302c353030302c353030301f73637266642d3130672d626e6b70731f312e302e30",
+      "face_id": "7491ffd459904677883eeb08090a41064c236ec0b60bd412b955409b744e621b"
+    },
+    {
+      "name": "bbox-on-the-half-quantum",
+      "why": "0.30025 * 10000 is EXACTLY 3002.5 as a double. Half away from zero gives 3003, which is what JavaScript's Math.round and Rust's f64::round produce; Python's round() gives 3002, because it rounds half to even. 8855 of the 10000 half-quantum positions in [0,1] are exactly representable, so this is a reachable divergence rather than a theoretical one.",
+      "input": {
+        "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+        "frame_time": null,
+        "bbox": {
+          "x": 0.30025,
+          "y": 0.30035,
+          "w": 0.10005,
+          "h": 0.10015
+        },
+        "detector": {
+          "model_id": "scrfd-10g-bnkps",
+          "version": "1.0.0"
+        }
+      },
+      "preimage_utf8_hex": "666163653a76311f313936373961316130613532663262323534656265633961633631383964633230666630363236386665653530616362663832633665353262646437636137321f1f333030332c333030342c313030312c313030321f73637266642d3130672d626e6b70731f312e302e30",
+      "face_id": "fff36914b779a95c9331ba0605fe801ac5369ec91fa50ccd56ff5e47f5f3913b"
+    },
+    {
+      "name": "bbox-covers-the-whole-frame",
+      "why": "The extremes of the coordinate range: a box at the origin covering the entire oriented frame quantises to 0,0,10000,10000. Confirms the quantum applies to the normalised value and not to a pixel count.",
+      "input": {
+        "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+        "frame_time": null,
+        "bbox": {
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        "detector": {
+          "model_id": "scrfd-10g-bnkps",
+          "version": "1.0.0"
+        }
+      },
+      "preimage_utf8_hex": "666163653a76311f313936373961316130613532663262323534656265633961633631383964633230666630363236386665653530616362663832633665353262646437636137321f1f302c302c31303030302c31303030301f73637266642d3130672d626e6b70731f312e302e30",
+      "face_id": "a57690e9dda37d0e3a85e05a428d802a99cb9aa7bd54074a8e1c8c185019fdd6"
+    },
+    {
+      "name": "bbox-below-the-quantum",
+      "why": "A box narrower than one quantum. It quantises to 0, which is correct and harmless -- a face 0.004% of the frame across is not embeddable anyway -- but it is written down so that nobody 'fixes' it into a floor of 1 and renames every such face.",
+      "input": {
+        "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+        "frame_time": null,
+        "bbox": {
+          "x": 0.5,
+          "y": 0.5,
+          "w": 4e-05,
+          "h": 6e-05
+        },
+        "detector": {
+          "model_id": "scrfd-10g-bnkps",
+          "version": "1.0.0"
+        }
+      },
+      "preimage_utf8_hex": "666163653a76311f313936373961316130613532663262323534656265633961633631383964633230666630363236386665653530616362663832633665353262646437636137321f1f353030302c353030302c302c311f73637266642d3130672d626e6b70731f312e302e30",
+      "face_id": "8309fe2b1223944595602d90fafcf40424c1f0d1b57c541f2fa77e3d3d842f32"
+    },
+    {
+      "name": "detector-version-bump-issues-a-new-id",
+      "why": "Identical to still-frame-time-null apart from the detector version. A different id is the point: a detector upgrade moves boxes by a pixel or two, and keeping the old id would attach v2's box to v1's embedding.",
+      "input": {
+        "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+        "frame_time": null,
+        "bbox": {
+          "x": 0.4128,
+          "y": 0.3016,
+          "w": 0.1042,
+          "h": 0.1563
+        },
+        "detector": {
+          "model_id": "scrfd-10g-bnkps",
+          "version": "1.0.1"
+        }
+      },
+      "preimage_utf8_hex": "666163653a76311f313936373961316130613532663262323534656265633961633631383964633230666630363236386665653530616362663832633665353262646437636137321f1f343132382c333031362c313034322c313536331f73637266642d3130672d626e6b70731f312e302e31",
+      "face_id": "874fb33962b6e7aa7ecad4fcec2a66cb0f024e7439d595f94e6c71e2d4e3b3c6"
+    },
+    {
+      "name": "detector-swap-issues-a-new-id",
+      "why": "Identical to still-frame-time-null apart from the model. Two detectors that happen to agree on a box to within the quantum are still two different measurements, and the licence-clean YuNet path exists precisely so that swap can happen.",
+      "input": {
+        "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+        "frame_time": null,
+        "bbox": {
+          "x": 0.4128,
+          "y": 0.3016,
+          "w": 0.1042,
+          "h": 0.1563
+        },
+        "detector": {
+          "model_id": "yunet-2023mar",
+          "version": "1.0.0"
+        }
+      },
+      "preimage_utf8_hex": "666163653a76311f313936373961316130613532663262323534656265633961633631383964633230666630363236386665653530616362663832633665353262646437636137321f1f343132382c333031362c313034322c313536331f79756e65742d323032336d61721f312e302e30",
+      "face_id": "f7cfe9854836859e47417a59ae1de46397a599d6083f0364ec6f75021ebf97b2"
+    }
+  ]
+}

@@ -130,6 +130,11 @@
         "status": "done",
         "attempts": 1,
         "completed_at": "2026-03-15T12:21:44+05:30"
+      },
+      "face_detection": {
+        "status": "done",
+        "attempts": 1,
+        "completed_at": "2026-03-15T12:26:09+05:30"
       }
     }
   },
@@ -156,7 +161,17 @@
       "threshold_used": 0.85
     }
   },
-  "faces": null,
+  "faces": {
+    "face_count": 1,
+    "face_ids": [
+      "8d9bdeb028243920fde92633cdc42acddf241739b54d3fe84fe28961b3db17ff"
+    ],
+    "confirmed_person_ids": [
+      "b8e5c710-2d94-4f36-8a71-6c03d9e2b4a5"
+    ],
+    "pending_review_count": 0,
+    "largest_face_area_ratio": 0.0133
+  },
   "dedupe": null,
   "exclusion": {
     "excluded_from_automation": false,
