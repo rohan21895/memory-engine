@@ -287,11 +287,19 @@ class RenderTheReel(unittest.TestCase):
     def test_a_contract_gap_is_reported_with_its_issue_and_not_worked_around(self):
         """The refusal path, exercised on a real refusal.
 
-        `audio_plan.ambient.high_pass_hz` pins a corner frequency and nothing
-        about the filter's order or response, so the renderer refuses it on
-        contracts#53. This test edits a planned EDL to declare one and checks
-        that the stage FAILS carrying the issue number, rather than dropping the
-        field, catching the error, or reporting a render that did not happen.
+        A non-zero `global_start_time` is a broadcast start timecode, and
+        nothing specifies the delivered file's timecode track or its drop-frame
+        convention, so the renderer refuses it. This test edits a planned EDL to
+        declare one and checks that the stage FAILS carrying the reason, rather
+        than dropping the field, catching the error, or reporting a render that
+        did not happen.
+
+        It used to edit `audio_plan.ambient.high_pass_hz`, which was refused on
+        contracts#53. That issue closed -- the filter now names its response,
+        order and section Q values -- and this assertion went on passing
+        locally only because `RenderTheReel` skips when the renderer is not
+        built. Choose a declaration that is still refused, not one that used to
+        be.
         """
         workdir = Path(tempfile.mkdtemp(prefix="mep-render-gap-"))
         try:
@@ -304,7 +312,7 @@ class RenderTheReel(unittest.TestCase):
             )
             edl_path = Path(_stage(report, "story").outputs[0])
             edl = json.loads(edl_path.read_text(encoding="utf-8"))
-            edl["audio_plan"]["ambient"]["high_pass_hz"] = 120.0
+            edl["global_start_time"] = {"value": 3600.0, "rate": edl["rate"]}
             edl_path.write_text(json.dumps(edl, indent=2), encoding="utf-8")
 
             # `story` re-runs, finds its plan already on disk and leaves the
@@ -317,8 +325,8 @@ class RenderTheReel(unittest.TestCase):
             )
             result = _stage(second, "render-video")
             self.assertEqual(StageStatus.FAILED, result.status, result.detail)
-            self.assertIn("contracts#53", result.detail)
-            self.assertIn("high_pass_hz", result.detail)
+            self.assertIn("global_start_time", result.detail)
+            self.assertIn("timecode", result.detail)
             self.assertFalse(
                 list((workdir / "outputs" / "video").glob("*.mp4")),
                 "a refused plan still produced a file",
