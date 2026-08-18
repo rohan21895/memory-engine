@@ -16,13 +16,17 @@ output against the source.
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import _support  # noqa: F401 - sets sys.path
 
 from memory_engine_story.moments import plan_moments
 from memory_engine_video_analysis import stream as stream_module
-from memory_engine_video_analysis.proxy import Proxy, read_frame_index
+from memory_engine_video_analysis.proxy import Proxy, ProxyError, read_frame_index
 from memory_engine_video_analysis.transcript import NullTranscriptBackend
 
 SCHEMA_DIR = _support.REPO_ROOT / "contracts" / "schemas"
@@ -234,7 +238,7 @@ class SourceOffset(unittest.TestCase):
                 media_id="a" * 64,
                 path=clip,
                 frame_index=read_frame_index(path),
-                proxy_id="b" * 64,
+                proxy_id=_support.file_blake3(clip),
             )
             built, _ = stream_module.analyse_proxy(proxy)
             return plan_moments(built, created_at=FIXED_TIME), built
@@ -277,11 +281,49 @@ class GridSafety(unittest.TestCase):
             media_id="a" * 64,
             path=clip,
             frame_index=read_frame_index(sidecar),
-            proxy_id="b" * 64,
+            proxy_id=_support.file_blake3(clip),
         )
         with self.assertRaises(stream_module.StreamAssemblyError) as caught:
             stream_module.analyse_proxy(proxy)
         self.assertIn("frame index holds", str(caught.exception))
+
+
+class ProxyIdentity(unittest.TestCase):
+    def test_same_grid_bytes_swapped_under_an_old_id_are_refused_before_decode(self):
+        """New pixels may not inherit the old proxy's content address."""
+        original = _support.hard_cut()
+        replacement = _support.flash()
+        self.assertEqual(
+            len(_support.probe_frames(original)),
+            len(_support.probe_frames(replacement)),
+            "the replacement must preserve the frame grid this regression targets",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "proxy.mp4"
+            shutil.copyfile(original, artifact)
+            declared_id = _support.file_blake3(artifact)
+            sidecar = _support.write_sidecar(original, Path(directory) / "proxy.idx")
+            proxy = Proxy(
+                media_id="a" * 64,
+                path=artifact,
+                frame_index=read_frame_index(sidecar),
+                proxy_id=declared_id,
+            )
+            shutil.copyfile(replacement, artifact)
+            actual_id = _support.file_blake3(artifact)
+            self.assertNotEqual(declared_id, actual_id)
+
+            with patch.object(
+                stream_module.decode,
+                "probe",
+                side_effect=AssertionError("decode ran before proxy identity was checked"),
+            ) as decode_probe:
+                with self.assertRaises(ProxyError) as caught:
+                    stream_module.analyse_proxy(proxy, consult_seam=False)
+
+            decode_probe.assert_not_called()
+            self.assertIn(declared_id, str(caught.exception))
+            self.assertIn(actual_id, str(caught.exception))
 
 
 if __name__ == "__main__":

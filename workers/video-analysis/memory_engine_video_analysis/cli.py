@@ -43,6 +43,8 @@ from .transcript import NullTranscriptBackend
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_DIR = REPO_ROOT / "contracts" / "schemas"
+RUN_REPORT_SCHEMA = "memory-engine-video-analysis-run"
+RUN_REPORT_VERSION = 1
 
 
 def _records_root(workdir: Path, override: Path | None) -> Path:
@@ -102,6 +104,39 @@ def _write_atomically(path: Path, payload: Any) -> None:
     os.replace(temporary, path)
 
 
+def _write_run_report(
+    path: Path,
+    *,
+    analysed_at: str,
+    exit_code: int,
+    discovered: int,
+    analysed: int,
+    skipped: int,
+    failed: int,
+    deferred: int,
+) -> None:
+    """A stable machine answer to how much of the requested run completed."""
+    _write_atomically(
+        path,
+        {
+            "schema": RUN_REPORT_SCHEMA,
+            "version": RUN_REPORT_VERSION,
+            "analysed_at": analysed_at,
+            "analyser": (
+                f"{stream_module.ANALYSER_ID}/{stream_module.ANALYSER_VERSION}"
+            ),
+            "exit_code": exit_code,
+            "counts": {
+                "discovered": discovered,
+                "analysed": analysed,
+                "skipped": skipped,
+                "failed": failed,
+                "deferred": deferred,
+            },
+        },
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python3 -m memory_engine_video_analysis",
@@ -112,6 +147,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="MediaRecord tree, if not <workdir>/records/records")
     parser.add_argument("--out", type=Path, default=None,
                         help="where to write moment JSON (default <workdir>/moments)")
+    parser.add_argument(
+        "--report",
+        type=Path,
+        default=None,
+        help=(
+            "machine-readable run counts (default "
+            "<workdir>/video-analysis-report.json)"
+        ),
+    )
     parser.add_argument("--media-id", action="append", default=[],
                         help="analyse only these media ids (repeatable)")
     parser.add_argument("--limit", type=int, default=0,
@@ -149,14 +193,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     ]
     say(f"records  {len(records)} under {root}, {len(videos)} video")
 
+    analysed_at = arguments.at or datetime.now(timezone.utc).isoformat(
+        timespec="seconds"
+    )
+    out_root = arguments.out or (arguments.workdir / "moments")
+    report_path = arguments.report or (
+        arguments.workdir / "video-analysis-report.json"
+    )
+
     with_proxy: list[tuple[dict[str, Any], Any]] = []
     without: list[str] = []
+    selection_failures = 0
     for record in sorted(videos, key=lambda item: item["media_id"]):
         try:
             proxies = proxies_in_record(record)
         except ProxyError as error:
+            selection_failures += 1
             print(f"FAILED {record['media_id'][:12]}: {error}", file=sys.stderr)
-            return 2
+            continue
         if proxies:
             if len(proxies) > 1:
                 # A record with two 480p proxies means one was regenerated and
@@ -182,18 +236,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             "nothing to analyse. Moment scoring needs a video proxy and a frame "
             "index, and no record has one."
         )
-        return 1
+        exit_code = 2 if selection_failures else 1
+        _write_run_report(
+            report_path,
+            analysed_at=analysed_at,
+            exit_code=exit_code,
+            discovered=len(videos),
+            analysed=0,
+            skipped=len(without),
+            failed=selection_failures,
+            deferred=0,
+        )
+        return exit_code
+    eligible = len(with_proxy)
     if arguments.limit > 0:
         with_proxy = with_proxy[: arguments.limit]
-
-    analysed_at = arguments.at or datetime.now(timezone.utc).isoformat(
-        timespec="seconds"
-    )
-    out_root = arguments.out or (arguments.workdir / "moments")
+    deferred = eligible - len(with_proxy)
     validator = _validator()
     total_moments = 0
     total_eliminated = 0
-    failures = 0
+    failures = selection_failures
+    analysed = 0
 
     for record, proxy in with_proxy:
         name = (record.get("sources") or [{}])[0].get("original_filename") or record[
@@ -263,6 +326,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         total_moments += len(plan.moments)
         total_eliminated += len(plan.eliminated)
+        analysed += 1
         say("")
         say(f"{name}")
         for line in report.lines():
@@ -283,10 +347,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     say("")
     say(
-        f"{len(with_proxy) - failures}/{len(with_proxy)} videos analysed; "
+        f"{analysed}/{len(with_proxy)} videos analysed; "
         f"{total_moments} moments kept, {total_eliminated} eliminated records "
         f"written under {out_root}"
     )
-    if failures:
-        return 2
-    return 0
+    exit_code = 2 if failures else (1 if without else 0)
+    _write_run_report(
+        report_path,
+        analysed_at=analysed_at,
+        exit_code=exit_code,
+        discovered=len(videos),
+        analysed=analysed,
+        skipped=len(without),
+        failed=failures,
+        deferred=deferred,
+    )
+    return exit_code

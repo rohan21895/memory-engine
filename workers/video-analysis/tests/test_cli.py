@@ -72,6 +72,65 @@ class ExitCodes(unittest.TestCase):
             self.assertIn("WEIGHTS_MISSING", payload["report"]["transnetv2_seam"])
             self.assertIn("face_presence", payload["report"]["not_measured"])
 
+    def test_a_mixed_library_is_incomplete_and_writes_machine_counts(self):
+        """One analysed video cannot hide another video's missing proxy."""
+        clip = _support.hard_cut()
+        proxy = _support.make_proxy(clip)
+        missing_id = "c" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            workdir = Path(directory)
+            root = workdir / "records" / "records"
+            for media_id, proxies in (
+                (
+                    proxy.media_id,
+                    [
+                        {
+                            "kind": "video_proxy_480p",
+                            "proxy_id": proxy.proxy_id,
+                            "path": str(clip),
+                            "size": {"width": 854, "height": 480},
+                            "frame_index": {"path": str(proxy.frame_index.path)},
+                        }
+                    ],
+                ),
+                (missing_id, []),
+            ):
+                record_root = root / media_id[:2] / media_id[2:4]
+                record_root.mkdir(parents=True, exist_ok=True)
+                (record_root / f"{media_id}.json").write_text(
+                    json.dumps(
+                        {
+                            "media_id": media_id,
+                            "kind": "video",
+                            "sources": [{"original_filename": f"{media_id[:4]}.mp4"}],
+                            "proxies": proxies,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            code = cli.main(
+                [str(workdir), "--quiet", "--at", "2026-08-17T00:00:00+00:00"]
+            )
+
+            self.assertEqual(code, 1)
+            self.assertTrue((workdir / "moments" / f"{proxy.media_id}.json").is_file())
+            self.assertFalse((workdir / "moments" / f"{missing_id}.json").exists())
+            report = json.loads(
+                (workdir / "video-analysis-report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["exit_code"], 1)
+            self.assertEqual(
+                report["counts"],
+                {
+                    "analysed": 1,
+                    "deferred": 0,
+                    "discovered": 2,
+                    "failed": 0,
+                    "skipped": 1,
+                },
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

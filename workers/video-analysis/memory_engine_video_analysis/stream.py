@@ -65,7 +65,7 @@ __all__ = [
 ]
 
 ANALYSER_ID = "video-analysis"
-ANALYSER_VERSION = "0.1.0"
+ANALYSER_VERSION = "0.1.1"
 
 # The Slug every Score in the emitted records points at. It names the SCORER,
 # because that is what produced the numbers in `scores`; the feature producers
@@ -167,6 +167,10 @@ def analyse_proxy(
     from memory_engine_story.moments import FeatureStream, Frame  # noqa: PLC0415
 
     started = time.monotonic()
+    # Content identity is checked before any decoder sees the path. Otherwise
+    # replaced bytes can produce new features and ModelRuns under an old
+    # `input_proxy_id`, defeating both provenance and resumable job identity.
+    proxy.verify_content()
     grid = proxy.proxy_grid
     index = proxy.frame_index
 
