@@ -1,5 +1,4 @@
 import type {
-  AudioPlan,
   Clip,
   EDL,
   EdlValidationChecksItemCheckId,
@@ -68,12 +67,22 @@ export interface GateReport {
 
 export const GAP_ISSUES = Object.freeze({
   colorOps: "contracts#49",
-  transition: "contracts#52",
-  ambientDsp: "contracts#53",
-  ducking: "contracts#54",
-  spanAssembly: "contracts#55",
-  encodeProfile: "contracts#56",
   colorPipeline: "contracts#58",
+  /**
+   * A non-zero timeline origin is a broadcast start timecode. contracts#56 settled the
+   * encode profile and deliberately did not settle this: a delivered file's timecode
+   * track and its drop-frame convention are a separate decision, and nobody has needed
+   * one yet.
+   */
+  startTimecode: "contracts/edl: delivery timecode track (unfiled)",
+  /**
+   * contracts#52 settled what a transition IS. What it does not settle is a transition
+   * that sits against a gap or a track edge, which has no handle source on one side.
+   * No planner emits one and no issue exists for it.
+   */
+  transitionGeometry: "contracts/edl: transition against a gap (unfiled)",
+  /** A `transparent` fill has no realisation in an opaque delivery file. */
+  gapFill: "contracts/edl: transparent gap fill (unfiled)",
   /**
    * contracts#51 pinned the interpolation curve and nothing else about crop geometry. A
    * rotated crop and a crop that changes size still name no resampling convention, and
@@ -207,6 +216,31 @@ export function assertStructurallySound(edl: EDL): void {
         "to have checked that the two agree before the mixer sums anything.",
     );
   }
+  const assemblies = edl.media_refs.filter((ref) => ref.is_span_assembly === true);
+  for (const ref of assemblies) {
+    const members = ref.member_media_ids ?? [];
+    if (members.length < 2) {
+      fail(
+        `media_ref ${ref.media_ref_id} is a span assembly naming ${members.length} member(s). ` +
+          "An assembly is what the renderer expands, and it cannot expand a list it does not have.",
+      );
+    }
+    if (ref.continuity !== "verified_gapless") {
+      fail(
+        `media_ref ${ref.media_ref_id} declares continuity ${ref.continuity}. Only ` +
+          "verified_gapless may be concatenated (contracts#55): a gap at a chapter split puts " +
+          "every source timecode after it wrong by the length of the gap, and nothing in the " +
+          "plan carries that length to compensate with.",
+      );
+    }
+  }
+  if (assemblies.length > 0 && !validation.checks.some((c) => c.check_id === "span_continuity_verified" && c.passed)) {
+    fail(
+      "the EDL names a span assembly but validation has no passing span_continuity_verified " +
+        "finding. The member list IS the assembly's identity, and an unchecked order is a " +
+        "different recording.",
+    );
+  }
   const retimed = edl.tracks.some((track) =>
     track.items.some((item) => isClip(item) && item.time_effect != null),
   );
@@ -219,7 +253,7 @@ export function assertStructurallySound(edl: EDL): void {
   }
 }
 
-function gapsFromClip(clip: Clip, audioPlan: AudioPlan | null | undefined, out: ContractGap[]): void {
+function gapsFromClip(clip: Clip, out: ContractGap[]): void {
   for (const op of clip.color_ops ?? []) {
     out.push({
       field: `clips.${clip.clip_id}.color_ops[${op.op}]`,
@@ -231,59 +265,23 @@ function gapsFromClip(clip: Clip, audioPlan: AudioPlan | null | undefined, out: 
     });
   }
 
-  const ambient = audioPlan?.ambient;
-  const clipGain = clip.audio?.gain_db ?? 0;
-  if (ambient && ambient.enabled !== false && clipGain !== 0) {
-    const perClip = (ambient.per_clip_gain_db ?? []).find((entry) => entry.clip_id === clip.clip_id);
-    const ambientGain = perClip ? perClip.gain_db : (ambient.default_gain_db ?? -12);
-    out.push({
-      field: `clips.${clip.clip_id}.audio.gain_db`,
-      declared: `${clipGain} dB against an ambient gain of ${ambientGain} dB`,
-      detail:
-        "Two gains apply to one bed and the contract states no composition rule. Summing, " +
-        "overriding and ignoring are all defensible and are dB apart.",
-      issue: GAP_ISSUES.ambientDsp,
-    });
-  }
-
-  if (clip.audio?.muted === true && (clip.audio.gain_db ?? 0) !== 0) {
-    out.push({
-      field: `clips.${clip.clip_id}.audio`,
-      declared: `muted with gain_db ${clip.audio.gain_db}`,
-      detail: "A muted clip that also carries a gain is a contradiction the renderer will not resolve.",
-      issue: GAP_ISSUES.ambientDsp,
-    });
-  }
+  // The gain conflict that used to be refused here is gone: contracts#53 removed
+  // AmbientPlan's own gains, so a clip's bed has exactly one level, on the clip, and
+  // `muted` outranks it — both now stated in ClipAudio.
 }
 
 function gapsFromTransitions(edl: EDL, out: ContractGap[]): void {
-  const ambientEnabled = (edl.audio_plan?.ambient?.enabled ?? true) && edl.audio_plan != null;
   for (const track of edl.tracks) {
     track.items.forEach((item, index) => {
       if (!isTransition(item)) return;
       const id = item.transition_id ?? `${track.track_id}[${index}]`;
 
-      if ((item.easing ?? "linear") !== "linear") {
-        out.push({
-          field: `transitions.${id}.easing`,
-          declared: item.easing ?? "linear",
-          detail: "The easing names carry no curve, and a cubic and a sine ease are different shots.",
-          issue: GAP_ISSUES.transition,
-        });
-      }
-
-      const supported = new Set(["dissolve", "dip_to_black", "dip_to_white"]);
-      if (!supported.has(item.transition_type)) {
-        out.push({
-          field: `transitions.${id}.transition_type`,
-          declared: item.transition_type,
-          detail:
-            "Only the three types whose meaning is fixed by their names are renderable. The " +
-            "rest carry a free-form `parameters` object whose keys are not enumerated.",
-          issue: GAP_ISSUES.transition,
-        });
-      }
-
+      // contracts#52 closed all three holes here. The easing names are polynomials in the
+      // linear progress, written out in the schema and implemented in filtergraph.ts; the
+      // transition types that carried an un-enumerated `parameters` bag are out of the enum
+      // entirely; and the beds under a transition are stated to butt-cut, because a
+      // cross-fade is already expressible exactly once as ClipAudio fades. What remains is
+      // geometry, which is structural rather than a contract gap.
       const before = track.items[index - 1];
       const after = track.items[index + 1];
       if (!before || !after || !isClip(before) || !isClip(after)) {
@@ -291,25 +289,8 @@ function gapsFromTransitions(edl: EDL, out: ContractGap[]): void {
           field: `transitions.${id}`,
           declared: "not between two clips",
           detail: "A transition against a gap or a track edge has no defined handle source.",
-          issue: GAP_ISSUES.transition,
+          issue: GAP_ISSUES.transitionGeometry,
         });
-        return;
-      }
-
-      if (track.kind === "video" && ambientEnabled) {
-        const carriesAudio = [before, after].some(
-          (clip) => clip.audio != null && clip.audio.muted !== true,
-        );
-        if (carriesAudio) {
-          out.push({
-            field: `transitions.${id}`,
-            declared: `${item.transition_type} between clips that carry ambient audio`,
-            detail:
-              "The contract describes the transition as a picture operation only and never says " +
-              "whether the beds cross-fade with it or hard-cut at the cut point.",
-            issue: GAP_ISSUES.transition,
-          });
-        }
       }
     });
   }
@@ -361,66 +342,20 @@ function gapsFromAudioPlan(edl: EDL, out: ContractGap[]): void {
   const plan = edl.audio_plan;
   if (!plan) return;
 
-  const ambient = plan.ambient;
-  if (ambient && ambient.enabled !== false) {
-    if ((ambient.noise_suppression ?? "light") !== "none") {
-      out.push({
-        field: "audio_plan.ambient.noise_suppression",
-        declared: ambient.noise_suppression ?? "light",
-        detail:
-          "A strength label with no algorithm and no measurable target behind it. " +
-          "\"Moderate\" is a slider caption, not a specification.",
-        issue: GAP_ISSUES.ambientDsp,
-      });
-    }
-    if ((ambient.high_pass_hz ?? null) !== null) {
-      out.push({
-        field: "audio_plan.ambient.high_pass_hz",
-        declared: `${ambient.high_pass_hz} Hz`,
-        detail:
-          "The corner frequency is pinned; the filter order and response are not, and they " +
-          "decide how much of the rumble actually goes.",
-        issue: GAP_ISSUES.ambientDsp,
-      });
-    }
-  }
-
-  for (const rule of plan.ducking ?? []) {
-    if (rule.trigger !== "explicit_ranges") {
-      out.push({
-        field: `audio_plan.ducking.${rule.rule_id}.trigger`,
-        declared: rule.trigger,
-        detail:
-          "A detection trigger asks the renderer to analyse the mix at render time, which is " +
-          "both a decision and not reproducible. The planner must resolve it to ranges.",
-        issue: GAP_ISSUES.ducking,
-      });
-    }
-    if ((rule.attack_ms ?? 80) !== 0 || (rule.release_ms ?? 300) !== 0) {
-      out.push({
-        field: `audio_plan.ducking.${rule.rule_id}`,
-        declared: `attack ${rule.attack_ms ?? 80} ms, release ${rule.release_ms ?? 300} ms`,
-        detail:
-          "No envelope shape is stated, so the gain in the middle of the ramp is the " +
-          "renderer's invention — and that is exactly where the voice is.",
-        issue: GAP_ISSUES.ducking,
-      });
-    }
-    if (rule.trigger === "explicit_ranges" && (rule.ranges ?? []).length === 0) {
-      out.push({
-        field: `audio_plan.ducking.${rule.rule_id}.ranges`,
-        declared: "empty",
-        detail: "explicit_ranges with no ranges states an intent with no extent.",
-        issue: GAP_ISSUES.ducking,
-      });
-    }
-  }
-
+  // contracts#53 replaced the ambient DSP labels with one linear filter whose response,
+  // order and section Q values the schema states, so there is nothing left to refuse here:
+  // the orders the contract allows (2 and 4) are the orders filtergraph.ts builds.
+  // contracts#54 pinned the ducking envelope — linear in dB, attack ending at the range
+  // start, release beginning at the range end — and removed the detection triggers that
+  // would have had the renderer analyse the mix. Both are executed rather than refused.
+  //
   // A MusicCue no longer places anything (contracts#59): every position, gain and fade it
   // used to duplicate now exists exactly once, on an audio-track clip. A bed that repeats
   // is several clips the cue claims, so there is no loop flag left to refuse either
   // (contracts#57). program.ts checks that every cue resolves to clips and every
   // music-role clip is claimed.
+  void plan;
+  void out;
 }
 
 function gapsFromColorPipeline(edl: EDL, out: ContractGap[]): void {
@@ -487,16 +422,6 @@ function unactedDeclarations(edl: EDL): UnactedDeclaration[] {
     );
   }
 
-  const ambient = edl.audio_plan?.ambient;
-  if (ambient && ambient.preserve_speech !== false && ambient.enabled !== false) {
-    note(
-      "audio_plan.ambient.preserve_speech",
-      `Not executable by a renderer: nothing in the EDL says which clips contain speech. In a ` +
-        `well-formed plan the intent already arrives as per-clip gains and explicit ducking ` +
-        `ranges. See ${GAP_ISSUES.ambientDsp}.`,
-    );
-  }
-
   for (const track of edl.tracks) {
     for (const item of track.items) {
       if (isClip(item) && (item.markers ?? []).length > 0) {
@@ -552,13 +477,13 @@ export function collectGaps(edl: EDL): GateReport {
       detail:
         "A non-zero timeline origin means a broadcast start timecode, and neither the timecode " +
         "track nor its drop-frame convention is specified for the delivered file.",
-      issue: GAP_ISSUES.encodeProfile,
+      issue: GAP_ISSUES.startTimecode,
     });
   }
 
   for (const track of edl.tracks) {
     for (const item of track.items) {
-      if (isClip(item)) gapsFromClip(item, edl.audio_plan, gaps);
+      if (isClip(item)) gapsFromClip(item, gaps);
       if (isGap(item)) {
         const fill = item.fill ?? "black";
         const valid = track.kind === "video" ? ["black", "white"] : ["silence"];
@@ -569,7 +494,7 @@ export function collectGaps(edl: EDL): GateReport {
             detail:
               `A ${fill} fill on a ${track.kind} track has no defined realisation in an opaque ` +
               "delivery file.",
-            issue: GAP_ISSUES.encodeProfile,
+            issue: GAP_ISSUES.gapFill,
           });
         }
       }

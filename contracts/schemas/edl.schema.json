@@ -4,7 +4,7 @@
   "title": "EDL",
   "description": "The deterministic edit plan for one video output. Every creative decision in the finished film or reel is expressed here; the renderer executes it and decides nothing.",
 
-  "$comment": "=====================================================================\n OPENTIMELINEIO MAPPING -- READ BEFORE CHANGING ANY FIELD IN THIS FILE\n=====================================================================\n\n Requirement: an EDL must be losslessly exportable to OpenTimelineIO, so a\n pro user can open our auto-cut in Resolve or Premiere and finish it by hand.\n 'Losslessly' here means: export to .otio, re-import, and get a byte-identical\n EDL back. Two rules make that achievable.\n\n RULE 1 -- Structure maps onto OTIO natives, never onto metadata.\n Anything OTIO models natively (clips, gaps, transitions, time, speed,\n markers, media references) uses the OTIO shape exactly, including its\n half-open TimeRange convention and its RationalTime value/rate pair. This is\n why nothing in this contract stores seconds as a float: 30000/1001 has no\n float representation that survives a round trip, and a drifting frame is a\n missed beat.\n\n RULE 2 -- Everything else round-trips through one metadata namespace.\n Beat grids, story arcs, reframe keyframe tracks and ducking rules have no\n OTIO equivalent. They are written into the OTIO `metadata` dict under the\n single key \"memory_engine\", which OTIO preserves verbatim across read/write\n and which every NLE ignores safely. An importer reconstructs the EDL from\n that namespace; an editor who never looks at it still gets a correct cut.\n\n FIELD-BY-FIELD MAPPING\n\n EDL                          -> otio.schema.Timeline\n  .name                       ->   Timeline.name\n  .global_start_time          ->   Timeline.global_start_time (RationalTime)\n  .tracks[]                   ->   Timeline.tracks (a Stack of Tracks)\n  .story_arc                  ->   Timeline.metadata.memory_engine.story_arc\n                                   (+ one Marker per act on the arc track,\n                                    for editor visibility only -- the\n                                    authoritative copy is the metadata)\n  .beat_grid                  ->   Timeline.metadata.memory_engine.beat_grid\n                                   (+ one Marker per downbeat, same rule)\n  .audio_plan.ducking         ->   Timeline.metadata.memory_engine.ducking\n  .audio_plan.mix             ->   Timeline.metadata.memory_engine.mix\n  .reframe_tracks[]           ->   Timeline.metadata.memory_engine.reframe_tracks\n  .determinism                ->   Timeline.metadata.memory_engine.determinism\n  .variant                    ->   Timeline.metadata.memory_engine.variant\n  .target                     ->   Timeline.metadata.memory_engine.target\n\n Track                        -> otio.schema.Track\n  .kind                       ->   Track.kind (\"Video\" | \"Audio\")\n  .name                       ->   Track.name\n  .items[]                    ->   Track (children list, in order)\n\n Clip (item_type=\"clip\")      -> otio.schema.Clip\n  .name                       ->   Clip.name\n  .source_range               ->   Clip.source_range (TimeRange, half-open)\n  .media_ref_id -> MediaRef   ->   Clip.media_reference (ExternalReference)\n  .enabled                    ->   Clip.enabled\n  .markers[]                  ->   Clip.markers[] (otio.schema.Marker)\n  .time_effect (linear_speed) ->   Clip.effects += otio.schema.LinearTimeWarp\n                                     (time_scalar)\n  .time_effect (freeze)       ->   Clip.effects += otio.schema.FreezeFrame\n  .color_ops[]                ->   Clip.effects += otio.schema.Effect with\n                                     effect_name \"memory_engine.color\" and the\n                                     op in its metadata\n  .moment_id, .beat_lock,\n  .reframe_track_id,\n  .source_media_id            ->   Clip.metadata.memory_engine.*\n\n Gap (item_type=\"gap\")        -> otio.schema.Gap\n  .duration                   ->   Gap.source_range.duration\n\n Transition                   -> otio.schema.Transition\n  (item_type=\"transition\")\n  .transition_type            ->   Transition.transition_type\n                                   (\"SMPTE_Dissolve\" | \"Custom\")\n  .in_offset                  ->   Transition.in_offset\n  .out_offset                 ->   Transition.out_offset\n  .parameters                 ->   Transition.metadata.memory_engine\n\n MediaRef                     -> otio.schema.ExternalReference\n  .available_range            ->   ExternalReference.available_range\n  .media_id (BLAKE3)          ->   ExternalReference.metadata.memory_engine\n                                     .media_id\n  (resolved local path)       ->   ExternalReference.target_url, written as a\n                                   file:// URL AT EXPORT TIME ONLY. The EDL\n                                   itself stores no paths -- it is portable\n                                   between machines precisely because it\n                                   addresses content by hash. On import the\n                                   hash in metadata wins over target_url.\n\n CONVENTIONS THAT KEEP THE ROUND TRIP EXACT\n\n - A plain cut is the ABSENCE of a Transition, matching OTIO, where adjacent\n   clips simply butt together. Never emit a zero-length Transition for a cut.\n - Transitions sit between their two neighbours in the items list and overlap\n   them by in_offset/out_offset. A TRANSITION DOES NOT CHANGE EITHER\n   NEIGHBOUR'S TIMELINE EXTENT: the blend straddles the cut, covering the\n   outgoing clip's last in_offset frames and the incoming clip's first\n   out_offset frames, and the extra frames it needs beyond each clip's\n   source_range are the HANDLES, drawn from available_range on either side.\n   (This corrected an earlier statement here that the source_ranges already\n   included the handles. They do not, in the golden fixture or in\n   workers/render-video, and under that reading the fixture's timeline does\n   not sum to the 899 frames its own validation report claims -- which is the\n   arithmetic every beat lock in it depends on. See contracts#52.)\n - `timeline_range` on a Clip is derived (it is the running sum of preceding\n   clip and gap EXTENTS -- see TimeEffect for what an extent is under a speed\n   change -- and a transition does not subtract from it) and is NOT exported -- OTIO computes\n   it. It is carried here only so a validator can catch a planner that emitted\n   an inconsistent timeline, and it is excluded from the determinism digest.\n - Every RationalTime on a video track should share the timeline `rate`.\n   Audio-track times may use the audio sample rate. OTIO permits mixed rates;\n   this contract permits them only in that one place.\n\n See docs/otio-mapping.md for the exporter/importer pseudocode and the\n round-trip test plan.",
+  "$comment": "=====================================================================\n OPENTIMELINEIO MAPPING -- READ BEFORE CHANGING ANY FIELD IN THIS FILE\n=====================================================================\n\n Requirement: an EDL must be losslessly exportable to OpenTimelineIO, so a\n pro user can open our auto-cut in Resolve or Premiere and finish it by hand.\n 'Losslessly' here means: export to .otio, re-import, and get a byte-identical\n EDL back. Two rules make that achievable.\n\n RULE 1 -- Structure maps onto OTIO natives, never onto metadata.\n Anything OTIO models natively (clips, gaps, transitions, time, speed,\n markers, media references) uses the OTIO shape exactly, including its\n half-open TimeRange convention and its RationalTime value/rate pair. This is\n why nothing in this contract stores seconds as a float: 30000/1001 has no\n float representation that survives a round trip, and a drifting frame is a\n missed beat.\n\n RULE 2 -- Everything else round-trips through one metadata namespace.\n Beat grids, story arcs, reframe keyframe tracks and ducking rules have no\n OTIO equivalent. They are written into the OTIO `metadata` dict under the\n single key \"memory_engine\", which OTIO preserves verbatim across read/write\n and which every NLE ignores safely. An importer reconstructs the EDL from\n that namespace; an editor who never looks at it still gets a correct cut.\n\n FIELD-BY-FIELD MAPPING\n\n EDL                          -> otio.schema.Timeline\n  .name                       ->   Timeline.name\n  .global_start_time          ->   Timeline.global_start_time (RationalTime)\n  .tracks[]                   ->   Timeline.tracks (a Stack of Tracks)\n  .story_arc                  ->   Timeline.metadata.memory_engine.story_arc\n                                   (+ one Marker per act on the arc track,\n                                    for editor visibility only -- the\n                                    authoritative copy is the metadata)\n  .beat_grid                  ->   Timeline.metadata.memory_engine.beat_grid\n                                   (+ one Marker per downbeat, same rule)\n  .audio_plan.ducking         ->   Timeline.metadata.memory_engine.ducking\n  .audio_plan.mix             ->   Timeline.metadata.memory_engine.mix\n  .reframe_tracks[]           ->   Timeline.metadata.memory_engine.reframe_tracks\n  .determinism                ->   Timeline.metadata.memory_engine.determinism\n  .variant                    ->   Timeline.metadata.memory_engine.variant\n  .target                     ->   Timeline.metadata.memory_engine.target\n\n Track                        -> otio.schema.Track\n  .kind                       ->   Track.kind (\"Video\" | \"Audio\")\n  .name                       ->   Track.name\n  .items[]                    ->   Track (children list, in order)\n\n Clip (item_type=\"clip\")      -> otio.schema.Clip\n  .name                       ->   Clip.name\n  .source_range               ->   Clip.source_range (TimeRange, half-open)\n  .media_ref_id -> MediaRef   ->   Clip.media_reference (ExternalReference)\n  .enabled                    ->   Clip.enabled\n  .markers[]                  ->   Clip.markers[] (otio.schema.Marker)\n  .time_effect (linear_speed) ->   Clip.effects += otio.schema.LinearTimeWarp\n                                     (time_scalar)\n  .time_effect (freeze)       ->   Clip.effects += otio.schema.FreezeFrame\n  .color_ops[]                ->   Clip.effects += otio.schema.Effect with\n                                     effect_name \"memory_engine.color\" and the\n                                     op in its metadata\n  .moment_id, .beat_lock,\n  .reframe_track_id,\n  .source_media_id            ->   Clip.metadata.memory_engine.*\n\n Gap (item_type=\"gap\")        -> otio.schema.Gap\n  .duration                   ->   Gap.source_range.duration\n\n Transition                   -> otio.schema.Transition\n  (item_type=\"transition\")\n  .transition_type            ->   Transition.transition_type\n                                   (\"SMPTE_Dissolve\" | \"Custom\")\n  .in_offset                  ->   Transition.in_offset\n  .out_offset                 ->   Transition.out_offset\n  .easing                     ->   Transition.metadata.memory_engine.easing\n\n MediaRef                     -> otio.schema.ExternalReference\n  .available_range            ->   ExternalReference.available_range\n  .media_id (BLAKE3)          ->   ExternalReference.metadata.memory_engine\n                                     .media_id\n  (resolved local path)       ->   ExternalReference.target_url, written as a\n                                   file:// URL AT EXPORT TIME ONLY. The EDL\n                                   itself stores no paths -- it is portable\n                                   between machines precisely because it\n                                   addresses content by hash. On import the\n                                   hash in metadata wins over target_url.\n\n CONVENTIONS THAT KEEP THE ROUND TRIP EXACT\n\n - A plain cut is the ABSENCE of a Transition, matching OTIO, where adjacent\n   clips simply butt together. Never emit a zero-length Transition for a cut.\n - Transitions sit between their two neighbours in the items list and overlap\n   them by in_offset/out_offset. A TRANSITION DOES NOT CHANGE EITHER\n   NEIGHBOUR'S TIMELINE EXTENT: the blend straddles the cut, covering the\n   outgoing clip's last in_offset frames and the incoming clip's first\n   out_offset frames, and the extra frames it needs beyond each clip's\n   source_range are the HANDLES, drawn from available_range on either side.\n   (This corrected an earlier statement here that the source_ranges already\n   included the handles. They do not, in the golden fixture or in\n   workers/render-video, and under that reading the fixture's timeline does\n   not sum to the 899 frames its own validation report claims -- which is the\n   arithmetic every beat lock in it depends on. See contracts#52.)\n - `timeline_range` on a Clip is derived (it is the running sum of preceding\n   clip and gap EXTENTS -- see TimeEffect for what an extent is under a speed\n   change -- and a transition does not subtract from it) and is NOT exported -- OTIO computes\n   it. It is carried here only so a validator can catch a planner that emitted\n   an inconsistent timeline, and it is excluded from the determinism digest.\n - Every RationalTime on a video track should share the timeline `rate`.\n   Audio-track times may use the audio sample rate. OTIO permits mixed rates;\n   this contract permits them only in that one place.\n\n See docs/otio-mapping.md for the exporter/importer pseudocode and the\n round-trip test plan.",
 
   "type": "object",
   "additionalProperties": false,
@@ -106,7 +106,7 @@
       "description": "What this cut is for. Destination is part of the plan because the reframe, the loudness target and the duration are all chosen for it -- an Instagram cut is not a YouTube cut at a different bitrate.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["destination", "resolution", "aspect_ratio"],
+      "required": ["destination", "resolution", "aspect_ratio", "encode"],
       "properties": {
         "destination": {
           "type": "string",
@@ -114,6 +114,10 @@
         },
         "resolution": { "$ref": "common.schema.json#/$defs/PixelSize" },
         "aspect_ratio": { "$ref": "common.schema.json#/$defs/AspectRatio" },
+        "encode": {
+          "description": "How the file is written. Required: `destination` says what the cut is FOR and settles nothing about the bytes, and a renderer that fills the difference in has made a delivery decision invisibly (contracts#56).",
+          "$ref": "#/$defs/EncodeProfile"
+        },
         "target_duration": {
           "description": "What the planner was asked for. The realised duration is the sum of the timeline and may differ slightly, because landing a cut on a beat matters more than hitting exactly 30.000s.",
           "oneOf": [{ "$ref": "common.schema.json#/$defs/RationalTime" }, { "type": "null" }]
@@ -125,6 +129,135 @@
         "loudness_target_lufs": {
           "description": "Integrated loudness the mix is normalised to. -14 for most social platforms, -23 for broadcast-style masters.",
           "oneOf": [{ "type": "number", "minimum": -40, "maximum": 0 }, { "type": "null" }]
+        }
+      }
+    },
+
+    "EncodeProfile": {
+      "title": "EncodeProfile",
+      "description": "The delivery encode, stated in the plan rather than chosen by the renderer (contracts#56). Every field is mandatory somewhere in this object: there is no default profile, and no destination-to-codec table anywhere in a worker. Two plans that differ only in their encode are two different files, and `determinism.inputs_digest` covers this block for exactly that reason.",
+      "$comment": "WHY THIS IS CONTRACT DATA AND NOT WORKER CONFIGURATION\n\nBefore this existed, `workers/render-video` took the encode from a required\n`JobSpec.params.encode` block, because RenderTarget said nothing about it. That\nkept the renderer honest (it refused to guess) but left the plan unable to\ndescribe its own output: two renders of one EDL could differ by an entire\ncodec and nothing recorded which was used. `Determinism.inputs_digest` claims\nthat two plans with the same digest are the same cut; that claim was false for\nthe one thing a viewer actually receives.\n\nCODEC vs ENCODER, and why both are named.\n`codec` is what a player has to understand. `encoder` is what produces the\nbytes. They are not the same decision: libx264 and h264_videotoolbox both emit\nH.264 and do not agree on a single byte, so a profile that named only the codec\nwould be reproducible in intent and not in fact. A renderer must refuse an\n`encoder` that does not produce the declared `codec` -- that mismatch is a\nplanner error, not something to reconcile.\n\nDETERMINISM.\n`encoder_threads` is here for the same reason. It is not a performance knob in\nthis contract: x264 slices a frame across threads and the slice boundaries move\nwith the thread count, so an encode is only byte-reproducible on a machine that\nused the same number. Stating it makes 'same EDL, same sources, same bytes' a\nproperty of the plan rather than of the machine.\n\nWHAT IS DELIBERATELY NOT HERE.\nContainer-level metadata (encoder version strings, creation time, chapters) is\nnot expressible and must not be written; a renderer strips it. Hardware-encoder\nfamilies are nameable via `encoder` but nothing here promises they are\nreproducible across GPU driver versions -- a profile that wants byte-identical\noutput names a software encoder.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "container", "scaler", "encoder_threads", "video"],
+      "properties": {
+        "profile_id": {
+          "description": "Names this exact combination of settings, so a delivery preset is versioned contract data that review can see rather than a table inside a worker. Two profiles that differ in any field must not share an id.",
+          "$ref": "common.schema.json#/$defs/Slug"
+        },
+        "container": {
+          "description": "The muxer. `mp4` and `mov` are delivery; `mkv` is what a lossless master goes in, because MP4 cannot carry FFV1.",
+          "type": "string",
+          "enum": ["mp4", "mov", "mkv", "webm"]
+        },
+        "scaler": {
+          "description": "Resampling kernel used to fit a crop to `resolution`. Pinned because the scaler touches every pixel of every frame, and two kernels are visibly different on a 480p proxy blown up to 1080p.",
+          "type": "string",
+          "enum": ["neighbor", "bilinear", "bicubic", "lanczos", "spline"]
+        },
+        "encoder_threads": {
+          "description": "Encoder thread count. A determinism input, not a performance setting -- see this def's $comment.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "video": { "$ref": "#/$defs/EncodeVideo" },
+        "audio": {
+          "description": "Null only when the plan carries no audio at all. A program with audio and a null audio profile is a validation failure, not a silent mute.",
+          "oneOf": [{ "$ref": "#/$defs/EncodeAudio" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "EncodeVideo": {
+      "title": "EncodeVideo",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codec", "encoder", "pixel_format", "rate_control", "keyframe_interval_frames"],
+      "properties": {
+        "codec": {
+          "description": "What a player must decode.",
+          "type": "string",
+          "enum": ["h264", "hevc", "av1", "vp9", "ffv1", "prores"]
+        },
+        "encoder": {
+          "description": "Which implementation writes the bytes. Must produce `codec`; a renderer refuses the pair if it does not.",
+          "type": "string",
+          "enum": ["libx264", "libx265", "libsvtav1", "libvpx-vp9", "ffv1", "prores_ks", "h264_videotoolbox", "hevc_videotoolbox"]
+        },
+        "pixel_format": {
+          "description": "Chroma subsampling and bit depth in one value, which is how every encoder actually takes it.",
+          "type": "string",
+          "enum": ["yuv420p", "yuv422p", "yuv444p", "yuv420p10le", "yuv422p10le", "yuv444p10le"]
+        },
+        "rate_control": { "$ref": "#/$defs/RateControl" },
+        "preset": {
+          "description": "Encoder speed/efficiency preset, e.g. x264's `medium`. Null means the encoder's own default, which is only acceptable for encoders that have no preset axis (ffv1, prores_ks).",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "profile": {
+          "description": "Codec profile, e.g. `high` for H.264 or `main10` for HEVC. Null means the encoder derives it from pixel_format.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "level": {
+          "description": "Codec level, e.g. `4.0`. Null means the encoder derives it from resolution and rate.",
+          "oneOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "keyframe_interval_frames": {
+          "description": "Maximum GOP length in frames. Stated because it is a delivery decision with consequences a viewer feels -- a platform re-encoding a 10-second GOP seeks worse than one re-encoding a 2-second GOP -- and because leaving it to the encoder's default makes the same plan produce different files on different builds.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+
+    "RateControl": {
+      "title": "RateControl",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "description": "`crf` and `cqp` take a quality value; `abr` and `cbr` take a bit rate; `lossless` takes neither.",
+          "type": "string",
+          "enum": ["crf", "cqp", "abr", "cbr", "lossless"]
+        },
+        "quality": {
+          "description": "CRF or QP value. Required for crf and cqp, null otherwise.",
+          "oneOf": [{ "type": "number" }, { "type": "null" }]
+        },
+        "bit_rate_kbps": {
+          "description": "Target bit rate. Required for abr and cbr, null otherwise.",
+          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "enum": ["crf", "cqp"] } }, "required": ["mode"] },
+          "then": { "required": ["quality"], "properties": { "quality": { "type": "number" }, "bit_rate_kbps": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "mode": { "enum": ["abr", "cbr"] } }, "required": ["mode"] },
+          "then": { "required": ["bit_rate_kbps"], "properties": { "bit_rate_kbps": { "type": "number", "exclusiveMinimum": 0 }, "quality": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "lossless" } }, "required": ["mode"] },
+          "then": { "properties": { "quality": { "type": "null" }, "bit_rate_kbps": { "type": "null" } } }
+        }
+      ]
+    },
+
+    "EncodeAudio": {
+      "title": "EncodeAudio",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codec", "encoder", "sample_format"],
+      "properties": {
+        "codec": { "type": "string", "enum": ["aac", "opus", "flac", "pcm_s16le", "pcm_s24le"] },
+        "encoder": { "type": "string", "enum": ["aac", "aac_at", "libopus", "flac", "pcm_s16le", "pcm_s24le"] },
+        "sample_format": { "type": "string", "enum": ["fltp", "s16", "s16p", "s32", "s32p"] },
+        "bit_rate_kbps": {
+          "description": "Null for the lossless codecs, which have no bit rate to set.",
+          "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
         }
       }
     },
@@ -158,6 +291,20 @@
           "type": "boolean",
           "default": false
         },
+        "member_media_ids": {
+          "description": "The assembly's members, in INDEX order -- the order they concatenate into one recording. Required when is_span_assembly is true and forbidden otherwise. This is the field that makes an assembly expandable from the EDL alone (contracts#55): the renderer never sees a MediaRecord, so before this existed the member order arrived out of band in the render job and the plan could not state what it had planned against.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/Blake3Hash" },
+          "default": []
+        },
+        "continuity": {
+          "description": "Whether the chapters were verified gapless, copied from MediaRecord.Span.continuity. Required when is_span_assembly is true and forbidden otherwise.",
+          "$comment": "ONLY `verified_gapless` MAY BE RENDERED.\n\nMediaRecord.Span already said why: 'Cameras occasionally drop a frame at the\nsplit; the renderer must know before it concatenates.' A `verified_gap`\nassembly concatenated as if it were gapless puts every source timecode after\nthe split wrong by the length of the gap, and every cut drawn from it lands on\nthe wrong frame -- silently, because the picture is still a picture.\n\nSo the contract, not the renderer, decides what happens: `verified_gap`,\n`unverified` and `incomplete_set` are REFUSED at render. That is a structural\nrule and not a judgement call -- there is no gap length in this contract to\ncompensate with, and inventing one is the failure this field exists to\nprevent. A planner that wants such footage in a cut resolves it upstream: fill\nthe gap in ingest and re-verify, or plan against the individual members.\n\nThe renderer's own arithmetic check (summed member frame counts must equal\navailable_range.duration) stays as well. It catches the dropped frame that\nnobody verified; this field catches the one that somebody verified and\nrecorded.",
+          "oneOf": [
+            { "type": "string", "enum": ["verified_gapless", "verified_gap", "unverified", "incomplete_set"] },
+            { "type": "null" }
+          ]
+        },
         "expected_frame_rate": {
           "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "null" }]
         },
@@ -165,7 +312,25 @@
           "description": "Human-readable name for the NLE bin. Cosmetic only -- never used for resolution.",
           "oneOf": [{ "type": "string" }, { "type": "null" }]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "is_span_assembly": { "const": true } }, "required": ["is_span_assembly"] },
+          "then": {
+            "required": ["member_media_ids", "continuity"],
+            "properties": {
+              "member_media_ids": { "type": "array", "minItems": 2 },
+              "continuity": { "type": "string" }
+            }
+          },
+          "else": {
+            "properties": {
+              "member_media_ids": { "type": "array", "maxItems": 0 },
+              "continuity": { "type": "null" }
+            }
+          }
+        }
+      ]
     },
 
     "Track": {
@@ -291,6 +456,7 @@
     "Transition": {
       "title": "Transition",
       "description": "An overlap between the two neighbouring items. A hard cut is the absence of one of these, never a zero-length instance -- that is OTIO's convention and departing from it breaks the round trip.",
+      "$comment": "WHAT A TRANSITION IS, EXACTLY (contracts#52)\n\nGEOMETRY. A transition does not change either neighbour's timeline extent. The\nblend window straddles the cut: it covers the outgoing clip's last `in_offset`\nframes and the incoming clip's first `out_offset` frames, and the frames it\nneeds beyond each clip's source_range are HANDLES drawn from available_range.\nSee the file-level $comment, which states the same thing for the OTIO mapping.\n\nBLEND WEIGHT. Let L = in_offset + out_offset frames, and let output frame N run\n0 <= N < L. The linear progress is u = N / L, and the weight applied to the\nINCOMING picture is w = easing(u); the outgoing picture gets 1 - w. For a\ndissolve that is out*(1-w) + in*w. For a dip, the first `in_offset` frames fade\nthe outgoing picture to the dip colour and the remaining `out_offset` frames\nfade the incoming picture up from it, each using the same easing over its own\nhalf.\n\nEASING CURVES, written out because a name is not a curve. Each is a polynomial\nin u over [0,1], using only + - and *, so every implementation lands on the\nsame bits -- the same reason ReframeKeyframe's `smooth` is a uniform rather\nthan a centripetal spline:\n\n    linear       w = u\n    ease_in      w = u*u*u\n    ease_out     w = 1 - (1-u)*(1-u)*(1-u)\n    ease_in_out  w = 4*u*u*u                     for u <  0.5\n                 w = 1 - 4*(1-u)*(1-u)*(1-u)     for u >= 0.5\n\nAll four satisfy easing(0) = 0 and easing(1) = 1; ease_in_out is continuous at\nu = 0.5, where both branches give 0.5.\n\nAUDIO UNDER A TRANSITION. Nothing. The picture blends; the beds do not\ncross-fade with it. Each clip's audio runs over that clip's own timeline extent\nand stops at its out-point, so the sound butt-cuts at the cut frame while the\npicture blends around it. This is a decision, and it is the same decision\ncontracts#59 made about music: a cross-fade is already expressible, exactly\nonce, as ClipAudio.fade_out on one clip and fade_in on the next, both of which\nname their own curve. Letting a Transition ALSO imply an audio fade would put\ntwo descriptions of one fade in one plan, and a renderer reading both applies\nboth.\n\nTYPES. The enum holds only the transitions whose meaning is fixed by their\nname and whose realisation is stated above. `wipe`, `push`, `blur_dissolve`,\n`match_cut` and `custom` were removed along with the free-form `parameters`\nobject: none of them had an enumerated parameter set (a wipe needs at least an\nangle, an edge softness and a direction), no planner emitted one, and a\ntransition type that no plan can describe and no renderer can execute is a\nname, not a contract. A type enters this enum together with its parameters and\nits stated realisation, or not at all. `match_cut` in particular is editorially\na HARD CUT, which is the absence of a Transition.",
       "type": "object",
       "additionalProperties": false,
       "required": ["item_type", "transition_type", "in_offset", "out_offset"],
@@ -300,9 +466,9 @@
           "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
         },
         "transition_type": {
-          "description": "`dissolve` maps to OTIO's standard SMPTE_Dissolve. Everything else maps to OTIO \"Custom\" with the specific kind preserved in metadata, which is how OTIO itself handles non-standard transitions.",
+          "description": "`dissolve` maps to OTIO's standard SMPTE_Dissolve. The two dips map to OTIO \"Custom\" with the specific kind preserved in metadata, which is how OTIO itself handles non-standard transitions. See this def's $comment for why the enum is only three values.",
           "type": "string",
-          "enum": ["dissolve", "dip_to_black", "dip_to_white", "wipe", "push", "blur_dissolve", "match_cut", "custom"]
+          "enum": ["dissolve", "dip_to_black", "dip_to_white"]
         },
         "in_offset": {
           "description": "How far the transition extends backwards into the outgoing item.",
@@ -313,15 +479,10 @@
           "$ref": "common.schema.json#/$defs/RationalTime"
         },
         "easing": {
+          "description": "Shape of the blend weight across the transition. Each value is a polynomial in the linear progress u, written out in this def's $comment; a name on its own is not a curve, and a cubic ease and a sine ease are different shots.",
           "type": "string",
           "enum": ["linear", "ease_in", "ease_out", "ease_in_out"],
           "default": "linear"
-        },
-        "parameters": {
-          "description": "Kind-specific settings, e.g. wipe angle. Free-form because the set is open-ended; it rides in OTIO metadata untouched.",
-          "type": "object",
-          "additionalProperties": true,
-          "default": {}
         }
       }
     },
@@ -411,10 +572,18 @@
 
     "ClipAudio": {
       "title": "ClipAudio",
+      "description": "This clip's own sound, and the ONLY place its level is stated (contracts#53).",
+      "$comment": "THE GAIN IS STATED ONCE, HERE.\n\nAmbientPlan used to carry `default_gain_db` and a `per_clip_gain_db` override\nlist alongside this field, so a clip's bed had two levels and the contract had\nno composition rule. In the golden fixture that was 14 dB of ambiguity: every\nclip carried gain_db -14 while the ambient plan said -14 with two per-clip\noverrides, and summing, overriding and ignoring were all defensible readings of\nthe same plan. `workers/render-video` refused the combination rather than pick.\n\nThe fix is the one contracts#59 applied to music: state it once. A clip's\nambient level is `gain_db` on that clip, in dB relative to the source, and\nnothing else adjusts it. The planner's own notion of a default level is a\nplanner setting -- it decides what to write here and does not travel with the\nplan.\n\nThe field is REQUIRED, with no default: a level a renderer has to supply is a\nlevel nobody chose.",
       "type": "object",
       "additionalProperties": false,
+      "required": ["gain_db"],
       "properties": {
-        "gain_db": { "type": "number", "minimum": -96, "maximum": 24, "default": 0 },
+        "gain_db": {
+          "description": "Level of this clip's own audio, in dB relative to the source. Composes with nothing else in the plan except MixPlan.master_gain_db and any DuckingRule whose target role covers this clip's track.",
+          "type": "number",
+          "minimum": -96,
+          "maximum": 24
+        },
         "muted": { "type": "boolean", "default": false },
         "fade_in": {
           "description": "Fade length at the clip's in-point. The curve is a LINEAR RAMP IN AMPLITUDE from 0 to 1 over the declared frames -- not equal-power, not linear in dB (contracts#60). Equal-power is the usual choice for a music crossfade and would be audibly different on a long fade, so it is named here rather than left to the mixer; a planner that wants a different shape emits a Transition.",
@@ -615,7 +784,7 @@
         },
         "ambient": { "$ref": "#/$defs/AmbientPlan" },
         "ducking": {
-          "description": "Ordered ducking rules. Later rules win where they overlap, which keeps the resolution deterministic instead of depending on the renderer's mixer implementation.",
+          "description": "Ordered ducking rules. Later rules win where they overlap, which keeps the resolution deterministic instead of depending on the renderer's mixer implementation; DuckingRule's $comment states exactly what 'overlap' means once the rules have attack and release ramps.",
           "type": "array",
           "items": { "$ref": "#/$defs/DuckingRule" },
           "default": []
@@ -682,77 +851,75 @@
 
     "AmbientPlan": {
       "title": "AmbientPlan",
-      "description": "How much of the original location sound survives. Keeping real ambient under music is most of what separates a film that feels like a memory from a slideshow with a soundtrack.",
+      "description": "Processing applied to the location sound as a whole. Keeping real ambient under music is most of what separates a film that feels like a memory from a slideshow with a soundtrack -- but the LEVEL of each clip's bed lives on that clip (ClipAudio.gain_db), and this type carries only what is a property of the group rather than of one clip.",
+      "$comment": "WHAT THIS TYPE LOST, AND WHY (contracts#53)\n\nThis def used to hold five more fields. Each is gone for a stated reason, and\nnone of them is coming back in the same shape:\n\n  `default_gain_db` and `per_clip_gain_db` -- a second place to state a level\n  that ClipAudio.gain_db already states. See ClipAudio's $comment.\n\n  `enabled` -- a second way to say a bed is silent. `ClipAudio.muted` already\n  says it, per clip, where a reader can see which sound is gone. A plan with a\n  global switch and a per-clip switch has to define which wins.\n\n  `preserve_speech` -- not executable by a renderer at all: nothing in an EDL\n  says which clips contain speech (that lives in MomentRecord.transcript,\n  which the renderer never sees) and detecting it at mix time is both a\n  creative decision and not reproducible. It described a PLANNER rule, and the\n  planner already realises it in the plan, as a raised ClipAudio.gain_db on\n  the speech clips plus a DuckingRule over the ranges those clips occupy.\n\n  `noise_suppression: none | light | moderate | aggressive` -- a strength\n  label with no algorithm, no parameters and no measurable target behind it.\n  'Moderate' is a slider caption; two implementations differ audibly and\n  neither is wrong. It is not re-specified here because a denoiser is not a\n  mix decision at all: if a bed needs cleaning, `workers/enhance` produces a\n  cleaned rendition, that rendition is a MediaRecord with its own content\n  hash, and the plan points at it. That keeps the renderer dumb and keeps the\n  processing auditable and cacheable, which a flag on a mix could not.\n\nWhat is left is a linear filter with a stated response, which a renderer can\nexecute and any two implementations agree on.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean", "default": true },
-        "default_gain_db": { "type": "number", "minimum": -96, "maximum": 24, "default": -12 },
-        "preserve_speech": {
-          "description": "When true, clips containing speech keep their ambient at full level and the music ducks under them instead.",
-          "type": "boolean",
-          "default": true
+        "high_pass": {
+          "description": "Removes wind rumble, which otherwise dominates every outdoor action clip. Null means no filter. Applied ONCE to the summed ambient group -- after each clip's gain, fades and L-cut tail, before any DuckingRule -- so that the plan's order of operations is stated rather than left to a mixer's internal graph.",
+          "$comment": "THE CORNER WAS PINNED AND THE FILTER WAS NOT (contracts#53)\n\nThe old field was `high_pass_hz`, a bare frequency. A 2-pole Butterworth and a\n4-pole Linkwitz-Riley at 120 Hz remove different amounts of exactly the thing\nthe field exists to remove, so a corner alone does not describe a filter.\n\nThe response is BUTTERWORTH (maximally flat passband), realised as a cascade\nof RBJ-cookbook high-pass biquads at the same corner frequency, one biquad per\ntwo poles, with the standard Butterworth Q values:\n\n    order 2   one section,  Q = 0.70710678118654752\n    order 4   two sections, Q = 0.54119610014619698 then Q = 1.30656296487637652\n\nThe corner is the -3 dB point of the whole cascade for order 2; for order 4 the\nQ pair is the standard factorisation, which puts the cascade's -3 dB point at\nthe same corner. Order is restricted to 2 and 4 because those are the two the\ncascade above defines; an odd order needs a first-order section and a different\nrule, and nothing has asked for one.\n\nThis is a specification by PROCESS rather than by outcome, which this contract\nusually avoids -- but a linear filter is the case where process is exact:\ngiven the corner, the order and the Q values, the coefficients are determined\nand every implementation lands on the same numbers. A target ('at most -18 dB\nat 60 Hz') would have left the passband ripple free.",
+          "oneOf": [{ "$ref": "#/$defs/HighPassFilter" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "HighPassFilter": {
+      "title": "HighPassFilter",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["corner_hz", "order"],
+      "properties": {
+        "corner_hz": {
+          "description": "-3 dB corner of the cascade.",
+          "type": "number",
+          "exclusiveMinimum": 0
         },
-        "high_pass_hz": {
-          "description": "Removes wind rumble, which otherwise dominates every outdoor action clip.",
-          "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }]
-        },
-        "noise_suppression": {
-          "type": "string",
-          "enum": ["none", "light", "moderate", "aggressive"],
-          "default": "light"
-        },
-        "per_clip_gain_db": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["clip_id", "gain_db"],
-            "properties": {
-              "clip_id": { "$ref": "common.schema.json#/$defs/Slug" },
-              "gain_db": { "type": "number", "minimum": -96, "maximum": 24 }
-            }
-          },
-          "default": []
+        "order": {
+          "description": "Pole count. See AmbientPlan.high_pass's $comment for the Q values each order expands to.",
+          "type": "integer",
+          "enum": [2, 4]
         }
       }
     },
 
     "DuckingRule": {
       "title": "DuckingRule",
-      "description": "One sidechain relationship, expressed as intent (duck music under speech by 9dB) rather than as a rendered gain curve, so the renderer stays dumb and the decision stays auditable.",
+      "description": "One duck: turn `target` down by `reduction_db` over these timeline ranges, on the envelope this def's $comment states exactly.",
+      "$comment": "THE ENVELOPE, WRITTEN OUT (contracts#54)\n\nA reduction, a range and two time constants do not describe a gain curve, and\nthe difference between the plausible readings is several dB in the middle of\nthe ramp -- which is exactly where the voice the duck exists for is sitting.\nSo:\n\nGAIN MOVES LINEARLY IN dB. Not linearly in amplitude, and not on the\nexponential one-pole curve a hardware compressor would use. Linear in dB is\nthe reading a person gets from writing '9 dB over 80 ms' and it is the only one\nthat is exactly reproducible without naming a filter.\n\nTHE ATTACK RAMP ENDS AT THE RANGE START; THE RELEASE RAMP BEGINS AT THE RANGE\nEND. So the declared range is fully ducked for its whole declared extent, and\nthe ramps sit outside it. For one range [s, e) in timeline seconds, with\na = attack_ms/1000 and r = release_ms/1000, the reduction in dB at time t is:\n\n    t <  s - a            0\n    s - a <= t < s        reduction_db * (t - (s - a)) / a\n    s <= t <  e           reduction_db\n    e <= t <  e + r       reduction_db * (1 - (t - e) / r)\n    t >= e + r            0\n\nwith a = 0 and r = 0 degenerating to a step, which is what\n`workers/render-video` implemented while this was unspecified. A ramp that\nreaches before frame 0 or past the end of the timeline is simply not rendered\nthere; the envelope is a function of timeline time and the timeline is what it\nis.\n\nWITHIN ONE RULE the envelope is the MAXIMUM over that rule's own ranges, which\nis what makes two ranges closer together than attack + release well defined\nrather than a race between a release and the next attack.\n\nACROSS RULES the existing resolution still holds -- later rules win where they\noverlap -- now stated precisely: a rule's SUPPORT is its ranges each extended\nby a before and r after. At any instant t, the reduction applied to a target is\nthe envelope of the highest-indexed rule whose support contains t; every other\nrule contributes nothing at t. That keeps 'duck everything, except here' \nexpressible (a later rule may reduce by 0 dB), which a maximum could not.\n\nWHAT LEFT THIS TYPE\n\n`trigger` is gone. Its non-`explicit_ranges` values (`speech`, `music`,\n`ambient`) asked the renderer to analyse the mix at render time, which is both\na decision and not reproducible across builds; the schema already called\nexplicit ranges 'always preferred, because it is deterministic'. Detection is\nplanner-side, and the planner resolves it to ranges before it emits an EDL.\nWith the other three gone the field held one value, so it holds none.\n\n`threshold_db` and `ratio` are gone with it: they are compressor parameters,\nthey were nullable and null in every plan ever emitted, and there is no\ncompressor here to hang them on.\n\n`ranges` is now required and non-empty. A duck with no extent is an intent, not\na plan.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["rule_id", "target", "trigger", "reduction_db"],
+      "required": ["rule_id", "target", "reduction_db", "ranges"],
       "properties": {
         "rule_id": { "$ref": "common.schema.json#/$defs/Slug" },
         "target": {
-          "description": "What gets turned down.",
+          "description": "Which Track.role gets turned down. A rule whose target matches no track in the plan states an intent about audio that does not exist, and is a validation failure.",
           "type": "string",
           "enum": ["music", "ambient", "sfx"]
         },
-        "trigger": {
-          "description": "What turns it down. `explicit_ranges` means the planner decided the ranges itself rather than relying on detection at render time -- always preferred, because it is deterministic.",
-          "type": "string",
-          "enum": ["speech", "music", "ambient", "explicit_ranges"]
-        },
         "reduction_db": {
-          "description": "Positive number of dB to reduce by.",
+          "description": "Positive number of dB to reduce by, reached at the range start and held to the range end.",
           "type": "number",
           "minimum": 0,
           "maximum": 96
         },
-        "threshold_db": {
-          "oneOf": [{ "type": "number", "minimum": -96, "maximum": 0 }, { "type": "null" }]
+        "attack_ms": {
+          "description": "Length of the ramp DOWN, ending at the range start. 0 is a step.",
+          "type": "number",
+          "minimum": 0,
+          "default": 0
         },
-        "ratio": { "oneOf": [{ "type": "number", "minimum": 1 }, { "type": "null" }] },
-        "attack_ms": { "type": "number", "minimum": 0, "default": 80 },
-        "release_ms": { "type": "number", "minimum": 0, "default": 300 },
+        "release_ms": {
+          "description": "Length of the ramp back UP, beginning at the range end. 0 is a step.",
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        },
         "ranges": {
-          "description": "Timeline ranges the rule applies over. Required when trigger is explicit_ranges; when empty with another trigger, the rule applies for the whole timeline.",
+          "description": "Timeline ranges held at the full reduction. Non-empty, and each must lie within the timeline.",
           "type": "array",
           "items": { "$ref": "common.schema.json#/$defs/TimeRange" },
-          "default": []
+          "minItems": 1
         }
       }
     },
@@ -1022,6 +1189,7 @@
                   "timeline_contiguous",
                   "time_effect_extent_derived",
                   "music_cues_placed_once",
+                  "span_continuity_verified",
                   "transition_handles_available",
                   "beat_alignment_within_tolerance",
                   "no_mid_word_cut",

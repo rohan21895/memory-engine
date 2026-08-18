@@ -1,9 +1,9 @@
 export { RenderVideoError } from "./errors.js";
 export { assertRenderable, assertStructurallySound, collectGaps, formatGaps, GAP_ISSUES } from "./gate.js";
 export { buildProgram, verifyBeatLocks } from "./program.js";
-export { buildGraph } from "./filtergraph.js";
+export { buildGraph, easingExpression } from "./filtergraph.js";
 export { cropAt, keyframesAt, planCrop, frameSeriesExpression } from "./reframe.js";
-export { parseEncodeProfile, BITEXACT_ARGS } from "./encode.js";
+export { assertEncodable, audioEncodeArgs, videoEncodeArgs, BITEXACT_ARGS } from "./encode.js";
 export { resolveSources, assertEveryRefIsUsed } from "./sources.js";
 export { decodedFrameDigest, publishRenderOnce, renderVideo } from "./renderer.js";
 export { parseParams, runRenderVideoJob, RENDER_VIDEO_CHECKPOINT_VERSION } from "./job.js";

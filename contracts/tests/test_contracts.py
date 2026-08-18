@@ -24,6 +24,11 @@ import sys
 import unittest
 from pathlib import Path
 
+try:  # a CI dependency; see scripts/ci/local-ci.sh
+    from blake3 import blake3 as _blake3
+except ImportError:  # pragma: no cover - absence is reported, never skipped
+    _blake3 = None
+
 CONTRACTS = Path(__file__).resolve().parent.parent
 SCHEMA_DIR = CONTRACTS / "schemas"
 FIXTURE_DIR = CONTRACTS / "fixtures"
@@ -468,6 +473,8 @@ def check_moment_record(record: dict) -> list[str]:
 def check_edl(edl: dict) -> list[str]:
     problems: list[str] = []
     refs = {ref["media_ref_id"]: ref for ref in edl["media_refs"]}
+    #: Longest video track, in frames. The ducking rules are checked against it.
+    video_extent = 0
 
     for track in edl["tracks"]:
         position = 0
@@ -566,6 +573,40 @@ def check_edl(edl: dict) -> list[str]:
                         f"timeline extent; source_range and its time effect derive {extent}"
                     )
             position += extent
+        if track["kind"] == "video":
+            video_extent = max(video_extent, position)
+
+    # contracts#55: an assembly's members are contract data now, and their ORDER
+    # is what the assembly's identity is made of -- BLAKE3 over the 64-hex ids
+    # concatenated in index order, no delimiter, per MediaRecord.Span.span_id.
+    # JSON Schema cannot check a hash, so it is checked here.
+    for ref in edl["media_refs"]:
+        members = ref.get("member_media_ids") or []
+        if not ref.get("is_span_assembly"):
+            if members:
+                problems.append(f"{ref['media_ref_id']} is not a span assembly and names members")
+            continue
+        if len(members) != len(set(members)):
+            problems.append(
+                f"{ref['media_ref_id']} names the same member file twice; a chapter appears "
+                "once in a recording"
+            )
+        if _blake3 is None:
+            # A check that cannot run fails. The alternative -- returning no
+            # problems because the hasher is absent -- is a fixture suite that
+            # passes on a machine where it verified nothing.
+            problems.append(
+                "blake3 is not installed, so the span-assembly identity of "
+                f"{ref['media_ref_id']} could not be recomputed"
+            )
+            continue
+        recomputed = _blake3("".join(members).encode("ascii")).hexdigest()
+        if recomputed != ref["media_id"]:
+            problems.append(
+                f"{ref['media_ref_id']} names members whose ids hash to {recomputed} and a "
+                f"media_id of {ref['media_id']}; a mis-ordered member list is a different "
+                "recording, and every source timecode drawn from it is wrong"
+            )
 
     grid = edl.get("beat_grid")
     if grid:
@@ -684,9 +725,35 @@ def check_edl(edl: dict) -> list[str]:
                     f"cue {cue['cue_id']} is not cleared for social_share but the "
                     f"target is {destination}"
                 )
+        # contracts#54: a duck is a range on the timeline and an envelope around
+        # it. A range outside the timeline is a gain curve applied to nothing,
+        # and a target no track carries is an intent about audio that is not in
+        # the mix -- neither is expressible in JSON Schema.
+        roles = {track.get("role", "primary") for track in edl["tracks"]}
+        for track in edl["tracks"]:
+            if track["kind"] == "video" and any(
+                item["item_type"] == "clip"
+                and item.get("audio") is not None
+                and not item["audio"].get("muted", False)
+                for item in track["items"]
+            ):
+                roles.add("ambient")
         for rule in plan.get("ducking", []):
-            if rule["trigger"] == "explicit_ranges" and not rule.get("ranges"):
-                problems.append(f"ducking rule {rule['rule_id']} declares explicit_ranges but none")
+            if not rule.get("ranges"):
+                problems.append(f"ducking rule {rule['rule_id']} states a duck with no extent")
+            for window in rule.get("ranges", []):
+                start = window["start_time"]["value"]
+                end = start + window["duration"]["value"]
+                if start < 0 or (video_extent and end > video_extent):
+                    problems.append(
+                        f"ducking rule {rule['rule_id']} covers [{start}, {end}) and the "
+                        f"timeline is [0, {video_extent})"
+                    )
+            if rule["target"] not in roles:
+                problems.append(
+                    f"ducking rule {rule['rule_id']} turns down {rule['target']!r} and no "
+                    "track carries that role"
+                )
 
     arc = edl.get("story_arc")
     if arc:

@@ -1,7 +1,7 @@
 {
   "schema_version": "v0",
-  "edl_id": "8c66be9a1497d9f50e72c510a36c7b292112737da5efc14d662521298768f33c",
-  "name": "Uttarakhand ridge ride - 15s",
+  "edl_id": "6a324c53b67e470121b71f4462c5ea61401321a7939d162404b1d8076f15fde5",
+  "name": "duck that outlives the timeline",
   "kind": "reel",
   "rate": 59.94005994005994,
   "global_start_time": {
@@ -1233,7 +1233,7 @@
               "rate": 59.94005994005994
             },
             "duration": {
-              "value": 113,
+              "value": 400,
               "rate": 59.94005994005994
             }
           }

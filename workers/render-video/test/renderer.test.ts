@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { beforeAll, describe, expect, it } from "vitest";
 
-import type { AudioPlan, EDL, ReframeTrack, Track } from "../../../contracts/codegen/generated/typescript/index.js";
+import type { AudioPlan, EDL, EncodeProfile, ReframeTrack, Track } from "../../../contracts/codegen/generated/typescript/index.js";
 
 import { digestFile } from "../src/digest.js";
 import { run } from "../src/ffmpeg.js";
@@ -23,6 +23,7 @@ import {
   TOOLS,
   videoRef,
   musicRef,
+  withoutAudio,
   workspace,
   type Fixture,
 } from "./helpers.js";
@@ -36,14 +37,12 @@ beforeAll(async () => {
   source = await fixture();
 }, 180_000);
 
-function encode(profile: typeof FFV1_MKV | typeof H264_MP4, withAudio: boolean) {
-  return {
-    container: profile.container,
-    scale_flags: profile.scale_flags,
-    video: { codec: profile.video.codec, pix_fmt: profile.video.pix_fmt, args: [...profile.video.args] },
-    audio: withAudio ? { ...profile.audio, args: [...profile.audio.args] } : null,
-    threads: profile.threads,
-  };
+/**
+ * contracts#56: the encode profile is part of the plan, so choosing one is editing the
+ * EDL rather than passing an option to the renderer.
+ */
+function withProfile(edl: EDL, profile: EncodeProfile, withAudio: boolean): EDL {
+  return { ...edl, target: { ...edl.target, encode: withAudio ? profile : withoutAudio(profile) } };
 }
 
 function videoOnlyEdl(reframe: ReframeTrack | null = reframeTrack("rf-1", SOURCE_ORIGIN, SOURCE_ORIGIN + 60)): EDL {
@@ -59,10 +58,9 @@ function videoOnlyEdl(reframe: ReframeTrack | null = reframeTrack("rf-1", SOURCE
   });
 }
 
-async function render(edl: EDL, options: { profile?: typeof FFV1_MKV | typeof H264_MP4; audio?: boolean; sources?: Record<string, { paths: string[] }>; prefix?: string }): Promise<RenderVideoResult> {
-  return renderVideo(edl, {
+async function render(edl: EDL, options: { profile?: EncodeProfile; audio?: boolean; sources?: Record<string, { paths: string[] }>; prefix?: string }): Promise<RenderVideoResult> {
+  return renderVideo(withProfile(edl, options.profile ?? FFV1_MKV, options.audio ?? false), {
     sources: options.sources ?? { [source.videoMediaId]: { paths: [source.videoPath] } },
-    encode: encode(options.profile ?? FFV1_MKV, options.audio ?? false),
     workDirectory: await workspace(options.prefix ?? "run"),
     tools: TOOLS,
   });
@@ -192,7 +190,6 @@ describe("the picture the plan asked for", () => {
               in_offset: t(6),
               out_offset: t(6),
               easing: "linear",
-              parameters: {},
             },
             clip("clip-02", "src-a", SOURCE_ORIGIN + 150, 60),
           ],
@@ -217,7 +214,7 @@ describe("the picture the plan asked for", () => {
 describe("span assemblies", () => {
   function spanEdl(): EDL {
     return makeEdl({
-      mediaRefs: [videoRef(source.chapterAssemblyId, true)],
+      mediaRefs: [videoRef(source.chapterAssemblyId, true, source.chapterMediaIds)],
       tracks: [
         {
           track_id: "v1",
@@ -345,22 +342,12 @@ describe("the audio plan", () => {
           },
         },
       ],
-      ambient: {
-        enabled: true,
-        default_gain_db: -12,
-        preserve_speech: true,
-        high_pass_hz: null,
-        noise_suppression: "none",
-        per_clip_gain_db: [],
-      },
+      ambient: { high_pass: null },
       ducking: [
         {
           rule_id: "duck-music",
           target: "music",
-          trigger: "explicit_ranges",
           reduction_db: 9,
-          threshold_db: null,
-          ratio: null,
           attack_ms: 0,
           release_ms: 0,
           ranges: [range(40, 30)],
@@ -438,12 +425,21 @@ describe("the audio plan", () => {
     expect(result.verification.loudness!.truePeakDb).toBeLessThanOrEqual(-1 + 0.3);
   }, 240_000);
 
-  it("records the fade curve and the duck edge as stated interpretations, not as silence", async () => {
-    const result = await render(audioEdl(false), { audio: true, sources: audioSources(), prefix: "audio-notes" });
+  it("records the fade curve and the duck envelope as stated interpretations, not as silence", async () => {
+    const edl = audioEdl(false);
+    // contracts#54's envelope rather than the degenerate step: the ramp is what was
+    // unspecified, so it is what the note has to be about.
+    edl.audio_plan!.ducking![0]!.attack_ms = 80;
+    edl.audio_plan!.ducking![0]!.release_ms = 300;
+    edl.audio_plan!.ambient = { high_pass: { corner_hz: 120, order: 4 } };
+    const result = await render(edl, { audio: true, sources: audioSources(), prefix: "audio-notes" });
     const fields = result.interpretations.map((entry) => entry.field);
     expect(fields).toContain("ClipAudio.fade_in / fade_out");
-    expect(fields).toContain("audio_plan.ducking[].ranges");
-    expect(result.unacted.map((entry) => entry.field)).toContain("audio_plan.ambient.preserve_speech");
+    expect(fields).toContain("audio_plan.ducking[].attack_ms / release_ms");
+    expect(fields).toContain("audio_plan.ambient.high_pass");
+    // The cascade the contract names: two RBJ biquads at the Butterworth Q pair.
+    expect(result.filterGraph).toContain("highpass=f=120:poles=2:width_type=q:width=0.541196100146197");
+    expect(result.filterGraph).toContain("highpass=f=120:poles=2:width_type=q:width=1.3065629648763766");
   }, 240_000);
 
   it("refuses a music cue that names a clip which does not place it", async () => {
@@ -485,12 +481,12 @@ describe("resumption", () => {
     const edl = videoOnlyEdl();
     const options = {
       sources: { [source.videoMediaId]: { paths: [source.videoPath] } },
-      encode: encode(FFV1_MKV, false),
       workDirectory: work,
       tools: TOOLS,
     };
-    const first = await renderVideo(edl, options);
-    const second = await renderVideo(edl, options);
+    const planned = withProfile(edl, FFV1_MKV, false);
+    const first = await renderVideo(planned, options);
+    const second = await renderVideo(planned, options);
     expect(second.path).toBe(first.path);
     expect(second.id).toBe(first.id);
     expect(await digestFile(second.path)).toBe(first.id);

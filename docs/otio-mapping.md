@@ -162,8 +162,7 @@ export_transition(t) -> otio.schema.Transition:
         out_offset      = to_rational(t.out_offset),
         metadata        = {"memory_engine": {"transition_id": t.transition_id,
                                              "kind":       t.transition_type,
-                                             "easing":     t.easing,
-                                             "parameters": t.parameters}},
+                                             "easing":     t.easing}},
     )
 ```
 

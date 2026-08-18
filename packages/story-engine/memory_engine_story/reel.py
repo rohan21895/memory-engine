@@ -83,6 +83,7 @@ WHAT IS DELIBERATELY NOT PLANNED HERE
 
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
@@ -165,8 +166,91 @@ _DESTINATION_CLEARANCE = {
     "whatsapp_status": "social_share",
 }
 
+# --------------------------------------------------------------------------
+# Delivery encode profiles (contracts#56)
+# --------------------------------------------------------------------------
+#
+# `RenderTarget.encode` is required contract data, and this is where it comes
+# from. The table is HERE, on the deciding side, and not in the render worker:
+# mapping `instagram_reel` to "H.264 High, yuv420p, CRF 20, 2s GOP" is a
+# delivery decision with real consequences -- a platform's own re-encode
+# behaves differently depending on what you hand it -- and a table buried in a
+# renderer is invisible to review, untestable from the plan, and free to differ
+# from whatever the next worker invents. Every entry carries a `profile_id`, so
+# a change to a preset is a new id in a diff rather than a silent re-render.
+#
+# `encoder_threads: 1` everywhere is not a performance choice. x264 slices a
+# frame across threads and the slice boundaries move with the thread count, so
+# a multi-threaded encode is only byte-reproducible on a machine with the same
+# core count -- and byte-reproducibility is the property `inputs_digest` is
+# claiming.
+_H264_DELIVERY = {
+    "container": "mp4",
+    "scaler": "bicubic",
+    "encoder_threads": 1,
+    "audio": {
+        "codec": "aac",
+        "encoder": "aac",
+        "sample_format": "fltp",
+        "bit_rate_kbps": 192,
+    },
+}
+
+
+def _h264_profile(profile_id: str, crf: int, gop: int) -> dict[str, Any]:
+    return {
+        "profile_id": profile_id,
+        **{key: copy.deepcopy(value) for key, value in _H264_DELIVERY.items()},
+        "video": {
+            "codec": "h264",
+            "encoder": "libx264",
+            "pixel_format": "yuv420p",
+            "rate_control": {"mode": "crf", "quality": crf, "bit_rate_kbps": None},
+            "preset": "medium",
+            "profile": "high",
+            "level": "4.0",
+            "keyframe_interval_frames": gop,
+        },
+    }
+
+
+# A 2-second GOP at 60000/1001 is 120 frames. Social platforms re-encode what
+# they are given, and they seek against the keyframes they find.
+_SOCIAL_GOP_FRAMES = 120
+# A master is kept, not streamed; a 1-second GOP costs bitrate and buys
+# scrubbing, which is what a master is for.
+_MASTER_GOP_FRAMES = 60
+
+ENCODE_PROFILES: dict[str, dict[str, Any]] = {
+    "master": _h264_profile("master-h264-crf18-v1", 18, _MASTER_GOP_FRAMES),
+    "web_preview": _h264_profile("web-preview-h264-crf24-v1", 24, _SOCIAL_GOP_FRAMES),
+    "instagram_reel": _h264_profile("instagram-reel-h264-crf20-v1", 20, _SOCIAL_GOP_FRAMES),
+    "instagram_feed": _h264_profile("instagram-feed-h264-crf20-v1", 20, _SOCIAL_GOP_FRAMES),
+    "youtube": _h264_profile("youtube-h264-crf18-v1", 18, _SOCIAL_GOP_FRAMES),
+    "youtube_shorts": _h264_profile("youtube-shorts-h264-crf20-v1", 20, _SOCIAL_GOP_FRAMES),
+    "tiktok": _h264_profile("tiktok-h264-crf20-v1", 20, _SOCIAL_GOP_FRAMES),
+    "whatsapp_status": _h264_profile("whatsapp-status-h264-crf24-v1", 24, _SOCIAL_GOP_FRAMES),
+}
+
+
+def encode_profile_for(destination: str) -> dict[str, Any]:
+    """The delivery profile this destination is published with."""
+    try:
+        return copy.deepcopy(ENCODE_PROFILES[destination])
+    except KeyError:  # pragma: no cover - RenderTarget rejects these first
+        raise ValueError(f"no encode profile for destination {destination!r}") from None
+
+
 _SLUG_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
 _HEX_CHARS = set("0123456789abcdef")
+
+#: MediaRecord.Span.continuity, restated for the EDL's MediaRef (contracts#55).
+#: Only `verified_gapless` is renderable; the rest are refused rather than
+#: concatenated on a guess about the length of the gap.
+_SPAN_CONTINUITY = frozenset(
+    {"verified_gapless", "verified_gap", "unverified", "incomplete_set"}
+)
+RENDERABLE_SPAN_CONTINUITY = "verified_gapless"
 
 _SNAP_IN_DIRECTIONS = frozenset({"in", "both"})
 
@@ -506,6 +590,75 @@ def _check_finite(value: float, what: str) -> float:
     return number
 
 
+#: Which encoder implementation produces which codec. The contract requires the
+#: pair to agree (edl.schema.json#EncodeProfile): libx264 and h264_videotoolbox
+#: both emit H.264 and do not agree on a single byte, so naming only the codec
+#: would be reproducible in intent and not in fact.
+_ENCODER_CODEC = {
+    "libx264": "h264",
+    "h264_videotoolbox": "h264",
+    "libx265": "hevc",
+    "hevc_videotoolbox": "hevc",
+    "libsvtav1": "av1",
+    "libvpx-vp9": "vp9",
+    "ffv1": "ffv1",
+    "prores_ks": "prores",
+}
+
+_RATE_CONTROL_NEEDS_QUALITY = frozenset({"crf", "cqp"})
+_RATE_CONTROL_NEEDS_BIT_RATE = frozenset({"abr", "cbr"})
+
+
+def _check_encode_profile(profile: Mapping[str, Any]) -> None:
+    """Refuse a profile the contract would reject, at the planner.
+
+    The schema says all of this too, and the planner says it again on purpose:
+    an EDL that fails validation after it has been planned is a traceback in a
+    pipeline, and the thing that went wrong is a delivery decision somebody
+    made three layers up.
+    """
+    _check_slug(str(profile.get("profile_id", "")), "encode.profile_id")
+    for key in ("container", "scaler", "encoder_threads", "video"):
+        if profile.get(key) is None:
+            raise ValueError(f"encode.{key} is required; there is no default profile")
+    threads = profile["encoder_threads"]
+    if not isinstance(threads, int) or isinstance(threads, bool) or threads < 1:
+        raise ValueError(f"encode.encoder_threads must be a positive integer, got {threads!r}")
+
+    video = profile["video"]
+    encoder = video.get("encoder")
+    codec = video.get("codec")
+    if _ENCODER_CODEC.get(encoder) != codec:
+        raise ValueError(
+            f"encode.video declares codec {codec!r} and encoder {encoder!r}, which "
+            f"produces {_ENCODER_CODEC.get(encoder)!r}"
+        )
+    if video.get("pixel_format") is None:
+        raise ValueError("encode.video.pixel_format is required")
+    gop = video.get("keyframe_interval_frames")
+    if not isinstance(gop, int) or isinstance(gop, bool) or gop < 1:
+        raise ValueError(
+            f"encode.video.keyframe_interval_frames must be a positive integer, got {gop!r}"
+        )
+
+    rate_control = video.get("rate_control") or {}
+    mode = rate_control.get("mode")
+    quality = rate_control.get("quality")
+    bit_rate = rate_control.get("bit_rate_kbps")
+    if mode in _RATE_CONTROL_NEEDS_QUALITY and quality is None:
+        raise ValueError(f"encode rate_control mode {mode!r} needs a quality value")
+    if mode in _RATE_CONTROL_NEEDS_BIT_RATE and bit_rate is None:
+        raise ValueError(f"encode rate_control mode {mode!r} needs a bit rate")
+    if mode not in _RATE_CONTROL_NEEDS_QUALITY and quality is not None:
+        raise ValueError(f"encode rate_control mode {mode!r} carries a quality value")
+    if mode not in _RATE_CONTROL_NEEDS_BIT_RATE and bit_rate is not None:
+        raise ValueError(f"encode rate_control mode {mode!r} carries a bit rate")
+
+    audio = profile.get("audio")
+    if audio is not None and audio.get("codec") is None:
+        raise ValueError("encode.audio is present and names no codec")
+
+
 @dataclass(frozen=True)
 class SnapPoint:
     """A certified cut position inside a moment, in source frames."""
@@ -664,6 +817,13 @@ class SourceMedia:
     aspect_ratio: tuple[int, int] = (16, 9)
     media_kind: str = "video"
     is_span_assembly: bool = False
+    # contracts#55. An assembly's members, in index order, copied from
+    # MediaRecord.Span, plus the continuity the ingest side verified. Both are
+    # required for an assembly and forbidden otherwise, and the member list is
+    # checked against `media_id` here rather than believed: the ids ARE the
+    # identity, so a mis-ordered list is a different recording.
+    member_media_ids: tuple[str, ...] = ()
+    continuity: str | None = None
     expected_frame_rate: float | None = None
     label: str | None = None
 
@@ -674,6 +834,43 @@ class SourceMedia:
             raise ValueError("SourceMedia.available_duration must be > 0")
         if len(self.aspect_ratio) != 2 or min(self.aspect_ratio) <= 0:
             raise ValueError(f"SourceMedia.aspect_ratio invalid: {self.aspect_ratio!r}")
+        if self.is_span_assembly:
+            if len(self.member_media_ids) < 2:
+                raise ValueError(
+                    f"SourceMedia {self.media_ref_id} is a span assembly and names "
+                    f"{len(self.member_media_ids)} member(s); an assembly of one file is "
+                    "the file"
+                )
+            for member in self.member_media_ids:
+                _check_hash(member, "SourceMedia.member_media_ids[]")
+            if len(set(self.member_media_ids)) != len(self.member_media_ids):
+                raise ValueError(
+                    f"SourceMedia {self.media_ref_id} names the same member twice"
+                )
+            # MediaRecord.Span.span_id: BLAKE3 over the members' 64-hex ids
+            # concatenated in INDEX order, no delimiter, no length prefix.
+            recomputed = blake3_hex("".join(self.member_media_ids).encode("ascii"))
+            if recomputed != self.media_id:
+                raise ValueError(
+                    f"SourceMedia {self.media_ref_id} names members hashing to "
+                    f"{recomputed} and a media_id of {self.media_id}; a mis-ordered "
+                    "chapter list is a different recording"
+                )
+            if self.continuity not in _SPAN_CONTINUITY:
+                raise ValueError(
+                    f"SourceMedia {self.media_ref_id} declares continuity "
+                    f"{self.continuity!r}; expected one of {sorted(_SPAN_CONTINUITY)}"
+                )
+        else:
+            if self.member_media_ids:
+                raise ValueError(
+                    f"SourceMedia {self.media_ref_id} is not a span assembly and names members"
+                )
+            if self.continuity is not None:
+                raise ValueError(
+                    f"SourceMedia {self.media_ref_id} is not a span assembly and declares "
+                    "a continuity"
+                )
 
     @property
     def available_end(self) -> float:
@@ -760,6 +957,11 @@ class RenderTarget:
     target_duration: float | None = None
     max_duration: float | None = None
     loudness_target_lufs: float | None = -14.0
+    # contracts#56. None means "the profile this destination publishes with",
+    # resolved from ENCODE_PROFILES at construction so that the plan carries the
+    # settled answer rather than a reference to a table the renderer would have
+    # to look up. Caller-supplied profiles are validated to the same shape.
+    encode: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.destination not in _DESTINATION_CLEARANCE:
@@ -768,17 +970,35 @@ class RenderTarget:
             raise ValueError(f"RenderTarget.resolution invalid: {self.resolution!r}")
         if len(self.aspect_ratio) != 2 or min(self.aspect_ratio) <= 0:
             raise ValueError(f"RenderTarget.aspect_ratio invalid: {self.aspect_ratio!r}")
+        profile = (
+            encode_profile_for(self.destination)
+            if self.encode is None
+            else copy.deepcopy(dict(self.encode))
+        )
+        _check_encode_profile(profile)
+        object.__setattr__(self, "encode", profile)
 
 
 @dataclass(frozen=True)
 class AmbientSettings:
-    """How much of the original location sound survives under the music."""
+    """How much of the original location sound survives under the music.
+
+    These are PLANNER settings. Most of them decide what the plan says and do
+    not appear in it: after contracts#53 the EDL carries one gain per clip, on
+    the clip, plus the high-pass filter, and nothing else about ambient. In
+    particular there is no `noise_suppression` here any more, because there is
+    nowhere for it to go -- a strength label with no algorithm behind it was
+    never executable, and a bed that needs cleaning is a job for
+    `workers/enhance`, whose output is a source with its own content hash.
+    """
 
     enabled: bool = True
     default_gain_db: float = -14.0
     preserve_speech: bool = True
     high_pass_hz: float | None = 120.0
-    noise_suppression: str = "light"
+    # Pole count of the Butterworth cascade. 2 or 4; the contract states the Q
+    # values each expands to.
+    high_pass_order: int = 4
     # Above this noise_ratio the clip's ambient is wind, not a memory.
     wind_noise_ratio: float = 0.6
     wind_gain_db: float = -60.0
@@ -789,6 +1009,16 @@ class AmbientSettings:
     duck_reduction_db: float = DEFAULT_DUCK_REDUCTION_DB
     duck_attack_ms: float = 60.0
     duck_release_ms: float = 320.0
+
+    def __post_init__(self) -> None:
+        if self.high_pass_hz is not None:
+            if self.high_pass_hz <= 0:
+                raise ValueError("AmbientSettings.high_pass_hz must be > 0 or None")
+            if self.high_pass_order not in (2, 4):
+                raise ValueError(
+                    f"AmbientSettings.high_pass_order must be 2 or 4, got "
+                    f"{self.high_pass_order!r}"
+                )
 
 
 @dataclass(frozen=True)
@@ -1781,8 +2011,11 @@ def plan_reel(request: ReelRequest) -> ReelPlan:
                     "transition_type": "dissolve",
                     "in_offset": _rational(request.dissolve_frames, rate),
                     "out_offset": _rational(request.dissolve_frames, rate),
+                    # contracts#52 writes this curve out as a polynomial in the
+                    # linear progress u: 4u^3 below the midpoint, mirrored
+                    # above it. The free-form `parameters` object is gone with
+                    # the transition types that had no enumerated parameters.
                     "easing": "ease_in_out",
-                    "parameters": {},
                 }
             )
 
@@ -1888,6 +2121,10 @@ def plan_reel(request: ReelRequest) -> ReelPlan:
                 else _rational(request.target.max_duration, rate)
             ),
             "loudness_target_lufs": request.target.loudness_target_lufs,
+            # contracts#56. Resolved at RenderTarget construction, so the plan
+            # states the codec it was made for rather than leaving the renderer
+            # to invent one and the digest to cover neither.
+            "encode": copy.deepcopy(dict(request.target.encode or {})),
         },
         "media_refs": media_refs,
         "tracks": tracks,
@@ -1954,6 +2191,12 @@ def _media_ref(medium: SourceMedia, rate: float) -> dict[str, Any]:
             medium.available_start, medium.available_duration, rate
         ),
         "is_span_assembly": medium.is_span_assembly,
+        # contracts#55: the member list and the verified continuity travel WITH
+        # the plan. Before this the renderer took the member order from the
+        # render job's resolver map, so the one fact that decides which frame
+        # every cut lands on was not contract data at all.
+        "member_media_ids": list(medium.member_media_ids),
+        "continuity": medium.continuity,
         "expected_frame_rate": medium.expected_frame_rate,
         "label": medium.label,
     }
@@ -2077,16 +2320,10 @@ def _audio_plan(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     rate = request.rate
     ambient = request.ambient
-    # With ambient off every clip is emitted muted, so a per-clip ambient gain
-    # is a level for a signal that is not in the mix. Emitting it anyway would
-    # have a renderer -- or a human reading the plan -- believe the location
-    # sound is coming up 6 dB under the music when it is not there at all.
-    per_clip = [
-        {"clip_id": placement.clip_id, "gain_db": _clip_gain_db(placement, request)}
-        for placement in placements
-        if ambient.enabled
-        and _clip_gain_db(placement, request) != ambient.default_gain_db
-    ]
+    # contracts#53: there is no per-clip gain list here any more. Every clip
+    # already carries its own `audio.gain_db`, computed by the same
+    # `_clip_gain_db`, and a second copy of it in the AmbientPlan was two levels
+    # for one bed with no rule saying which won.
 
     music_cues: list[dict[str, Any]] = []
     music_track_block: dict[str, Any] | None = None
@@ -2169,10 +2406,11 @@ def _audio_plan(
                 {
                     "rule_id": "duck-music-under-speech",
                     "target": "music",
-                    "trigger": "explicit_ranges",
                     "reduction_db": ambient.duck_reduction_db,
-                    "threshold_db": None,
-                    "ratio": None,
+                    # contracts#54 defines these: the gain moves linearly in dB,
+                    # the attack ramp ENDS at the range start and the release
+                    # ramp BEGINS at the range end, so the declared range is
+                    # fully ducked for its whole declared extent.
                     "attack_ms": ambient.duck_attack_ms,
                     "release_ms": ambient.duck_release_ms,
                     "ranges": [
@@ -2189,12 +2427,13 @@ def _audio_plan(
     audio_plan = {
         "music": music_cues,
         "ambient": {
-            "enabled": ambient.enabled,
-            "default_gain_db": ambient.default_gain_db,
-            "preserve_speech": ambient.preserve_speech,
-            "high_pass_hz": ambient.high_pass_hz,
-            "noise_suppression": ambient.noise_suppression,
-            "per_clip_gain_db": per_clip,
+            # A high-pass on a mix with no location sound in it filters silence.
+            "high_pass": None
+            if ambient.high_pass_hz is None or not ambient.enabled
+            else {
+                "corner_hz": float(ambient.high_pass_hz),
+                "order": int(ambient.high_pass_order),
+            },
         },
         "ducking": ducking,
         "mix": {
@@ -2406,13 +2645,17 @@ def _request_digest_payload(request: ReelRequest) -> dict[str, Any]:
             "target_duration": target.target_duration,
             "max_duration": target.max_duration,
             "loudness_target_lufs": target.loudness_target_lufs,
+            # Two plans that differ only by their encode are two different
+            # files, so the digest that claims to identify a cut has to cover it
+            # (contracts#56).
+            "encode": copy.deepcopy(dict(target.encode or {})),
         },
         "ambient": {
             "enabled": ambient.enabled,
             "default_gain_db": ambient.default_gain_db,
             "preserve_speech": ambient.preserve_speech,
             "high_pass_hz": ambient.high_pass_hz,
-            "noise_suppression": ambient.noise_suppression,
+            "high_pass_order": ambient.high_pass_order,
             "wind_noise_ratio": ambient.wind_noise_ratio,
             "wind_gain_db": ambient.wind_gain_db,
             "speech_ratio_threshold": ambient.speech_ratio_threshold,
@@ -2441,6 +2684,8 @@ def _request_digest_payload(request: ReelRequest) -> dict[str, Any]:
                 "aspect_ratio": list(m.aspect_ratio),
                 "media_kind": m.media_kind,
                 "is_span_assembly": m.is_span_assembly,
+                "member_media_ids": list(m.member_media_ids),
+                "continuity": m.continuity,
                 "expected_frame_rate": m.expected_frame_rate,
                 "label": m.label,
             }
@@ -2644,6 +2889,41 @@ def _validate(
         )
     )
 
+    # span_continuity_verified (contracts#55)
+    #
+    # Recomputed from the emitted media_refs, not from the SourceMedia objects
+    # that produced them: SourceMedia checks the same thing at construction, and
+    # a validator that reads the writer's variables cannot catch the writer
+    # dropping a member on the way out.
+    assemblies = [ref for ref in edl["media_refs"] if ref.get("is_span_assembly")]
+    span_problems: list[str] = []
+    for ref in assemblies:
+        members = list(ref.get("member_media_ids") or [])
+        recomputed = blake3_hex("".join(members).encode("ascii"))
+        if recomputed != ref["media_id"]:
+            span_problems.append(
+                f"{ref['media_ref_id']} names members hashing to {recomputed[:12]}..., "
+                f"not {ref['media_id'][:12]}..."
+            )
+        elif ref.get("continuity") != RENDERABLE_SPAN_CONTINUITY:
+            span_problems.append(
+                f"{ref['media_ref_id']} continuity is {ref.get('continuity')!r}; only "
+                f"{RENDERABLE_SPAN_CONTINUITY!r} may be concatenated, because nothing in "
+                "the plan carries the length of a gap to compensate for"
+            )
+    if assemblies:
+        checks.append(
+            _check(
+                "span_continuity_verified",
+                not span_problems,
+                "error",
+                f"{len(assemblies)} assembly ref(s): members hash to their media_id in "
+                f"index order, continuity {RENDERABLE_SPAN_CONTINUITY}"
+                if not span_problems
+                else "; ".join(span_problems),
+            )
+        )
+
     # source_range_within_available
     escapes: list[tuple[str, str]] = []
     for track in edl["tracks"]:
@@ -2692,15 +2972,13 @@ def _validate(
                 # the clips either side still butt up. The handles it overlaps
                 # come from OUTSIDE the neighbours' source_ranges -- which is
                 # what `transition_handles_available` checks them against.
-                # (edl.schema.json's OTIO header says the opposite in one
-                # sentence: "The clips' source_ranges already include the
-                # handles the overlap consumes." Under that reading the handle
-                # check would be pure duplication of
-                # `source_range_within_available`, and every dissolve would
-                # shorten its two shots by `dissolve_frames` of picture. The
-                # planner implements the OTIO reading; the contract sentence
-                # needs Codex sign-off to correct, so it is flagged rather than
-                # edited here -- see the branch report.)
+                # edl.schema.json once said the opposite in one sentence ("the
+                # clips' source_ranges already include the handles"); under that
+                # reading the handle check is pure duplication of
+                # `source_range_within_available` and every dissolve silently
+                # shortens its two shots. The contract now states this reading
+                # in both the file header and Transition's own $comment
+                # (contracts#52).
                 continue
             if item["item_type"] == "gap":
                 cursor += item["duration"]["value"]

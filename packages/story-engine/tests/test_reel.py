@@ -58,6 +58,7 @@ from memory_engine_story.reel import (  # noqa: E402
     Word,
     blake3_hex,
     canonical_json,
+    encode_profile_for,
     moment_from_record,
     plan_reel,
 )
@@ -76,6 +77,22 @@ RATE = 59.94005994005994
 
 RIDE_MEDIA_ID = "a371bd849cc440490b2013581e0e77ff53db9a984fd9d37ceddbeaffefb96cf2"
 MUSIC_MEDIA_ID = "22fbf421bb5540190572a9439a138fc77ad8c3c13b3a87be34f96a965da222ce"
+
+# contracts#55. Read from the MediaRecord fixture that defines the assembly
+# rather than copied here, so a change to the chapter set breaks in one place
+# and the two documents cannot drift into disagreeing about one recording.
+_SPAN_FIXTURE = json.loads(
+    (
+        REPO_ROOT
+        / "contracts"
+        / "fixtures"
+        / "media-record"
+        / "valid"
+        / "video-gopro-span-assembly.json"
+    ).read_text(encoding="utf-8")
+)
+RIDE_MEMBER_IDS = tuple(_SPAN_FIXTURE["span"]["member_media_ids"])
+RIDE_CONTINUITY = _SPAN_FIXTURE["span"]["continuity"]
 
 # The golden EDL fixture's grid: 32 bars of 128bpm laid over 899 frames at
 # 59.94. Recomputing it here (rather than reading the fixture) is deliberate --
@@ -128,6 +145,8 @@ def source_media(**kwargs) -> SourceMedia:
         available_duration=61593,
         aspect_ratio=(16, 9),
         is_span_assembly=True,
+        member_media_ids=RIDE_MEMBER_IDS,
+        continuity=RIDE_CONTINUITY,
         expected_frame_rate=RATE,
         label="GH01/GH02 1234 (assembled)",
     )
@@ -804,10 +823,16 @@ class TestSpeechAndAudio(unittest.TestCase):
         self.assertEqual(1, len(rules))
         rule = rules[0]
         self.assertEqual("music", rule["target"])
-        # explicit_ranges, not "speech": a renderer re-detecting speech would
-        # mix the same EDL differently on a different build.
-        self.assertEqual("explicit_ranges", rule["trigger"])
+        # There is no `trigger` any more (contracts#54): the only value that
+        # was ever deterministic was `explicit_ranges`, and the detection
+        # triggers asked a renderer to analyse the mix, which would mix the
+        # same EDL differently on a different build. Ranges are the rule.
+        self.assertNotIn("trigger", rule)
         self.assertEqual(9.0, rule["reduction_db"])
+        # The envelope contracts#54 defines: the ramp down ENDS at the range
+        # start, so the declared range is fully ducked for its whole extent.
+        self.assertEqual(60.0, rule["attack_ms"])
+        self.assertEqual(320.0, rule["release_ms"])
         clip = next(
             c for c in video_clips(plan.edl) if c["moment_id"] == speech.moment_id
         )
@@ -863,11 +888,12 @@ class TestSpeechAndAudio(unittest.TestCase):
             c for c in video_clips(plan.edl) if c["moment_id"] == windy.moment_id
         )
         self.assertEqual(-60.0, clip["audio"]["gain_db"])
-        per_clip = {
-            entry["clip_id"]: entry["gain_db"]
-            for entry in plan.edl["audio_plan"]["ambient"]["per_clip_gain_db"]
-        }
-        self.assertEqual(-60.0, per_clip[clip["clip_id"]])
+        # contracts#53: the level is stated exactly once, on the clip. The
+        # AmbientPlan carries no gains at all now, so there is no second copy
+        # for a renderer to sum with, override by, or silently prefer.
+        self.assertEqual(
+            {"high_pass"}, set(plan.edl["audio_plan"]["ambient"])
+        )
 
     def test_an_l_cut_is_planned_when_the_audio_outlives_the_picture(self):
         # Three moments so the speech clip is not the last one: there is
@@ -1606,6 +1632,9 @@ class TestChapteredFootage(unittest.TestCase):
         spare = source_media(
             media_ref_id="src-spare",
             media_id="b" * 64,
+            is_span_assembly=False,
+            member_media_ids=(),
+            continuity=None,
             label="unused",
         )
         plan = plan_reel(request(media=(source_media(), music_media(), spare)))
@@ -1835,6 +1864,7 @@ class TestValidationBlock(unittest.TestCase):
         allowed = {
             "source_range_within_available",
             "media_refs_resolvable",
+            "span_continuity_verified",
             "timeline_contiguous",
             "transition_handles_available",
             "beat_alignment_within_tolerance",
@@ -2712,19 +2742,24 @@ class TestAmbientDisabled(unittest.TestCase):
     def test_ambient_on_ducks_the_music_and_keeps_the_clip_audio(self):
         plan = plan_reel(self._speech_request())
         self.assertEqual(1, len(plan.edl["audio_plan"]["ducking"]))
-        self.assertTrue(plan.edl["audio_plan"]["ambient"]["per_clip_gain_db"])
+        self.assertIsNotNone(plan.edl["audio_plan"]["ambient"]["high_pass"])
         for clip in video_clips(plan.edl):
             self.assertFalse(clip["audio"]["muted"])
+            self.assertNotEqual(0.0, clip["audio"]["gain_db"])
 
     def test_ambient_off_mutes_the_clips_and_stops_ducking_under_silence(self):
         # Ducking here would pull the music down 9 dB for a quarter of the reel
         # with nothing underneath it: audible, wrong, and silent in the plan.
         plan = plan_reel(self._speech_request(ambient=AmbientSettings(enabled=False)))
-        self.assertFalse(plan.edl["audio_plan"]["ambient"]["enabled"])
+        # contracts#53 removed AmbientPlan.enabled: a bed is silent because the
+        # clip says muted, in one place, where a reader can see which sound is
+        # gone. The planner setting still decides -- it just does not travel as
+        # a second switch the renderer would have to reconcile.
         for clip in video_clips(plan.edl):
             self.assertTrue(clip["audio"]["muted"])
         self.assertEqual([], plan.edl["audio_plan"]["ducking"])
-        self.assertEqual([], plan.edl["audio_plan"]["ambient"]["per_clip_gain_db"])
+        # A high-pass over a mix with no location sound in it filters silence.
+        self.assertIsNone(plan.edl["audio_plan"]["ambient"]["high_pass"])
         self.assertEqual("pass", plan.status)
         _assert_schema_valid(self, plan.edl)
 
@@ -3148,6 +3183,167 @@ class TestOtioMapping(unittest.TestCase):
                 for part in ("start_time", "duration"):
                     value = clip[field][part]["value"]
                     self.assertEqual(value, int(value), f"{field}.{part} is fractional")
+
+
+class TestEncodeProfile(unittest.TestCase):
+    """contracts#56. The delivery encode is in the plan, and it is a decision."""
+
+    def test_the_plan_carries_the_destination_profile(self):
+        edl = plan_reel(request()).edl
+        encode = edl["target"]["encode"]
+        self.assertEqual("instagram-reel-h264-crf20-v1", encode["profile_id"])
+        self.assertEqual("mp4", encode["container"])
+        self.assertEqual("h264", encode["video"]["codec"])
+        self.assertEqual("libx264", encode["video"]["encoder"])
+        self.assertEqual(
+            {"mode": "crf", "quality": 20, "bit_rate_kbps": None},
+            encode["video"]["rate_control"],
+        )
+        # Stated rather than left to x264's 250-frame default: a platform's own
+        # re-encode seeks against the keyframes it is handed.
+        self.assertEqual(120, encode["video"]["keyframe_interval_frames"])
+        # Not a performance setting. x264 slices a frame across threads and the
+        # slice boundaries move with the count.
+        self.assertEqual(1, encode["encoder_threads"])
+        _assert_schema_valid(self, edl)
+
+    def test_each_destination_has_its_own_versioned_profile(self):
+        ids = {
+            destination: encode_profile_for(destination)["profile_id"]
+            for destination in ("master", "instagram_reel", "youtube", "whatsapp_status")
+        }
+        self.assertEqual(len(ids), len(set(ids.values())), ids)
+
+    def test_two_plans_that_differ_only_by_encode_have_different_digests(self):
+        """The digest claims two plans with the same value are the same cut.
+
+        Before contracts#56 that claim was false for the one thing a viewer
+        actually receives: the encode arrived in the render job, so two renders
+        of one EDL could differ by an entire codec with nothing recording which.
+        """
+        baseline = plan_reel(request()).edl
+        louder = encode_profile_for("instagram_reel")
+        louder["profile_id"] = "instagram-reel-h264-crf14-v1"
+        louder["video"]["rate_control"]["quality"] = 14
+        other = plan_reel(
+            request(
+                target=RenderTarget(
+                    destination="instagram_reel",
+                    resolution=(1080, 1920),
+                    aspect_ratio=(9, 16),
+                    encode=louder,
+                )
+            )
+        ).edl
+        self.assertNotEqual(
+            baseline["determinism"]["inputs_digest"], other["determinism"]["inputs_digest"]
+        )
+        self.assertNotEqual(baseline["edl_id"], other["edl_id"])
+
+    def test_an_encoder_that_does_not_produce_the_declared_codec_is_refused(self):
+        profile = encode_profile_for("master")
+        profile["video"]["codec"] = "hevc"  # still encoded by libx264
+        with self.assertRaisesRegex(ValueError, "produces"):
+            RenderTarget(
+                destination="master",
+                resolution=(1080, 1920),
+                aspect_ratio=(9, 16),
+                encode=profile,
+            )
+
+    def test_a_crf_profile_that_names_no_quality_is_refused(self):
+        profile = encode_profile_for("master")
+        profile["video"]["rate_control"]["quality"] = None
+        with self.assertRaisesRegex(ValueError, "needs a quality value"):
+            RenderTarget(
+                destination="master",
+                resolution=(1080, 1920),
+                aspect_ratio=(9, 16),
+                encode=profile,
+            )
+
+
+class TestSpanAssemblyIsSelfDescribing(unittest.TestCase):
+    """contracts#55. The member order is what the assembly's identity is made of."""
+
+    def test_the_plan_names_the_members_and_the_verified_continuity(self):
+        edl = plan_reel(request()).edl
+        ref = next(r for r in edl["media_refs"] if r["is_span_assembly"])
+        self.assertEqual(list(RIDE_MEMBER_IDS), ref["member_media_ids"])
+        self.assertEqual("verified_gapless", ref["continuity"])
+        self.assertEqual(
+            RIDE_MEDIA_ID, blake3_hex("".join(ref["member_media_ids"]).encode("ascii"))
+        )
+        check = next(
+            c
+            for c in edl["validation"]["checks"]
+            if c["check_id"] == "span_continuity_verified"
+        )
+        self.assertTrue(check["passed"])
+        _assert_schema_valid(self, edl)
+
+    def test_a_non_assembly_names_no_members(self):
+        edl = plan_reel(request(music=music_track())).edl
+        ref = next(r for r in edl["media_refs"] if not r["is_span_assembly"])
+        self.assertEqual([], ref["member_media_ids"])
+        self.assertIsNone(ref["continuity"])
+
+    def test_a_reversed_member_list_is_refused_at_the_source(self):
+        # It hashes to a different assembly, which is exactly right: a different
+        # order is a different recording, and every source timecode drawn from
+        # it after the split would be wrong.
+        with self.assertRaisesRegex(ValueError, "mis-ordered"):
+            source_media(member_media_ids=tuple(reversed(RIDE_MEMBER_IDS)))
+
+    def test_an_assembly_of_one_file_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "assembly of one file"):
+            source_media(member_media_ids=RIDE_MEMBER_IDS[:1])
+
+    def test_an_assembly_must_declare_a_continuity(self):
+        with self.assertRaisesRegex(ValueError, "continuity"):
+            source_media(continuity=None)
+
+    def test_an_unverified_span_fails_the_plan_rather_than_being_concatenated(self):
+        # Nothing in the plan carries the length of a gap to compensate with, so
+        # the only honest answer is to refuse. A verified_gap assembly rendered
+        # as if it were gapless puts every cut after the split on the wrong
+        # frame, and the picture still looks like a picture.
+        plan = plan_reel(
+            request(
+                media=(source_media(continuity="verified_gap"),),
+                music=None,
+                beat_grid=None,
+            )
+        )
+        check = next(
+            c
+            for c in plan.edl["validation"]["checks"]
+            if c["check_id"] == "span_continuity_verified"
+        )
+        self.assertFalse(check["passed"])
+        self.assertEqual("fail", plan.status)
+
+
+class TestAmbientFilterAndDuckEnvelope(unittest.TestCase):
+    """contracts#53 and #54: a filter with a response, and a duck with a curve."""
+
+    def test_the_high_pass_states_its_corner_and_its_order(self):
+        edl = plan_reel(request()).edl
+        self.assertEqual(
+            {"corner_hz": 120.0, "order": 4}, edl["audio_plan"]["ambient"]["high_pass"]
+        )
+
+    def test_a_second_order_filter_is_emitted_when_asked_for(self):
+        edl = plan_reel(
+            request(ambient=AmbientSettings(high_pass_hz=80.0, high_pass_order=2))
+        ).edl
+        self.assertEqual(
+            {"corner_hz": 80.0, "order": 2}, edl["audio_plan"]["ambient"]["high_pass"]
+        )
+
+    def test_an_order_the_contract_does_not_define_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "must be 2 or 4"):
+            AmbientSettings(high_pass_order=3)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import type { EDL, JobError, JobSpec } from "../../../contracts/codegen/generated/typescript/index.js";
 
 import { canonicalJson, digestBytes } from "./digest.js";
-import { parseEncodeProfile, type EncodeProfile } from "./encode.js";
 import { asRenderVideoError, RenderVideoError } from "./errors.js";
 import { publishRenderOnce, renderVideo, type RenderVideoResult } from "./renderer.js";
 import type { SourceResolver } from "./sources.js";
@@ -15,7 +14,6 @@ export interface RenderVideoJobParams {
   work_directory: string;
   /** media_id -> ordered local paths. One path, unless the ref is a span assembly. */
   sources: SourceResolver;
-  encode: EncodeProfile;
   ffmpeg_path?: string;
   ffprobe_path?: string;
 }
@@ -55,11 +53,19 @@ export function parseParams(value: Record<string, unknown> | undefined): RenderV
   if (typeof params.work_directory !== "string" || params.work_directory.length === 0) {
     throw new RenderVideoError("validation_failed", "render_video params.work_directory is missing.");
   }
+  if (params.encode !== undefined) {
+    throw new RenderVideoError(
+      "validation_failed",
+      "render_video params carries an `encode` block. The encode profile moved into the " +
+        "plan, on RenderTarget.encode (contracts#56); a job that also carries one is a " +
+        "second description of the same delivery, and the renderer will not pick between " +
+        "them.",
+    );
+  }
   const parsed: RenderVideoJobParams = {
     output_path: params.output_path,
     work_directory: params.work_directory,
     sources: parseSources(params.sources),
-    encode: parseEncodeProfile(params.encode),
   };
   if (typeof params.ffmpeg_path === "string") parsed.ffmpeg_path = params.ffmpeg_path;
   if (typeof params.ffprobe_path === "string") parsed.ffprobe_path = params.ffprobe_path;
@@ -136,7 +142,6 @@ export async function runRenderVideoJob(
 
     const result = await renderVideo(edl, {
       sources: params.sources,
-      encode: params.encode,
       workDirectory,
       tools,
     });

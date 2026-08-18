@@ -1,7 +1,6 @@
-import type { EDL, MixPlan, ReframeTrack } from "../../../contracts/codegen/generated/typescript/index.js";
+import type { EDL, EncodeProfile, MixPlan, ReframeTrack } from "../../../contracts/codegen/generated/typescript/index.js";
 
 import { RenderVideoError } from "./errors.js";
-import type { EncodeProfile } from "./encode.js";
 import type { AudioContribution, DuckingWindow, Program, VideoSegment } from "./program.js";
 import { frameSeriesExpression, planCrop } from "./reframe.js";
 import type { ResolvedSource } from "./sources.js";
@@ -99,9 +98,46 @@ function cropChain(
   return `,crop=w=${plan.width}:h=${plan.height}:x='${x}':y='${y}'`;
 }
 
+/**
+ * The four easing curves of contracts#52, as ffmpeg expressions in the linear progress
+ * `u`. Written with only + - and * so the arithmetic is bit-identical everywhere, which is
+ * the same reason ReframeKeyframe's `smooth` is a uniform rather than a centripetal
+ * spline. `u` is substituted textually and is always a parenthesised sub-expression.
+ */
+export function easingExpression(easing: string | null | undefined, u: string): string {
+  switch (easing ?? "linear") {
+    case "linear":
+      return u;
+    case "ease_in":
+      return `${u}*${u}*${u}`;
+    case "ease_out":
+      return `1-(1-${u})*(1-${u})*(1-${u})`;
+    case "ease_in_out":
+      return `if(lt(${u},0.5),4*${u}*${u}*${u},1-4*(1-${u})*(1-${u})*(1-${u}))`;
+    default:
+      return fail(`transition easing ${easing} has no curve in this worker.`);
+  }
+}
+
+/** A constant-colour clip of `length` frames, normalised like every other segment. */
+function colourSource(
+  builder: GraphBuilder,
+  edl: EDL,
+  profile: EncodeProfile,
+  colour: "black" | "white",
+  length: number,
+  label: string,
+): string {
+  builder.add(
+    `color=c=${colour}:s=${edl.target.resolution.width}x${edl.target.resolution.height}:r=${edl.rate}` +
+      `,trim=end_frame=${length},setpts=PTS-STARTPTS,setsar=1,format=${profile.video.pixel_format}[${label}]`,
+  );
+  return label;
+}
+
 function normaliseChain(target: EDL["target"], profile: EncodeProfile): string {
   const { width, height } = target.resolution;
-  return `,scale=${width}:${height}:flags=${profile.scale_flags},setsar=1,format=${profile.video.pix_fmt}`;
+  return `,scale=${width}:${height}:flags=${profile.scaler},setsar=1,format=${profile.video.pixel_format}`;
 }
 
 /**
@@ -124,7 +160,7 @@ function videoSegmentChain(
     const colour = segment.fill === "white" ? "white" : "black";
     builder.add(
       `color=c=${colour}:s=${edl.target.resolution.width}x${edl.target.resolution.height}:r=${rate}` +
-        `,trim=end_frame=${segment.length},setpts=PTS-STARTPTS,setsar=1,format=${profile.video.pix_fmt}[${label}]`,
+        `,trim=end_frame=${segment.length},setpts=PTS-STARTPTS,setsar=1,format=${profile.video.pixel_format}[${label}]`,
     );
     return label;
   }
@@ -164,10 +200,11 @@ function videoSegmentChain(
 
   builder.note(
     "transitions[].easing",
-    "Only linear easing is executed; the blend is a straight ramp indexed by frame number " +
-      "across the declared handle window, and any other easing value is refused rather than " +
-      "approximated.",
-    "contracts#52",
+    "The blend weight is easing(N/L), with the four curves written out as polynomials in the " +
+      "schema's Transition $comment. Indexed by frame number rather than by seconds, so it " +
+      "cannot drift; the polynomials use only + - and *, so every implementation lands on the " +
+      "same bits.",
+    "contracts#52 (closed)",
   );
 
   /**
@@ -178,31 +215,39 @@ function videoSegmentChain(
    * cut. Frame numbers cannot drift.
    */
   if (segment.transitionType === "dissolve") {
-    const length = segment.length;
-    builder.add(
-      `[${sideLabels[0]}][${sideLabels[1]}]blend=all_expr='A*(1-N/${length})+B*(N/${length})'[${label}]`,
-    );
+    const weight = easingExpression(segment.easing, `(N/${segment.length})`);
+    builder.add(`[${sideLabels[0]}][${sideLabels[1]}]blend=all_expr='A*(1-(${weight}))+B*(${weight})'[${label}]`);
     return label;
   }
 
-  // A dip goes to a colour at the cut and comes back out of it, so it is two fades rather
-  // than a blend, and `fade` knows what "black" and "white" mean in the working pixel
-  // format — which an arithmetic blend against a constant would not.
+  // A dip goes to a colour at the cut and comes back out of it, so it is two ramps rather
+  // than one blend — but each ramp is a blend against a constant-colour source driven by
+  // the SAME weight polynomial as a dissolve. `fade` was what this used before and it only
+  // ramps linearly, which would have made `easing` mean one thing on a dissolve and
+  // another on a dip.
   const colour = segment.transitionType === "dip_to_black" ? "black" : "white";
   const halves: string[] = [];
   if (segment.inOffset > 0) {
     const out = `${label}_out`;
+    const dip = colourSource(builder, edl, profile, colour, segment.inOffset, `${label}_c0`);
+    const weight = easingExpression(segment.easing, `(N/${segment.inOffset})`);
     builder.add(
-      `[${sideLabels[0]}]trim=end_frame=${segment.inOffset},setpts=PTS-STARTPTS` +
-        `,fade=type=out:start_frame=0:nb_frames=${segment.inOffset}:color=${colour}[${out}]`,
+      `[${sideLabels[0]}]trim=end_frame=${segment.inOffset},setpts=PTS-STARTPTS[${label}_a0]`,
+    );
+    builder.add(
+      `[${label}_a0][${dip}]blend=all_expr='A*(1-(${weight}))+B*(${weight})'[${out}]`,
     );
     halves.push(out);
   }
   if (segment.outOffset > 0) {
     const into = `${label}_in`;
+    const dip = colourSource(builder, edl, profile, colour, segment.outOffset, `${label}_c1`);
+    const weight = easingExpression(segment.easing, `(N/${segment.outOffset})`);
     builder.add(
-      `[${sideLabels[1]}]trim=start_frame=${segment.inOffset},setpts=PTS-STARTPTS` +
-        `,fade=type=in:start_frame=0:nb_frames=${segment.outOffset}:color=${colour}[${into}]`,
+      `[${sideLabels[1]}]trim=start_frame=${segment.inOffset},setpts=PTS-STARTPTS[${label}_a1]`,
+    );
+    builder.add(
+      `[${dip}][${label}_a1]blend=all_expr='A*(1-(${weight}))+B*(${weight})'[${into}]`,
     );
     halves.push(into);
   }
@@ -267,31 +312,126 @@ function audioContributionChain(
   return label;
 }
 
+/**
+ * One rule's reduction, in dB, as an ffmpeg expression in `t` (contracts#54).
+ *
+ * Per range [s, e): the reduction ramps linearly IN dB from 0 to reduction_db over
+ * [s-a, s), holds reduction_db over [s, e), and ramps back to 0 over [e, e+r). Within one
+ * rule the envelope is the maximum over its own ranges, which is what makes two ranges
+ * closer together than attack+release well defined rather than a race between a release
+ * and the next attack.
+ */
+/** ffmpeg's `max` takes exactly two arguments, so an n-way maximum is folded. */
+function foldMax(terms: readonly string[]): string {
+  return terms.reduce((left, right) => `max(${left},${right})`);
+}
+
+function reductionExpression(window: DuckingWindow, rate: number): string {
+  const attack = framesToSeconds(window.attackFrames, rate);
+  const release = framesToSeconds(window.releaseFrames, rate);
+  const reduction = window.reductionDb;
+
+  const perRange = window.ranges.map((range) => {
+    const s = framesToSeconds(range.start, rate);
+    const e = framesToSeconds(range.end, rate);
+    const held = `between(t,${secondsArg(s)},${secondsArg(e)})*${reduction}`;
+    const parts = [held];
+    if (attack > 0) {
+      parts.push(
+        `between(t,${secondsArg(s - attack)},${secondsArg(s)})*${reduction}*` +
+          `((t-${secondsArg(s - attack)})/${secondsArg(attack)})`,
+      );
+    }
+    if (release > 0) {
+      parts.push(
+        `between(t,${secondsArg(e)},${secondsArg(e + release)})*${reduction}*` +
+          `(1-(t-${secondsArg(e)})/${secondsArg(release)})`,
+      );
+    }
+    // The three pieces are disjoint except at their shared endpoints, where `between` is
+    // inclusive on both sides and each neighbour contributes the same value, so max() and
+    // not a sum: adding them would double the gain on exactly the two sample boundaries a
+    // listener would hear as a click. Folded pairwise because ffmpeg's `max` is binary.
+    return foldMax(parts);
+  });
+
+  return foldMax(perRange);
+}
+
 function duckingChain(builder: GraphBuilder, rate: number, windows: readonly DuckingWindow[], label: string): string {
   if (windows.length === 0) return label;
   let current = label;
   windows.forEach((window, index) => {
     if (window.ranges.length === 0) return;
-    const gain = decibelsToLinear(-window.reductionDb);
-    const enable = window.ranges
-      .map((range) => {
-        const start = secondsArg(framesToSeconds(range.start, rate));
-        const end = secondsArg(framesToSeconds(range.end, rate));
-        return `between(t,${start},${end})`;
-      })
-      .join("+");
     const next = `${current}_d${index}`;
-    builder.note(
-      "audio_plan.ducking[].ranges",
-      "A duck is a step of exactly reduction_db across the declared range. Its edges land on an " +
-        "ffmpeg audio-frame boundary, so the transition is within one frame of the stated time; " +
-        "attack and release are refused rather than approximated.",
-      "contracts#54",
-    );
-    builder.add(`[${current}]volume=volume=${gain.toFixed(9)}:enable='${enable}'[${next}]`);
+    const stepped = window.attackFrames === 0 && window.releaseFrames === 0;
+    if (stepped) {
+      const gain = decibelsToLinear(-window.reductionDb);
+      const enable = window.ranges
+        .map((range) => {
+          const start = secondsArg(framesToSeconds(range.start, rate));
+          const end = secondsArg(framesToSeconds(range.end, rate));
+          return `between(t,${start},${end})`;
+        })
+        .join("+");
+      builder.add(`[${current}]volume=volume=${gain.toFixed(9)}:enable='${enable}'[${next}]`);
+    } else {
+      builder.note(
+        "audio_plan.ducking[].attack_ms / release_ms",
+        "The envelope is the one contracts#54 states: linear in dB, the ramp down ending at the " +
+          "range start and the ramp up beginning at the range end, so the declared range is fully " +
+          "ducked for its whole declared extent. `volume` re-evaluates the expression once per " +
+          "audio frame, so the ramp is a staircase of 1024-sample treads (21 ms at 48 kHz) rather " +
+          "than a continuous line — the same quantisation the stepped form has always had at its " +
+          "edges, and the reason `eval=frame` is stated here rather than assumed.",
+        "contracts#54",
+      );
+      builder.add(
+        `[${current}]volume=volume='pow(10,-(${reductionExpression(window, rate)})/20)':eval=frame[${next}]`,
+      );
+    }
     current = next;
   });
   return current;
+}
+
+/**
+ * The ambient high-pass (contracts#53), applied ONCE to the summed ambient group — after
+ * each clip's gain, fades and L-cut tail, and before any duck — because that is the order
+ * the contract states.
+ *
+ * Butterworth, realised as a cascade of RBJ-cookbook high-pass biquads at one corner, one
+ * section per two poles, with the standard Butterworth Q values. ffmpeg's `highpass` is
+ * exactly that biquad, and `width_type=q` takes the Q directly.
+ */
+const BUTTERWORTH_Q: Readonly<Record<number, readonly number[]>> = Object.freeze({
+  2: [0.70710678118654752],
+  4: [0.54119610014619698, 1.30656296487637652],
+});
+
+function highPassChain(builder: GraphBuilder, edl: EDL, label: string): string {
+  const filter = edl.audio_plan?.ambient?.high_pass;
+  if (!filter) return label;
+  const sections = BUTTERWORTH_Q[filter.order];
+  if (!sections) {
+    fail(
+      `AmbientPlan.high_pass declares order ${filter.order}, and the contract's Butterworth ` +
+        "cascade is defined for 2 and 4.",
+    );
+  }
+  const chain = sections
+    .map((q) => `highpass=f=${filter.corner_hz}:poles=2:width_type=q:width=${q}`)
+    .join(",");
+  const next = `${label}_hp`;
+  builder.note(
+    "audio_plan.ambient.high_pass",
+    `Butterworth order ${filter.order} at ${filter.corner_hz} Hz, built as ${sections.length} ` +
+      `RBJ biquad section(s) at Q ${sections.join(", ")} — the values the contract's $comment ` +
+      "names. Applied to the summed ambient group, before ducking.",
+    "contracts#53 (closed)",
+  );
+  builder.add(`[${label}]${chain}[${next}]`);
+  return next;
 }
 
 function mergeAudio(builder: GraphBuilder, labels: readonly string[], label: string): string {
@@ -337,7 +477,8 @@ function buildAudioGraph(
 
   const groupLabels: string[] = [];
   for (const [role, labels] of [...byRole.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-    const merged = mergeAudio(builder, labels, `g_${role}`);
+    let merged = mergeAudio(builder, labels, `g_${role}`);
+    if (role === "ambient") merged = highPassChain(builder, edl, merged);
     const windows = program.ducking.filter((window) => window.target === role);
     groupLabels.push(duckingChain(builder, edl.rate, windows, merged));
   }

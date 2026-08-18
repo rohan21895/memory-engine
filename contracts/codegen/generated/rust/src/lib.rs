@@ -1535,53 +1535,19 @@ pub struct Act {
     pub beats: Vec<StoryBeat>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum AmbientPlanNoiseSuppression {
-    #[serde(rename = "none")]
-    None,
-
-    #[serde(rename = "light")]
-    Light,
-
-    #[serde(rename = "moderate")]
-    Moderate,
-
-    #[serde(rename = "aggressive")]
-    Aggressive,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AmbientPlanPerClipGainDbItem {
-    pub clip_id: Slug,
-
-    pub gain_db: f64,
-}
-
-/// How much of the original location sound survives. Keeping real ambient under music
-/// is most of what separates a film that feels like a memory from a slideshow with a
-/// soundtrack.
+/// Processing applied to the location sound as a whole. Keeping real ambient under
+/// music is most of what separates a film that feels like a memory from a slideshow
+/// with a soundtrack -- but the LEVEL of each clip's bed lives on that clip
+/// (ClipAudio.gain_db), and this type carries only what is a property of the group
+/// rather than of one clip.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AmbientPlan {
+    /// Removes wind rumble, which otherwise dominates every outdoor action clip. Null means
+    /// no filter. Applied ONCE to the summed ambient group -- after each clip's gain, fades
+    /// and L-cut tail, before any DuckingRule -- so that the plan's order of operations is
+    /// stated rather than left to a mixer's internal graph.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_gain_db: Option<f64>,
-
-    /// When true, clips containing speech keep their ambient at full level and the music
-    /// ducks under them instead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preserve_speech: Option<bool>,
-
-    /// Removes wind rumble, which otherwise dominates every outdoor action clip.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub high_pass_hz: Option<f64>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub noise_suppression: Option<AmbientPlanNoiseSuppression>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub per_clip_gain_db: Option<Vec<AmbientPlanPerClipGainDbItem>>,
+    pub high_pass: Option<HighPassFilter>,
 }
 
 /// The complete audio intention: what music plays, how much of the original scene
@@ -1596,7 +1562,8 @@ pub struct AudioPlan {
 
     /// Ordered ducking rules. Later rules win where they overlap, which keeps the
     /// resolution deterministic instead of depending on the renderer's mixer
-    /// implementation.
+    /// implementation; DuckingRule's $comment states exactly what 'overlap' means once the
+    /// rules have attack and release ramps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ducking: Option<Vec<DuckingRule>>,
 
@@ -1776,10 +1743,13 @@ pub struct Clip {
     pub markers: Option<Vec<Marker>>,
 }
 
+/// This clip's own sound, and the ONLY place its level is stated (contracts#53).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClipAudio {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gain_db: Option<f64>,
+    /// Level of this clip's own audio, in dB relative to the source. Composes with nothing
+    /// else in the plan except MixPlan.master_gain_db and any DuckingRule whose target role
+    /// covers this clip's track.
+    pub gain_db: f64,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>,
@@ -1911,55 +1881,31 @@ pub enum DuckingRuleTarget {
     Sfx,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum DuckingRuleTrigger {
-    #[serde(rename = "speech")]
-    Speech,
-
-    #[serde(rename = "music")]
-    Music,
-
-    #[serde(rename = "ambient")]
-    Ambient,
-
-    #[serde(rename = "explicit_ranges")]
-    ExplicitRanges,
-}
-
-/// One sidechain relationship, expressed as intent (duck music under speech by 9dB)
-/// rather than as a rendered gain curve, so the renderer stays dumb and the decision
-/// stays auditable.
+/// One duck: turn `target` down by `reduction_db` over these timeline ranges, on the
+/// envelope this def's $comment states exactly.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DuckingRule {
     pub rule_id: Slug,
 
-    /// What gets turned down.
+    /// Which Track.role gets turned down. A rule whose target matches no track in the plan
+    /// states an intent about audio that does not exist, and is a validation failure.
     pub target: DuckingRuleTarget,
 
-    /// What turns it down. `explicit_ranges` means the planner decided the ranges itself
-    /// rather than relying on detection at render time -- always preferred, because it is
-    /// deterministic.
-    pub trigger: DuckingRuleTrigger,
-
-    /// Positive number of dB to reduce by.
+    /// Positive number of dB to reduce by, reached at the range start and held to the range
+    /// end.
     pub reduction_db: f64,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub threshold_db: Option<f64>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ratio: Option<f64>,
-
+    /// Length of the ramp DOWN, ending at the range start. 0 is a step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attack_ms: Option<f64>,
 
+    /// Length of the ramp back UP, beginning at the range end. 0 is a step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_ms: Option<f64>,
 
-    /// Timeline ranges the rule applies over. Required when trigger is explicit_ranges;
-    /// when empty with another trigger, the rule applies for the whole timeline.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ranges: Option<Vec<TimeRange>>,
+    /// Timeline ranges held at the full reduction. Non-empty, and each must lie within the
+    /// timeline.
+    pub ranges: Vec<TimeRange>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1993,6 +1939,9 @@ pub enum EdlValidationChecksItemCheckId {
 
     #[serde(rename = "music_cues_placed_once")]
     MusicCuesPlacedOnce,
+
+    #[serde(rename = "span_continuity_verified")]
+    SpanContinuityVerified,
 
     #[serde(rename = "transition_handles_available")]
     TransitionHandlesAvailable,
@@ -2068,6 +2017,248 @@ pub struct EdlValidation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum EncodeAudioCodec {
+    #[serde(rename = "aac")]
+    Aac,
+
+    #[serde(rename = "opus")]
+    Opus,
+
+    #[serde(rename = "flac")]
+    Flac,
+
+    #[serde(rename = "pcm_s16le")]
+    PcmS16le,
+
+    #[serde(rename = "pcm_s24le")]
+    PcmS24le,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum EncodeAudioEncoder {
+    #[serde(rename = "aac")]
+    Aac,
+
+    #[serde(rename = "aac_at")]
+    AacAt,
+
+    #[serde(rename = "libopus")]
+    Libopus,
+
+    #[serde(rename = "flac")]
+    Flac,
+
+    #[serde(rename = "pcm_s16le")]
+    PcmS16le,
+
+    #[serde(rename = "pcm_s24le")]
+    PcmS24le,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum EncodeAudioSampleFormat {
+    #[serde(rename = "fltp")]
+    Fltp,
+
+    #[serde(rename = "s16")]
+    S16,
+
+    #[serde(rename = "s16p")]
+    S16p,
+
+    #[serde(rename = "s32")]
+    S32,
+
+    #[serde(rename = "s32p")]
+    S32p,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EncodeAudio {
+    pub codec: EncodeAudioCodec,
+
+    pub encoder: EncodeAudioEncoder,
+
+    pub sample_format: EncodeAudioSampleFormat,
+
+    /// Null for the lossless codecs, which have no bit rate to set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_rate_kbps: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum EncodeProfileContainer {
+    #[serde(rename = "mp4")]
+    Mp4,
+
+    #[serde(rename = "mov")]
+    Mov,
+
+    #[serde(rename = "mkv")]
+    Mkv,
+
+    #[serde(rename = "webm")]
+    Webm,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum EncodeProfileScaler {
+    #[serde(rename = "neighbor")]
+    Neighbor,
+
+    #[serde(rename = "bilinear")]
+    Bilinear,
+
+    #[serde(rename = "bicubic")]
+    Bicubic,
+
+    #[serde(rename = "lanczos")]
+    Lanczos,
+
+    #[serde(rename = "spline")]
+    Spline,
+}
+
+/// The delivery encode, stated in the plan rather than chosen by the renderer
+/// (contracts#56). Every field is mandatory somewhere in this object: there is no
+/// default profile, and no destination-to-codec table anywhere in a worker. Two plans
+/// that differ only in their encode are two different files, and
+/// `determinism.inputs_digest` covers this block for exactly that reason.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EncodeProfile {
+    /// Names this exact combination of settings, so a delivery preset is versioned contract
+    /// data that review can see rather than a table inside a worker. Two profiles that
+    /// differ in any field must not share an id.
+    pub profile_id: Slug,
+
+    /// The muxer. `mp4` and `mov` are delivery; `mkv` is what a lossless master goes in,
+    /// because MP4 cannot carry FFV1.
+    pub container: EncodeProfileContainer,
+
+    /// Resampling kernel used to fit a crop to `resolution`. Pinned because the scaler
+    /// touches every pixel of every frame, and two kernels are visibly different on a 480p
+    /// proxy blown up to 1080p.
+    pub scaler: EncodeProfileScaler,
+
+    /// Encoder thread count. A determinism input, not a performance setting -- see this
+    /// def's $comment.
+    pub encoder_threads: i64,
+
+    pub video: EncodeVideo,
+
+    /// Null only when the plan carries no audio at all. A program with audio and a null
+    /// audio profile is a validation failure, not a silent mute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<EncodeAudio>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum EncodeVideoCodec {
+    #[serde(rename = "h264")]
+    H264,
+
+    #[serde(rename = "hevc")]
+    Hevc,
+
+    #[serde(rename = "av1")]
+    Av1,
+
+    #[serde(rename = "vp9")]
+    Vp9,
+
+    #[serde(rename = "ffv1")]
+    Ffv1,
+
+    #[serde(rename = "prores")]
+    Prores,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum EncodeVideoEncoder {
+    #[serde(rename = "libx264")]
+    Libx264,
+
+    #[serde(rename = "libx265")]
+    Libx265,
+
+    #[serde(rename = "libsvtav1")]
+    Libsvtav1,
+
+    #[serde(rename = "libvpx-vp9")]
+    LibvpxVp9,
+
+    #[serde(rename = "ffv1")]
+    Ffv1,
+
+    #[serde(rename = "prores_ks")]
+    ProresKs,
+
+    #[serde(rename = "h264_videotoolbox")]
+    H264Videotoolbox,
+
+    #[serde(rename = "hevc_videotoolbox")]
+    HevcVideotoolbox,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum EncodeVideoPixelFormat {
+    #[serde(rename = "yuv420p")]
+    Yuv420p,
+
+    #[serde(rename = "yuv422p")]
+    Yuv422p,
+
+    #[serde(rename = "yuv444p")]
+    Yuv444p,
+
+    #[serde(rename = "yuv420p10le")]
+    Yuv420p10le,
+
+    #[serde(rename = "yuv422p10le")]
+    Yuv422p10le,
+
+    #[serde(rename = "yuv444p10le")]
+    Yuv444p10le,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EncodeVideo {
+    /// What a player must decode.
+    pub codec: EncodeVideoCodec,
+
+    /// Which implementation writes the bytes. Must produce `codec`; a renderer refuses the
+    /// pair if it does not.
+    pub encoder: EncodeVideoEncoder,
+
+    /// Chroma subsampling and bit depth in one value, which is how every encoder actually
+    /// takes it.
+    pub pixel_format: EncodeVideoPixelFormat,
+
+    pub rate_control: RateControl,
+
+    /// Encoder speed/efficiency preset, e.g. x264's `medium`. Null means the encoder's own
+    /// default, which is only acceptable for encoders that have no preset axis (ffv1,
+    /// prores_ks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+
+    /// Codec profile, e.g. `high` for H.264 or `main10` for HEVC. Null means the encoder
+    /// derives it from pixel_format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+
+    /// Codec level, e.g. `4.0`. Null means the encoder derives it from resolution and rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+
+    /// Maximum GOP length in frames. Stated because it is a delivery decision with
+    /// consequences a viewer feels -- a platform re-encoding a 10-second GOP seeks worse
+    /// than one re-encoding a 2-second GOP -- and because leaving it to the encoder's
+    /// default makes the same plan produce different files on different builds.
+    pub keyframe_interval_frames: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum GapFill {
     #[serde(rename = "black")]
     Black,
@@ -2093,6 +2284,19 @@ pub struct Gap {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<GapFill>,
+}
+
+/// Permitted values: 2, 4.
+pub type HighPassFilterOrder = i64;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HighPassFilter {
+    /// -3 dB corner of the cascade.
+    pub corner_hz: f64,
+
+    /// Pole count. See AmbientPlan.high_pass's $comment for the Q values each order expands
+    /// to.
+    pub order: HighPassFilterOrder,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2194,6 +2398,21 @@ pub enum MediaRefMediaKind {
     Generated,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum MediaRefContinuity {
+    #[serde(rename = "verified_gapless")]
+    VerifiedGapless,
+
+    #[serde(rename = "verified_gap")]
+    VerifiedGap,
+
+    #[serde(rename = "unverified")]
+    Unverified,
+
+    #[serde(rename = "incomplete_set")]
+    IncompleteSet,
+}
+
 /// One source, addressed by content hash rather than by path. This is what makes an EDL
 /// portable: the same plan renders on any machine that has the same footage, wherever
 /// it happens to live.
@@ -2218,6 +2437,20 @@ pub struct MediaRef {
     /// file on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_span_assembly: Option<bool>,
+
+    /// The assembly's members, in INDEX order -- the order they concatenate into one
+    /// recording. Required when is_span_assembly is true and forbidden otherwise. This is
+    /// the field that makes an assembly expandable from the EDL alone (contracts#55): the
+    /// renderer never sees a MediaRecord, so before this existed the member order arrived
+    /// out of band in the render job and the plan could not state what it had planned
+    /// against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_media_ids: Option<Vec<Blake3Hash>>,
+
+    /// Whether the chapters were verified gapless, copied from MediaRecord.Span.continuity.
+    /// Required when is_span_assembly is true and forbidden otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity: Option<MediaRefContinuity>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_frame_rate: Option<f64>,
@@ -2386,6 +2619,39 @@ pub struct OtioExportInfo {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RateControlMode {
+    #[serde(rename = "crf")]
+    Crf,
+
+    #[serde(rename = "cqp")]
+    Cqp,
+
+    #[serde(rename = "abr")]
+    Abr,
+
+    #[serde(rename = "cbr")]
+    Cbr,
+
+    #[serde(rename = "lossless")]
+    Lossless,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RateControl {
+    /// `crf` and `cqp` take a quality value; `abr` and `cbr` take a bit rate; `lossless`
+    /// takes neither.
+    pub mode: RateControlMode,
+
+    /// CRF or QP value. Required for crf and cqp, null otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<f64>,
+
+    /// Target bit rate. Required for abr and cbr, null otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_rate_kbps: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ReframeKeyframeInterpolation {
     #[serde(rename = "linear")]
     Linear,
@@ -2544,6 +2810,11 @@ pub struct RenderTarget {
     pub resolution: PixelSize,
 
     pub aspect_ratio: AspectRatio,
+
+    /// How the file is written. Required: `destination` says what the cut is FOR and
+    /// settles nothing about the bytes, and a renderer that fills the difference in has
+    /// made a delivery decision invisibly (contracts#56).
+    pub encode: EncodeProfile,
 
     /// What the planner was asked for. The realised duration is the sum of the timeline and
     /// may differ slightly, because landing a cut on a beat matters more than hitting
@@ -2847,21 +3118,6 @@ pub enum TransitionTransitionType {
 
     #[serde(rename = "dip_to_white")]
     DipToWhite,
-
-    #[serde(rename = "wipe")]
-    Wipe,
-
-    #[serde(rename = "push")]
-    Push,
-
-    #[serde(rename = "blur_dissolve")]
-    BlurDissolve,
-
-    #[serde(rename = "match_cut")]
-    MatchCut,
-
-    #[serde(rename = "custom")]
-    Custom,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2887,9 +3143,9 @@ pub struct Transition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition_id: Option<Slug>,
 
-    /// `dissolve` maps to OTIO's standard SMPTE_Dissolve. Everything else maps to OTIO
-    /// "Custom" with the specific kind preserved in metadata, which is how OTIO itself
-    /// handles non-standard transitions.
+    /// `dissolve` maps to OTIO's standard SMPTE_Dissolve. The two dips map to OTIO "Custom"
+    /// with the specific kind preserved in metadata, which is how OTIO itself handles non-
+    /// standard transitions. See this def's $comment for why the enum is only three values.
     pub transition_type: TransitionTransitionType,
 
     /// How far the transition extends backwards into the outgoing item.
@@ -2898,13 +3154,11 @@ pub struct Transition {
     /// How far it extends forwards into the incoming item.
     pub out_offset: RationalTime,
 
+    /// Shape of the blend weight across the transition. Each value is a polynomial in the
+    /// linear progress u, written out in this def's $comment; a name on its own is not a
+    /// curve, and a cubic ease and a sine ease are different shots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub easing: Option<TransitionEasing>,
-
-    /// Kind-specific settings, e.g. wipe angle. Free-form because the set is open-ended; it
-    /// rides in OTIO metadata untouched.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

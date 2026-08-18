@@ -1408,47 +1408,20 @@ export interface Act {
   beats: StoryBeat[];
 }
 
-export type AmbientPlanNoiseSuppression = "none" | "light" | "moderate" | "aggressive";
-
-export const AmbientPlanNoiseSuppressionValues = [
-  "none",
-  "light",
-  "moderate",
-  "aggressive",
-] as const satisfies readonly AmbientPlanNoiseSuppression[];
-
-export interface AmbientPlanPerClipGainDbItem {
-  clip_id: Slug;
-
-  gain_db: number;
-}
-
 /**
- * How much of the original location sound survives. Keeping real ambient under music is
+ * Processing applied to the location sound as a whole. Keeping real ambient under music is
  * most of what separates a film that feels like a memory from a slideshow with a
- * soundtrack.
+ * soundtrack -- but the LEVEL of each clip's bed lives on that clip (ClipAudio.gain_db),
+ * and this type carries only what is a property of the group rather than of one clip.
  */
 export interface AmbientPlan {
-  /** Default: true. */
-  enabled?: boolean;
-
-  /** Default: -12. */
-  default_gain_db?: number;
-
   /**
-   * When true, clips containing speech keep their ambient at full level and the music
-   * ducks under them instead. Default: true.
+   * Removes wind rumble, which otherwise dominates every outdoor action clip. Null means
+   * no filter. Applied ONCE to the summed ambient group -- after each clip's gain, fades
+   * and L-cut tail, before any DuckingRule -- so that the plan's order of operations is
+   * stated rather than left to a mixer's internal graph.
    */
-  preserve_speech?: boolean;
-
-  /** Removes wind rumble, which otherwise dominates every outdoor action clip. */
-  high_pass_hz?: number | null;
-
-  /** Default: "light". */
-  noise_suppression?: AmbientPlanNoiseSuppression;
-
-  /** Default: []. */
-  per_clip_gain_db?: AmbientPlanPerClipGainDbItem[];
+  high_pass?: HighPassFilter | null;
 }
 
 /**
@@ -1463,8 +1436,9 @@ export interface AudioPlan {
 
   /**
    * Ordered ducking rules. Later rules win where they overlap, which keeps the resolution
-   * deterministic instead of depending on the renderer's mixer implementation. Default:
-   * [].
+   * deterministic instead of depending on the renderer's mixer implementation;
+   * DuckingRule's $comment states exactly what 'overlap' means once the rules have attack
+   * and release ramps. Default: [].
    */
   ducking?: DuckingRule[];
 
@@ -1651,9 +1625,14 @@ export interface Clip {
   markers?: Marker[];
 }
 
+/** This clip's own sound, and the ONLY place its level is stated (contracts#53). */
 export interface ClipAudio {
-  /** Default: 0. */
-  gain_db?: number;
+  /**
+   * Level of this clip's own audio, in dB relative to the source. Composes with nothing
+   * else in the plan except MixPlan.master_gain_db and any DuckingRule whose target role
+   * covers this clip's track.
+   */
+  gain_db: number;
 
   /** Default: false. */
   muted?: boolean;
@@ -1768,51 +1747,36 @@ export const DuckingRuleTargetValues = [
   "sfx",
 ] as const satisfies readonly DuckingRuleTarget[];
 
-export type DuckingRuleTrigger = "speech" | "music" | "ambient" | "explicit_ranges";
-
-export const DuckingRuleTriggerValues = [
-  "speech",
-  "music",
-  "ambient",
-  "explicit_ranges",
-] as const satisfies readonly DuckingRuleTrigger[];
-
 /**
- * One sidechain relationship, expressed as intent (duck music under speech by 9dB) rather
- * than as a rendered gain curve, so the renderer stays dumb and the decision stays
- * auditable.
+ * One duck: turn `target` down by `reduction_db` over these timeline ranges, on the
+ * envelope this def's $comment states exactly.
  */
 export interface DuckingRule {
   rule_id: Slug;
 
-  /** What gets turned down. */
+  /**
+   * Which Track.role gets turned down. A rule whose target matches no track in the plan
+   * states an intent about audio that does not exist, and is a validation failure.
+   */
   target: DuckingRuleTarget;
 
   /**
-   * What turns it down. `explicit_ranges` means the planner decided the ranges itself
-   * rather than relying on detection at render time -- always preferred, because it is
-   * deterministic.
+   * Positive number of dB to reduce by, reached at the range start and held to the range
+   * end.
    */
-  trigger: DuckingRuleTrigger;
-
-  /** Positive number of dB to reduce by. */
   reduction_db: number;
 
-  threshold_db?: number | null;
-
-  ratio?: number | null;
-
-  /** Default: 80. */
+  /** Length of the ramp DOWN, ending at the range start. 0 is a step. Default: 0. */
   attack_ms?: number;
 
-  /** Default: 300. */
+  /** Length of the ramp back UP, beginning at the range end. 0 is a step. Default: 0. */
   release_ms?: number;
 
   /**
-   * Timeline ranges the rule applies over. Required when trigger is explicit_ranges; when
-   * empty with another trigger, the rule applies for the whole timeline. Default: [].
+   * Timeline ranges held at the full reduction. Non-empty, and each must lie within the
+   * timeline.
    */
-  ranges?: TimeRange[];
+  ranges: TimeRange[];
 }
 
 export type EdlValidationStatus = "pass" | "warn" | "fail" | "not_run";
@@ -1830,6 +1794,7 @@ export type EdlValidationChecksItemCheckId =
   | "timeline_contiguous"
   | "time_effect_extent_derived"
   | "music_cues_placed_once"
+  | "span_continuity_verified"
   | "transition_handles_available"
   | "beat_alignment_within_tolerance"
   | "no_mid_word_cut"
@@ -1847,6 +1812,7 @@ export const EdlValidationChecksItemCheckIdValues = [
   "timeline_contiguous",
   "time_effect_extent_derived",
   "music_cues_placed_once",
+  "span_continuity_verified",
   "transition_handles_available",
   "beat_alignment_within_tolerance",
   "no_mid_word_cut",
@@ -1894,6 +1860,202 @@ export interface EdlValidation {
   validator_version?: string | null;
 }
 
+export type EncodeAudioCodec = "aac" | "opus" | "flac" | "pcm_s16le" | "pcm_s24le";
+
+export const EncodeAudioCodecValues = [
+  "aac",
+  "opus",
+  "flac",
+  "pcm_s16le",
+  "pcm_s24le",
+] as const satisfies readonly EncodeAudioCodec[];
+
+export type EncodeAudioEncoder = "aac" | "aac_at" | "libopus" | "flac" | "pcm_s16le" | "pcm_s24le";
+
+export const EncodeAudioEncoderValues = [
+  "aac",
+  "aac_at",
+  "libopus",
+  "flac",
+  "pcm_s16le",
+  "pcm_s24le",
+] as const satisfies readonly EncodeAudioEncoder[];
+
+export type EncodeAudioSampleFormat = "fltp" | "s16" | "s16p" | "s32" | "s32p";
+
+export const EncodeAudioSampleFormatValues = [
+  "fltp",
+  "s16",
+  "s16p",
+  "s32",
+  "s32p",
+] as const satisfies readonly EncodeAudioSampleFormat[];
+
+export interface EncodeAudio {
+  codec: EncodeAudioCodec;
+
+  encoder: EncodeAudioEncoder;
+
+  sample_format: EncodeAudioSampleFormat;
+
+  /** Null for the lossless codecs, which have no bit rate to set. */
+  bit_rate_kbps?: number | null;
+}
+
+export type EncodeProfileContainer = "mp4" | "mov" | "mkv" | "webm";
+
+export const EncodeProfileContainerValues = [
+  "mp4",
+  "mov",
+  "mkv",
+  "webm",
+] as const satisfies readonly EncodeProfileContainer[];
+
+export type EncodeProfileScaler = "neighbor" | "bilinear" | "bicubic" | "lanczos" | "spline";
+
+export const EncodeProfileScalerValues = [
+  "neighbor",
+  "bilinear",
+  "bicubic",
+  "lanczos",
+  "spline",
+] as const satisfies readonly EncodeProfileScaler[];
+
+/**
+ * The delivery encode, stated in the plan rather than chosen by the renderer
+ * (contracts#56). Every field is mandatory somewhere in this object: there is no default
+ * profile, and no destination-to-codec table anywhere in a worker. Two plans that differ
+ * only in their encode are two different files, and `determinism.inputs_digest` covers
+ * this block for exactly that reason.
+ */
+export interface EncodeProfile {
+  /**
+   * Names this exact combination of settings, so a delivery preset is versioned contract
+   * data that review can see rather than a table inside a worker. Two profiles that differ
+   * in any field must not share an id.
+   */
+  profile_id: Slug;
+
+  /**
+   * The muxer. `mp4` and `mov` are delivery; `mkv` is what a lossless master goes in,
+   * because MP4 cannot carry FFV1.
+   */
+  container: EncodeProfileContainer;
+
+  /**
+   * Resampling kernel used to fit a crop to `resolution`. Pinned because the scaler
+   * touches every pixel of every frame, and two kernels are visibly different on a 480p
+   * proxy blown up to 1080p.
+   */
+  scaler: EncodeProfileScaler;
+
+  /**
+   * Encoder thread count. A determinism input, not a performance setting -- see this def's
+   * $comment.
+   */
+  encoder_threads: number;
+
+  video: EncodeVideo;
+
+  /**
+   * Null only when the plan carries no audio at all. A program with audio and a null audio
+   * profile is a validation failure, not a silent mute.
+   */
+  audio?: EncodeAudio | null;
+}
+
+export type EncodeVideoCodec = "h264" | "hevc" | "av1" | "vp9" | "ffv1" | "prores";
+
+export const EncodeVideoCodecValues = [
+  "h264",
+  "hevc",
+  "av1",
+  "vp9",
+  "ffv1",
+  "prores",
+] as const satisfies readonly EncodeVideoCodec[];
+
+export type EncodeVideoEncoder =
+  | "libx264"
+  | "libx265"
+  | "libsvtav1"
+  | "libvpx-vp9"
+  | "ffv1"
+  | "prores_ks"
+  | "h264_videotoolbox"
+  | "hevc_videotoolbox";
+
+export const EncodeVideoEncoderValues = [
+  "libx264",
+  "libx265",
+  "libsvtav1",
+  "libvpx-vp9",
+  "ffv1",
+  "prores_ks",
+  "h264_videotoolbox",
+  "hevc_videotoolbox",
+] as const satisfies readonly EncodeVideoEncoder[];
+
+export type EncodeVideoPixelFormat =
+  | "yuv420p"
+  | "yuv422p"
+  | "yuv444p"
+  | "yuv420p10le"
+  | "yuv422p10le"
+  | "yuv444p10le";
+
+export const EncodeVideoPixelFormatValues = [
+  "yuv420p",
+  "yuv422p",
+  "yuv444p",
+  "yuv420p10le",
+  "yuv422p10le",
+  "yuv444p10le",
+] as const satisfies readonly EncodeVideoPixelFormat[];
+
+export interface EncodeVideo {
+  /** What a player must decode. */
+  codec: EncodeVideoCodec;
+
+  /**
+   * Which implementation writes the bytes. Must produce `codec`; a renderer refuses the
+   * pair if it does not.
+   */
+  encoder: EncodeVideoEncoder;
+
+  /**
+   * Chroma subsampling and bit depth in one value, which is how every encoder actually
+   * takes it.
+   */
+  pixel_format: EncodeVideoPixelFormat;
+
+  rate_control: RateControl;
+
+  /**
+   * Encoder speed/efficiency preset, e.g. x264's `medium`. Null means the encoder's own
+   * default, which is only acceptable for encoders that have no preset axis (ffv1,
+   * prores_ks).
+   */
+  preset?: string | null;
+
+  /**
+   * Codec profile, e.g. `high` for H.264 or `main10` for HEVC. Null means the encoder
+   * derives it from pixel_format.
+   */
+  profile?: string | null;
+
+  /** Codec level, e.g. `4.0`. Null means the encoder derives it from resolution and rate. */
+  level?: string | null;
+
+  /**
+   * Maximum GOP length in frames. Stated because it is a delivery decision with
+   * consequences a viewer feels -- a platform re-encoding a 10-second GOP seeks worse than
+   * one re-encoding a 2-second GOP -- and because leaving it to the encoder's default
+   * makes the same plan produce different files on different builds.
+   */
+  keyframe_interval_frames: number;
+}
+
 export type GapFill = "black" | "white" | "transparent" | "silence";
 
 export const GapFillValues = [
@@ -1916,6 +2078,24 @@ export interface Gap {
 
   /** Default: "black". */
   fill?: GapFill;
+}
+
+export type HighPassFilterOrder = 2 | 4;
+
+export const HighPassFilterOrderValues = [
+  2,
+  4,
+] as const satisfies readonly HighPassFilterOrder[];
+
+export interface HighPassFilter {
+  /** -3 dB corner of the cascade. */
+  corner_hz: number;
+
+  /**
+   * Pole count. See AmbientPlan.high_pass's $comment for the Q values each order expands
+   * to.
+   */
+  order: HighPassFilterOrder;
 }
 
 export type MarkerColor =
@@ -1995,6 +2175,19 @@ export const MediaRefMediaKindValues = [
   "generated",
 ] as const satisfies readonly MediaRefMediaKind[];
 
+export type MediaRefContinuity =
+  | "verified_gapless"
+  | "verified_gap"
+  | "unverified"
+  | "incomplete_set";
+
+export const MediaRefContinuityValues = [
+  "verified_gapless",
+  "verified_gap",
+  "unverified",
+  "incomplete_set",
+] as const satisfies readonly MediaRefContinuity[];
+
 /**
  * One source, addressed by content hash rather than by path. This is what makes an EDL
  * portable: the same plan renders on any machine that has the same footage, wherever it
@@ -2025,6 +2218,22 @@ export interface MediaRef {
    * file on disk. Default: false.
    */
   is_span_assembly?: boolean;
+
+  /**
+   * The assembly's members, in INDEX order -- the order they concatenate into one
+   * recording. Required when is_span_assembly is true and forbidden otherwise. This is the
+   * field that makes an assembly expandable from the EDL alone (contracts#55): the
+   * renderer never sees a MediaRecord, so before this existed the member order arrived out
+   * of band in the render job and the plan could not state what it had planned against.
+   * Default: [].
+   */
+  member_media_ids?: Blake3Hash[];
+
+  /**
+   * Whether the chapters were verified gapless, copied from MediaRecord.Span.continuity.
+   * Required when is_span_assembly is true and forbidden otherwise.
+   */
+  continuity?: MediaRefContinuity | null;
 
   expected_frame_rate?: number | null;
 
@@ -2185,6 +2394,30 @@ export interface OtioExportInfo {
   round_trip_verified?: boolean;
 }
 
+export type RateControlMode = "crf" | "cqp" | "abr" | "cbr" | "lossless";
+
+export const RateControlModeValues = [
+  "crf",
+  "cqp",
+  "abr",
+  "cbr",
+  "lossless",
+] as const satisfies readonly RateControlMode[];
+
+export interface RateControl {
+  /**
+   * `crf` and `cqp` take a quality value; `abr` and `cbr` take a bit rate; `lossless`
+   * takes neither.
+   */
+  mode: RateControlMode;
+
+  /** CRF or QP value. Required for crf and cqp, null otherwise. */
+  quality?: number | null;
+
+  /** Target bit rate. Required for abr and cbr, null otherwise. */
+  bit_rate_kbps?: number | null;
+}
+
 export type ReframeKeyframeInterpolation = "linear" | "smooth" | "bezier" | "hold";
 
 export const ReframeKeyframeInterpolationValues = [
@@ -2339,6 +2572,13 @@ export interface RenderTarget {
   resolution: PixelSize;
 
   aspect_ratio: AspectRatio;
+
+  /**
+   * How the file is written. Required: `destination` says what the cut is FOR and settles
+   * nothing about the bytes, and a renderer that fills the difference in has made a
+   * delivery decision invisibly (contracts#56).
+   */
+  encode: EncodeProfile;
 
   /**
    * What the planner was asked for. The realised duration is the sum of the timeline and
@@ -2610,25 +2850,12 @@ export interface Track {
   items: Array<Clip | Gap | Transition>;
 }
 
-export type TransitionTransitionType =
-  | "dissolve"
-  | "dip_to_black"
-  | "dip_to_white"
-  | "wipe"
-  | "push"
-  | "blur_dissolve"
-  | "match_cut"
-  | "custom";
+export type TransitionTransitionType = "dissolve" | "dip_to_black" | "dip_to_white";
 
 export const TransitionTransitionTypeValues = [
   "dissolve",
   "dip_to_black",
   "dip_to_white",
-  "wipe",
-  "push",
-  "blur_dissolve",
-  "match_cut",
-  "custom",
 ] as const satisfies readonly TransitionTransitionType[];
 
 export type TransitionEasing = "linear" | "ease_in" | "ease_out" | "ease_in_out";
@@ -2651,9 +2878,9 @@ export interface Transition {
   transition_id?: Slug | null;
 
   /**
-   * `dissolve` maps to OTIO's standard SMPTE_Dissolve. Everything else maps to OTIO
-   * "Custom" with the specific kind preserved in metadata, which is how OTIO itself
-   * handles non-standard transitions.
+   * `dissolve` maps to OTIO's standard SMPTE_Dissolve. The two dips map to OTIO "Custom"
+   * with the specific kind preserved in metadata, which is how OTIO itself handles non-
+   * standard transitions. See this def's $comment for why the enum is only three values.
    */
   transition_type: TransitionTransitionType;
 
@@ -2663,14 +2890,12 @@ export interface Transition {
   /** How far it extends forwards into the incoming item. */
   out_offset: RationalTime;
 
-  /** Default: "linear". */
-  easing?: TransitionEasing;
-
   /**
-   * Kind-specific settings, e.g. wipe angle. Free-form because the set is open-ended; it
-   * rides in OTIO metadata untouched. Default: {}.
+   * Shape of the blend weight across the transition. Each value is a polynomial in the
+   * linear progress u, written out in this def's $comment; a name on its own is not a
+   * curve, and a cubic ease and a sine ease are different shots. Default: "linear".
    */
-  parameters?: Record<string, unknown>;
+  easing?: TransitionEasing;
 }
 
 export type VariantInfoStrategy =

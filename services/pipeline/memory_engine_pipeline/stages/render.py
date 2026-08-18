@@ -53,29 +53,16 @@ _VIDEO_ENTRY = _VIDEO_ROOT / "dist" / "workers" / "render-video" / "src" / "cli.
 
 VIDEO_SUFFIX = ".mp4"
 
-# The delivery decision, stated in one place with nothing implicit.
+# The delivery decision no longer lives here.
 #
-# `RenderTarget` carries no encode profile at all (contracts#56) and the worker
-# refuses a job that leaves any of this out, deliberately, so that the codec a
-# file ends up in is a decision somebody made rather than a table hidden in a
-# renderer. libx264 in MP4 is what the worker's determinism suite covers
-# alongside FFV1/Matroska -- byte-identical output across work directories on
-# one FFmpeg build -- and it is the profile a person can actually play.
-#
-# `threads: 1` is not a performance choice. x264 slices a frame across threads
-# and the slice boundaries move with the thread count, so a multi-threaded
-# encode is only reproducible on a machine with the same core count.
-ENCODE_PROFILE: dict[str, Any] = {
-    "container": "mp4",
-    "scale_flags": "bicubic",
-    "threads": 1,
-    "video": {
-        "codec": "libx264",
-        "pix_fmt": "yuv420p",
-        "args": ["-preset", "medium", "-crf", "18"],
-    },
-    "audio": {"codec": "aac", "sample_fmt": "fltp", "args": ["-b:a", "192k"]},
-}
+# It used to: `RenderTarget` carried no encode profile, so this stage supplied a
+# required `JobSpec.params.encode` block and the render worker refused a job
+# that left any field out. contracts#56 moved it into the plan, on
+# `RenderTarget.encode`, resolved from the destination presets in
+# `story-engine`'s ENCODE_PROFILES -- which is the deciding side, where a
+# delivery decision belongs and where review can see it. The worker now refuses
+# a job that carries an `encode` block at all, because two descriptions of one
+# delivery is exactly the defect contracts#59 removed from music.
 
 
 def _node() -> str | None:
@@ -341,7 +328,6 @@ def run_video(ctx: StageContext) -> StageResult:
         "output_path": str(output),
         "work_directory": str(work_directory),
         "sources": sources,
-        "encode": ENCODE_PROFILE,
         "ffmpeg_path": shutil.which("ffmpeg"),
         "ffprobe_path": shutil.which("ffprobe"),
     }

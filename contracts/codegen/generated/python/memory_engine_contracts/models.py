@@ -1291,46 +1291,23 @@ class Act(ContractModel):
     beats: list[StoryBeat] = Field(default_factory=list)
 
 
-class AmbientPlanNoiseSuppression(str, Enum):
-    NONE = "none"
-    LIGHT = "light"
-    MODERATE = "moderate"
-    AGGRESSIVE = "aggressive"
-
-
-class AmbientPlanPerClipGainDbItem(ContractModel):
-    clip_id: Slug
-
-    gain_db: float
-
-
 class AmbientPlan(ContractModel):
     """
-    How much of the original location sound survives. Keeping real ambient under
+    Processing applied to the location sound as a whole. Keeping real ambient under
     music is most of what separates a film that feels like a memory from a slideshow
-    with a soundtrack.
+    with a soundtrack -- but the LEVEL of each clip's bed lives on that clip
+    (ClipAudio.gain_db), and this type carries only what is a property of the group
+    rather than of one clip.
     """
 
-    enabled: bool = Field(default=True)
-
-    default_gain_db: float = Field(default=-12)
-
-    # When true, clips containing speech keep their ambient at full level and the
-    # music ducks under them instead.
-    preserve_speech: bool = Field(
-        default=True,
-        description="When true, clips containing speech keep their ambient at full level and the music ducks under them instead.",
-    )
-
-    # Removes wind rumble, which otherwise dominates every outdoor action clip.
-    high_pass_hz: float | None = Field(
+    # Removes wind rumble, which otherwise dominates every outdoor action clip. Null
+    # means no filter. Applied ONCE to the summed ambient group -- after each clip's
+    # gain, fades and L-cut tail, before any DuckingRule -- so that the plan's order
+    # of operations is stated rather than left to a mixer's internal graph.
+    high_pass: HighPassFilter | None = Field(
         default=None,
-        description="Removes wind rumble, which otherwise dominates every outdoor action clip.",
+        description="Removes wind rumble, which otherwise dominates every outdoor action clip. Null means no filter. Applied ONCE to the summed ambient group -- after each clip's gain, fades and L-cut tail, before any DuckingRule -- so that the plan's order ...",
     )
-
-    noise_suppression: AmbientPlanNoiseSuppression = Field(default="light")
-
-    per_clip_gain_db: list[AmbientPlanPerClipGainDbItem] = Field(default_factory=list)
 
 
 class AudioPlan(ContractModel):
@@ -1347,10 +1324,11 @@ class AudioPlan(ContractModel):
 
     # Ordered ducking rules. Later rules win where they overlap, which keeps the
     # resolution deterministic instead of depending on the renderer's mixer
-    # implementation.
+    # implementation; DuckingRule's $comment states exactly what 'overlap' means once
+    # the rules have attack and release ramps.
     ducking: list[DuckingRule] = Field(
         default_factory=list,
-        description="Ordered ducking rules. Later rules win where they overlap, which keeps the resolution deterministic instead of depending on the renderer's mixer implementation.",
+        description="Ordered ducking rules. Later rules win where they overlap, which keeps the resolution deterministic instead of depending on the renderer's mixer implementation; DuckingRule's $comment states exactly what 'overlap' means once the rules ha...",
     )
 
 
@@ -1533,7 +1511,16 @@ class Clip(ContractModel):
 
 
 class ClipAudio(ContractModel):
-    gain_db: float = Field(default=0)
+    """
+    This clip's own sound, and the ONLY place its level is stated (contracts#53).
+    """
+
+    # Level of this clip's own audio, in dB relative to the source. Composes with
+    # nothing else in the plan except MixPlan.master_gain_db and any DuckingRule whose
+    # target role covers this clip's track.
+    gain_db: float = Field(
+        description="Level of this clip's own audio, in dB relative to the source. Composes with nothing else in the plan except MixPlan.master_gain_db and any DuckingRule whose target role covers this clip's track.",
+    )
 
     muted: bool = Field(default=False)
 
@@ -1632,48 +1619,43 @@ class DuckingRuleTarget(str, Enum):
     SFX = "sfx"
 
 
-class DuckingRuleTrigger(str, Enum):
-    SPEECH = "speech"
-    MUSIC = "music"
-    AMBIENT = "ambient"
-    EXPLICIT_RANGES = "explicit_ranges"
-
-
 class DuckingRule(ContractModel):
     """
-    One sidechain relationship, expressed as intent (duck music under speech by 9dB)
-    rather than as a rendered gain curve, so the renderer stays dumb and the
-    decision stays auditable.
+    One duck: turn `target` down by `reduction_db` over these timeline ranges, on
+    the envelope this def's $comment states exactly.
     """
 
     rule_id: Slug
 
-    # What gets turned down.
-    target: DuckingRuleTarget = Field(description="What gets turned down.")
-
-    # What turns it down. `explicit_ranges` means the planner decided the ranges
-    # itself rather than relying on detection at render time -- always preferred,
-    # because it is deterministic.
-    trigger: DuckingRuleTrigger = Field(
-        description="What turns it down. `explicit_ranges` means the planner decided the ranges itself rather than relying on detection at render time -- always preferred, because it is deterministic.",
+    # Which Track.role gets turned down. A rule whose target matches no track in the
+    # plan states an intent about audio that does not exist, and is a validation
+    # failure.
+    target: DuckingRuleTarget = Field(
+        description="Which Track.role gets turned down. A rule whose target matches no track in the plan states an intent about audio that does not exist, and is a validation failure.",
     )
 
-    # Positive number of dB to reduce by.
-    reduction_db: float = Field(description="Positive number of dB to reduce by.")
+    # Positive number of dB to reduce by, reached at the range start and held to the
+    # range end.
+    reduction_db: float = Field(
+        description="Positive number of dB to reduce by, reached at the range start and held to the range end.",
+    )
 
-    threshold_db: float | None = Field(default=None)
-
-    ratio: float | None = Field(default=None)
-
-    attack_ms: float = Field(default=80)
-
-    release_ms: float = Field(default=300)
-
-    # Timeline ranges the rule applies over. Required when trigger is explicit_ranges;
-    # when empty with another trigger, the rule applies for the whole timeline.
+    # Timeline ranges held at the full reduction. Non-empty, and each must lie within
+    # the timeline.
     ranges: list[TimeRange] = Field(
-        default_factory=list,
-        description="Timeline ranges the rule applies over. Required when trigger is explicit_ranges; when empty with another trigger, the rule applies for the whole timeline.",
+        description="Timeline ranges held at the full reduction. Non-empty, and each must lie within the timeline.",
+    )
+
+    # Length of the ramp DOWN, ending at the range start. 0 is a step.
+    attack_ms: float = Field(
+        default=0,
+        description="Length of the ramp DOWN, ending at the range start. 0 is a step.",
+    )
+
+    # Length of the ramp back UP, beginning at the range end. 0 is a step.
+    release_ms: float = Field(
+        default=0,
+        description="Length of the ramp back UP, beginning at the range end. 0 is a step.",
     )
 
 
@@ -1690,6 +1672,7 @@ class EdlValidationChecksItemCheckId(str, Enum):
     TIMELINE_CONTIGUOUS = "timeline_contiguous"
     TIME_EFFECT_EXTENT_DERIVED = "time_effect_extent_derived"
     MUSIC_CUES_PLACED_ONCE = "music_cues_placed_once"
+    SPAN_CONTINUITY_VERIFIED = "span_continuity_verified"
     TRANSITION_HANDLES_AVAILABLE = "transition_handles_available"
     BEAT_ALIGNMENT_WITHIN_TOLERANCE = "beat_alignment_within_tolerance"
     NO_MID_WORD_CUT = "no_mid_word_cut"
@@ -1736,6 +1719,184 @@ class EdlValidation(ContractModel):
     validator_version: str | None = Field(default=None)
 
 
+class EncodeAudioCodec(str, Enum):
+    AAC = "aac"
+    OPUS = "opus"
+    FLAC = "flac"
+    PCM_S16LE = "pcm_s16le"
+    PCM_S24LE = "pcm_s24le"
+
+
+class EncodeAudioEncoder(str, Enum):
+    AAC = "aac"
+    AAC_AT = "aac_at"
+    LIBOPUS = "libopus"
+    FLAC = "flac"
+    PCM_S16LE = "pcm_s16le"
+    PCM_S24LE = "pcm_s24le"
+
+
+class EncodeAudioSampleFormat(str, Enum):
+    FLTP = "fltp"
+    S16 = "s16"
+    S16P = "s16p"
+    S32 = "s32"
+    S32P = "s32p"
+
+
+class EncodeAudio(ContractModel):
+    codec: EncodeAudioCodec
+
+    encoder: EncodeAudioEncoder
+
+    sample_format: EncodeAudioSampleFormat
+
+    # Null for the lossless codecs, which have no bit rate to set.
+    bit_rate_kbps: float | None = Field(
+        default=None,
+        description="Null for the lossless codecs, which have no bit rate to set.",
+    )
+
+
+class EncodeProfileContainer(str, Enum):
+    MP4 = "mp4"
+    MOV = "mov"
+    MKV = "mkv"
+    WEBM = "webm"
+
+
+class EncodeProfileScaler(str, Enum):
+    NEIGHBOR = "neighbor"
+    BILINEAR = "bilinear"
+    BICUBIC = "bicubic"
+    LANCZOS = "lanczos"
+    SPLINE = "spline"
+
+
+class EncodeProfile(ContractModel):
+    """
+    The delivery encode, stated in the plan rather than chosen by the renderer
+    (contracts#56). Every field is mandatory somewhere in this object: there is no
+    default profile, and no destination-to-codec table anywhere in a worker. Two
+    plans that differ only in their encode are two different files, and
+    `determinism.inputs_digest` covers this block for exactly that reason.
+    """
+
+    # Names this exact combination of settings, so a delivery preset is versioned
+    # contract data that review can see rather than a table inside a worker. Two
+    # profiles that differ in any field must not share an id.
+    profile_id: Slug = Field(
+        description="Names this exact combination of settings, so a delivery preset is versioned contract data that review can see rather than a table inside a worker. Two profiles that differ in any field must not share an id.",
+    )
+
+    # The muxer. `mp4` and `mov` are delivery; `mkv` is what a lossless master goes
+    # in, because MP4 cannot carry FFV1.
+    container: EncodeProfileContainer = Field(
+        description="The muxer. `mp4` and `mov` are delivery; `mkv` is what a lossless master goes in, because MP4 cannot carry FFV1.",
+    )
+
+    # Resampling kernel used to fit a crop to `resolution`. Pinned because the scaler
+    # touches every pixel of every frame, and two kernels are visibly different on a
+    # 480p proxy blown up to 1080p.
+    scaler: EncodeProfileScaler = Field(
+        description="Resampling kernel used to fit a crop to `resolution`. Pinned because the scaler touches every pixel of every frame, and two kernels are visibly different on a 480p proxy blown up to 1080p.",
+    )
+
+    # Encoder thread count. A determinism input, not a performance setting -- see this
+    # def's $comment.
+    encoder_threads: int = Field(
+        description="Encoder thread count. A determinism input, not a performance setting -- see this def's $comment.",
+    )
+
+    video: EncodeVideo
+
+    # Null only when the plan carries no audio at all. A program with audio and a null
+    # audio profile is a validation failure, not a silent mute.
+    audio: EncodeAudio | None = Field(
+        default=None,
+        description="Null only when the plan carries no audio at all. A program with audio and a null audio profile is a validation failure, not a silent mute.",
+    )
+
+
+class EncodeVideoCodec(str, Enum):
+    H264 = "h264"
+    HEVC = "hevc"
+    AV1 = "av1"
+    VP9 = "vp9"
+    FFV1 = "ffv1"
+    PRORES = "prores"
+
+
+class EncodeVideoEncoder(str, Enum):
+    LIBX264 = "libx264"
+    LIBX265 = "libx265"
+    LIBSVTAV1 = "libsvtav1"
+    LIBVPX_VP9 = "libvpx-vp9"
+    FFV1 = "ffv1"
+    PRORES_KS = "prores_ks"
+    H264_VIDEOTOOLBOX = "h264_videotoolbox"
+    HEVC_VIDEOTOOLBOX = "hevc_videotoolbox"
+
+
+class EncodeVideoPixelFormat(str, Enum):
+    YUV420P = "yuv420p"
+    YUV422P = "yuv422p"
+    YUV444P = "yuv444p"
+    YUV420P10LE = "yuv420p10le"
+    YUV422P10LE = "yuv422p10le"
+    YUV444P10LE = "yuv444p10le"
+
+
+class EncodeVideo(ContractModel):
+    # What a player must decode.
+    codec: EncodeVideoCodec = Field(description="What a player must decode.")
+
+    # Which implementation writes the bytes. Must produce `codec`; a renderer refuses
+    # the pair if it does not.
+    encoder: EncodeVideoEncoder = Field(
+        description="Which implementation writes the bytes. Must produce `codec`; a renderer refuses the pair if it does not.",
+    )
+
+    # Chroma subsampling and bit depth in one value, which is how every encoder
+    # actually takes it.
+    pixel_format: EncodeVideoPixelFormat = Field(
+        description="Chroma subsampling and bit depth in one value, which is how every encoder actually takes it.",
+    )
+
+    rate_control: RateControl
+
+    # Maximum GOP length in frames. Stated because it is a delivery decision with
+    # consequences a viewer feels -- a platform re-encoding a 10-second GOP seeks
+    # worse than one re-encoding a 2-second GOP -- and because leaving it to the
+    # encoder's default makes the same plan produce different files on different
+    # builds.
+    keyframe_interval_frames: int = Field(
+        description="Maximum GOP length in frames. Stated because it is a delivery decision with consequences a viewer feels -- a platform re-encoding a 10-second GOP seeks worse than one re-encoding a 2-second GOP -- and because leaving it to the encoder's ...",
+    )
+
+    # Encoder speed/efficiency preset, e.g. x264's `medium`. Null means the encoder's
+    # own default, which is only acceptable for encoders that have no preset axis
+    # (ffv1, prores_ks).
+    preset: str | None = Field(
+        default=None,
+        description="Encoder speed/efficiency preset, e.g. x264's `medium`. Null means the encoder's own default, which is only acceptable for encoders that have no preset axis (ffv1, prores_ks).",
+    )
+
+    # Codec profile, e.g. `high` for H.264 or `main10` for HEVC. Null means the
+    # encoder derives it from pixel_format.
+    profile: str | None = Field(
+        default=None,
+        description="Codec profile, e.g. `high` for H.264 or `main10` for HEVC. Null means the encoder derives it from pixel_format.",
+    )
+
+    # Codec level, e.g. `4.0`. Null means the encoder derives it from resolution and
+    # rate.
+    level: str | None = Field(
+        default=None,
+        description="Codec level, e.g. `4.0`. Null means the encoder derives it from resolution and rate.",
+    )
+
+
 class GapFill(str, Enum):
     BLACK = "black"
     WHITE = "white"
@@ -1757,6 +1918,22 @@ class Gap(ContractModel):
     gap_id: Slug | None = Field(default=None)
 
     fill: GapFill = Field(default="black")
+
+
+class HighPassFilterOrder(int, Enum):
+    V_2 = 2
+    V_4 = 4
+
+
+class HighPassFilter(ContractModel):
+    # -3 dB corner of the cascade.
+    corner_hz: float = Field(description="-3 dB corner of the cascade.")
+
+    # Pole count. See AmbientPlan.high_pass's $comment for the Q values each order
+    # expands to.
+    order: HighPassFilterOrder = Field(
+        description="Pole count. See AmbientPlan.high_pass's $comment for the Q values each order expands to.",
+    )
 
 
 class MarkerColor(str, Enum):
@@ -1809,6 +1986,13 @@ class MediaRefMediaKind(str, Enum):
     GENERATED = "generated"
 
 
+class MediaRefContinuity(str, Enum):
+    VERIFIED_GAPLESS = "verified_gapless"
+    VERIFIED_GAP = "verified_gap"
+    UNVERIFIED = "unverified"
+    INCOMPLETE_SET = "incomplete_set"
+
+
 class MediaRef(ContractModel):
     """
     One source, addressed by content hash rather than by path. This is what makes an
@@ -1840,6 +2024,25 @@ class MediaRef(ContractModel):
     is_span_assembly: bool = Field(
         default=False,
         description="True when media_id names a virtual assembly of chaptered files rather than a single file on disk.",
+    )
+
+    # The assembly's members, in INDEX order -- the order they concatenate into one
+    # recording. Required when is_span_assembly is true and forbidden otherwise. This
+    # is the field that makes an assembly expandable from the EDL alone
+    # (contracts#55): the renderer never sees a MediaRecord, so before this existed
+    # the member order arrived out of band in the render job and the plan could not
+    # state what it had planned against.
+    member_media_ids: list[Blake3Hash] = Field(
+        default_factory=list,
+        description="The assembly's members, in INDEX order -- the order they concatenate into one recording. Required when is_span_assembly is true and forbidden otherwise. This is the field that makes an assembly expandable from the EDL alone (contracts#55...",
+    )
+
+    # Whether the chapters were verified gapless, copied from
+    # MediaRecord.Span.continuity. Required when is_span_assembly is true and
+    # forbidden otherwise.
+    continuity: MediaRefContinuity | None = Field(
+        default=None,
+        description="Whether the chapters were verified gapless, copied from MediaRecord.Span.continuity. Required when is_span_assembly is true and forbidden otherwise.",
     )
 
     expected_frame_rate: float | None = Field(default=None)
@@ -1971,6 +2174,34 @@ class OtioExportInfo(ContractModel):
     round_trip_verified: bool = Field(
         default=False,
         description="Set by the exporter after re-importing its own output and comparing to the source EDL. The claim of losslessness is tested per export, not assumed.",
+    )
+
+
+class RateControlMode(str, Enum):
+    CRF = "crf"
+    CQP = "cqp"
+    ABR = "abr"
+    CBR = "cbr"
+    LOSSLESS = "lossless"
+
+
+class RateControl(ContractModel):
+    # `crf` and `cqp` take a quality value; `abr` and `cbr` take a bit rate;
+    # `lossless` takes neither.
+    mode: RateControlMode = Field(
+        description="`crf` and `cqp` take a quality value; `abr` and `cbr` take a bit rate; `lossless` takes neither.",
+    )
+
+    # CRF or QP value. Required for crf and cqp, null otherwise.
+    quality: float | None = Field(
+        default=None,
+        description="CRF or QP value. Required for crf and cqp, null otherwise.",
+    )
+
+    # Target bit rate. Required for abr and cbr, null otherwise.
+    bit_rate_kbps: float | None = Field(
+        default=None,
+        description="Target bit rate. Required for abr and cbr, null otherwise.",
     )
 
 
@@ -2111,6 +2342,13 @@ class RenderTarget(ContractModel):
     resolution: PixelSize
 
     aspect_ratio: AspectRatio
+
+    # How the file is written. Required: `destination` says what the cut is FOR and
+    # settles nothing about the bytes, and a renderer that fills the difference in has
+    # made a delivery decision invisibly (contracts#56).
+    encode: EncodeProfile = Field(
+        description="How the file is written. Required: `destination` says what the cut is FOR and settles nothing about the bytes, and a renderer that fills the difference in has made a delivery decision invisibly (contracts#56).",
+    )
 
     # What the planner was asked for. The realised duration is the sum of the timeline
     # and may differ slightly, because landing a cut on a beat matters more than
@@ -2377,11 +2615,6 @@ class TransitionTransitionType(str, Enum):
     DISSOLVE = "dissolve"
     DIP_TO_BLACK = "dip_to_black"
     DIP_TO_WHITE = "dip_to_white"
-    WIPE = "wipe"
-    PUSH = "push"
-    BLUR_DISSOLVE = "blur_dissolve"
-    MATCH_CUT = "match_cut"
-    CUSTOM = "custom"
 
 
 class TransitionEasing(str, Enum):
@@ -2400,11 +2633,12 @@ class Transition(ContractModel):
 
     item_type: Literal["transition"]
 
-    # `dissolve` maps to OTIO's standard SMPTE_Dissolve. Everything else maps to OTIO
+    # `dissolve` maps to OTIO's standard SMPTE_Dissolve. The two dips map to OTIO
     # "Custom" with the specific kind preserved in metadata, which is how OTIO itself
-    # handles non-standard transitions.
+    # handles non-standard transitions. See this def's $comment for why the enum is
+    # only three values.
     transition_type: TransitionTransitionType = Field(
-        description="`dissolve` maps to OTIO's standard SMPTE_Dissolve. Everything else maps to OTIO \"Custom\" with the specific kind preserved in metadata, which is how OTIO itself handles non-standard transitions.",
+        description="`dissolve` maps to OTIO's standard SMPTE_Dissolve. The two dips map to OTIO \"Custom\" with the specific kind preserved in metadata, which is how OTIO itself handles non-standard transitions. See this def's $comment for why the enum is onl...",
     )
 
     # How far the transition extends backwards into the outgoing item.
@@ -2419,13 +2653,12 @@ class Transition(ContractModel):
 
     transition_id: Slug | None = Field(default=None)
 
-    easing: TransitionEasing = Field(default="linear")
-
-    # Kind-specific settings, e.g. wipe angle. Free-form because the set is open-
-    # ended; it rides in OTIO metadata untouched.
-    parameters: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Kind-specific settings, e.g. wipe angle. Free-form because the set is open-ended; it rides in OTIO metadata untouched.",
+    # Shape of the blend weight across the transition. Each value is a polynomial in
+    # the linear progress u, written out in this def's $comment; a name on its own is
+    # not a curve, and a cubic ease and a sine ease are different shots.
+    easing: TransitionEasing = Field(
+        default="linear",
+        description="Shape of the blend weight across the transition. Each value is a polynomial in the linear progress u, written out in this def's $comment; a name on its own is not a curve, and a cubic ease and a sine ease are different shots.",
     )
 
 
@@ -5653,7 +5886,6 @@ TimeAssertion.model_rebuild()
 TimeRange.model_rebuild()
 VectorRef.model_rebuild()
 Act.model_rebuild()
-AmbientPlanPerClipGainDbItem.model_rebuild()
 AmbientPlan.model_rebuild()
 AudioPlan.model_rebuild()
 Beat.model_rebuild()
@@ -5667,13 +5899,18 @@ ColorPipeline.model_rebuild()
 DuckingRule.model_rebuild()
 EdlValidationChecksItem.model_rebuild()
 EdlValidation.model_rebuild()
+EncodeAudio.model_rebuild()
+EncodeProfile.model_rebuild()
+EncodeVideo.model_rebuild()
 Gap.model_rebuild()
+HighPassFilter.model_rebuild()
 Marker.model_rebuild()
 MediaRef.model_rebuild()
 MixPlan.model_rebuild()
 MusicCue.model_rebuild()
 MusicLicense.model_rebuild()
 OtioExportInfo.model_rebuild()
+RateControl.model_rebuild()
 ReframeKeyframe.model_rebuild()
 ReframeSmoothing.model_rebuild()
 ReframeTrack.model_rebuild()
@@ -5861,8 +6098,6 @@ __all__ = [
     "VectorRef",
     "VectorSpace",
     "Act",
-    "AmbientPlanNoiseSuppression",
-    "AmbientPlanPerClipGainDbItem",
     "AmbientPlan",
     "AudioPlan",
     "BeatSection",
@@ -5878,19 +6113,32 @@ __all__ = [
     "ColorPipelineWorkingSpace",
     "ColorPipeline",
     "DuckingRuleTarget",
-    "DuckingRuleTrigger",
     "DuckingRule",
     "EdlValidationStatus",
     "EdlValidationChecksItemCheckId",
     "EdlValidationChecksItemSeverity",
     "EdlValidationChecksItem",
     "EdlValidation",
+    "EncodeAudioCodec",
+    "EncodeAudioEncoder",
+    "EncodeAudioSampleFormat",
+    "EncodeAudio",
+    "EncodeProfileContainer",
+    "EncodeProfileScaler",
+    "EncodeProfile",
+    "EncodeVideoCodec",
+    "EncodeVideoEncoder",
+    "EncodeVideoPixelFormat",
+    "EncodeVideo",
     "GapFill",
     "Gap",
+    "HighPassFilterOrder",
+    "HighPassFilter",
     "MarkerColor",
     "MarkerKind",
     "Marker",
     "MediaRefMediaKind",
+    "MediaRefContinuity",
     "MediaRef",
     "MixPlanChannels",
     "MixPlanSampleRate",
@@ -5901,6 +6149,8 @@ __all__ = [
     "MusicLicenseClearedForItem",
     "MusicLicense",
     "OtioExportInfo",
+    "RateControlMode",
+    "RateControl",
     "ReframeKeyframeInterpolation",
     "ReframeKeyframe",
     "ReframeSmoothingMethod",

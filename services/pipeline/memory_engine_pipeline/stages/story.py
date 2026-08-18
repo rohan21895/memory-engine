@@ -85,20 +85,20 @@ THREE THINGS THE PLANNER HAS TO BE TOLD, AND WHERE EACH COMES FROM
 
 AMBIENT, WHICH IS A DECISION AND NOT A DEFAULT
 
-`AmbientSettings`' defaults (-14 dB ambient, a 120 Hz high-pass, `light` noise
-suppression) are calibrated for location sound sitting UNDER a music bed. With
-no music the ambient IS the mix, so:
+`AmbientSettings`' defaults (-14 dB ambient under a 4th-order 120 Hz
+high-pass) are calibrated for location sound sitting UNDER a music bed. With no
+music the ambient IS the mix, so:
 
-    music present -> the story-engine defaults, unchanged. render-video will
-                     refuse them on contracts#53 and #54 and this stage reports
-                     the refusal verbatim. That refusal is correct: the gain
-                     composition rule and the filter response are genuinely
-                     unspecified.
-    no music      -> ambient at unity, no high-pass, no noise suppression.
+    music present -> the story-engine defaults, unchanged. Both are renderable
+                     now: contracts#53 pinned the filter (Butterworth, stated
+                     order and Q values) and moved the level onto the clip so
+                     there is only one of it, and contracts#54 pinned the
+                     ducking envelope.
+    no music      -> ambient at unity, no high-pass.
 
-The second is not a default chosen to get past the gate; it is the only level
-that means anything without a bed, and "no DSP" is a statement the renderer can
-execute rather than one it has to interpret. It is announced every run.
+The second is not a default chosen to get past a gate; it is the only level
+that means anything without a bed, and "no filter" is a statement the renderer
+can execute rather than one it has to interpret. It is announced every run.
 
 RESUMABILITY
 
@@ -831,9 +831,13 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
         "there is no beat grid and no cut in this reel is beat-locked"
     )
     notes.append(
-        "ambient is at unity gain with no high-pass and no noise suppression. The "
-        "AmbientSettings defaults (-14 dB, 120 Hz, 'light') describe location sound "
-        "under a music bed; with no bed the ambient is the whole mix"
+        "ambient is at unity gain with no high-pass. The AmbientSettings default "
+        "(-14 dB under a 120 Hz filter) describes location sound sitting under a "
+        "music bed; with no bed the ambient is the whole mix"
+    )
+    notes.append(
+        f"encode profile {reel_module.encode_profile_for('master')['profile_id']}, "
+        "carried in the plan rather than supplied to the renderer (contracts#56)"
     )
 
     planned_at = utc_now()
@@ -877,9 +881,7 @@ def _plan_reel(ctx: StageContext) -> _ReelOutcome | None:
         moments=tuple(moments),
         name=f"{ctx.settings.scope} reel",
         reframe=reel_module.ReframeSettings(enabled=False),
-        ambient=reel_module.AmbientSettings(
-            default_gain_db=0.0, high_pass_hz=None, noise_suppression="none"
-        ),
+        ambient=reel_module.AmbientSettings(default_gain_db=0.0, high_pass_hz=None),
         # REQUEST fields, because `plan_reel` is a pure function and reading a
         # clock inside it would make the plan irreproducible. The real instant
         # is safe to pass: `EDL_ID_EXCLUDED` strips `determinism.generated_at`

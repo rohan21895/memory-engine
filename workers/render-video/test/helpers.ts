@@ -6,6 +6,7 @@ import type {
   Clip,
   EDL,
   EdlValidationChecksItemCheckId,
+  EncodeProfile,
   JobSpec,
   MediaRef,
   RationalTime,
@@ -54,6 +55,8 @@ export interface Fixture {
   videoMediaId: string;
   /** The same 300 frames split into two 150-frame chapters. */
   chapterPaths: string[];
+  /** Per-chapter BLAKE3, in index order: what MediaRef.member_media_ids names. */
+  chapterMediaIds: string[];
   chapterAssemblyId: string;
   musicPath: string;
   musicMediaId: string;
@@ -140,6 +143,7 @@ export async function fixture(): Promise<Fixture> {
       videoPath,
       videoMediaId: await digestFile(videoPath),
       chapterPaths,
+      chapterMediaIds: chapterDigests,
       chapterAssemblyId: spanAssemblyId(chapterDigests),
       musicPath,
       musicMediaId: await digestFile(musicPath),
@@ -166,16 +170,48 @@ const ALL_PASSING: EdlValidationChecksItemCheckId[] = [
   "music_cues_placed_once",
   "time_effect_extent_derived",
   "beat_alignment_within_tolerance",
+  "span_continuity_verified",
   "determinism_digest_present",
 ];
 
-export function videoRef(mediaId: string, isSpan = false): MediaRef {
+/**
+ * The delivery profile the tests render with, expressed the way the plan now carries it
+ * (contracts#56). FFV1 in Matroska because it is lossless: a byte-identity test on an
+ * x264 render would be testing x264's determinism as much as ours.
+ */
+export const FFV1_MKV: EncodeProfile = {
+  profile_id: "test-ffv1-mkv",
+  container: "mkv",
+  scaler: "bicubic",
+  encoder_threads: 1,
+  video: {
+    codec: "ffv1",
+    encoder: "ffv1",
+    pixel_format: "yuv420p",
+    rate_control: { mode: "lossless", quality: null, bit_rate_kbps: null },
+    preset: null,
+    profile: null,
+    level: null,
+    keyframe_interval_frames: 1,
+  },
+  audio: {
+    codec: "pcm_s16le",
+    encoder: "pcm_s16le",
+    sample_format: "s16",
+    bit_rate_kbps: null,
+  },
+};
+
+export function videoRef(mediaId: string, isSpan = false, memberMediaIds: string[] = []): MediaRef {
   return {
     media_ref_id: isSpan ? "src-span" : "src-a",
     media_id: mediaId,
     media_kind: "video",
     available_range: range(SOURCE_ORIGIN, SOURCE_FRAMES),
     is_span_assembly: isSpan,
+    // contracts#55: an assembly carries its members and its verified continuity.
+    member_media_ids: isSpan ? memberMediaIds : [],
+    continuity: isSpan ? "verified_gapless" : null,
     expected_frame_rate: NTSC_30,
     label: null,
   };
@@ -188,6 +224,8 @@ export function musicRef(mediaId: string): MediaRef {
     media_kind: "music",
     available_range: range(0, 560),
     is_span_assembly: false,
+    member_media_ids: [],
+    continuity: null,
     expected_frame_rate: null,
     label: null,
   };
@@ -263,6 +301,7 @@ export interface EdlOptions {
   resolution?: { width: number; height: number };
   aspect?: { numerator: number; denominator: number };
   maxDurationFrames?: number;
+  encode?: EncodeProfile;
 }
 
 export function makeEdl(options: EdlOptions): EDL {
@@ -282,6 +321,7 @@ export function makeEdl(options: EdlOptions): EDL {
       target_duration: null,
       max_duration: options.maxDurationFrames ? t(options.maxDurationFrames) : null,
       loudness_target_lufs: -14,
+      encode: options.encode ?? FFV1_MKV,
     },
     media_refs: options.mediaRefs,
     tracks: options.tracks,
@@ -314,21 +354,28 @@ export function makeEdl(options: EdlOptions): EDL {
   return edl;
 }
 
-export const H264_MP4 = {
+export const H264_MP4: EncodeProfile = {
+  profile_id: "test-h264-mp4",
   container: "mp4",
-  scale_flags: "bicubic",
-  video: { codec: "libx264", pix_fmt: "yuv420p", args: ["-crf", "26", "-preset", "veryfast", "-g", "30"] },
-  audio: { codec: "aac", sample_fmt: "fltp", args: ["-b:a", "128k"] },
-  threads: 1,
-} as const;
+  scaler: "bicubic",
+  encoder_threads: 1,
+  video: {
+    codec: "h264",
+    encoder: "libx264",
+    pixel_format: "yuv420p",
+    rate_control: { mode: "crf", quality: 26, bit_rate_kbps: null },
+    preset: "veryfast",
+    profile: null,
+    level: null,
+    keyframe_interval_frames: 30,
+  },
+  audio: { codec: "aac", encoder: "aac", sample_format: "fltp", bit_rate_kbps: 128 },
+};
 
-export const FFV1_MKV = {
-  container: "matroska",
-  scale_flags: "bicubic",
-  video: { codec: "ffv1", pix_fmt: "yuv420p", args: [] },
-  audio: { codec: "pcm_s16le", sample_fmt: "s16", args: [] },
-  threads: 1,
-} as const;
+/** The same profile with no audio block, for a program that carries no sound. */
+export function withoutAudio(profile: EncodeProfile): EncodeProfile {
+  return { ...profile, audio: null };
+}
 
 export function makeJob(edlId: string, params: Record<string, unknown>): JobSpec {
   return {

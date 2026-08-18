@@ -67,6 +67,8 @@ export interface TransitionSide {
 export interface VideoTransitionSegment {
   kind: "transition";
   transitionType: "dissolve" | "dip_to_black" | "dip_to_white";
+  /** Blend-weight curve, as declared. contracts#52 states each name's polynomial. */
+  easing: "linear" | "ease_in" | "ease_out" | "ease_in_out";
   /** in_offset + out_offset: the whole blend window, straddling the cut. */
   length: number;
   /** Frames the transition reaches back into the outgoing clip. */
@@ -96,6 +98,10 @@ export interface DuckingWindow {
   target: "music" | "ambient" | "sfx";
   reductionDb: number;
   ranges: FrameRange[];
+  /** Length of the ramp DOWN, in frames, ending at each range's start (contracts#54). */
+  attackFrames: number;
+  /** Length of the ramp back UP, in frames, beginning at each range's end. */
+  releaseFrames: number;
 }
 
 export interface Program {
@@ -307,6 +313,7 @@ function transitionSegment(
   return {
     kind: "transition",
     transitionType: kind,
+    easing: transition.easing ?? "linear",
     length: inOffset + outOffset,
     inOffset,
     outOffset,
@@ -405,11 +412,6 @@ function buildAudioProgram(
   const contributions: AudioContribution[] = [];
   const audioPlacements: ClipPlacement[] = [];
 
-  const ambient = plan?.ambient;
-  const ambientEnabled = ambient ? ambient.enabled !== false : plan != null;
-  const perClipGain = new Map<string, number>();
-  for (const entry of ambient?.per_clip_gain_db ?? []) perClipGain.set(entry.clip_id, entry.gain_db);
-
   for (const placement of videoPlacements) {
     const audio = placement.clip.audio;
     if (!audio || audio.muted === true) continue;
@@ -425,9 +427,11 @@ function buildAudioProgram(
           "is no mix to render it into — no sample rate, no channel count, no loudness target.",
       );
     }
-    if (!ambientEnabled) continue;
-
-    const gainDb = perClipGain.get(placement.clip.clip_id) ?? ambient?.default_gain_db ?? audio.gain_db ?? 0;
+    // contracts#53: one gain, on the clip. This used to reconcile three of them —
+    // AmbientPlan.per_clip_gain_db, AmbientPlan.default_gain_db and ClipAudio.gain_db —
+    // in an order nothing in the contract stated, so the gate refused the combination
+    // rather than pick. There is nothing left to pick between.
+    const gainDb = audio.gain_db;
     const tail = audio.audio_extends_past_out
       ? frames(audio.audio_extends_past_out, edl.rate, `clip ${placement.clip.clip_id} audio_extends_past_out`)
       : 0;
@@ -528,16 +532,29 @@ function reconcileMusicCues(edl: EDL, audioPlacements: readonly ClipPlacement[])
   }
 }
 
+/**
+ * The ramps are converted to frames here, and to samples in the filtergraph, so the
+ * envelope is expressed in the same integer time as everything else. A ramp is allowed to
+ * be a fractional number of frames — 60 ms at 59.94 is 3.596 — because the envelope is a
+ * function of TIME, and quantising it to frames would move the gain by up to half a frame
+ * at exactly the ramp's steepest point.
+ */
 function buildDucking(edl: EDL): DuckingWindow[] {
   const windows: DuckingWindow[] = [];
   for (const rule of edl.audio_plan?.ducking ?? []) {
+    const ranges = (rule.ranges ?? []).map((range) =>
+      frameRange(range, edl.rate, `ducking rule ${rule.rule_id} range`),
+    );
+    if (ranges.length === 0) {
+      fail(`ducking rule ${rule.rule_id} states a duck with no extent.`);
+    }
     windows.push({
       ruleId: rule.rule_id,
       target: rule.target,
       reductionDb: rule.reduction_db,
-      ranges: (rule.ranges ?? []).map((range) =>
-        frameRange(range, edl.rate, `ducking rule ${rule.rule_id} range`),
-      ),
+      ranges,
+      attackFrames: ((rule.attack_ms ?? 0) / 1000) * edl.rate,
+      releaseFrames: ((rule.release_ms ?? 0) / 1000) * edl.rate,
     });
   }
   return windows;

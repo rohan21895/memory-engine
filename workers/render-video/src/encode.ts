@@ -1,95 +1,148 @@
+import type { EncodeProfile } from "../../../contracts/codegen/generated/typescript/index.js";
+
 import { RenderVideoError } from "./errors.js";
 
 /**
- * The encode profile is NOT in the EDL. `RenderTarget` gives a destination, a resolution,
- * an aspect ratio and a loudness target, and stops — no codec, no container, no pixel
- * format, no rate control, no GOP, no scaler. See contracts#56.
+ * The encode profile arrives in the PLAN, on `RenderTarget.encode` (contracts#56).
  *
- * Rather than keep a destination-to-codec table inside the renderer, where it would be a
- * delivery decision made invisibly, the profile arrives as a required, fully explicit
- * `JobSpec.params.encode` block. Every field is mandatory. There are no defaults and no
- * fallbacks: a job that omits one fails instead of getting somebody's opinion.
+ * It used to arrive as a required `JobSpec.params.encode` block, because RenderTarget said
+ * nothing about the codec and this worker refuses to invent one. That kept the renderer
+ * honest and left the plan unable to describe its own output: two renders of one EDL could
+ * differ by an entire codec and nothing recorded which was used, while
+ * `Determinism.inputs_digest` claimed that two plans with the same digest are the same cut.
  *
- * This mirrors what `workers/render-print` does with the ICC profile, which is the same
- * shape of problem — a delivery fact the plan does not carry.
+ * Nothing here fills anything in. The contract makes every field mandatory; this module
+ * maps the declared profile onto ffmpeg arguments and refuses the combinations it cannot
+ * produce — an encoder that does not emit the declared codec, or an encoder this build has
+ * no mapping for.
  */
 
-export interface EncodeVideoProfile {
-  codec: string;
-  pix_fmt: string;
-  /** Passed to ffmpeg verbatim, after the codec and pixel format. */
-  args: string[];
+/** Encoder implementation -> the codec it produces. Mirrors the contract's own pairing. */
+const ENCODER_CODEC: Readonly<Record<string, string>> = Object.freeze({
+  libx264: "h264",
+  h264_videotoolbox: "h264",
+  libx265: "hevc",
+  hevc_videotoolbox: "hevc",
+  libsvtav1: "av1",
+  "libvpx-vp9": "vp9",
+  ffv1: "ffv1",
+  prores_ks: "prores",
+});
+
+/**
+ * Which ffmpeg flag each encoder takes its quality on. `-crf` is x264/x265/VP9/SVT-AV1;
+ * `-q:v` is what prores_ks and the VideoToolbox encoders understand. Getting this wrong is
+ * not silent — ffmpeg rejects an unknown private option — but stating it here keeps the
+ * mapping in one readable place rather than inside a conditional.
+ */
+const QUALITY_FLAG: Readonly<Record<string, string>> = Object.freeze({
+  libx264: "-crf",
+  libx265: "-crf",
+  libsvtav1: "-crf",
+  "libvpx-vp9": "-crf",
+  h264_videotoolbox: "-q:v",
+  hevc_videotoolbox: "-q:v",
+  prores_ks: "-q:v",
+});
+
+/**
+ * Contract container name -> ffmpeg muxer name. The contract names the CONTAINER, which is
+ * what a player and a vendor care about; ffmpeg's `-f` takes a muxer, and the two differ
+ * for Matroska. Mapping here rather than putting "matroska" in the schema keeps one
+ * worker's command-line vocabulary out of a document both sides read.
+ */
+const CONTAINER_MUXER: Readonly<Record<string, string>> = Object.freeze({
+  mp4: "mp4",
+  mov: "mov",
+  mkv: "matroska",
+  webm: "webm",
+});
+
+export function muxerFor(profile: EncodeProfile): string {
+  const muxer = CONTAINER_MUXER[profile.container];
+  if (muxer === undefined) fail(`container ${profile.container} has no muxer in this worker.`);
+  return muxer;
 }
 
-export interface EncodeAudioProfile {
-  codec: string;
-  sample_fmt: string;
-  args: string[];
-}
-
-export interface EncodeProfile {
-  /** ffmpeg muxer name, used as `-f`. */
-  container: string;
-  /** ffmpeg scaler, used as scale=flags=. Pinned because the scaler changes every pixel. */
-  scale_flags: string;
-  video: EncodeVideoProfile;
-  audio: EncodeAudioProfile | null;
-  /**
-   * Encoder thread count. Not a creative decision, but it is a determinism input for some
-   * encoders, so it is stated rather than left to the machine's core count.
-   */
-  threads: number;
-}
+/** Encoders whose output is byte-reproducible on one build given the same thread count. */
+const SOFTWARE_ENCODERS = new Set(["libx264", "libx265", "libsvtav1", "libvpx-vp9", "ffv1", "prores_ks"]);
 
 function fail(detail: string): never {
-  throw new RenderVideoError("validation_failed", `render_video params are not usable: ${detail}`);
+  throw new RenderVideoError("validation_failed", `The video renderer refused the encode profile: ${detail}`);
 }
 
-function stringArray(value: unknown, name: string): string[] {
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-    fail(`${name} must be an array of strings.`);
+export function assertEncodable(profile: EncodeProfile): void {
+  const video = profile.video;
+  const produced = ENCODER_CODEC[video.encoder];
+  if (produced === undefined) {
+    fail(`encoder ${video.encoder} has no mapping in this worker.`);
   }
-  return value as string[];
+  if (produced !== video.codec) {
+    fail(
+      `encoder ${video.encoder} produces ${produced} and the profile declares codec ` +
+        `${video.codec}. The pair is a planner error, not something to reconcile here.`,
+    );
+  }
+  const mode = video.rate_control.mode;
+  if ((mode === "crf" || mode === "cqp") && QUALITY_FLAG[video.encoder] === undefined) {
+    fail(`encoder ${video.encoder} takes no quality value, and rate_control is ${mode}.`);
+  }
+  if (profile.encoder_threads > 1 && SOFTWARE_ENCODERS.has(video.encoder)) {
+    fail(
+      `profile ${profile.profile_id} asks for ${profile.encoder_threads} encoder threads on ` +
+        `${video.encoder}. Software encoders slice a frame across threads and the slice ` +
+        "boundaries move with the count, so the render would only be reproducible on a " +
+        "machine with the same one. State 1, or state a hardware encoder and accept that " +
+        "its bytes are a property of the driver.",
+    );
+  }
 }
 
-function parseVideo(value: unknown): EncodeVideoProfile {
-  if (typeof value !== "object" || value === null) fail("encode.video is missing.");
-  const record = value as Record<string, unknown>;
-  if (typeof record.codec !== "string" || record.codec.length === 0) fail("encode.video.codec is missing.");
-  if (typeof record.pix_fmt !== "string" || record.pix_fmt.length === 0) fail("encode.video.pix_fmt is missing.");
-  return { codec: record.codec, pix_fmt: record.pix_fmt, args: stringArray(record.args, "encode.video.args") };
+/** Video encoder arguments, in a fixed order so two runs build the same command. */
+export function videoEncodeArgs(profile: EncodeProfile): string[] {
+  const video = profile.video;
+  const args = ["-c:v", video.encoder, "-pix_fmt", video.pixel_format];
+  if (video.preset) args.push("-preset", video.preset);
+
+  const rate = video.rate_control;
+  switch (rate.mode) {
+    case "crf":
+    case "cqp":
+      args.push(QUALITY_FLAG[video.encoder]!, String(rate.quality));
+      break;
+    case "abr":
+      args.push("-b:v", `${rate.bit_rate_kbps}k`);
+      break;
+    case "cbr":
+      args.push(
+        "-b:v",
+        `${rate.bit_rate_kbps}k`,
+        "-minrate",
+        `${rate.bit_rate_kbps}k`,
+        "-maxrate",
+        `${rate.bit_rate_kbps}k`,
+        "-bufsize",
+        `${(rate.bit_rate_kbps as number) * 2}k`,
+      );
+      break;
+    case "lossless":
+      break;
+  }
+
+  if (video.profile) args.push("-profile:v", video.profile);
+  if (video.level) args.push("-level:v", video.level);
+  args.push("-g", String(video.keyframe_interval_frames));
+  return args;
 }
 
-function parseAudio(value: unknown): EncodeAudioProfile | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== "object") fail("encode.audio must be an object or null.");
-  const record = value as Record<string, unknown>;
-  if (typeof record.codec !== "string" || record.codec.length === 0) fail("encode.audio.codec is missing.");
-  if (typeof record.sample_fmt !== "string" || record.sample_fmt.length === 0) {
-    fail("encode.audio.sample_fmt is missing.");
+export function audioEncodeArgs(profile: EncodeProfile): string[] {
+  const audio = profile.audio;
+  if (!audio) {
+    fail("the program carries audio and the profile's audio block is null.");
   }
-  return { codec: record.codec, sample_fmt: record.sample_fmt, args: stringArray(record.args, "encode.audio.args") };
-}
-
-export function parseEncodeProfile(value: unknown): EncodeProfile {
-  if (typeof value !== "object" || value === null) {
-    fail("encode is missing. There is no default encode profile; see contracts#56.");
-  }
-  const record = value as Record<string, unknown>;
-  if (typeof record.container !== "string" || record.container.length === 0) fail("encode.container is missing.");
-  if (typeof record.scale_flags !== "string" || record.scale_flags.length === 0) {
-    fail("encode.scale_flags is missing. The scaler changes every pixel and is not the renderer's to pick.");
-  }
-  if (!Number.isInteger(record.threads) || (record.threads as number) < 1) {
-    fail("encode.threads must be a positive integer.");
-  }
-  return {
-    container: record.container,
-    scale_flags: record.scale_flags,
-    video: parseVideo(record.video),
-    audio: parseAudio(record.audio ?? null),
-    threads: record.threads as number,
-  };
+  const args = ["-c:a", audio.encoder, "-sample_fmt", audio.sample_format];
+  if (audio.bit_rate_kbps != null) args.push("-b:a", `${audio.bit_rate_kbps}k`);
+  return args;
 }
 
 /**
@@ -126,3 +179,5 @@ export const BITEXACT_ARGS: readonly string[] = Object.freeze([
   "-fps_mode",
   "passthrough",
 ]);
+
+export type { EncodeProfile };

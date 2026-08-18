@@ -5,7 +5,15 @@ import { dirname, join, resolve } from "node:path";
 import type { EDL, JobErrorCode } from "../../../contracts/codegen/generated/typescript/index.js";
 
 import { canonicalJson, digestFile, digestJson } from "./digest.js";
-import { BITEXACT_ARGS, GLOBAL_ARGS, type EncodeProfile } from "./encode.js";
+import {
+  assertEncodable,
+  audioEncodeArgs,
+  BITEXACT_ARGS,
+  GLOBAL_ARGS,
+  muxerFor,
+  videoEncodeArgs,
+  type EncodeProfile,
+} from "./encode.js";
 import { RenderVideoError } from "./errors.js";
 import {
   parseEbur128Summary,
@@ -23,7 +31,6 @@ import { framesToSamples, framesToSeconds } from "./time.js";
 
 export interface RenderVideoOptions {
   sources: SourceResolver;
-  encode: EncodeProfile;
   workDirectory: string;
   tools?: Partial<ToolPaths>;
 }
@@ -113,14 +120,7 @@ function loudnessStage(edl: EDL): LoudnessStage | null {
 }
 
 function encodeArgs(profile: EncodeProfile, hasAudio: boolean): string[] {
-  const args = ["-c:v", profile.video.codec, "-pix_fmt", profile.video.pix_fmt, ...profile.video.args];
-  if (hasAudio) {
-    if (!profile.audio) {
-      fail("validation_failed", "The program carries audio and encode.audio is null.");
-    }
-    args.push("-c:a", profile.audio.codec, "-sample_fmt", profile.audio.sample_fmt, ...profile.audio.args);
-  }
-  return args;
+  return hasAudio ? [...videoEncodeArgs(profile), ...audioEncodeArgs(profile)] : videoEncodeArgs(profile);
 }
 
 async function writeFilterScript(directory: string, name: string, filter: string): Promise<string> {
@@ -139,6 +139,10 @@ function sourceDigestManifest(sources: ReadonlyMap<string, ResolvedSource>): Rec
 export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promise<RenderVideoResult> {
   const tools: ToolPaths = { ...DEFAULT_TOOLS, ...options.tools };
   const gate = assertRenderable(edl);
+  // contracts#56: the profile is in the plan. Nothing here fills a field in; this
+  // checks that the encoder the plan names produces the codec the plan names.
+  const encode: EncodeProfile = edl.target.encode;
+  assertEncodable(encode);
   const program: Program = buildProgram(edl);
 
   const workDirectory = resolve(options.workDirectory);
@@ -155,7 +159,7 @@ export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promis
   for (const contribution of program.audio) used.add(contribution.mediaRefId);
   assertEveryRefIsUsed(edl, used);
 
-  const graph = buildGraph(edl, program, sources, options.encode);
+  const graph = buildGraph(edl, program, sources, encode);
   const stage = graph.audioLabel ? loudnessStage(edl) : null;
   if (graph.audioLabel && !stage) {
     fail("validation_failed", "The program carries audio and the EDL declares no MixPlan.");
@@ -190,19 +194,19 @@ export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promis
   const command = [
     ...GLOBAL_ARGS,
     "-threads",
-    String(options.encode.threads),
+    String(encode.encoder_threads),
     ...graph.inputs.flatMap((input) => input.args),
     "-filter_complex_script",
     scriptPath,
     "-map",
     `[${graph.videoLabel}]`,
     ...(audioOut ? ["-map", `[${audioOut}]`] : []),
-    ...encodeArgs(options.encode, audioOut !== null),
+    ...encodeArgs(encode, audioOut !== null),
     "-threads:v",
-    String(options.encode.threads),
+    String(encode.encoder_threads),
     ...BITEXACT_ARGS,
     "-f",
-    options.encode.container,
+    muxerFor(encode),
     "-y",
   ];
 
@@ -230,7 +234,7 @@ export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promis
     edl_id: edl.edl_id,
     command: portableCommand,
     filter: filter.split(workDirectory).join("work:"),
-    encode: options.encode,
+    encode,
     sources: sourceDigestManifest(sources),
     total_frames: program.totalFrames,
   });
@@ -241,7 +245,7 @@ export async function renderVideo(edl: EDL, options: RenderVideoOptions): Promis
    * relaunch, re-verifies it, and does not decode a frame. A job killed mid-encode finds a
    * file that fails verification and renders again.
    */
-  const partial = join(workDirectory, `render-${commandGraphDigest.slice(0, 16)}.${options.encode.container}`);
+  const partial = join(workDirectory, `render-${commandGraphDigest.slice(0, 16)}.${encode.container}`);
   await mkdir(dirname(partial), { recursive: true });
   let verification: RenderVerification | null = null;
   if (await exists(partial)) {

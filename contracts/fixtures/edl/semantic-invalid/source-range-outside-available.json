@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "edl_id": "ba5a48c7442b26d6e170f74b497de7257652982e5b4bfd2deab6fefa244bfb5e",
+  "edl_id": "a5b85a15d815ef6abb662c1bdc5147cc19ae3801b1c48a671c387c4e35d3b5b4",
   "name": "clip reaches past the end of its source",
   "kind": "reel",
   "rate": 59.94005994005994,
@@ -13,6 +13,32 @@
     "aspect_ratio": {
       "numerator": 9,
       "denominator": 16
+    },
+    "encode": {
+      "profile_id": "instagram-reel-h264-crf20-v1",
+      "container": "mp4",
+      "scaler": "bicubic",
+      "encoder_threads": 1,
+      "video": {
+        "codec": "h264",
+        "encoder": "libx264",
+        "pixel_format": "yuv420p",
+        "rate_control": {
+          "mode": "crf",
+          "quality": 20,
+          "bit_rate_kbps": null
+        },
+        "preset": "medium",
+        "profile": "high",
+        "level": "4.0",
+        "keyframe_interval_frames": 120
+      },
+      "audio": {
+        "codec": "aac",
+        "encoder": "aac",
+        "sample_format": "fltp",
+        "bit_rate_kbps": 192
+      }
     }
   },
   "media_refs": [
@@ -30,7 +56,12 @@
           "rate": 59.94005994005994
         }
       },
-      "is_span_assembly": true
+      "is_span_assembly": true,
+      "member_media_ids": [
+        "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
+        "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8"
+      ],
+      "continuity": "verified_gapless"
     }
   ],
   "tracks": [

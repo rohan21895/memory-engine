@@ -1,7 +1,7 @@
 {
   "schema_version": "v0",
-  "edl_id": "8c66be9a1497d9f50e72c510a36c7b292112737da5efc14d662521298768f33c",
-  "name": "Uttarakhand ridge ride - 15s",
+  "edl_id": "09c69e5c6f95390a1421a4a80c1a1e78dc2299af22c658a754ae53bc3888a8db",
+  "name": "crf encode that names no quality",
   "kind": "reel",
   "rate": 59.94005994005994,
   "global_start_time": {
@@ -38,7 +38,7 @@
         "pixel_format": "yuv420p",
         "rate_control": {
           "mode": "crf",
-          "quality": 20,
+          "quality": null,
           "bit_rate_kbps": null
         },
         "preset": "medium",

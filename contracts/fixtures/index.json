@@ -60,12 +60,62 @@
       ]
     },
     {
+      "path": "edl/schema-invalid/encode-crf-without-quality.json",
+      "schema": "edl",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "target",
+        "encode",
+        "video",
+        "rate_control",
+        "quality"
+      ],
+      "purpose": "contracts#56. A CRF encode that names no CRF value. The whole reason the encode profile is in the plan is that a renderer filling in a missing number is a delivery decision nobody reviewed, so a half-stated rate control has to be rejected rather than completed.",
+      "exercises": [
+        "rate_control mode crf requires a quality value and forbids a bit rate"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "edl/schema-invalid/span-assembly-without-members.json",
+      "schema": "edl",
+      "expectation": "schema-invalid",
+      "error_path": [
+        "media_refs",
+        0
+      ],
+      "purpose": "contracts#55. A media_ref that says it is a span assembly and then names nothing to expand it into. This was the state of every EDL before the field existed: the member order arrived out of band, in the render job, so the plan could not say what it had been planned against.",
+      "exercises": [
+        "is_span_assembly true requires member_media_ids and continuity"
+      ],
+      "rejected_by": "schema_conditional"
+    },
+    {
+      "path": "edl/semantic-invalid/ducking-range-past-the-timeline.json",
+      "schema": "edl",
+      "expectation": "semantic-invalid",
+      "purpose": "contracts#54. A duck whose range runs 175 frames past the end of the 899-frame timeline. A gain envelope over frames that do not exist is not a mix decision that can be executed, and the renderer should never be the first thing to discover it.",
+      "exercises": [
+        "a DuckingRule range must lie inside the timeline the plan lays out"
+      ]
+    },
+    {
       "path": "edl/semantic-invalid/source-range-outside-available.json",
       "schema": "edl",
       "expectation": "semantic-invalid",
       "purpose": "JSON Schema cannot compare a clip's source_range against its media_ref's available_range. This fixture is structurally perfect and still unrenderable, which is exactly the class of bug the semantic validator exists to catch before a render starts rather than at 80%.",
       "exercises": [
         "clip-01 ends 227 frames past the end of its source"
+      ]
+    },
+    {
+      "path": "edl/semantic-invalid/span-assembly-members-out-of-order.json",
+      "schema": "edl",
+      "expectation": "semantic-invalid",
+      "purpose": "contracts#55. The golden reel with its two GoPro chapters listed GH02 then GH01. Every field is well-formed and the plan is unrenderable: the member list IS the assembly's identity, so a reversed order names a recording whose source timecodes are all different, and every cut drawn from it lands on the wrong frame. Nothing in the plan looks wrong, which is the point.",
+      "exercises": [
+        "member_media_ids in the wrong order fails the canonical span_id encoding (BLAKE3 over the concatenated 64-hex ids, index order, no delimiter)",
+        "the failure is invisible to JSON Schema: the array is the right length, the right type, and holds the right ids"
       ]
     },
     {

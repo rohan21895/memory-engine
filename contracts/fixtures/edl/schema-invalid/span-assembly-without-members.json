@@ -1,7 +1,7 @@
 {
   "schema_version": "v0",
-  "edl_id": "8c66be9a1497d9f50e72c510a36c7b292112737da5efc14d662521298768f33c",
-  "name": "Uttarakhand ridge ride - 15s",
+  "edl_id": "d35e1f51e5c7321c68c2e9a5a42e8292c8a40f4e83e972cad69e6a0e02341700",
+  "name": "span assembly with nothing to expand",
   "kind": "reel",
   "rate": 59.94005994005994,
   "global_start_time": {
@@ -71,12 +71,7 @@
       },
       "is_span_assembly": true,
       "expected_frame_rate": 59.94005994005994,
-      "label": "GH01/GH02 1234 (assembled)",
-      "member_media_ids": [
-        "8491282cd8a82f656a215e4fa4f21d1ca793759dbe287ed7fd9aad8411c34013",
-        "d9342f437503473d2d5d98ede0d1edcda024897e6b84cf1f51df2c5a4c2f6eb8"
-      ],
-      "continuity": "verified_gapless"
+      "label": "GH01/GH02 1234 (assembled)"
     },
     {
       "media_ref_id": "src-music",

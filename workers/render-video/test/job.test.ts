@@ -51,13 +51,6 @@ async function params(prefix: string): Promise<Record<string, unknown>> {
     output_path: join(work, "out.mkv"),
     work_directory: work,
     sources: { [source.videoMediaId]: { paths: [source.videoPath] } },
-    encode: {
-      container: FFV1_MKV.container,
-      scale_flags: FFV1_MKV.scale_flags,
-      video: { codec: "ffv1", pix_fmt: "yuv420p", args: [] },
-      audio: null,
-      threads: 1,
-    },
     ffmpeg_path: TOOLS.ffmpeg,
     ffprobe_path: TOOLS.ffprobe,
   };
@@ -147,28 +140,16 @@ describe("the render_video job", () => {
 });
 
 describe("the encode profile", () => {
-  it("has no defaults: every field must be stated by the job", () => {
+  it("is no longer a job parameter: a job that carries one is refused", () => {
+    // contracts#56 moved it into RenderTarget.encode. A job that also carries one is a
+    // second description of the same delivery, and there is no rule for which wins.
     const base = {
       output_path: "/tmp/out.mp4",
       work_directory: "/tmp",
       sources: { ["a".repeat(64)]: { paths: ["/tmp/a.mp4"] } },
     };
-    expect(() => parseParams({ ...base })).toThrow(/contracts#56/);
-    expect(() => parseParams({ ...base, encode: { container: "mp4" } })).toThrow(/scale_flags/);
-    expect(() =>
-      parseParams({ ...base, encode: { container: "mp4", scale_flags: "bicubic", threads: 1 } }),
-    ).toThrow(/encode.video/);
-    expect(() =>
-      parseParams({
-        ...base,
-        encode: {
-          container: "mp4",
-          scale_flags: "bicubic",
-          threads: 1,
-          video: { codec: "libx264", pix_fmt: "yuv420p", args: [] },
-        },
-      }),
-    ).not.toThrow();
+    expect(() => parseParams({ ...base })).not.toThrow();
+    expect(() => parseParams({ ...base, encode: { container: "mp4" } })).toThrow(/contracts#56/);
   });
 
   it("refuses a resolver keyed by anything other than a content hash", () => {
@@ -177,12 +158,6 @@ describe("the encode profile", () => {
         output_path: "/tmp/out.mp4",
         work_directory: "/tmp",
         sources: { "some-file.mp4": { paths: ["/tmp/a.mp4"] } },
-        encode: {
-          container: "mp4",
-          scale_flags: "bicubic",
-          threads: 1,
-          video: { codec: "libx264", pix_fmt: "yuv420p", args: [] },
-        },
       }),
     ).toThrow(/BLAKE3 media_id/);
   });
@@ -208,7 +183,6 @@ describe("dips", () => {
               in_offset: t(5),
               out_offset: t(5),
               easing: "linear",
-              parameters: {},
             },
             clip("clip-02", "src-a", SOURCE_ORIGIN + 150, 40),
           ],
@@ -217,18 +191,16 @@ describe("dips", () => {
     });
     const result = await renderVideo(withDip, {
       sources: { [source.videoMediaId]: { paths: [source.videoPath] } },
-      encode: {
-        container: "matroska",
-        scale_flags: "bicubic",
-        video: { codec: "ffv1", pix_fmt: "yuv420p", args: [] },
-        audio: null,
-        threads: 1,
-      },
       workDirectory: await workspace("dip"),
       tools: TOOLS,
     });
     expect(result.verification.frameCount).toBe(80);
-    expect(result.filterGraph).toContain("fade=type=out:start_frame=0:nb_frames=5:color=black");
-    expect(result.filterGraph).toContain("fade=type=in:start_frame=0:nb_frames=5:color=black");
+    // contracts#52: a dip is a blend against a constant-colour source driven by the same
+    // easing polynomial a dissolve uses, so `easing` cannot mean one thing on one
+    // transition family and something else on the other.
+    expect(result.filterGraph).toContain("color=c=black:s=360x640");
+    // Twice: the outgoing half blends the picture INTO the colour, the incoming half
+    // blends the colour into the picture, both on the same weight.
+    expect(result.filterGraph.match(/blend=all_expr='A\*\(1-\(\(N\/5\)\)\)\+B\*\(\(N\/5\)\)'/g)).toHaveLength(2);
   }, 240_000);
 });

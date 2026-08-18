@@ -10,7 +10,7 @@ A private, local-first AI system that turns terabytes of raw photos and video in
 
 - `workers/ingest/` — file walkers, BLAKE3 hashing, EXIF/XMP/QuickTime metadata, perceptual hashing, thumbnail + 480p video proxy pipeline with hardware decode (VideoToolbox / NVDEC / QSV), source adapters (Google Takeout, iCloud export, WhatsApp folder conventions, GoPro chaptered MP4s, DSLR card layouts)
 - `workers/ml-runtime/` — the model-hosting process: loads ONNX/CoreML/DirectML/CUDA models from the registry, batches requests, exposes local gRPC. Claude supplies model configs and pre/post-processing specs; you own the host.
-- `workers/render-video/` — EDL → FFmpeg filtergraph compiler, hardware encode profiles (master / Instagram / YouTube). Deterministic: same EDL + sources = identical output intent.
+- `workers/render-video/` — EDL → FFmpeg filtergraph compiler, EXECUTING the encode profile the plan carries in `RenderTarget.encode` (contracts#56). Choosing that profile is a delivery decision and lives on the deciding side, in `story-engine`'s destination presets; this worker maps a declared profile onto encoder arguments and refuses one it cannot produce. Deterministic: same EDL + sources = identical output intent.
 - `workers/render-print/` — AlbumSpec → PDF/X with embedded ICC per vendor profile. **You enforce the print validator as a hard gate**: any DPI-floor, trim-zone-face, bleed, or color-profile violation blocks export. No override flag exists.
 - `workers/enhance/` — GPU execution host for restoration/upscale/outpaint ops (op planning comes from album-engine).
 - `apps/desktop/` — Tauri + Rust + React: library grid, person labeling, review/approve flows, variant picker, project editor, scan progress that survives crashes.

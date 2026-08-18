@@ -171,7 +171,6 @@ describe("the gate refuses a plan that contradicts itself", () => {
       in_offset: t(0),
       out_offset: t(0),
       easing: "linear",
-      parameters: {},
     };
     edl.tracks[0]!.items.splice(1, 0, transition);
     expect(() => buildProgram(edl)).toThrow(/ABSENCE of a transition/);
@@ -196,7 +195,6 @@ describe("the gate refuses a plan that contradicts itself", () => {
               in_offset: t(6),
               out_offset: t(6),
               easing: "linear",
-              parameters: {},
             },
             // Starts at the very first frame of the source, so there is no handle before it.
             clip("clip-02", "src-a", SOURCE_ORIGIN, 60),
@@ -282,14 +280,18 @@ describe("the golden fixture", () => {
     const { gaps, unacted } = collectGaps(edl);
 
     const issues = new Set(gaps.map((gap) => gap.issue));
-    expect(issues).toEqual(
-      new Set([
-        "contracts#49", // exposure and match_to_reference on clip-07
-        "contracts#52", // ease_in_out, and ambient beds across the dissolve
-        "contracts#53", // noise_suppression moderate, high_pass 120 Hz, two gains per bed
-        "contracts#54", // ducking attack 60 ms / release 320 ms
-      ]),
-    );
+    // One issue left in the golden reel. This set is the checklist: a closed contract
+    // issue must leave it, and nothing may enter it without an issue behind it.
+    //
+    // #52 closed: ease_in_out is a stated polynomial, the transition types with no
+    //   enumerated parameters are out of the enum, and the beds under a transition
+    //   butt-cut rather than cross-fading.
+    // #53 closed: the bed's level is stated once, on the clip, and the high-pass names
+    //   its response, order and section Q values.
+    // #54 closed: the ducking envelope is linear in dB with the ramps outside the range.
+    // #55 closed: the assembly names its members and its verified continuity.
+    // #56 closed: the encode profile is in the plan.
+    expect(issues).toEqual(new Set(["contracts#49"])); // exposure and match_to_reference on clip-07
     // #51 closed: every reframe keyframe in the fixture is `smooth`, and `smooth` is now a
     // stated curve. #50 closed: the retime on clip-05 is pinned, and what is left is this
     // worker's, not the contract's.
@@ -297,7 +299,6 @@ describe("the golden fixture", () => {
       "clips.clip-05.time_effect",
     ]);
 
-    expect(unacted.map((entry) => entry.field)).toContain("audio_plan.ambient.preserve_speech");
     expect(unacted.map((entry) => entry.field)).toContain("beat_grid");
     expect(unacted.map((entry) => entry.field)).toContain("story_arc");
   });
