@@ -63,7 +63,7 @@ __all__ = [
 ]
 
 DETECTOR_ID = "content-hysteresis"
-DETECTOR_VERSION = "1.0.0"
+DETECTOR_VERSION = "1.0.1"
 TRANSNETV2_MODEL_ID = "transnetv2"
 
 # CIE76 dE between consecutive frames' coarse Lab signatures at which a
@@ -449,19 +449,24 @@ def _flash_return(
         if _distance(before, signatures[j]) <= FLASH_RETURN_DELTA_E:
             return j, index
 
-    # Return edge: the picture at `index` is already back to something it held
-    # shortly before, so the frames in between were the transient. Compared
-    # against frames at `index - 2` and earlier, because `index - 1` is inside
-    # the spike by construction.
+    # Return edge: locate BOTH sides of the transient. `index - 1` is inside
+    # the spike by construction, so a possible pre-transient reference is at
+    # `index - 2` or earlier. The frame at `index` may still be ringing or
+    # undershooting after the large return edge, however, so it is not enough
+    # to compare that one frame with the past. Search forward for the first
+    # frame that actually settles onto each candidate reference.
     #
     # This will also absorb a genuine A-B-A cut whose B shot is shorter than
     # FLASH_MAX_SECONDS. That is intended: a shot that appears and disappears
     # inside 0.4s is an event within a scene by any useful definition, and
     # MIN_SHOT_SECONDS (0.40) would refuse to emit it as a shot anyway.
-    here = signatures[index]
     for k in range(index - 2, max(-1, index - span - 2), -1):
-        if _distance(signatures[k], here) <= FLASH_RETURN_DELTA_E:
-            # k is the last frame before the transient, so the flash itself
-            # begins at k + 1. The picture has already settled by `index`.
-            return index, k + 1
+        flash_at = k + 1
+        # The duration bound measures the transient itself: from its first
+        # frame through the frame where the old scene is present again. A
+        # match after `flash_at + span` is a later cut, not a flash return.
+        settle_stop = min(len(signatures), flash_at + span + 1)
+        for j in range(index, settle_stop):
+            if _distance(signatures[k], signatures[j]) <= FLASH_RETURN_DELTA_E:
+                return j, flash_at
     return None

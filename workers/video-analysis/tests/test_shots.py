@@ -222,6 +222,23 @@ class FlashEdgeSymmetry(unittest.TestCase):
         frames[flash_at + 1] = self._scene(20.0 - 60.0 * (back_gain - out_gain))
         return frames
 
+    def _return_edge_with_delayed_settle(
+        self, *, flash_at: int, settled_value: float = 20.0
+    ) -> list[list[float]]:
+        """A return-edge peak that rings once before settling on the next frame.
+
+        The ringing frame is deliberately just outside the flash-return
+        tolerance.  It therefore cannot itself prove that the pre-flash scene
+        returned; only the following settled frame can.
+        """
+        frames = [self._scene(20.0) for _ in range(90)]
+        frames[flash_at] = self._scene(117.60)
+        frames[flash_at + 1] = self._scene(13.68)
+        frames[flash_at + 2 :] = [
+            self._scene(settled_value) for _ in frames[flash_at + 2 :]
+        ]
+        return frames
+
     def test_rejected_when_the_outgoing_edge_is_larger(self) -> None:
         detection = shots.detect_shots(
             self._stream(flash_at=45, out_gain=1.0, back_gain=0.98), rate=self.RATE
@@ -236,6 +253,61 @@ class FlashEdgeSymmetry(unittest.TestCase):
         )
         self.assertEqual((), detection.cut_frames)
         self.assertEqual(1, len(detection.shots))
+
+    def test_return_edge_flash_is_rejected_when_it_settles_one_frame_later(
+        self,
+    ) -> None:
+        """The winning return edge can still ring; search forward to settle."""
+        flash_at = 45
+        frames = self._return_edge_with_delayed_settle(flash_at=flash_at)
+        outgoing = shots._distance(frames[flash_at - 1], frames[flash_at])
+        returning = shots._distance(frames[flash_at], frames[flash_at + 1])
+        ringing_to_before = shots._distance(
+            frames[flash_at - 1], frames[flash_at + 1]
+        )
+        settled_to_before = shots._distance(
+            frames[flash_at - 1], frames[flash_at + 2]
+        )
+        self.assertGreater(returning, outgoing, "the return edge must be the peak")
+        self.assertGreater(ringing_to_before, shots.FLASH_RETURN_DELTA_E)
+        self.assertLessEqual(settled_to_before, shots.FLASH_RETURN_DELTA_E)
+
+        detection = shots.detect_shots(frames, rate=self.RATE)
+
+        self.assertEqual((), detection.cut_frames)
+        self.assertEqual((flash_at,), detection.suppressed_flashes)
+
+    def test_return_edge_transient_that_settles_to_a_new_scene_is_a_cut(
+        self,
+    ) -> None:
+        """A forward search must match the pre-transient scene, not any scene."""
+        flash_at = 45
+        frames = self._return_edge_with_delayed_settle(
+            flash_at=flash_at, settled_value=90.0
+        )
+
+        detection = shots.detect_shots(frames, rate=self.RATE)
+
+        self.assertIn(flash_at + 1, detection.cut_frames)
+        self.assertEqual((), detection.suppressed_flashes)
+
+    def test_return_after_the_flash_window_does_not_suppress_the_cut(self) -> None:
+        """The matching scene must return within FLASH_MAX_SECONDS."""
+        flash_at = 45
+        frames = self._return_edge_with_delayed_settle(
+            flash_at=flash_at, settled_value=90.0
+        )
+        first_allowed_late_frame = flash_at + shots._frames(
+            shots.FLASH_MAX_SECONDS, self.RATE
+        ) + 1
+        frames[first_allowed_late_frame:] = [
+            self._scene(20.0) for _ in frames[first_allowed_late_frame:]
+        ]
+
+        detection = shots.detect_shots(frames, rate=self.RATE)
+
+        self.assertIn(flash_at + 1, detection.cut_frames)
+        self.assertEqual((), detection.suppressed_flashes)
 
     def test_the_recorded_frame_is_the_flash_not_the_peak(self) -> None:
         """Both edges must report the SAME frame: where the flash actually is.
