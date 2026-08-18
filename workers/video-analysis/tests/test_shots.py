@@ -187,3 +187,82 @@ class Distances(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FlashEdgeSymmetry(unittest.TestCase):
+    """A flash must be rejected whichever of its two edges is the larger spike.
+
+    THE BUG THIS PINS. A flash is a pair of opposing spikes -- the picture
+    leaves, then comes back -- and non-maximum suppression keeps whichever edge
+    is larger. `_flash_return` originally only searched forward from
+    `index - 1`, which works when the peak is the OUTGOING edge and cannot work
+    when it is the RETURN edge: there, `index - 1` IS the flash frame, so the
+    search asks when the scene comes back to white and the answer is never.
+
+    Which edge wins is decided by sub-threshold encoder noise. A single white
+    frame in an unbroken scene was therefore a cut on Ubuntu's ffmpeg 6 and not
+    on macOS's ffmpeg 7 -- green on the machine it was written on, red in CI.
+
+    These build the signatures directly instead of encoding a clip, so the two
+    cases are exact and no ffmpeg build can decide the outcome.
+    """
+
+    RATE = 30.0
+
+    @staticmethod
+    def _scene(value: float) -> list[float]:
+        return [value] * 12
+
+    def _stream(self, *, flash_at: int, out_gain: float, back_gain: float):
+        """A steady scene with one bright frame, and control of which edge peaks."""
+        frames = [self._scene(20.0 + (i % 2) * 0.05) for i in range(90)]
+        frames[flash_at] = self._scene(20.0 + 60.0 * out_gain)
+        # The return edge's magnitude is |flash - next|; nudging the frame after
+        # the flash is how a real encoder makes one edge marginally larger.
+        frames[flash_at + 1] = self._scene(20.0 - 60.0 * (back_gain - out_gain))
+        return frames
+
+    def test_rejected_when_the_outgoing_edge_is_larger(self) -> None:
+        detection = shots.detect_shots(
+            self._stream(flash_at=45, out_gain=1.0, back_gain=0.98), rate=self.RATE
+        )
+        self.assertEqual((), detection.cut_frames)
+        self.assertEqual(1, len(detection.shots))
+
+    def test_rejected_when_the_return_edge_is_larger(self) -> None:
+        """The case that was red in CI and green locally."""
+        detection = shots.detect_shots(
+            self._stream(flash_at=45, out_gain=0.98, back_gain=1.0), rate=self.RATE
+        )
+        self.assertEqual((), detection.cut_frames)
+        self.assertEqual(1, len(detection.shots))
+
+    def test_the_recorded_frame_is_the_flash_not_the_peak(self) -> None:
+        """Both edges must report the SAME frame: where the flash actually is.
+
+        The first fix stopped the flash being called a cut but still recorded
+        it at whichever edge peaked, so `suppressed_flashes` read 45 on one
+        ffmpeg build and 46 on another. That is the original defect wearing a
+        different field, and CI caught it a second time.
+        """
+        outgoing = shots.detect_shots(
+            self._stream(flash_at=45, out_gain=1.0, back_gain=0.98), rate=self.RATE
+        )
+        returning = shots.detect_shots(
+            self._stream(flash_at=45, out_gain=0.98, back_gain=1.0), rate=self.RATE
+        )
+        self.assertIn(45, outgoing.suppressed_flashes)
+        self.assertIn(45, returning.suppressed_flashes)
+        self.assertEqual(outgoing.suppressed_flashes, returning.suppressed_flashes)
+
+    def test_a_real_cut_is_still_a_cut(self) -> None:
+        """The suppression must not have been bought by blinding the detector.
+
+        A step to a new scene that does NOT return is a boundary, and stays one.
+        """
+        frames = [self._scene(20.0) for _ in range(45)] + [
+            self._scene(90.0) for _ in range(45)
+        ]
+        detection = shots.detect_shots(frames, rate=self.RATE)
+        self.assertEqual((45,), detection.cut_frames)
+        self.assertEqual(2, len(detection.shots))

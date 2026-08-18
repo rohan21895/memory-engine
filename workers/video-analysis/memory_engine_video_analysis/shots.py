@@ -203,7 +203,13 @@ def transnetv2_seam(
             ),
         )
     try:
-        catalog = ModelCatalog(environ=environ)
+        # repo_root MUST be passed. ModelCatalog's default is derived from
+        # catalog.py's own location, which is correct only when ml-runtime is
+        # on sys.path from the source tree. CI pip-installs it, so the default
+        # resolves into site-packages and models/registry.json is not there --
+        # and the gate then reports "nobody asked" for what is really a path
+        # bug on our side. `root` was already computed above; use it.
+        catalog = ModelCatalog(repo_root=root, environ=environ)
         inspection = catalog.inspect(TRANSNETV2_MODEL_ID)
     except Exception as error:  # noqa: BLE001
         return SeamStatus(
@@ -383,11 +389,12 @@ def _classical_cuts(
             index += 1
             continue
 
-        returned = _flash_return(signatures, index, flash_span)
-        if returned is not None:
-            flashes.append(index)
-            blocked_until = returned + 1
-            index = returned + 1
+        found = _flash_return(signatures, index, flash_span)
+        if found is not None:
+            settled_at, flash_at = found
+            flashes.append(flash_at)
+            blocked_until = settled_at + 1
+            index = settled_at + 1
             continue
 
         if cuts and index - cuts[-1] < minimum:
@@ -412,15 +419,49 @@ def _classical_cuts(
 
 def _flash_return(
     signatures: Sequence[Sequence[float]], index: int, span: int
-) -> int | None:
+) -> tuple[int, int] | None:
     """The frame at which the picture returns to what preceded a spike, if it does.
 
-    `index` is the frame the spike lands on, so `index - 1` is the last frame
-    before it. A return means the interval was a flash, a firework or a passing
-    headlight — an event inside one shot, not a boundary between two.
+    A flash is a PAIR of opposing spikes: the picture leaves, then comes back.
+    Either edge can be the local maximum, and which one wins is decided by
+    sub-threshold encoder noise — so both have to be recognised or the
+    behaviour depends on the ffmpeg build.
+
+    That is not hypothetical. This function originally only looked forward from
+    `index - 1`, which is correct when the peak lands on the OUTGOING edge and
+    guaranteed to fail when it lands on the RETURN edge: there, `index - 1` is
+    the flash frame itself, so the search asks when the scene comes back to
+    white, and the answer is never. A single white frame in an unbroken scene
+    was reported as a cut on Linux and not on macOS, because ffmpeg 6 and 7
+    quantise the two edges of the spike differently.
+
+    Returns (settled_at, flash_at), or None if the picture never settles.
+
+    Two frames, not one, because they differ on the return edge and the caller
+    needs both: it resumes scanning from `settled_at`, and RECORDS `flash_at`.
+    Recording the peak instead would leave `suppressed_flashes` naming whichever
+    edge encoder noise happened to make larger -- the same fragility this
+    function exists to remove, moved into a different field.
     """
+    # Outgoing edge: the picture leaves at `index` and comes back later.
     before = signatures[index - 1]
     for j in range(index + 1, min(len(signatures), index + span + 1)):
         if _distance(before, signatures[j]) <= FLASH_RETURN_DELTA_E:
-            return j
+            return j, index
+
+    # Return edge: the picture at `index` is already back to something it held
+    # shortly before, so the frames in between were the transient. Compared
+    # against frames at `index - 2` and earlier, because `index - 1` is inside
+    # the spike by construction.
+    #
+    # This will also absorb a genuine A-B-A cut whose B shot is shorter than
+    # FLASH_MAX_SECONDS. That is intended: a shot that appears and disappears
+    # inside 0.4s is an event within a scene by any useful definition, and
+    # MIN_SHOT_SECONDS (0.40) would refuse to emit it as a shot anyway.
+    here = signatures[index]
+    for k in range(index - 2, max(-1, index - span - 2), -1):
+        if _distance(signatures[k], here) <= FLASH_RETURN_DELTA_E:
+            # k is the last frame before the transient, so the flash itself
+            # begins at k + 1. The picture has already settled by `index`.
+            return index, k + 1
     return None
