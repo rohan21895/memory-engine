@@ -853,6 +853,11 @@ class _Selection:
 
     rate: float
     raster: tuple[int, int]
+    #: Which measurement `raster` came from -- the source's oriented size when
+    #: `workers/ingest` recorded one, else the proxy raster. Carried on the
+    #: selection rather than recomputed per planner so the reel and the film
+    #: can never disagree about where their geometry came from.
+    geometry_from: str
     aspect: tuple[int, int]
     media: tuple[Any, ...]
     moments: tuple[Any, ...]
@@ -1088,6 +1093,7 @@ def _select(ctx: StageContext) -> _Selection | None:
     return _Selection(
         rate=rate,
         raster=raster,
+        geometry_from=geometry_from,
         aspect=aspect,
         media=tuple(media),
         moments=tuple(moments),
@@ -1149,6 +1155,9 @@ def _plan_reel(
     from memory_engine_story import reel as reel_module  # noqa: PLC0415
 
     rate = selection.rate
+    raster = selection.raster
+    geometry_from = selection.geometry_from
+    measured = geometry_from == _SOURCE_GEOMETRY
     notes: list[str] = []
     request = reel_module.ReelRequest(
         rate=rate,
@@ -1234,6 +1243,9 @@ def _plan_film(
     from memory_engine_story import film as film_module  # noqa: PLC0415
 
     rate = selection.rate
+    raster = selection.raster
+    geometry_from = selection.geometry_from
+    measured = geometry_from == _SOURCE_GEOMETRY
     notes: list[str] = []
     request = film_module.FilmRequest(
         rate=rate,
