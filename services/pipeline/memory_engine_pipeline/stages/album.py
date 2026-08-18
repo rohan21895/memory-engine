@@ -21,6 +21,11 @@ in the post rather than a bug report. So this stage refuses in three places:
   * the AlbumSpec is written ONLY when the print validator returns `pass`. A
     failing report is still written, to a `.rejected.json` beside it, because
     "no silent anything" cuts both ways -- a person needs to read why.
+  * a selected photo whose MediaRecord claims faces the library holds no
+    rectangles for stops the book. Face-safe layout with a partial face set
+    passes for the faces it cannot see, which is the failure this stage used to
+    have in its purest form: with NO face set at all, every face check passed
+    vacuously and CLAUDE.md rule 5 could not fail.
 
 IDEMPOTENCE
 
@@ -102,7 +107,7 @@ def _analysed_records(ctx: StageContext) -> list[dict[str, Any]]:
 
 
 def run(ctx: StageContext) -> StageResult:
-    upstream = ctx.require("ingest", "analysis", "ranking")
+    upstream = ctx.require("ingest", "analysis", "faces", "ranking")
     if upstream is not None:
         return blocked_by(STAGE, upstream)
 
@@ -191,12 +196,42 @@ def run(ctx: StageContext) -> StageResult:
             },
         )
 
+    # The photos, and therefore the face rectangles, are assembled BEFORE the
+    # job identity is computed, because the rectangles are an input to the
+    # plan: they move every crop that has a face in it. A digest that ignored
+    # them would let a re-detected library reuse the previous run's completed
+    # job and its album file, so a layout that now puts a face in the gutter
+    # would never be recomputed. Same reason `selected` is in there.
+    try:
+        photos = [_photo(ctx, by_id[media_id]) for media_id in selection.selected]
+    except FaceEvidenceMissing as error:
+        return StageResult(
+            stage=STAGE, status=StageStatus.FAILED, detail=str(error)
+        )
+    missing_size = [photo.media_id for photo in photos if photo.pixel_width <= 0]
+    if missing_size:
+        return StageResult(
+            stage=STAGE,
+            status=StageStatus.FAILED,
+            detail=(
+                f"{len(missing_size)} selected photos carry no oriented pixel size, so "
+                "their printed DPI cannot be measured and the book cannot be validated"
+            ),
+        )
+
     inputs_digest = digest_of(
         {
             "planner": PLANNER,
             "planner_version": PLANNER_VERSION,
             "seed": SEED,
             "selected": list(selection.selected),
+            "faces": {
+                photo.media_id: [
+                    [face.face_id, face.box.x, face.box.y, face.box.w, face.box.h]
+                    for face in photo.faces
+                ]
+                for photo in photos
+            },
             "vendor_profile": profile,
             "photos_per_page": ctx.settings.album_photos_per_page,
             "target_count": wanted,
@@ -240,23 +275,6 @@ def run(ctx: StageContext) -> StageResult:
         PageRequest,
         layout_album,
     )
-
-    photos = [_photo(by_id[media_id]) for media_id in selection.selected]
-    missing_size = [photo.media_id for photo in photos if photo.pixel_width <= 0]
-    if missing_size:
-        ctx.jobs.fail(
-            job, code="validation_failed",
-            message="a selected photo has no oriented pixel size", retryable=False,
-        )
-        return StageResult(
-            stage=STAGE,
-            status=StageStatus.FAILED,
-            detail=(
-                f"{len(missing_size)} selected photos carry no oriented pixel size, so "
-                "their printed DPI cannot be measured and the book cannot be validated"
-            ),
-            job_id=job["job_id"],
-        )
 
     per_page = max(1, ctx.settings.album_photos_per_page)
     requests = [
@@ -408,23 +426,66 @@ def _epoch(timestamp: str | None) -> float | None:
         return None
 
 
-def _photo(record: Mapping[str, Any]) -> Any:
-    from memory_engine_album.layout import Photo  # noqa: PLC0415
+class FaceEvidenceMissing(Exception):
+    """A photo claims faces the library has no rectangles for."""
 
+
+def _photo(ctx: StageContext, record: Mapping[str, Any]) -> Any:
+    """One selected photo, with every face rectangle the trim check must see.
+
+    THE FACE BOXES ARE THE POINT OF THIS FUNCTION.
+
+    They used to be `()`, unconditionally, because nothing wrote FaceRecords.
+    That made album-engine's `face_safety` report `face_count: 0` on every
+    placement, which made the print validator's `face_in_trim_zone` gate pass
+    vacuously -- no face known to be in the trim zone, because no face known at
+    all. CLAUDE.md rule 5 could not fail. It can now.
+
+    `face_boxes_for_layout` takes every detected face over the detector floor
+    and accepts no assignment argument: identity has nothing to do with where a
+    guillotine cuts. A child whose parent has not consented to labelling is
+    unnamed AND protected.
+
+    Refuses rather than under-reporting when a photo's stored rectangles do not
+    account for its `face_count`. The two are written by the same step, so a
+    disagreement means the faces were detected under an older run and never
+    stored -- and planning through it would produce exactly the vacuous pass
+    this function exists to end, with a face_count that says otherwise sitting
+    in the same record.
+    """
+    from memory_engine_album.layout import Face, NormBox, Photo  # noqa: PLC0415
+    from memory_engine_face.records import (  # noqa: PLC0415
+        detected_face_from_record,
+        face_boxes_for_layout,
+    )
+
+    media_id = record["media_id"]
+    claimed = int((record.get("faces") or {}).get("face_count") or 0)
+    stored = ctx.database.faces_for_media(media_id)
+    if len(stored) < claimed:
+        raise FaceEvidenceMissing(
+            f"{media_id[:12]} reports {claimed} face(s) but the library holds "
+            f"{len(stored)} face rectangle(s) for it. Face-safe layout would run "
+            "against an incomplete face set and pass without checking the faces it "
+            "could not see. Re-run with --reanalyze-faces"
+        )
+
+    boxes = face_boxes_for_layout(
+        detected_face_from_record(face) for face in stored
+    )
     size = (record.get("image") or {}).get("oriented_size") or {}
     return Photo(
-        media_id=record["media_id"],
+        media_id=media_id,
         pixel_width=int(size.get("width") or 0),
         pixel_height=int(size.get("height") or 0),
-        # Face boxes are not carried on the MediaRecord -- they live on
-        # FaceRecords, which `cluster_faces` would write and which this
-        # pipeline does not run. So face-safe placement has nothing to work
-        # with here. The validator's face checks pass vacuously on an empty
-        # face set, which is honest (no face is known to be in the trim zone)
-        # and is NOT the same as "checked and safe". Wiring faces into layout
-        # is blocked on the face-identity stage, and is called out in the
-        # README rather than approximated from a detection count.
-        faces=(),
+        faces=tuple(
+            Face(
+                face_id=box.face_id,
+                box=NormBox(box.x, box.y, box.w, box.h),
+                is_subject=box.is_subject,
+            )
+            for box in boxes
+        ),
         salience=None,
     )
 

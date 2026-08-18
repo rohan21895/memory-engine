@@ -39,6 +39,7 @@ _LIBRARY_PATHS = (
     _REPO_ROOT / "packages" / "media-db",
     _REPO_ROOT / "packages" / "ranking-engine",
     _REPO_ROOT / "packages" / "album-engine",
+    _REPO_ROOT / "packages" / "face-identity",
     _REPO_ROOT / "packages" / "story-engine",
     _REPO_ROOT / "packages" / "prompt-engine",
     # `workers/video-analysis` is on this list even though it is a worker rather

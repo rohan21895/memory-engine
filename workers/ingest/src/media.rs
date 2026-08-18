@@ -320,6 +320,11 @@ fn processing_pending() -> ProcessingState {
             classical_quality: None,
             image_embedding: None,
             face_detection: None,
+            // Added by contracts: the analysis stage records detection and
+            // embedding separately, so a detector that ran and an embedder
+            // that was missing leaves the library with face boxes rather
+            // than with neither. Ingest runs neither.
+            face_embedding: None,
             iqa: None,
             aesthetic: None,
             tagging: None,

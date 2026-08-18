@@ -218,6 +218,8 @@ def _load_stubs() -> tuple[Any, Any, Any]:
 EMBEDDING_MODEL = "siglip2-so400m-384"
 EMBEDDING_DIMENSIONS = 1152
 FACE_MODEL = "scrfd-10g-bnkps"
+FACE_EMBEDDING_MODEL = "arcface-buffalo-l"
+FACE_EMBEDDING_DIMENSIONS = 512
 
 
 def deterministic_embedding(proxy_id: str, dimensions: int) -> list[float]:
@@ -240,6 +242,28 @@ def deterministic_face_count(proxy_id: str) -> int:
     return int(proxy_id[0], 16) % 3
 
 
+def face_box(index: int) -> tuple[float, float, float, float]:
+    """Where this fake puts face `index`. Well clear of any trim zone."""
+    return (0.1 + 0.2 * index, 0.2, 0.12, 0.16)
+
+
+def face_landmarks(index: int) -> tuple[tuple[float, float], ...]:
+    """Five points inside `face_box(index)`, in insightface_5 order.
+
+    Order matters even in a fake: the pipeline refuses to send landmarks whose
+    scheme is not the one the embedder's template was built for, and a fake
+    that omitted the scheme would exercise the refusal instead of the path.
+    """
+    x, y, w, h = face_box(index)
+    return (
+        (x + 0.30 * w, y + 0.38 * h),  # left eye
+        (x + 0.70 * w, y + 0.38 * h),  # right eye
+        (x + 0.50 * w, y + 0.58 * h),  # nose
+        (x + 0.35 * w, y + 0.78 * h),  # left mouth corner
+        (x + 0.65 * w, y + 0.78 * h),  # right mouth corner
+    )
+
+
 class FakeMlRuntime:
     """A loopback MlRuntime host. Use as a context manager; `endpoint` is the target."""
 
@@ -247,18 +271,32 @@ class FakeMlRuntime:
         self,
         *,
         serving: bool = True,
-        models: tuple[str, ...] = (EMBEDDING_MODEL, FACE_MODEL),
+        models: tuple[str, ...] = (EMBEDDING_MODEL, FACE_MODEL, FACE_EMBEDDING_MODEL),
         unloadable: tuple[str, ...] = (),
         embedding_dimensions: int = EMBEDDING_DIMENSIONS,
+        face_embedding_dimensions: int = FACE_EMBEDDING_DIMENSIONS,
         fail_items: frozenset[str] = frozenset(),
+        face_boxes: Any = None,
+        landmark_scheme: str = "insightface_5",
+        emit_landmarks: bool = True,
     ) -> None:
         self._grpc, self._pb, self._pb_grpc = _load_stubs()
         self.serving = serving
         self.models = models
         self.unloadable = frozenset(unloadable)
         self.embedding_dimensions = embedding_dimensions
+        self.face_embedding_dimensions = face_embedding_dimensions
         self.fail_items = fail_items
+        # `face_boxes(proxy_id) -> sequence of (x, y, w, h)`, for tests that
+        # need a face somewhere specific -- in the trim zone, in the gutter.
+        self.face_boxes = face_boxes
+        self.landmark_scheme = landmark_scheme
+        # The real host drops a detection's keypoints when they fall outside
+        # the frame (`landmarks_out_of_range`), so "a face with no landmarks"
+        # is a real state and not a broken fake.
+        self.emit_landmarks = emit_landmarks
         self.infer_calls: list[tuple[str, int]] = []
+        self.face_embedding_requests: list[Any] = []
         self._server: Any = None
         self.endpoint = ""
 
@@ -286,8 +324,11 @@ class FakeMlRuntime:
                             pin=pb.ModelPin(model_id=name, version="test",
                                             weights_blake3="00" * 32,
                                             config_blake3="11" * 32),
-                            task="image_embedding" if name == EMBEDDING_MODEL
-                            else "face_detection",
+                            task={
+                                EMBEDDING_MODEL: "image_embedding",
+                                FACE_MODEL: "face_detection",
+                                FACE_EMBEDDING_MODEL: "face_embedding",
+                            }.get(name, "image_embedding"),
                             loadable=loadable,
                             unloadable_reason=(
                                 pb.UNLOADABLE_REASON_UNSPECIFIED if loadable
@@ -296,8 +337,8 @@ class FakeMlRuntime:
                             currently_loaded=loadable,
                             max_batch=32,
                             output_kind=(
-                                pb.OUTPUT_KIND_TENSORS if name == EMBEDDING_MODEL
-                                else pb.OUTPUT_KIND_DETECTIONS
+                                pb.OUTPUT_KIND_DETECTIONS if name == FACE_MODEL
+                                else pb.OUTPUT_KIND_TENSORS
                             ),
                         )
                     )
@@ -349,20 +390,108 @@ class FakeMlRuntime:
                                 ),
                             )
                         )
+                    elif request.model_id == FACE_EMBEDDING_MODEL:
+                        # A face embedder REFUSES an item it cannot align. The
+                        # real host does this in preprocess; reproducing it
+                        # here is what makes the pipeline's own guard testable
+                        # rather than merely present.
+                        if item.alignment != pb.ALIGNMENT_NEEDS_ALIGNMENT:
+                            results.append(
+                                pb.InferResult(
+                                    item_id=item.item_id,
+                                    error=pb.InferError(
+                                        code=pb.ERROR_CODE_INPUT_INVALID,
+                                        message="face model alignment cannot be skipped",
+                                        retryable=False,
+                                    ),
+                                )
+                            )
+                            continue
+                        if not item.landmarks:
+                            results.append(
+                                pb.InferResult(
+                                    item_id=item.item_id,
+                                    error=pb.InferError(
+                                        code=pb.ERROR_CODE_LANDMARKS_REQUIRED,
+                                        message="face landmarks are required",
+                                        retryable=False,
+                                    ),
+                                )
+                            )
+                            continue
+                        if item.landmark_scheme != pb.LANDMARK_SCHEME_INSIGHTFACE_5:
+                            results.append(
+                                pb.InferResult(
+                                    item_id=item.item_id,
+                                    error=pb.InferError(
+                                        code=pb.ERROR_CODE_INPUT_INVALID,
+                                        message=(
+                                            "landmark scheme does not match the "
+                                            "alignment template"
+                                        ),
+                                        retryable=False,
+                                    ),
+                                )
+                            )
+                            continue
+                        host.face_embedding_requests.append(item)
+                        # Keyed on the ITEM id (the face) rather than the proxy:
+                        # every face on one photo shares a proxy, and a fake
+                        # that keyed on it would hand the whole photo one
+                        # vector and make every face on it a perfect match.
+                        values = deterministic_embedding(
+                            item.item_id, host.face_embedding_dimensions
+                        )
+                        results.append(
+                            pb.InferResult(
+                                item_id=item.item_id,
+                                tensors=pb.TensorSet(
+                                    tensors=[
+                                        pb.Tensor(
+                                            shape=[len(values)],
+                                            dtype=pb.DTYPE_FLOAT32,
+                                            data=struct.pack(
+                                                f"<{len(values)}f", *values
+                                            ),
+                                        )
+                                    ]
+                                ),
+                            )
+                        )
                     else:
-                        count = deterministic_face_count(item.proxy_id)
+                        if host.face_boxes is not None:
+                            boxes = tuple(host.face_boxes(item.proxy_id))
+                        else:
+                            boxes = tuple(
+                                face_box(face)
+                                for face in range(
+                                    deterministic_face_count(item.proxy_id)
+                                )
+                            )
+                        scheme = getattr(
+                            pb, f"LANDMARK_SCHEME_{host.landmark_scheme.upper()}"
+                        )
                         detections = [
                             pb.Detection(
-                                box=pb.NormalizedBox(
-                                    x=0.1 + 0.2 * face,
-                                    y=0.2,
-                                    w=0.12,
-                                    h=0.16,
-                                ),
+                                box=pb.NormalizedBox(x=x, y=y, w=w, h=h),
                                 score=0.9 - 0.05 * face,
-                                landmark_scheme=pb.LANDMARK_SCHEME_INSIGHTFACE_5,
+                                landmarks=[
+                                    pb.Point2D(
+                                        x=x + dx * w,
+                                        y=y + dy * h,
+                                    )
+                                    for dx, dy in (
+                                        (0.30, 0.38),
+                                        (0.70, 0.38),
+                                        (0.50, 0.58),
+                                        (0.35, 0.78),
+                                        (0.65, 0.78),
+                                    )
+                                ] if host.emit_landmarks else [],
+                                landmarks_out_of_range=not host.emit_landmarks,
+                                landmark_scheme=scheme,
                             )
-                            for face in range(count)
+                            for face, (x, y, w, h) in enumerate(boxes)
                         ]
                         results.append(
                             pb.InferResult(

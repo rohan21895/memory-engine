@@ -143,13 +143,20 @@ class IdempotentRerun(unittest.TestCase):
         self.assertEqual({"added": 1, "changed": 0, "removed": 0},
                          {key: ingest.counts[key] for key in ("added", "changed", "removed")})
 
-        # One item per model, for the one new photo.
+        # One call per model for the one new photo, each carrying only what
+        # that photo needs: one image for the embedder and the detector, and
+        # one item per face it turned out to contain for the face embedder.
+        by_model = [model for model, _count in host.infer_calls]
         self.assertEqual(
-            [1] * len(host.infer_calls),
-            [count for _model, count in host.infer_calls],
-            f"expected single-item batches, got {host.infer_calls}",
+            ["siglip2-so400m-384", "scrfd-10g-bnkps", "arcface-buffalo-l"],
+            by_model,
+            f"expected one call per model, got {host.infer_calls}",
         )
-        self.assertEqual(2, len(host.infer_calls), "one embedding call, one face call")
+        for model, count in host.infer_calls:
+            if model != "arcface-buffalo-l":
+                self.assertEqual(
+                    1, count, f"{model} was sent more than the one new photo"
+                )
 
         after = self._library()
         self.assertEqual(len(before) + 1, len(after))
@@ -159,7 +166,8 @@ class IdempotentRerun(unittest.TestCase):
         # Nothing already analysed was analysed again.
         for media_id in before:
             record = self._record(media_id)
-            for step in ("classical_quality", "image_embedding", "face_detection"):
+            for step in ("classical_quality", "image_embedding", "face_detection",
+                         "face_embedding"):
                 self.assertEqual(
                     1, record["processing"]["stages"][step]["attempts"],
                     f"{step} was re-attempted on an untouched record",

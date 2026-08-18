@@ -3775,6 +3775,16 @@ class ProcessingStateStages(ContractModel):
 
     face_detection: StageState | None = Field(default=None)
 
+    # Aligning each detected face onto the recognition model's template and embedding
+    # it. Separate from `face_detection` because they fail and resume separately: a
+    # detector that ran and an embedder that was missing must leave the library with
+    # face BOXES -- which the print validator's trim-zone check needs and which have
+    # nothing to do with identity -- rather than with neither.
+    face_embedding: StageState | None = Field(
+        default=None,
+        description="Aligning each detected face onto the recognition model's template and embedding it. Separate from `face_detection` because they fail and resume separately: a detector that ran and an embedder that was missing must leave the library with ...",
+    )
+
     iqa: StageState | None = Field(default=None)
 
     aesthetic: StageState | None = Field(default=None)
