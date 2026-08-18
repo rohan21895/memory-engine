@@ -55,6 +55,7 @@ from support import (  # noqa: E402
     require_ingest_binary,
 )
 
+from memory_engine_pipeline.ids import blake3_hex  # noqa: E402
 from memory_engine_pipeline.runner import run_pipeline  # noqa: E402
 from memory_engine_pipeline.stages.base import Settings, StageStatus  # noqa: E402
 
@@ -283,6 +284,19 @@ class InterruptedIngestImport(unittest.TestCase):
         self.assertEqual(1, len(checkpoints))
         return json.loads(checkpoints[0].read_text(encoding="utf-8"))
 
+    def assert_worker_outputs_are_bound_to_artifacts(self, worker: dict) -> None:
+        output_ids = set()
+        for output in worker["outputs"]:
+            artifact = Path(output["path"]).read_bytes()
+            self.assertEqual(len(artifact), output["byte_size"])
+            self.assertEqual(blake3_hex(artifact), output["id"])
+            output_ids.add(output["id"])
+        self.assertEqual(PHOTOS, len(output_ids))
+        self.assertEqual(
+            output_ids,
+            set(worker["checkpoint"]["partial_output_ids"]),
+        )
+
     def test_completed_scan_stores_records_not_a_second_full_manifest(self):
         from memory_engine_media_db import Database
 
@@ -295,6 +309,7 @@ class InterruptedIngestImport(unittest.TestCase):
         worker = self._worker_checkpoint()
         self.assertEqual(PHOTOS, len(worker["outputs"]))
         self.assertEqual(PHOTOS, len(worker["checkpoint"]["partial_output_ids"]))
+        self.assert_worker_outputs_are_bound_to_artifacts(worker)
 
         with Database.open(self.workdir / "library.db") as database:
             self.assertEqual(PHOTOS, database.count_media())
@@ -332,6 +347,7 @@ class InterruptedIngestImport(unittest.TestCase):
         self.assertEqual("completed", checkpoint["state"]["status"])
         self.assertEqual(PHOTOS, len(checkpoint["outputs"]))
         self.assertEqual(PHOTOS, len(checkpoint["checkpoint"]["partial_output_ids"]))
+        self.assert_worker_outputs_are_bound_to_artifacts(checkpoint)
         self.assertTrue(
             all(Path(output["path"]).is_file() for output in checkpoint["outputs"]),
             "the retry manifest points at missing record artifacts",

@@ -30,7 +30,38 @@ from memory_engine_pipeline.jobstore import (  # noqa: E402
     build_job,
     validate_job,
 )
-from memory_engine_pipeline.stages.ingest import _scan_job_for_store  # noqa: E402
+from memory_engine_pipeline.stages.ingest import (  # noqa: E402
+    _scan_job_for_store,
+    _verified_media_record,
+)
+
+
+class IngestOutputIntegrity(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="mep-output-integrity-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_same_size_valid_json_corruption_is_not_a_verified_job_output(self):
+        path = self.root / "record.json"
+        original = json.dumps(
+            {"media_id": "ab" * 32, "label": "alpha"},
+            sort_keys=True,
+        ).encode("utf-8")
+        path.write_bytes(original)
+        output = {
+            "kind": "media_record",
+            "id": ids.blake3_hex(original),
+            "path": str(path),
+            "byte_size": len(original),
+        }
+        self.assertEqual("alpha", _verified_media_record(output)["label"])
+
+        changed = original.replace(b"alpha", b"omega")
+        self.assertEqual(len(original), len(changed))
+        self.assertIsInstance(json.loads(changed), dict)
+        path.write_bytes(changed)
+
+        self.assertIsNone(_verified_media_record(output))
 
 
 class SourceLocatorDigest(unittest.TestCase):

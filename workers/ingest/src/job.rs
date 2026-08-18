@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -43,6 +43,8 @@ pub enum JobExecutionError {
     Serialize(#[source] serde_json::Error),
     #[error("persisted media record could not be loaded; location redacted")]
     PersistedRecordUnreadable,
+    #[error("persisted media record does not match its JobOutput integrity metadata")]
+    PersistedRecordIntegrity,
     #[error(transparent)]
     Ingest(#[from] IngestError),
 }
@@ -131,6 +133,7 @@ pub fn execute_scan_batch(
     max_files: Option<usize>,
 ) -> Result<ScanReport, JobExecutionError> {
     validate_job(job)?;
+    validate_media_outputs(job)?;
     let mut report =
         retry_capability_blocked_outputs(job, output_dir, checkpoint_store, max_files)?;
     if job.state.status == JobStateStatus::Completed {
@@ -196,9 +199,16 @@ pub fn execute_scan_batch(
                 ) {
                     report.quarantined += 1;
                 }
-                let (record_path, artifact_bytes) = persist_record(&ingested.record, output_dir)?;
-                append_output(job, &ingested.record.media_id, &record_path, artifact_bytes);
-                update_partial_outputs(job, &ingested.record.media_id);
+                let (record_path, artifact_bytes, artifact_id) =
+                    persist_record(&ingested.record, output_dir)?;
+                upsert_output(
+                    job,
+                    &ingested.record.media_id,
+                    &record_path,
+                    artifact_bytes,
+                    &artifact_id,
+                );
+                update_partial_outputs(job, &artifact_id);
             }
             Err(error) => report.issues.push(ScanIssue {
                 code: memory_engine_contracts::JobErrorCode::FileUnreadable,
@@ -309,14 +319,16 @@ fn retry_capability_blocked_outputs(
         }
         // `persist_record` merges the on-disk `span` back in, so re-ingesting a record
         // that reconciliation had already made a span member does not drop membership.
-        let (persisted_path, artifact_bytes) = persist_record(&ingested.record, output_dir)?;
+        let (persisted_path, artifact_bytes, artifact_id) =
+            persist_record(&ingested.record, output_dir)?;
         upsert_output(
             job,
             &ingested.record.media_id,
             &persisted_path,
             artifact_bytes,
+            &artifact_id,
         );
-        update_partial_outputs(job, &ingested.record.media_id);
+        update_partial_outputs(job, &artifact_id);
         report.processed += 1;
         report.capability_retries += 1;
         checkpoint_store.save(job)?;
@@ -356,9 +368,9 @@ fn reconcile_gopro_outputs(
         }));
 
     for member in built.members {
-        let (path, artifact_bytes) = persist_record(&member, output_dir)?;
-        upsert_output(job, &member.media_id, &path, artifact_bytes);
-        update_partial_outputs(job, &member.media_id);
+        let (path, artifact_bytes, artifact_id) = persist_record(&member, output_dir)?;
+        upsert_output(job, &member.media_id, &path, artifact_bytes, &artifact_id);
+        update_partial_outputs(job, &artifact_id);
         report.span_members_updated += 1;
     }
     for desired in built.assemblies {
@@ -377,20 +389,21 @@ fn reconcile_gopro_outputs(
             serde_json::from_slice::<memory_engine_contracts::MediaRecord>(&bytes).ok()
         });
         let existed = existing.is_some();
-        let (path, artifact_bytes) = if existing.as_ref() == Some(&assembly) {
-            let bytes = fs::metadata(&path)
-                .map_err(JobExecutionError::Checkpoint)?
-                .len() as i64;
-            (path, bytes)
+        let (path, artifact_bytes, artifact_id) = if existing.as_ref() == Some(&assembly) {
+            let bytes = fs::read(&path).map_err(JobExecutionError::Checkpoint)?;
+            let byte_size = bytes.len() as i64;
+            let artifact_id = blake3::hash(&bytes).to_hex().to_string();
+            (path, byte_size, artifact_id)
         } else {
             persist_record(&assembly, output_dir)?
         };
-        let output_changed = upsert_output(job, &assembly.media_id, &path, artifact_bytes);
+        let output_changed =
+            upsert_output(job, &assembly.media_id, &path, artifact_bytes, &artifact_id);
         if !existed {
             report.assemblies_created += 1;
         }
         if !existed || output_changed || existing.as_ref() != Some(&assembly) {
-            update_partial_outputs(job, &assembly.media_id);
+            update_partial_outputs(job, &artifact_id);
         }
     }
     // Reconciliation writes are content-addressed and idempotent. One checkpoint
@@ -419,6 +432,61 @@ fn validate_job(job: &JobSpec) -> Result<(), JobExecutionError> {
     }
     if !job.checkpoint.as_ref().is_some_and(|state| state.resumable) {
         return Err(JobExecutionError::NotResumable);
+    }
+    Ok(())
+}
+
+/// Verify every persisted MediaRecord against the JobOutput contract.
+///
+/// Older ingest checkpoints used `MediaRecord.media_id` as the output id and
+/// therefore never authenticated the serialized record. They cannot be
+/// migrated safely: doing so would bless whatever bytes happen to occupy the
+/// old path. Any disagreement is corruption, not a cache hit, and must fail
+/// before a completed job is trusted or a cursor advances.
+fn validate_media_outputs(job: &JobSpec) -> Result<(), JobExecutionError> {
+    let mut artifact_ids = BTreeSet::new();
+    let mut media_ids = BTreeSet::new();
+
+    for output in job
+        .outputs
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|output| output.kind == JobOutputKind::MediaRecord)
+    {
+        let path = output
+            .path
+            .as_deref()
+            .ok_or(JobExecutionError::PersistedRecordIntegrity)?;
+        let bytes = fs::read(path).map_err(|_| JobExecutionError::PersistedRecordUnreadable)?;
+        if output.byte_size != Some(bytes.len() as i64) {
+            return Err(JobExecutionError::PersistedRecordIntegrity);
+        }
+        let record: memory_engine_contracts::MediaRecord = serde_json::from_slice(&bytes)
+            .map_err(|_| JobExecutionError::PersistedRecordUnreadable)?;
+        if !media_ids.insert(record.media_id.clone()) {
+            return Err(JobExecutionError::PersistedRecordIntegrity);
+        }
+        let artifact_id = blake3::hash(&bytes).to_hex().to_string();
+        if output.id != artifact_id {
+            return Err(JobExecutionError::PersistedRecordIntegrity);
+        }
+        if !artifact_ids.insert(artifact_id) {
+            return Err(JobExecutionError::PersistedRecordIntegrity);
+        }
+    }
+
+    if let Some(partial_ids) = job
+        .checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.partial_output_ids.as_ref())
+    {
+        let mut seen = BTreeSet::new();
+        for partial_id in partial_ids {
+            if !artifact_ids.contains(partial_id) || !seen.insert(partial_id.clone()) {
+                return Err(JobExecutionError::PersistedRecordIntegrity);
+            }
+        }
     }
     Ok(())
 }
@@ -511,7 +579,7 @@ fn update_progress(job: &mut JobSpec, units_done: usize, total: usize, bytes_pro
 fn persist_record(
     record: &memory_engine_contracts::MediaRecord,
     output_dir: &Path,
-) -> Result<(PathBuf, i64), JobExecutionError> {
+) -> Result<(PathBuf, i64, String), JobExecutionError> {
     let directory = output_dir
         .join("records")
         .join(&record.media_id[..2])
@@ -538,8 +606,9 @@ fn persist_record(
         }
     }
     let bytes = serde_json::to_vec_pretty(&merged).map_err(JobExecutionError::Serialize)?;
+    let artifact_id = blake3::hash(&bytes).to_hex().to_string();
     atomic_write(&path, &bytes)?;
-    Ok((path, bytes.len() as i64))
+    Ok((path, bytes.len() as i64, artifact_id))
 }
 
 fn record_path(output_dir: &Path, media_id: &str) -> PathBuf {
@@ -550,47 +619,64 @@ fn record_path(output_dir: &Path, media_id: &str) -> PathBuf {
         .join(format!("{media_id}.json"))
 }
 
-fn append_output(job: &mut JobSpec, media_id: &str, path: &Path, byte_size: i64) {
-    let outputs = job.outputs.get_or_insert_with(Vec::new);
-    if outputs.iter().any(|output| output.id == media_id) {
-        return;
-    }
-    outputs.push(JobOutput {
-        kind: JobOutputKind::MediaRecord,
-        id: media_id.to_owned(),
-        path: Some(path.to_string_lossy().into_owned()),
-        byte_size: Some(byte_size),
-        produced_at: Some(Utc::now().to_rfc3339()),
-    });
-}
-
 /// Point the `media_record` output for `media_id` at `path`, returning whether anything
 /// actually changed. Both the capability-retry and the span-reconciliation pass go
 /// through here, so it has to be a no-op when the record is already recorded identically
 /// — that is what keeps a repeat reconciliation from churning `produced_at`.
-fn upsert_output(job: &mut JobSpec, media_id: &str, path: &Path, byte_size: i64) -> bool {
+fn upsert_output(
+    job: &mut JobSpec,
+    media_id: &str,
+    path: &Path,
+    byte_size: i64,
+    artifact_id: &str,
+) -> bool {
+    let path = path.to_string_lossy().into_owned();
     let outputs = job.outputs.get_or_insert_with(Vec::new);
-    if let Some(output) = outputs
-        .iter_mut()
-        .find(|output| output.kind == JobOutputKind::MediaRecord && output.id == media_id)
-    {
-        let path = path.to_string_lossy().into_owned();
-        if output.path.as_deref() == Some(&path) && output.byte_size == Some(byte_size) {
+    if let Some(index) = outputs.iter_mut().position(|output| {
+        output.kind == JobOutputKind::MediaRecord
+            && (output.path.as_deref() == Some(path.as_str()) || output.id == media_id)
+    }) {
+        let old_id = outputs[index].id.clone();
+        if old_id == artifact_id
+            && outputs[index].path.as_deref() == Some(path.as_str())
+            && outputs[index].byte_size == Some(byte_size)
+        {
             return false;
         }
+        let output = &mut outputs[index];
+        output.id = artifact_id.to_owned();
         output.path = Some(path);
         output.byte_size = Some(byte_size);
         output.produced_at = Some(Utc::now().to_rfc3339());
+        replace_partial_output_id(job, &old_id, artifact_id);
         return true;
     }
     outputs.push(JobOutput {
         kind: JobOutputKind::MediaRecord,
-        id: media_id.to_owned(),
-        path: Some(path.to_string_lossy().into_owned()),
+        id: artifact_id.to_owned(),
+        path: Some(path),
         byte_size: Some(byte_size),
         produced_at: Some(Utc::now().to_rfc3339()),
     });
     true
+}
+
+fn replace_partial_output_id(job: &mut JobSpec, old_id: &str, new_id: &str) {
+    if old_id == new_id {
+        return;
+    }
+    let Some(ids) = job
+        .checkpoint
+        .as_mut()
+        .and_then(|checkpoint| checkpoint.partial_output_ids.as_mut())
+    else {
+        return;
+    };
+    for id in ids.iter_mut().filter(|id| id.as_str() == old_id) {
+        *id = new_id.to_owned();
+    }
+    ids.sort();
+    ids.dedup();
 }
 
 #[cfg(test)]
@@ -646,6 +732,127 @@ mod tests {
         assert!(second.complete);
         assert_eq!(job.state.status, JobStateStatus::Completed);
         assert_eq!(job.outputs.as_ref().map(Vec::len), Some(2));
+        let output_ids = job
+            .outputs
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                let bytes = fs::read(item.path.as_ref().unwrap()).expect("record artifact");
+                assert_eq!(item.byte_size, Some(bytes.len() as i64));
+                assert_eq!(item.id, blake3::hash(&bytes).to_hex().to_string());
+                item.id.clone()
+            })
+            .collect::<BTreeSet<_>>();
+        let partial_ids = job
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.partial_output_ids.as_ref())
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(partial_ids, output_ids);
+    }
+
+    #[test]
+    fn completed_scan_rejects_same_size_valid_json_record_corruption() {
+        let directory = tempdir().expect("tempdir");
+        let source = directory.path().join("source");
+        let output = directory.path().join("output");
+        fs::create_dir(&source).expect("source directory");
+        fs::write(source.join("a.jpg"), []).expect("hostile fixture");
+        let locator = source_locator_digest(std::slice::from_ref(&source)).expect("locator digest");
+        let mut job: JobSpec = serde_json::from_value(json!({
+            "schema_version": "v0",
+            "job_id": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac",
+            "job_type": "scan_source",
+            "inputs": {
+                "media_ids": [],
+                "source_paths": [source],
+                "source_locator_digest": locator
+            },
+            "params": {"follow_symlinks": false, "include_hidden": false, "max_depth": 32},
+            "params_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "scope": "library:integrity-test",
+            "egress": {"requires_egress": false},
+            "state": {"status": "pending", "attempts": 0},
+            "checkpoint": {"resumable": true, "cursor": null, "checkpoint_version": 1}
+        }))
+        .expect("job contract");
+        let store = CheckpointStore::new(directory.path().join("checkpoint.json"));
+        execute_scan(&mut job, &output, &store).expect("initial scan");
+        let record_path = PathBuf::from(
+            job.outputs.as_ref().unwrap()[0]
+                .path
+                .as_ref()
+                .expect("record path"),
+        );
+        let bytes = fs::read(&record_path).expect("record bytes");
+        let text = String::from_utf8(bytes).expect("record JSON is UTF-8");
+        let original: memory_engine_contracts::MediaRecord =
+            serde_json::from_str(&text).expect("original MediaRecord JSON");
+        assert!(
+            text.contains("a.jpg"),
+            "fixture path is present in the record"
+        );
+        let changed = text.replacen("a.jpg", "z.jpg", 1);
+        assert_eq!(changed.len(), text.len(), "mutation preserves byte size");
+        let parsed: memory_engine_contracts::MediaRecord =
+            serde_json::from_str(&changed).expect("mutation remains valid MediaRecord JSON");
+        assert_eq!(parsed.media_id, original.media_id);
+        fs::write(&record_path, changed).expect("replace record with same-size valid JSON");
+
+        let error = execute_scan(&mut job, &output, &store).expect_err("corruption must fail");
+        assert!(matches!(error, JobExecutionError::PersistedRecordIntegrity));
+        assert_eq!(job.state.status, JobStateStatus::Completed);
+    }
+
+    #[test]
+    fn legacy_media_ids_are_rejected_before_completed_reuse() {
+        let directory = tempdir().expect("tempdir");
+        let source = directory.path().join("source");
+        let output = directory.path().join("output");
+        fs::create_dir(&source).expect("source directory");
+        ImageBuffer::from_pixel(8, 8, Rgb([9_u8, 8, 7]))
+            .save(source.join("legacy.jpg"))
+            .expect("fixture image");
+        let locator = source_locator_digest(std::slice::from_ref(&source)).expect("locator digest");
+        let mut job: JobSpec = serde_json::from_value(json!({
+            "schema_version": "v0",
+            "job_id": "adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad",
+            "job_type": "scan_source",
+            "inputs": {
+                "media_ids": [],
+                "source_paths": [source],
+                "source_locator_digest": locator
+            },
+            "params": {"follow_symlinks": false, "include_hidden": false, "max_depth": 32},
+            "params_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "scope": "library:legacy-output-id-test",
+            "egress": {"requires_egress": false},
+            "state": {"status": "pending", "attempts": 0},
+            "checkpoint": {"resumable": true, "cursor": null, "checkpoint_version": 1}
+        }))
+        .expect("job contract");
+        let store = CheckpointStore::new(directory.path().join("checkpoint.json"));
+        execute_scan(&mut job, &output, &store).expect("initial scan");
+        let output_path = PathBuf::from(job.outputs.as_ref().unwrap()[0].path.as_ref().unwrap());
+        let bytes = fs::read(&output_path).expect("record bytes");
+        let record: memory_engine_contracts::MediaRecord =
+            serde_json::from_slice(&bytes).expect("MediaRecord");
+        let artifact_id = blake3::hash(&bytes).to_hex().to_string();
+        assert_ne!(record.media_id, artifact_id);
+
+        job.outputs.as_mut().unwrap()[0].id = record.media_id.clone();
+        job.checkpoint.as_mut().unwrap().partial_output_ids = Some(Vec::new());
+        store.save(&job).expect("persist legacy checkpoint shape");
+
+        let error = execute_scan(&mut job, &output, &store)
+            .expect_err("an unauthenticated legacy artifact must not be blessed");
+        assert!(matches!(error, JobExecutionError::PersistedRecordIntegrity));
+        assert_eq!(job.outputs.as_ref().unwrap()[0].id, record.media_id);
+        assert_ne!(job.outputs.as_ref().unwrap()[0].id, artifact_id);
     }
 
     #[test]
@@ -854,7 +1061,7 @@ mod tests {
 
         assert!(matches!(
             replay,
-            Err(JobExecutionError::PersistedRecordUnreadable)
+            Err(JobExecutionError::PersistedRecordIntegrity)
         ));
         assert_eq!(job.state.status, JobStateStatus::Completed);
     }
@@ -923,7 +1130,8 @@ mod tests {
         record.proxies = Some(Vec::new());
         record.image = None;
         record.perceptual = None;
-        let (record_path, record_bytes) = persist_record(&record, &output).expect("legacy record");
+        let (record_path, record_bytes, record_artifact_id) =
+            persist_record(&record, &output).expect("legacy record");
         let locator = source_locator_digest(std::slice::from_ref(&source)).expect("locator digest");
         let mut job: JobSpec = serde_json::from_value(json!({
             "schema_version": "v0",
@@ -942,7 +1150,7 @@ mod tests {
             "checkpoint": {"resumable": true, "cursor": null, "checkpoint_version": 1},
             "outputs": [{
                 "kind": "media_record",
-                "id": record.media_id,
+                "id": record_artifact_id,
                 "path": record_path,
                 "byte_size": record_bytes
             }]
@@ -1042,10 +1250,11 @@ mod tests {
                 record.image = None;
                 record.perceptual = None;
             }
-            let (record_path, record_bytes) = persist_record(&record, &output).expect("persist");
+            let (record_path, record_bytes, record_artifact_id) =
+                persist_record(&record, &output).expect("persist");
             outputs.push(json!({
                 "kind": "media_record",
-                "id": record.media_id,
+                "id": record_artifact_id,
                 "path": record_path,
                 "byte_size": record_bytes
             }));
@@ -1165,7 +1374,7 @@ mod tests {
         persist_record(&member, &output).expect("persist member");
 
         // A capability retry re-persists the from-scratch record over it.
-        let (path, _) = persist_record(&fresh, &output).expect("persist retry result");
+        let (path, _, _) = persist_record(&fresh, &output).expect("persist retry result");
         let reloaded: memory_engine_contracts::MediaRecord =
             serde_json::from_slice(&fs::read(&path).expect("read")).expect("MediaRecord");
 
