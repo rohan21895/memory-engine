@@ -11,7 +11,11 @@
 #                          "pillow>=10.0" "numpy>=1.26" opencv-python-headless \
 #                          grpcio onnxruntime -e ./workers/ml-runtime
 set -o pipefail
-cd /Users/rohantomar/Documents/Photeo/memory-engine || exit 1
+# Resolve the repository root from this script's own location rather than
+# hardcoding it. The original held one developer's absolute path, which both
+# leaked a home directory into a public repo and made the script useless to
+# anyone else who cloned it.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit 1
 find . -name __pycache__ -type d -not -path './.git/*' -exec rm -rf {} + 2>/dev/null
 fail=0
 run() { printf "%-24s " "$1"; shift; if out=$("$@" 2>&1); then echo "pass"; else echo "FAIL"; echo "$out" | tail -25; fail=1; fi; }
