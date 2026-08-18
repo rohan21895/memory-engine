@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 memory-engine-pipeline = "memory_engine_pipeline.cli:main"
+memory-engine-scale = "memory_engine_pipeline.scale_harness:main"
 
 [tool.setuptools.packages.find]
 include = ["memory_engine_pipeline*"]

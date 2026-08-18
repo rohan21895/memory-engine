@@ -60,6 +60,32 @@ Exit codes are the contract with a caller:
   analysed none of them exits 1.
 * **2** — something failed.
 
+## Phase 1 scale harness
+
+`memory-engine-scale` creates deterministic synthetic media in a scratch root
+and measures the real scan-ingest, media-db, dedupe and search APIs at clean,
+increasing library sizes. It never needs a photo from the user's library.
+
+```bash
+cd workers/ingest && cargo build --release && cd ../..
+PYTHONPATH=services/pipeline python3 -m memory_engine_pipeline.scale_harness \
+  --root /tmp/memory-engine-scale \
+  --steps 1000,5000,10000,25000,50000,100000
+```
+
+The durable `scale-report.json` records wall throughput, sampled peak RSS,
+stage counts, search results and the machine shape. Its initial state is
+`incomplete` with exit code 1, so killing the process cannot leave a passing
+report. Re-run the identical command after a kill: generated files are checked
+and reused, and the ingest worker resumes from its own cursor. For a fast,
+controlled resume exercise, add `--generation-budget 100`; that invocation
+stops with exit 1 after 100 new files, and the same command without the budget
+continues it.
+
+The synthetic MP4s intentionally contain ISO-BMFF boxes but no playable track.
+This harness measures large-library scan/catalogue/dedupe behavior; it does not
+claim to measure hardware proxy throughput, and says so in every report.
+
 ## The five stage outcomes
 
 A stage that could not run must not report what a stage that succeeded reports,
