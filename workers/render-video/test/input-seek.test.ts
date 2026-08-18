@@ -66,20 +66,28 @@ async function makeH264(
 
 async function makeDeceptiveVfr(name: string): Promise<EncodedSource> {
   const path = join(fixtureDirectory, name);
+  const staged = join(fixtureDirectory, `staged-${name}`);
   const frames = 600;
   // Across the full file both reported rates are exactly 30/1 and the time base
-  // admits an integral 3000 ticks/frame. Individual packets are nevertheless VFR:
-  // the paired timestamps become 1/5999-tick steps, with a compensating last gap.
+  // admits an integral 3000 ticks/frame. Individual packets are nevertheless VFR.
+  // Encode one sentinel frame so packet 599 receives an explicit duration, then
+  // copy only the first 600 packets. That keeps the 20-second average portable
+  // across ffprobe versions that differ in how they infer a final packet duration.
   await run(TOOLS.ffmpeg, [
     "-nostdin", "-hide_banner", "-nostats",
-    "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=20",
-    "-vf", "settb=expr=1/90000,setpts=if(eq(N\\,599)\\,1800000\\,floor(N/2)*6000)",
+    "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=21",
+    "-vf", "settb=expr=1/90000,setpts=if(eq(N\\,599)\\,1797000\\,if(eq(N\\,600)\\,1800000\\,floor(N/2)*6000))",
     "-fps_mode", "passthrough",
     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
     "-profile:v", "high", "-flags:v", "+cgop",
     "-g", "120", "-keyint_min", "120", "-sc_threshold", "0",
     "-pix_fmt", "yuv420p", "-video_track_timescale", "90000",
-    "-map_metadata", "-1", "-frames:v", String(frames), "-y", path,
+    "-map_metadata", "-1", "-frames:v", String(frames + 1), "-y", staged,
+  ]);
+  await run(TOOLS.ffmpeg, [
+    "-nostdin", "-hide_banner", "-nostats", "-i", staged,
+    "-map", "0:v:0", "-c", "copy", "-frames:v", String(frames),
+    "-map_metadata", "-1", "-y", path,
   ]);
   return { path, mediaId: await digestFile(path), frames, rate: RATE_30 };
 }
