@@ -220,7 +220,7 @@ to detect.
 | `yunet-2023mar` | fetched | 232,589 | `3d5938c4cd5a02dc416f1cd1f7fc1f662a22adc370477112c871954587e63431` |
 | `scrfd-10g-bnkps` | fetched (`det_10g.onnx` from `buffalo_l.zip`) | 16,923,827 | `fa3e5d8c62722a7b7122dc185245236589dcf0b3b5c9c5561cc742ce356fba56` |
 | `arcface-buffalo-l` | fetched (`w600k_r50.onnx` from `buffalo_l.zip`) | 174,383,860 | `c9cc033a308d5cbe0006b8f2d695f13fe716c985cc4b676ad5c0a20a497a07cc` |
-| `siglip2-so400m-384` | **unavailable** | — | — |
+| `siglip2-so400m-384` | **unavailable** (built ourselves on 2026-08-18 — see below) | — | — |
 | `transnetv2` | **unavailable** | — | — |
 | 4 placeholders | skipped | — | — |
 
@@ -244,17 +244,9 @@ branch are still `blake3: null`.
 
 ### What is not reachable, and why
 
-- **`siglip2-so400m-384`** — `google/siglip2-so400m-patch14-384` publishes
-  safetensors only. There is no ONNX vision export at the declared source, so
-  the entry reports unavailable rather than the fetcher saving a web page as a
-  model. The repository is **not gated** (`gated: false` from the HF API on
-  2026-08-17), so a token is not the obstacle. The two real options — export the
-  vision tower ourselves, or adopt `onnx-community/siglip2-so400m-patch14-384-ONNX`
-  — both change the config: that conversion exposes `last_hidden_state` /
-  `pooler_output` where our config binds `image_embeds`, and its fp32 tower is
-  1.7 GB against our declared fp16. That is an eval-harness decision, not a URL
-  edit. **This blocks the whole search/dedupe/diversity path**, which is the
-  highest-leverage model in the stack.
+- **`siglip2-so400m-384`** — RESOLVED 2026-08-18 by exporting it ourselves. See
+  *The SigLIP 2 conversion* below. It is no longer reported unavailable; it is
+  reported `CONVERTIBLE`, with the command that produces it.
 - **`transnetv2`** — ships a TensorFlow SavedModel and a PyTorch conversion
   *script* with no checkpoint, and has no GitHub releases. Nothing named
   `transnetv2.onnx` exists to fetch; we must export and pin our own.
@@ -304,6 +296,186 @@ Measured, not read off the graph.
 
 ---
 
+## The SigLIP 2 conversion — issue #79, done 2026-08-18
+
+`google/siglip2-so400m-patch14-384` publishes safetensors and nothing else, so
+`siglip2-so400m-patch14-384-vision.onnx` existed on no server anywhere and no
+`source_url` edit could have made one appear. Until this was resolved the
+fetcher reported the entry unavailable, analysis reported
+`siglip2-so400m-384 (weights_missing)`, and album planning and render-print
+refused. **Every album rendered before this date used the test suite's stand-in
+embedder**: the chain from AlbumSpec to paper was proven, the taste of what went
+on the page was not.
+
+### Why our own export rather than the community one
+
+`onnx-community/siglip2-so400m-patch14-384-ONNX` exists and would have been
+cheaper. It was rejected because its graph exposes `last_hidden_state` and
+`pooler_output` where our config binds `image_embeds`, so adopting it means
+rewriting the config to match somebody else's export decisions — and this
+repository has twice shipped a config bound to an output name that was not in
+the graph (issue #36 for SCRFD; ArcFace in #69, above on this page). A
+conversion we perform is one whose output names we choose, whose precision we
+choose, and whose input we can pin.
+
+### How it is reproduced
+
+    python3 scripts/models/export_siglip2_vision_onnx.py --parity
+
+The script is `scripts/models/export_siglip2_vision_onnx.py` and the recipe is
+recorded in the config's `weights.conversion` block, so it survives this
+document. It:
+
+1. downloads `model.safetensors` at revision
+   `e8e487298228002f3d8a82e0cd5c8ea9c567f57f` and **refuses to continue unless
+   its SHA-256 is `9f4f4a49f908ef0c979bce8ff5a5c0e88882dc6c5dc4304387cbbd152558e2c2`**
+   (4,544,143,072 bytes) — the same digest Hugging Face's LFS pointer states, so
+   it is checked against the source's own record and not only against ourselves;
+2. exports the **vision tower only**, naming the output `image_embeds` at export
+   time — which is upstream's own name for this tensor, since
+   `SiglipModel.forward` computes `image_embeds = vision_outputs.pooler_output`.
+   The text tower is left out because nothing at inference reads text
+   embeddings today. The caveat, stated rather than buried: the entry lists
+   `zero_shot_tags` in `required_for` and that path *would* need it. Nothing
+   implements it yet, and when it lands the text tower is a second artifact
+   with its own digest, not a wider version of this one;
+3. reads the config for every binding it must satisfy rather than restating
+   them, so a script that agreed with itself while disagreeing with the config
+   is not possible;
+4. verifies the result and installs it only if every check passes.
+
+**Byte-identical re-export is not claimed.** PyTorch 2.9.1 and 2.13.0 produce
+files of different sizes from the same weights, and even renaming the wrapper
+module changes the graph's node names and therefore its bytes. What reproduces
+is the input (pinned by digest) and the procedure (in the repository). This
+artifact was built with torch 2.13.0 (TorchScript exporter, `dynamo=False`),
+transformers 5.15.0, ONNX opset 17, on macOS arm64.
+
+### What was measured, by execution
+
+| measurement | result |
+|---|---|
+| graph input | `pixel_values`, `tensor(float)`, `['batch', 3, 384, 384]` |
+| graph output | `image_embeds`, `tensor(float)`, `['batch', 1152]` — the name the config binds, read back off the real graph with onnxruntime |
+| initializer dtypes | 448 tensors, **all float16** |
+| artifact | 856,897,226 bytes, BLAKE3 `e4d1e5d0b294c25bb02cefc560326a6c9d9caaf4fce156ba80a0a3fabf4e2df7` — **measured, NOT pinned** |
+| fp16 vs the fp32 PyTorch reference | cosine **0.99999765**, max abs diff 0.02145 on values averaging 0.30522 |
+| batch of 8 | `(8, 1152)`; row 0 matches the same image run alone to cosine 1.0000000; a mirrored row differs at 0.9969 |
+| `--verify` on the CI interpreter | passes on system python3 with onnxruntime 1.28.0 — no PyTorch needed to re-check |
+
+**The check that makes it more than a plausible file.** Numerical parity proves
+the ONNX matches the safetensors; the SHA-256 pin proves the safetensors are
+Google's. Semantics were then checked directly: the ONNX embedding of
+`apps/desktop/src/assets/onboarding-memory-table.jpg` — the only real photograph
+committed to this repository — was scored against the *PyTorch* text tower.
+
+| sigmoid probability | caption |
+|---|---|
+| 0.9955 | a photo of hands looking through an old photo album on a wooden table |
+| 0.9432 | an elderly woman turning the pages of a photo album |
+| 0.0702 | printed photographs scattered on a table |
+| 0.0000 | a screenshot of a spreadsheet |
+| 0.0000 | a close-up of a circuit board |
+| 0.0000 | a plate of sushi |
+| 0.0000 | a snow-covered mountain range |
+| 0.0000 | a dog running on a beach |
+
+That is the check a synthetic fixture cannot give: a randomly initialised
+network also returns different numbers for different inputs, and would score
+these captions identically. It also confirms colour order, layout and
+normalisation, because getting any of them wrong destroys the ranking.
+
+### Precision: fp16, and the measurement behind it
+
+The config declares fp16 and the graph honours it — 857MB against 1.71GB for
+the same tower in fp32. The obvious worry is that fp16 costs speed on an
+ONNX Runtime CPU provider that has to cast around missing kernels, so it was
+measured rather than assumed. On this laptop, batch of 8, CPU provider:
+
+| graph | per image |
+|---|---|
+| fp16 (shipped) | 2.69s |
+| fp32 | 2.45s |
+
+Half the disk for ~10% of the compute. The graph's **input and output are
+float32**: `weights.quantization` describes the stored weights, preprocessing
+produces float32 and the vector store holds float32, so an fp16 boundary would
+add a lossy cast on each side for nothing.
+
+`onnxconverter_common.float16.convert_float_to_float16(keep_io_types=True)` was
+tried first and produced a graph ONNX Runtime refuses to load — it leaves the
+patch-embedding `Conv` with a float32 input and float16 weights. The cast is
+therefore expressed in the exported module instead. Recorded because that tool's
+failure was loud here and need not be next time.
+
+### Two things this made visible, and both are real
+
+1. **The interpolation in our config was wrong.** It said `bicubic`; the
+   publisher's `preprocessor_config.json` says `resample: 2`, which is PIL
+   BILINEAR. Corrected. Nothing would ever have raised — a bicubic-resized
+   tensor is a perfectly valid tensor — and on the photograph above the two
+   resamplings produce embeddings **cosine 0.995721 apart**, which is inside
+   the range near-duplicate decisions are made in.
+
+   A larger residual remains and is *not* fixed here: `workers/ml-runtime`
+   resizes with `cv2`, and OpenCV does not antialias on downscale where PIL
+   does. Measured on the same photograph (1600×842 → 384×384), against the
+   publisher's own pipeline:
+
+   | host resize | cosine vs PIL BILINEAR |
+   |---|---|
+   | `cv2.INTER_LINEAR` (what the corrected config selects) | 0.969841 |
+   | `cv2.INTER_CUBIC` (what it selected before) | 0.957858 |
+   | `cv2.INTER_AREA` | 0.996222 |
+
+   So the config fix is an improvement and not a cure: the host still does not
+   see the tensor the model was trained on. Fixing the rest means changing how
+   `workers/ml-runtime` resizes — Codex's territory — and it is left undone
+   here rather than done quietly. `cv2.INTER_AREA` is the obvious candidate for
+   downscale, and these numbers are the evidence that change would start from.
+
+2. **The pipeline's inference deadline could not accommodate a large model.**
+   `MlRuntimeClient` used one fixed budget per request no matter how many items
+   the request carried, which was survivable while the biggest real checkpoint
+   was 174MB. At ~2.5s per image, a batch of 32 needs ~85s against a fixed 60s,
+   and the first analysis pass with real SigLIP weights died at the transport
+   with `DEADLINE_EXCEEDED` — every time, on every record. The deadline now
+   scales with the batch.
+
+### What the end-to-end demo did afterwards
+
+`scripts/demo/run_demo.py` over a 200-still / 10-clip synthetic library, against
+a real `workers/ml-runtime` host serving all four installed checkpoints:
+
+```
+ok analysis   analysis complete  embedded=201 embedding_failed=0
+                                 faces_scanned=201 faces_found=0 still_pending=0
+ok ranking    ranking complete   embeddings_loaded=86 scored=201
+                                 duplicate_groups=3 duplicates=11
+ok album      album planned and validated  candidates=71 pages=26 selected=24
+```
+
+**Album planning now runs on real SigLIP 2 embeddings.** Before this it did not
+run at all. Two of those numbers deserve reading rather than ticking:
+
+- `duplicate_groups` went from 2 to 3 and `duplicates` from 9 to 11 once the
+  embedding refinement pass had vectors to read. pHash alone found two bursts;
+  the embeddings found a third grouping. That is the near-duplicate refinement
+  path executing for the first time on real features.
+- **`faces_found=0`, and that is not a regression.** Every earlier run that
+  reported faces used the test suite's stand-in host. Real SCRFD, at the 0.60
+  score floor, finds nothing in a library whose "faces" are an oval with two
+  ellipses and an arc. The face gate in the album therefore ran on an empty set.
+  Nothing about face detection is proven by this run, and `make_library.py`
+  already says its cartoons prove plumbing and not detection.
+
+This establishes that the embedding path executes end to end. It establishes
+**nothing about retrieval or aesthetic quality** — the library is synthetic, and
+those numbers have to come from `packages/eval-harness/` against a consented
+benchmark library.
+
+---
+
 ## Decision: the face stack, taken 2026-08-16
 
 **Selected: SCRFD (detection) + ArcFace `buffalo_l` (recognition), InsightFace.**
@@ -347,4 +519,5 @@ precision-first design was for.
 3. **Decide the music licensing model** — catalogue deal, CC library, or generated score. Build plan §6 calls this a Phase 0 decision because it shapes the beat-sync design, and `MusicCue.license.cleared_for` already refuses to let a cut be shared under a licence that does not cover the destination.
 4. **Fill the `Verified` column.** It is `no` everywhere. Nothing in this table has been checked by a human, and this document is only worth what that column says.
 5. **Paste the three measured digests into their configs** (see *Getting the weights*), or decide not to and say why. Until then `scripts/models/fetch_weights.py` exits 3 and the release gate refuses all three with `HASH_UNPINNED`: a fresh clone gets whatever those URLs serve on the day, which is better than nothing on disk but is not reproducibility.
-6. **Get a SigLIP 2 artifact.** Export the vision tower ourselves or adopt the community ONNX conversion — either way the config's `outputs` and `quantization` need revisiting and an eval run. Nothing in search, dedupe refinement, diversity or zero-shot tagging can run until this exists.
+6. ~~**Get a SigLIP 2 artifact.**~~ Done 2026-08-18 — the vision tower is exported by `scripts/models/export_siglip2_vision_onnx.py` and verified against the config on the real graph. What remains from it: **paste its digest** (item 5 covers this), and **run an eval**. Nothing here establishes retrieval or aesthetic quality — only that the embedding is the one Google's weights produce.
+7. **Make `workers/ml-runtime` resize the way the publisher does.** OpenCV does not antialias on downscale; PIL does. The gap is a cosine of 0.9698 between the tensor the host builds and the tensor the model was trained on, measured above — larger than the config error it was hiding behind. Codex's territory.

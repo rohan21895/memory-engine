@@ -45,6 +45,22 @@ a real one. Entries whose declared source publishes no artifact in the declared
 format are reported UNAVAILABLE with the reason, which is the honest state: a
 provenance link, not a download.
 
+ARTIFACTS WE BUILD RATHER THAN FETCH
+
+Some models are published in a format nothing can load and no conversion is
+distributed. SigLIP 2 is one (issue #79): Google ships safetensors, so no URL
+anywhere serves the ONNX vision tower this registry names. Such an entry
+carries `weights.conversion` -- the exact input file at an immutable revision,
+its SHA-256, and the script in this repository that builds the artifact -- and
+is reported CONVERTIBLE with the command to run.
+
+CONVERTIBLE is separate from UNAVAILABLE because the two need different actions
+from the operator: UNAVAILABLE means nothing can be done from here, and
+CONVERTIBLE means run one command. It shares UNAVAILABLE's exit code, because
+in both cases the model is not on disk. `conversion.input_url` is never
+downloaded by this script: it is the conversion's INPUT, and fetching it would
+install 4.5GB of safetensors under a name ending in `.onnx`.
+
 GATED REPOSITORIES
 
 Hugging Face requests carry `Authorization: Bearer $HF_TOKEN` (or
@@ -59,11 +75,14 @@ EXIT CODES -- ALL DISTINCT, BECAUSE A SKIP IS NOT A PASS
 
   0  SUCCESS       every model in scope is installed and verified against its pin
   3  PARTIAL       nothing is broken, but something is missing: a model was
-                   fetched-but-unpinned, or was unavailable (no artifact URL,
-                   gated, network refusal). Work remains.
+                   fetched-but-unpinned, was unavailable (no artifact URL,
+                   gated, network refusal), or is convertible-but-not-yet-built.
+                   Work remains.
   4  FAILURE       a pin mismatched, a download was not the artifact it claimed
-                   to be, an archive member was absent, or the run accomplished
-                   nothing at all (empty scope, or everything unavailable).
+                   to be, an archive member was absent, a conversion recipe
+                   named a script that is not in the checkout, or the run
+                   accomplished nothing at all (empty scope, or nothing in
+                   scope was obtainable without further work).
   5  PRECONDITION  the script could not run: blake3 missing, registry unreadable.
 
 Fetched-but-unpinned is PARTIAL and never SUCCESS on purpose. An unpinned model
@@ -153,6 +172,13 @@ ONNX_LEADING_TAGS = frozenset({0x08, 0x12, 0x1A, 0x22, 0x28, 0x32, 0x3A, 0x42})
 VERIFIED = "VERIFIED"
 NEEDS_PIN = "NEEDS_PIN"
 UNAVAILABLE = "UNAVAILABLE"
+# Distinct from UNAVAILABLE on purpose. UNAVAILABLE means nobody publishes this
+# and there is nothing you can do from here. CONVERTIBLE means no publisher
+# ships it either, and this repository builds it -- the config carries the
+# input, the digest of that input, and the script. Reporting the two the same
+# way is how issue #79 stayed open reading "no artifact URL" while a documented
+# way to produce the file existed. Same exit code; different instruction.
+CONVERTIBLE = "CONVERTIBLE"
 FAILED = "FAILED"
 SKIPPED = "SKIPPED"
 
@@ -191,6 +217,13 @@ class Plan:
     pinned_hash: str | None
     rollout_state: str
     install_path: Path
+    conversion: dict | None = None
+    """weights.conversion, when this artifact is one we build rather than fetch.
+
+    Its presence stops the fetch outright: `conversion.input_url` is the
+    conversion's INPUT, and downloading it here would install a 4.5GB
+    safetensors under a name ending in `.onnx`.
+    """
 
 
 @dataclass
@@ -307,6 +340,11 @@ def build_plans(
                 ),
                 rollout_state=state,
                 install_path=weights_dir / filename,
+                conversion=(
+                    dict(weights["conversion"])
+                    if isinstance(weights.get("conversion"), dict)
+                    else None
+                ),
             )
         )
     return plans, skipped
@@ -727,6 +765,37 @@ def fetch_one(
             )
         return result
 
+    # Before any URL reasoning: an artifact this repository BUILDS is not one
+    # this script fetches, and `conversion.input_url` must never be mistaken
+    # for the artifact. Checked ahead of `--force` too -- forcing a re-download
+    # of something that was never downloaded has no meaning.
+    if plan.conversion is not None:
+        script = str(plan.conversion.get("script") or "<script unrecorded>")
+        result.state = CONVERTIBLE
+        result.detail = (
+            "no publisher ships this artifact; this repository builds it. "
+            f"Run: python3 {script}"
+        )
+        if (REPO_ROOT / script).is_file():
+            result.notes.append(
+                "input: "
+                + str(plan.conversion.get("input_url") or "<unrecorded>")
+                + " (sha256 "
+                + str(plan.conversion.get("input_sha256") or "<unrecorded>")[:16]
+                + "...), which the script checks before it builds anything"
+            )
+        else:
+            # A conversion recipe pointing at a script that is not here is a
+            # claim of reproducibility that is no longer true, and it should
+            # be as loud as a bad download.
+            result.state = FAILED
+            result.detail = (
+                f"weights.conversion names {script}, which does not exist in "
+                "this checkout. The artifact cannot be reproduced from what the "
+                "config describes."
+            )
+        return result
+
     url = artifact_url(plan.source_url)
     if url is None:
         result.state = UNAVAILABLE
@@ -833,6 +902,11 @@ def report(results: list[Result], *, stream=sys.stdout) -> None:
         print(f"{result.model_id.ljust(width)}  {result.state:<12} {result.detail}", file=stream)
         if result.corroboration:
             print(f"{' ' * width}  {'':<12} corroboration: {result.corroboration}", file=stream)
+        # `notes` carried nothing to the operator until CONVERTIBLE needed to
+        # say where the conversion input comes from. A field a report never
+        # printed is a field that could hold anything.
+        for note in result.notes:
+            print(f"{' ' * width}  {'':<12} {note}", file=stream)
         if result.digest:
             print(
                 f"{' ' * width}  {'':<12} blake3 {result.digest}  ({result.byte_size} bytes)",

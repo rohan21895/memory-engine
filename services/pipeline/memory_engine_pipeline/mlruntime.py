@@ -384,12 +384,36 @@ class MlRuntimeClient:
     absent data.
     """
 
+    # Seconds of deadline granted per ITEM in a batch, on top of the fixed
+    # budget. Issue #79 exposed why a fixed deadline was wrong: it was set when
+    # every real checkpoint in the stack was small -- YuNet is 232KB -- and the
+    # first genuinely large model made the pipeline unrunnable rather than
+    # slow. SigLIP 2 so400m is 428M parameters and measures ~2.5s per 384px
+    # image on this laptop's CPU, so a batch of 32 needs ~85s against a fixed
+    # 60s and every analysis pass died at the transport with DEADLINE_EXCEEDED.
+    #
+    # 20s per item is deliberately several times the measured cost: the point
+    # of the deadline is to notice a host that has stopped answering, not to
+    # police throughput, and a machine slower than this one must still finish.
+    # A hung host on a full batch is now detected in minutes rather than
+    # seconds, which is the price of the model being large.
+    PER_ITEM_DEADLINE_S = 20.0
+
     def __init__(self, endpoint: str | None = None, *, timeout_s: float = 60.0) -> None:
         self._grpc, self._pb, pb_grpc = _load_stubs()
         self.endpoint = endpoint_from_env(endpoint)
         self._timeout_s = timeout_s
         self._channel = self._grpc.insecure_channel(self.endpoint)
         self._stub = pb_grpc.MlRuntimeStub(self._channel)
+
+    def deadline_for(self, item_count: int) -> float:
+        """The deadline for a batch of `item_count` items.
+
+        The fixed budget is the floor, so a caller that shortened `timeout_s`
+        for a health-check-sized call still gets at least what it asked for,
+        and a batch is never given less time than a single item.
+        """
+        return max(self._timeout_s, self.PER_ITEM_DEADLINE_S * max(1, item_count))
 
     def close(self) -> None:
         self._channel.close()
@@ -423,6 +447,7 @@ class MlRuntimeClient:
         exactly this reason.
         """
         pb = self._pb
+        deadline = self.deadline_for(len(items))
         alignment_value = {
             "none": pb.ALIGNMENT_NONE,
             "needs_alignment": pb.ALIGNMENT_NEEDS_ALIGNMENT,
@@ -435,11 +460,11 @@ class MlRuntimeClient:
                 pb.InferItem(item_id=item_id, proxy_id=proxy_id, alignment=alignment_value)
                 for item_id, proxy_id in items.items()
             ],
-            deadline_ms=int(self._timeout_s * 1000),
+            deadline_ms=int(deadline * 1000),
             priority=priority,
         )
         try:
-            response = self._stub.Infer(request, timeout=self._timeout_s)
+            response = self._stub.Infer(request, timeout=deadline)
         except self._grpc.RpcError as error:
             code = getattr(error, "code", lambda: None)()
             raise MlRuntimeError(
@@ -488,6 +513,7 @@ class MlRuntimeClient:
                     "embedding, and nothing downstream can detect it"
                 )
         pb = self._pb
+        deadline = self.deadline_for(len(crops))
         scheme_value = getattr(
             pb, f"LANDMARK_SCHEME_{required_landmark_scheme.upper()}", None
         )
@@ -511,11 +537,11 @@ class MlRuntimeClient:
                 )
                 for crop in crops
             ],
-            deadline_ms=int(self._timeout_s * 1000),
+            deadline_ms=int(deadline * 1000),
             priority=priority,
         )
         try:
-            response = self._stub.Infer(request, timeout=self._timeout_s)
+            response = self._stub.Infer(request, timeout=deadline)
         except self._grpc.RpcError as error:
             code = getattr(error, "code", lambda: None)()
             raise MlRuntimeError(
