@@ -103,6 +103,15 @@ async fn library_page(
 }
 
 #[tauri::command]
+async fn best_moments_page(
+    cursor: Option<String>,
+    limit: usize,
+    media_query: State<'_, MediaQueryState>,
+) -> Result<LibraryPage, String> {
+    media_query.gateway()?.best_moments(cursor, limit).await
+}
+
+#[tauri::command]
 async fn proxy_asset(
     app: AppHandle,
     proxy_id: String,
@@ -341,6 +350,7 @@ pub fn run() {
             start_scan,
             cancel_scan,
             library_page,
+            best_moments_page,
             proxy_asset,
             people_page,
             library_stats

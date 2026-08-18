@@ -184,6 +184,49 @@ impl MediaQueryGateway {
         })
     }
 
+    pub async fn best_moments(
+        &self,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Result<LibraryPage, String> {
+        let cursor = cursor
+            .filter(|token| !token.is_empty())
+            .map(|token| Cursor { token });
+        let limit = i32::try_from(limit)
+            .unwrap_or(MAX_PAGE_SIZE)
+            .clamp(1, MAX_PAGE_SIZE);
+        let mut client = self.client().await?;
+        let response = client
+            .list_media(ListMediaRequest {
+                limit,
+                cursor,
+                person_ids: Vec::new(),
+                captured_between: None,
+                media_kinds: vec![
+                    "image".to_owned(),
+                    "video".to_owned(),
+                    "live_photo".to_owned(),
+                    "motion_photo".to_owned(),
+                ],
+                include_sensitive: false,
+                include_rejected: false,
+                order: SortOrder::QualityDesc as i32,
+            })
+            .await
+            .map_err(status_message)?
+            .into_inner();
+        let page = response.page.unwrap_or_default();
+        Ok(LibraryPage {
+            items: response.items.into_iter().map(LibraryItem::from).collect(),
+            total: response.total,
+            next_cursor: page
+                .next
+                .map(|next| next.token)
+                .filter(|token| !token.is_empty()),
+            has_more: page.has_more,
+        })
+    }
+
     pub async fn proxy_bytes(&self, proxy_id: &str) -> Result<(Vec<u8>, String, String), String> {
         if !is_blake3(proxy_id) {
             return Err("That preview reference is invalid.".to_owned());
@@ -610,6 +653,32 @@ mod tests {
             .clone()
             .expect("search request");
         assert_eq!(request.query, "beach");
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn best_moments_are_quality_ranked_visual_media_with_safety_filters_closed() {
+        let (gateway, mock, shutdown) = server().await;
+        let page = gateway
+            .best_moments(Some("best-cursor".to_owned()), 80)
+            .await
+            .expect("best moments response");
+        assert_eq!(page.next_cursor.as_deref(), Some("opaque:do-not-parse"));
+        let request = mock
+            .list_request
+            .lock()
+            .expect("list request lock")
+            .clone()
+            .expect("list request");
+        assert_eq!(request.limit, 80);
+        assert_eq!(request.cursor.expect("cursor").token, "best-cursor");
+        assert_eq!(request.order, SortOrder::QualityDesc as i32);
+        assert!(!request.include_sensitive);
+        assert!(!request.include_rejected);
+        assert_eq!(
+            request.media_kinds,
+            ["image", "video", "live_photo", "motion_photo"]
+        );
         let _ = shutdown.send(());
     }
 

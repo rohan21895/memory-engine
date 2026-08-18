@@ -17,9 +17,13 @@ accepts only literal IPv4 or IPv6 loopback HTTP endpoints. Pixel responses are p
 BLAKE3-verified, and cached by content digest under the operating system's app-local data
 directory. Original paths and bytes never enter the webview.
 
-Opaque service cursors are preserved end to end, and the grid virtualizes rows so a 100k-item
-library has bounded mounted-DOM work. Closing or pausing during a scan is safe; selecting the
-same source later reuses its durable checkpoint.
+Opaque service cursors are preserved end to end, and the library and Best moments grids
+virtualize rows so a 100k-item library has bounded mounted-DOM work. Best moments asks the
+service for quality-descending visual media with rejected and sensitive items excluded. Its
+working selection is session-local: photo/video counts, known video duration, unknown video
+lengths, and quality comparability are reported separately instead of inventing a usable-time
+claim. Closing or pausing during a scan is safe; selecting the same source later reuses its
+durable checkpoint.
 
 The query contract is intentionally read-only. The media-db-owned host still needs to import
 the Rust ingest worker's content-addressed MediaRecord inbox, and person-label submission needs
