@@ -221,6 +221,47 @@ sources disagree".
 medical results to answer a question that does not need them. A privacy
 decision, not a cost one.
 
+**"We cannot decode this yet" is not a quarantine** (issue #14, finding 1). The
+review argued that quarantining HEIC under `unsupported_codec` was wrong, and it
+was right. `file_corrupt` and `zero_byte_file` are permanent properties of the
+file; `unsupported_codec` was a property of *our build*, and quarantine means
+never retried automatically — so every iPhone photo scanned before the decoder
+landed would have stayed dead until something forced a re-scan. A missing
+capability is now `failed` with `retryable: true`, quarantine is reserved for
+files that are genuinely hostile, and a completed scan re-tries records parked in
+the old terminal state when the capability appears. A decoder landing is a
+re-run, not a migration.
+
+**The perceptual hash is named, not just measured** (issue #14, finding 2).
+`phash-dct-64` hashed the 8×8 low-frequency block *including* `C(0,0)`, the sum
+of every sample, while taking the threshold from the other 63. DC is above that
+threshold for every input that is not exactly black — measured, 27 of 28 images,
+against 9–20 of 28 for every other position — so the top bit was a constant, and
+the first of the four 16-bit bands the dedupe index uses carried fifteen live
+bits. `phash-dct-64-v2` drops DC and appends `(0, 8)`, keeping 64 informative
+bits rather than shipping 63 and a pad.
+
+The bit was worth one band's collision rate and nothing more. What made the
+change worth a migration is that **`phash-dct-64` never defined its own bits**:
+the reference implementations disagree about the threshold statistic and about
+whether DC participates, so two writers could both be "phash-dct-64" and produce
+unrelated digests. The encoding is now frozen on the schema, with golden
+luma-matrix → digest vectors recomputed independently in Python and Rust. The
+migration is paid once, and it will never be cheaper than before a real library
+exists.
+
+Two limits are stated rather than implied. The step from a file to the 32×32
+luma matrix is *not* portable — `image` greys with Rec. 709 weights and integer
+division, Pillow with Rec. 601 — so digests are comparable only between records
+written by the same producer, which is why the vectors start at the matrix.  And
+**equal length is not equal meaning**: `phash-dct-64`, `phash-dct-64-v2`,
+`dhash-64`, `ahash-64` and `wavelet-64` are all sixteen hex characters, and
+`hamming_distance` guarded on length alone, so every cross-algorithm pair passed
+and returned a number with no referent — which dedupe acts on by dropping a photo
+from every automated output. The algorithm is now part of the band key, part of
+the comparison, and an indexed column in media-db, backfilled from the records so
+nothing needs re-scanning.
+
 ---
 
 ## Status
@@ -298,6 +339,18 @@ Open, and honest about it:
   issue #31 that is at least *visible*: `batching.verified_against` is required,
   and eight of nine entries now say batch 1 because nothing has read their input
   shape.
+- **A structureless frame's perceptual hash is rounding residue.** Found while
+  freezing the pHash encoding. Every hashed coefficient of a flat field is
+  mathematically zero, so the threshold is drawn from the rounding cloud and all
+  64 bits are decided by summation order. Measured: a flat field's largest
+  coefficient is ~9e-11 where a real frame's smallest is 0.77, and flat fields at
+  luma 1, 17, 64, 128, 200 and 255 give four distinct digests 27–36 bits apart
+  while 1, 64 and 128 collide exactly. `phash-dct-64` had this too; dropping DC
+  neither caused it nor cured it. Pinned by a test that asserts the *diagnosis*
+  rather than the digests — the digests are not portable and must never be
+  frozen — and left for its own decision, most likely writing no `image_hash` at
+  all, which dedupe already handles, rather than inventing a structure
+  threshold. It is also why no flat or separable pattern is a golden vector.
 - **Nothing has been tested on a large real library.** Every performance claim
   in this repo is untested at scale.
 

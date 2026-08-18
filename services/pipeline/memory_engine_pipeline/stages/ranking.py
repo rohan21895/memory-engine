@@ -108,6 +108,14 @@ def run(ctx: StageContext) -> StageResult:
             phash_bits=((record.get("perceptual") or {}).get("image_hash") or {}).get(
                 "bits", 64
             ),
+            # Carried, not defaulted. The record states which algorithm produced
+            # its digest and dedupe refuses to compare two that disagree; a
+            # library holding records from before and after the phash-dct-64-v2
+            # change (issue #14) would otherwise merge unrelated photographs
+            # whose hex happened to match.
+            phash_algorithm=(
+                (record.get("perceptual") or {}).get("image_hash") or {}
+            )["algorithm"],
             embedding=None,
             quality=(
                 fused[record["media_id"]].value if record["media_id"] in fused else 0.0
@@ -130,6 +138,7 @@ def run(ctx: StageContext) -> StageResult:
             media_id=candidate.media_id,
             phash_hex=candidate.phash_hex,
             phash_bits=candidate.phash_bits,
+            phash_algorithm=candidate.phash_algorithm,
             embedding=(
                 ctx.database.vectors.get("media", candidate.media_id, space)
                 if candidate.media_id in ambiguous

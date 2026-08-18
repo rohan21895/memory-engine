@@ -81,7 +81,7 @@
     "keyframe_hashes": [
       {
         "time": { "value": 0, "rate": 30.0 },
-        "hash": { "algorithm": "phash-dct-64", "bits": 64, "hex": "0f1e3c78f0e1c387" }
+        "hash": { "algorithm": "phash-dct-64-v2", "bits": 64, "hex": "49dc3d3822581cef" }
       }
     ]
   },

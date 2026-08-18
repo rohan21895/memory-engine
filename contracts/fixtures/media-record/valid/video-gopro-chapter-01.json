@@ -113,7 +113,7 @@
           "rate": 59.94005994005994
         },
         "hash": {
-          "algorithm": "phash-dct-64",
+          "algorithm": "phash-dct-64-v2",
           "bits": 64,
           "hex": "1e3c78f0e1c38707"
         }
@@ -124,7 +124,7 @@
           "rate": 59.94005994005994
         },
         "hash": {
-          "algorithm": "phash-dct-64",
+          "algorithm": "phash-dct-64-v2",
           "bits": 64,
           "hex": "78f0e1c387071e3c"
         }

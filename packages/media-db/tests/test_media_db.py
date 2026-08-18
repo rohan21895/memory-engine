@@ -911,7 +911,14 @@ class TestProxyLookupIsIndexed(unittest.TestCase):
         for record in records:
             self.db.put_media(record)
 
+        # Undo everything migrations 2 and 3 added, not just the proxy table.
+        # Setting user_version back while leaving their columns in place would
+        # not be a version-1 database, and would hide a migration that cannot
+        # actually run against one.
         self.db.connection.execute("DROP TABLE media_proxy")
+        self.db.connection.execute("DROP INDEX IF EXISTS media_phash_idx")
+        self.db.connection.execute("ALTER TABLE media DROP COLUMN phash_algorithm")
+        self.db.connection.execute("CREATE INDEX media_phash_idx ON media (phash_hex)")
         self.db.connection.execute("PRAGMA user_version = 1")
         self.assertEqual(1, current_version(self.db.connection))
 
@@ -922,6 +929,20 @@ class TestProxyLookupIsIndexed(unittest.TestCase):
                     resolved = self.db.resolve_proxy(proxy["proxy_id"])
                     self.assertIsNotNone(resolved)
                     self.assertEqual(proxy["kind"], resolved["kind"])
+
+        # The pHash algorithm is backfilled from the records themselves, so a
+        # library scanned before the column existed does not have to be
+        # re-scanned to become comparable again (issue #14).
+        for record in records:
+            expected = ((record.get("perceptual") or {}).get("image_hash") or {}).get(
+                "algorithm"
+            )
+            with self.subTest(record=record["media_id"][:12]):
+                stored = self.db.connection.execute(
+                    "SELECT phash_algorithm FROM media WHERE media_id = ?",
+                    (record["media_id"],),
+                ).fetchone()[0]
+                self.assertEqual(expected, stored)
 
     def test_a_proxy_removed_from_its_record_stops_resolving(self):
         """The index is derived data; it may not outlive what it describes."""

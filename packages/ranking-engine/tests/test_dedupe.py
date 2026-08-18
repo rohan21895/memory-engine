@@ -68,9 +68,57 @@ class TestHashArithmetic(unittest.TestCase):
     def test_band_position_is_part_of_the_key(self):
         """Two hashes sharing a slice in different positions are a coincidence,
         not a similarity."""
-        a = dict(band_keys("aaaabbbbccccdddd"))
-        self.assertNotEqual(a[0], a[1])
-        self.assertEqual(("aaaa"), a[0])
+        a = dict(band_keys("aaaabbbbccccdddd", algorithm="phash-dct-64-v2"))
+        self.assertNotEqual(a[(0, "phash-dct-64-v2")], a[(1, "phash-dct-64-v2")])
+        self.assertEqual("aaaa", a[(0, "phash-dct-64-v2")])
+
+    def test_the_algorithm_is_part_of_the_key(self):
+        """Issue #14. Every 64-bit algorithm in the enum produces sixteen hex
+        characters, so a bucket keyed on position alone would put a
+        `phash-dct-64` digest and a `dhash-64` digest in one bucket and hand
+        the pair to `hamming_distance`."""
+        legacy = band_keys("aaaabbbbccccdddd", algorithm="phash-dct-64")
+        current = band_keys("aaaabbbbccccdddd", algorithm="phash-dct-64-v2")
+        self.assertEqual(
+            [slice_ for _, slice_ in legacy],
+            [slice_ for _, slice_ in current],
+            "the same digest should still split the same way",
+        )
+        self.assertFalse(
+            set(key for key, _ in legacy) & set(key for key, _ in current),
+            "no bucket key may be shared across two algorithms",
+        )
+
+    def test_comparing_two_algorithms_is_an_error(self):
+        """Equal length is not equal meaning. Before this, the two digests below
+        returned a distance of 0 and would have been merged as the same photo."""
+        with self.assertRaises(ValueError):
+            hamming_distance(
+                "aaaabbbbccccdddd",
+                "aaaabbbbccccdddd",
+                "phash-dct-64",
+                "phash-dct-64-v2",
+            )
+        self.assertEqual(
+            0,
+            hamming_distance(
+                "aaaabbbbccccdddd",
+                "aaaabbbbccccdddd",
+                "phash-dct-64-v2",
+                "phash-dct-64-v2",
+            ),
+        )
+
+    def test_a_library_mid_migration_never_pairs_across_algorithms(self):
+        """The realistic shape of the failure: a library scanned before the
+        change and rescanned after it holds both, and the identical hex would
+        otherwise merge two unrelated photographs at distance 0."""
+        items = [
+            Candidate(mid("a"), phash_hex="f0e1c3878f1e3c78", phash_algorithm="phash-dct-64"),
+            Candidate(mid("b"), phash_hex="f0e1c3878f1e3c78", phash_algorithm="phash-dct-64-v2"),
+        ]
+        self.assertEqual([], candidate_pairs(items))
+        self.assertEqual([], find_duplicates(items))
 
 
 class TestCandidatePairs(unittest.TestCase):

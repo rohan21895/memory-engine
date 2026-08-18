@@ -365,6 +365,17 @@
       ]
     },
     {
+      "path": "media-record/valid/image-legacy-perceptual-hash.json",
+      "schema": "media-record",
+      "expectation": "valid",
+      "purpose": "EDGE CASE: a record written before phash-dct-64-v2 replaced phash-dct-64 (issue #14). It exists so that removing the superseded algorithm from the enum breaks a test rather than a library: everything scanned before the change still validates, and must.",
+      "exercises": [
+        "algorithm phash-dct-64, which no current writer emits and which must never be compared against a v2 digest",
+        "a legacy digest with its top bit set -- the constant DC bit that the change removed",
+        "processing.state proxied with no analysis stages, i.e. a record the analysis pass has not reached"
+      ]
+    },
+    {
       "path": "media-record/valid/image-no-exif-date.json",
       "schema": "media-record",
       "expectation": "valid",

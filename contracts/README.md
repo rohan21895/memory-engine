@@ -23,6 +23,15 @@ vector carries the exact UTF-8 pre-image as hex alongside the digest, because a
 digest mismatch says only that something diverged and a pre-image mismatch names
 the field that did.
 
+`vectors/phash-dct-64-v2.json` is the exception to the pre-image convention, for
+a reason worth knowing: a perceptual hash starts at an image file, and no two
+imaging libraries resample or convert to grey identically, so a file-level
+vector would pin a number no second implementation could reproduce. Its input is
+the 32×32 luma matrix — the point after which the encoding *is* exactly
+determined — and the contract says so rather than implying a portability it does
+not have. Digests written by two different producers are not comparable even
+under the same algorithm name.
+
 `tests-typescript/` is what makes "language-independent" a measured claim rather
 than an intention. It reads the same vectors and the same fixtures and
 recomputes the same ids against the generated TypeScript bindings. One

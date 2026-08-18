@@ -978,6 +978,7 @@ class NormalizedBox(ContractModel):
 
 
 class PerceptualHashAlgorithm(str, Enum):
+    PHASH_DCT_64_V2 = "phash-dct-64-v2"
     PHASH_DCT_64 = "phash-dct-64"
     PHASH_DCT_256 = "phash-dct-256"
     DHASH_64 = "dhash-64"
@@ -999,7 +1000,13 @@ class PerceptualHash(ContractModel):
     silently invalidate existing buckets.
     """
 
-    algorithm: PerceptualHashAlgorithm
+    # Which hash this is. Two digests may only be compared when this value is equal on
+    # both -- equal `bits` is NOT sufficient, and the name is the comparison key, not
+    # a label. See the $comment on PerceptualHash for the encoding of `phash-
+    # dct-64-v2` and for what `phash-dct-64` is still doing in this list.
+    algorithm: PerceptualHashAlgorithm = Field(
+        description="Which hash this is. Two digests may only be compared when this value is equal on both -- equal `bits` is NOT sufficient, and the name is the comparison key, not a label. See the $comment on PerceptualHash for the encoding of `phash-dct-6...",
+    )
 
     # Hash length in bits. Enforced to equal 4 * len(hex).
     bits: PerceptualHashBits = Field(

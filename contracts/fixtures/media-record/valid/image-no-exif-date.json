@@ -56,7 +56,7 @@
   "video": null,
   "perceptual": {
     "image_hash": {
-      "algorithm": "phash-dct-64",
+      "algorithm": "phash-dct-64-v2",
       "bits": 64,
       "hex": "3c7ef0c183071e3c"
     },

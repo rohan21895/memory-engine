@@ -19,6 +19,7 @@ Four layers of checking, in order of what they would catch:
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 import unittest
@@ -2180,6 +2181,228 @@ class TestGeneratedBindings(unittest.TestCase):
                     dumped,
                     "a fixture changed shape passing through the generated model",
                 )
+
+
+PHASH_VECTORS = json.loads(
+    (CONTRACTS / "vectors" / "phash-dct-64-v2.json").read_text(encoding="utf-8")
+)
+
+_PHASH_SIDE = 32
+_PHASH_BLOCK = 8
+
+
+def _phash_coefficient_order() -> list[tuple[int, int]]:
+    """(u, v) in bit order, most significant first.
+
+    Reimplemented from the schema text rather than imported from anywhere. The
+    only producer lives in Rust; a Python copy of it would agree with it by
+    construction and would show nothing.
+    """
+    order = [
+        (u, v)
+        for u in range(_PHASH_BLOCK)
+        for v in range(_PHASH_BLOCK)
+        if (u, v) != (0, 0)
+    ]
+    order.append((0, _PHASH_BLOCK))
+    return order
+
+
+def _phash_coefficient(luma: list[list[int]], u: int, v: int) -> float:
+    total = 0.0
+    for x in range(_PHASH_SIDE):
+        cos_x = math.cos((2 * x + 1) * u * math.pi / (2 * _PHASH_SIDE))
+        for y in range(_PHASH_SIDE):
+            cos_y = math.cos((2 * y + 1) * v * math.pi / (2 * _PHASH_SIDE))
+            total += luma[y][x] * cos_x * cos_y
+    return total
+
+
+def _phash_coefficients(luma: list[list[int]]) -> list[float]:
+    return [_phash_coefficient(luma, u, v) for u, v in _phash_coefficient_order()]
+
+
+def _phash_digest(values: list[float]) -> str:
+    threshold = sorted(values)[len(values) // 2]
+    bits = 0
+    for index, value in enumerate(values):
+        if value > threshold:
+            bits |= 1 << (63 - index)
+    return f"{bits:016x}"
+
+
+def _phash_luma(vector: dict) -> list[list[int]]:
+    rows = vector["luma_rows_hex"]
+    if len(rows) != _PHASH_SIDE:
+        raise AssertionError(f"{vector['name']} carries {len(rows)} rows")
+    return [
+        [int(row[index * 2 : index * 2 + 2], 16) for index in range(_PHASH_SIDE)]
+        for row in rows
+    ]
+
+
+class TestPerceptualHashEncoding(unittest.TestCase):
+    """`phash-dct-64-v2`, recomputed here in a second language (issue #14).
+
+    The producer is Rust and there is only one of it, so a golden table is the
+    only thing that can show the encoding is a contract rather than whatever
+    that one implementation happens to do. `workers/ingest` recomputes the same
+    file on its side.
+    """
+
+    def test_the_table_declares_the_constants_the_schema_states(self):
+        self.assertEqual("phash-dct-64-v2", PHASH_VECTORS["algorithm"])
+        self.assertEqual(_PHASH_SIDE, PHASH_VECTORS["side"])
+        self.assertIn("(0, 0) omitted", PHASH_VECTORS["coefficient_order"])
+        self.assertIn("index 32", PHASH_VECTORS["threshold"])
+
+    def test_the_algorithm_is_a_value_the_schema_permits(self):
+        enum = DOCUMENTS["common.schema.json"]["$defs"]["PerceptualHash"][
+            "properties"
+        ]["algorithm"]["enum"]
+        self.assertIn(PHASH_VECTORS["algorithm"], enum)
+        self.assertIn(
+            "phash-dct-64",
+            enum,
+            "the superseded value must stay: records written before the change "
+            "are still valid and must not start failing validation",
+        )
+
+    def test_every_vector_states_what_it_is_for(self):
+        self.assertGreaterEqual(len(PHASH_VECTORS["vectors"]), 6)
+        for vector in PHASH_VECTORS["vectors"]:
+            with self.subTest(vector=vector["name"]):
+                self.assertTrue(vector.get("why"), "a vector needs a stated purpose")
+
+    def test_every_vector_reproduces_its_digest(self):
+        for vector in PHASH_VECTORS["vectors"]:
+            with self.subTest(vector=vector["name"]):
+                values = _phash_coefficients(_phash_luma(vector))
+                self.assertEqual(
+                    vector["phash_dct_64_v2_hex"],
+                    _phash_digest(values),
+                    "the committed digest is not what this encoding produces",
+                )
+
+    def test_no_vector_is_decided_by_rounding(self):
+        """The margin that makes these vectors portable at all.
+
+        A flat field, a linear ramp and a checkerboard are separable in x and y,
+        which drives most of the 64 coefficients to within 1e-10 of zero and puts
+        the threshold inside that cloud -- so the digest would be a property of
+        summation order. Every committed vector has to clear that by orders of
+        magnitude, checked here rather than trusted from the generator.
+        """
+        for vector in PHASH_VECTORS["vectors"]:
+            with self.subTest(vector=vector["name"]):
+                values = _phash_coefficients(_phash_luma(vector))
+                self.assertGreater(min(abs(value) for value in values), 1e-3)
+                ordered = sorted(values)
+                gap = min(ordered[32] - ordered[31], ordered[33] - ordered[32])
+                self.assertGreater(gap, 1e-6, "the threshold sits on a near-tie")
+
+    def test_at_most_thirty_one_bits_can_be_set(self):
+        """The threshold is drawn from the tuple and the comparison is strict,
+        so a digest with 32 or more bits set could not have been produced by
+        this algorithm. Cheap enough to be worth checking on invented values."""
+        for vector in PHASH_VECTORS["vectors"]:
+            with self.subTest(vector=vector["name"]):
+                popcount = bin(int(vector["phash_dct_64_v2_hex"], 16)).count("1")
+                self.assertEqual(popcount, vector["popcount"])
+                self.assertLessEqual(popcount, 31)
+
+    def test_a_brightness_offset_does_not_move_the_digest(self):
+        """C(0, 0) is the only coefficient a constant offset touches, and it is
+        no longer hashed."""
+        vectors = {v["name"]: v for v in PHASH_VECTORS["vectors"]}
+        base = _phash_luma(vectors["noise"])
+        lifted = _phash_luma(vectors["noise-plus-64"])
+        self.assertEqual(
+            [[value + 64 for value in row] for row in base],
+            lifted,
+            "the vector pair is no longer an offset of one another",
+        )
+        self.assertEqual(
+            vectors["noise"]["phash_dct_64_v2_hex"],
+            vectors["noise-plus-64"]["phash_dct_64_v2_hex"],
+        )
+
+    def test_the_transposed_vector_pins_which_axis_u_belongs_to(self):
+        """u pairs with x, the column index. Without the pair, an implementation
+        that swapped them would reproduce every single-matrix vector."""
+        vectors = {v["name"]: v for v in PHASH_VECTORS["vectors"]}
+        base = _phash_luma(vectors["noise"])
+        transposed = _phash_luma(vectors["noise-transposed"])
+        self.assertEqual(
+            [[base[x][y] for x in range(_PHASH_SIDE)] for y in range(_PHASH_SIDE)],
+            transposed,
+        )
+        self.assertNotEqual(
+            vectors["noise"]["phash_dct_64_v2_hex"],
+            vectors["noise-transposed"]["phash_dct_64_v2_hex"],
+        )
+
+    def test_the_appended_coefficient_is_the_bit_that_moves(self):
+        """`photographic-vertical-8` differs from `photographic` by a cosine at
+        exactly the frequency of the appended (0, 8) coefficient. An
+        implementation that dropped DC and shipped 63 bits, or appended a
+        different coefficient, cannot reproduce both."""
+        vectors = {v["name"]: v for v in PHASH_VECTORS["vectors"]}
+        plain = int(vectors["photographic"]["phash_dct_64_v2_hex"], 16)
+        waved = int(vectors["photographic-vertical-8"]["phash_dct_64_v2_hex"], 16)
+        self.assertNotEqual(plain & 1, waved & 1, "the last bit did not move")
+
+    def test_the_superseded_algorithm_had_a_constant_top_bit(self):
+        """The defect issue #14 reported, kept as committed evidence rather than
+        as a claim in a commit message. C(0, 0) is the sum of every sample, so it
+        is above a threshold drawn from the other coefficients for every input
+        that is not exactly black -- and it occupied bit 63."""
+        legacy = [
+            int(vector["legacy_phash_dct_64_hex"], 16)
+            for vector in PHASH_VECTORS["vectors"]
+        ]
+        self.assertTrue(
+            all(value >> 63 == 1 for value in legacy),
+            "every legacy digest should have had its top bit set",
+        )
+        current = [
+            int(vector["phash_dct_64_v2_hex"], 16) for vector in PHASH_VECTORS["vectors"]
+        ]
+        self.assertNotEqual(
+            len({value >> 63 for value in current}),
+            1,
+            "the top bit is still constant across the vectors",
+        )
+
+    def test_every_fixture_digest_could_have_been_produced(self):
+        """Fixture hashes are stand-ins -- there is no image behind a fixture to
+        hash -- but a stand-in must still be a value the algorithm can emit.
+        Three of them were not: they set 32 or 33 bits, which this threshold
+        rule cannot do."""
+        for entry in _entries("valid"):
+            fixture = _fixture(entry)
+            for hash_object in _walk_perceptual_hashes(fixture):
+                if hash_object.get("algorithm") != "phash-dct-64-v2":
+                    continue
+                with self.subTest(fixture=entry["path"], hex=hash_object["hex"]):
+                    self.assertEqual(64, hash_object["bits"])
+                    self.assertLessEqual(
+                        bin(int(hash_object["hex"], 16)).count("1"),
+                        31,
+                        "no input produces this digest",
+                    )
+
+
+def _walk_perceptual_hashes(node):
+    """Every PerceptualHash-shaped object anywhere in a fixture."""
+    if isinstance(node, dict):
+        if {"algorithm", "bits", "hex"} <= set(node):
+            yield node
+        for value in node.values():
+            yield from _walk_perceptual_hashes(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _walk_perceptual_hashes(value)
 
 
 if __name__ == "__main__":

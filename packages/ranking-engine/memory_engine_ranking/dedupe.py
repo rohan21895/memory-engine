@@ -76,6 +76,16 @@ class Candidate:
     media_id: str
     phash_hex: str | None = None
     phash_bits: int = 64
+    # `MediaRecord.perceptual.image_hash.algorithm`, carried because equal
+    # length is NOT permission to compare. `phash-dct-64`, `dhash-64`,
+    # `ahash-64` and `wavelet-64` are all sixteen hex characters and all mean
+    # different things, and `phash-dct-64-v2` deliberately produces different
+    # digits from `phash-dct-64` for the same picture (issue #14). A Hamming
+    # distance across two of them is a number with no referent -- and this
+    # module acts on that number by dropping a photo from every automated
+    # output. Defaulted so existing callers keep working; a library that mixes
+    # two algorithms simply never pairs across them.
+    phash_algorithm: str = "phash-dct-64-v2"
     embedding: Sequence[float] | None = None
     # Fused quality in [0,1]. Drives primary selection.
     quality: float = 0.0
@@ -131,13 +141,35 @@ class _UnionFind:
         return out
 
 
-def hamming_distance(a: str, b: str) -> int:
-    """Bit distance between two hex digests of equal length."""
+def hamming_distance(
+    a: str,
+    b: str,
+    a_algorithm: str | None = None,
+    b_algorithm: str | None = None,
+) -> int:
+    """Bit distance between two hex digests of the same algorithm.
+
+    The length guard was here from the start and is not enough: `phash-dct-64`,
+    `phash-dct-64-v2`, `dhash-64`, `ahash-64` and `wavelet-64` are all sixteen
+    hex characters, so every cross-algorithm pair passed it and returned a
+    number that means nothing. It looks like a distance, dedupe treats it as
+    one, and the outcome is a photo dropped from every automated output.
+
+    The algorithms are optional so existing callers that pass two digests they
+    already know are the same kind keep working; when both are given they must
+    match.
+    """
     if len(a) != len(b):
         raise ValueError(
             f"cannot compare hashes of different lengths ({len(a)} vs {len(b)}); "
             "a length mismatch means different algorithms, and comparing them "
             "would produce a meaningless number rather than an error"
+        )
+    if a_algorithm is not None and b_algorithm is not None and a_algorithm != b_algorithm:
+        raise ValueError(
+            f"cannot compare a {a_algorithm} digest against a {b_algorithm} one; "
+            "equal length is not equal meaning, and the distance between them "
+            "would be a number with no referent"
         )
     return bin(int(a, 16) ^ int(b, 16)).count("1")
 
@@ -153,17 +185,26 @@ def cosine_distance(a: Sequence[float], b: Sequence[float]) -> float:
     return 1.0 - dot / (na * nb)
 
 
-def band_keys(phash_hex: str, bands: int = DEFAULT_BANDS) -> list[tuple[int, str]]:
-    """Split a hash into `bands` equal slices, each keyed by its position.
+def band_keys(
+    phash_hex: str,
+    bands: int = DEFAULT_BANDS,
+    algorithm: str = "phash-dct-64-v2",
+) -> list[tuple[tuple[int, str], str]]:
+    """Split a hash into `bands` equal slices, each keyed by position and algorithm.
 
     Position is part of the key so two hashes that happen to share a slice in
     *different* positions are not treated as candidates -- that would be a
-    coincidence, not a similarity.
+    coincidence, not a similarity. The algorithm is part of the key for the
+    stronger reason: two digests from different algorithms sharing a slice is
+    not even a coincidence worth looking at, and a bucket that mixed them would
+    hand `hamming_distance` a pair it must refuse.
     """
     if bands < 1 or len(phash_hex) % bands != 0:
         raise ValueError(f"cannot split {len(phash_hex)} hex chars into {bands} bands")
     width = len(phash_hex) // bands
-    return [(i, phash_hex[i * width : (i + 1) * width]) for i in range(bands)]
+    return [
+        ((i, algorithm), phash_hex[i * width : (i + 1) * width]) for i in range(bands)
+    ]
 
 
 def candidate_pairs(
@@ -178,7 +219,7 @@ def candidate_pairs(
     for item in sorted(items, key=lambda c: c.media_id):
         if not item.phash_hex:
             continue
-        for key in band_keys(item.phash_hex, bands):
+        for key in band_keys(item.phash_hex, bands, item.phash_algorithm):
             buckets.setdefault(key, []).append(item.media_id)
 
     pairs: set[tuple[str, str]] = set()
@@ -221,7 +262,9 @@ def find_duplicates(
     for a_id, b_id in candidate_pairs(items, bands=bands):
         a, b = by_id[a_id], by_id[b_id]
 
-        distance = hamming_distance(a.phash_hex, b.phash_hex)
+        distance = hamming_distance(
+            a.phash_hex, b.phash_hex, a.phash_algorithm, b.phash_algorithm
+        )
         if distance > hamming_threshold:
             continue
 

@@ -92,9 +92,9 @@
   "video": null,
   "perceptual": {
     "image_hash": {
-      "algorithm": "phash-dct-64",
+      "algorithm": "phash-dct-64-v2",
       "bits": 64,
-      "hex": "f0e1c3878f1e3c78"
+      "hex": "81827e786c746a9e"
     },
     "keyframe_hashes": []
   },

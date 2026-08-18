@@ -1188,6 +1188,9 @@ pub struct NormalizedBox {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PerceptualHashAlgorithm {
+    #[serde(rename = "phash-dct-64-v2")]
+    PhashDct64V2,
+
     #[serde(rename = "phash-dct-64")]
     PhashDct64,
 
@@ -1213,6 +1216,10 @@ pub type PerceptualHashBits = i64;
 /// existing buckets.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PerceptualHash {
+    /// Which hash this is. Two digests may only be compared when this value is equal on
+    /// both -- equal `bits` is NOT sufficient, and the name is the comparison key, not a
+    /// label. See the $comment on PerceptualHash for the encoding of `phash-dct-64-v2` and
+    /// for what `phash-dct-64` is still doing in this list.
     pub algorithm: PerceptualHashAlgorithm,
 
     /// Hash length in bits. Enforced to equal 4 * len(hex).

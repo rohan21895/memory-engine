@@ -961,6 +961,11 @@ def stage_dedupe(run: Run, tools: Tools, source: Path,
             media_id=record["media_id"],
             phash_hex=((record.get("perceptual") or {}).get("image_hash") or {}).get("hex"),
             phash_bits=((record.get("perceptual") or {}).get("image_hash") or {}).get("bits", 64),
+            # From the record, so a library holding both phash-dct-64 and
+            # phash-dct-64-v2 digests never pairs across them (issue #14).
+            phash_algorithm=(
+                (record.get("perceptual") or {}).get("image_hash") or {}
+            )["algorithm"],
             embedding=None,  # no models in the demo path; pHash decides alone
             quality=0.0,
             captured_utc=record["capture"]["captured_at"].get("utc"),

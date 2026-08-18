@@ -163,7 +163,8 @@ class Database:
                     media_id, asset_kind, kind, byte_size, mime_type, file_format,
                     captured_utc, captured_local, capture_precision, capture_confidence,
                     capture_source, latitude, longitude, width, height,
-                    duration_value, duration_rate, phash_hex, phash_bits,
+                    duration_value, duration_rate,
+                    phash_hex, phash_bits, phash_algorithm,
                     dedupe_group_id, is_dedupe_primary,
                     quality_sharpness, quality_exposure, quality_aesthetic, face_count,
                     scene_type, nsfw_score, excluded, exclusion_reasons,
@@ -171,7 +172,7 @@ class Database:
                     first_seen_at, updated_at, record_json
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?,  ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,  ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?,
                     ?, ?, ?, ?,  ?, ?, ?
                 )
                 ON CONFLICT (media_id) DO UPDATE SET
@@ -193,6 +194,7 @@ class Database:
                     duration_rate = excluded.duration_rate,
                     phash_hex = excluded.phash_hex,
                     phash_bits = excluded.phash_bits,
+                    phash_algorithm = excluded.phash_algorithm,
                     dedupe_group_id = excluded.dedupe_group_id,
                     is_dedupe_primary = excluded.is_dedupe_primary,
                     quality_sharpness = excluded.quality_sharpness,
@@ -231,6 +233,11 @@ class Database:
                     duration_rate,
                     phash.get("hex"),
                     phash.get("bits"),
+                    # Never defaulted. A digest whose algorithm is unknown
+                    # must not be compared against anything (issue #14),
+                    # and guessing a name here is exactly how the digest
+                    # and its meaning came apart in the first place.
+                    phash.get("algorithm"),
                     dedupe.get("group_id"),
                     1 if dedupe.get("is_primary") else 0,
                     score(quality.get("sharpness")),

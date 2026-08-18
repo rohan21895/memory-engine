@@ -1065,6 +1065,7 @@ export interface NormalizedBox {
 }
 
 export type PerceptualHashAlgorithm =
+  | "phash-dct-64-v2"
   | "phash-dct-64"
   | "phash-dct-256"
   | "dhash-64"
@@ -1072,6 +1073,7 @@ export type PerceptualHashAlgorithm =
   | "wavelet-64";
 
 export const PerceptualHashAlgorithmValues = [
+  "phash-dct-64-v2",
   "phash-dct-64",
   "phash-dct-256",
   "dhash-64",
@@ -1094,6 +1096,12 @@ export const PerceptualHashBitsValues = [
  * buckets.
  */
 export interface PerceptualHash {
+  /**
+   * Which hash this is. Two digests may only be compared when this value is equal on both
+   * -- equal `bits` is NOT sufficient, and the name is the comparison key, not a label.
+   * See the $comment on PerceptualHash for the encoding of `phash-dct-64-v2` and for what
+   * `phash-dct-64` is still doing in this list.
+   */
   algorithm: PerceptualHashAlgorithm;
 
   /** Hash length in bits. Enforced to equal 4 * len(hex). */
