@@ -41,6 +41,18 @@ def _type(node: AnyType) -> str:
     if isinstance(node, MapOf):
         return f"dict[str, {_type(node.value)}]" if node.value else "dict[str, Any]"
     if isinstance(node, LiteralOf):
+        if isinstance(node.value, list):
+            # A const ARRAY. `Literal[["a", "b"]]` is not valid typing -- Literal
+            # takes hashable values -- and while pydantic happens to accept and
+            # enforce it, generating something that is only correct by accident
+            # is the failure this generator exists to avoid. A fixed-length
+            # tuple of per-element Literals says exactly the same thing in the
+            # type system: this many elements, these values, IN THIS ORDER.
+            # Order is the whole reason `SafetyClearance.classifier.class_order`
+            # is a const, so a `list[str]` here would drop the only part that
+            # matters.
+            inner = ", ".join(f"Literal[{_literal(item)}]" for item in node.value)
+            return f"tuple[{inner}]" if node.value else "tuple[()]"
         return f"Literal[{_literal(node.value)}]"
     if isinstance(node, UnionOf):
         return " | ".join(_type(option) for option in node.options)

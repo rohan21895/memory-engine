@@ -1,0 +1,19 @@
+[project]
+name = "memory-engine-safety-gate"
+version = "0.0.0"
+requires-python = ">=3.12"
+# blake3 only, and it is not optional. The gate's whole mechanism is a manifest
+# bound to a publication by a digest; a host that cannot compute the digest
+# cannot verify the binding, and "could not verify" is a refusal rather than a
+# reduced-functionality mode. It is imported inside `canonical.blake3_hex`
+# rather than at module import, so its absence surfaces as a denial at the
+# boundary instead of as an ImportError somebody wraps in a bare except.
+#
+# No numpy, no onnxruntime, no model runtime of any kind. The head is 3 x 1152
+# multiply-accumulates in pure Python, which is nothing beside the vision tower
+# that produced the embedding, and keeping the dependency set this small is what
+# lets the verifier run in every host that has to run it.
+dependencies = ["blake3>=0.4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

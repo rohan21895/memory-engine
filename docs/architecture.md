@@ -165,6 +165,40 @@ decide a breastfeeding photo belongs in the family book. A *missing* result may
 not be overridden by anything. "Nobody checked" and "somebody checked and
 disagreed" are different states.
 
+**Where the gate is enforced** (issue #21, branch `feat/safety-classifier`):
+
+| Sink | Enforcement point | Language |
+|---|---|---|
+| `print` | `workers/render-print/src/job.ts`, immediately before `writePdfOnce`, in the same operation | TypeScript, `src/clearance.ts` |
+| `share` | `services/share`, inside the only function that can mint a `ShareAuthorization` | Python, `memory_engine_safety.gate` |
+| `frontier_egress` | `packages/prompt-engine`'s `FrontierTransport.send`, after consent and again immediately before the socket opens | Python, same gate |
+
+`local_export` deliberately has no gate: exporting to the user's own disk
+publishes nothing on their behalf, and a check there is the kind people learn to
+disable.
+
+The verifier is implemented twice, in Python and TypeScript, because the print
+worker has to check the inputs it is itself about to publish rather than trust a
+"yes" computed in another process. The two are reconciled against one committed
+table — `contracts/vectors/safety-clearance-manifest-id.json`, which carries the
+exact pre-image bytes as well as the digest, because a digest mismatch says only
+that something diverged and the pre-image says which field did.
+
+**The class axis is pinned in four places**, and each catches a different edit:
+`memory_engine_safety.classes.CLASS_ORDER`;
+`models/schema/model-config.schema.json` (a hand-edited config);
+`ClassifierPin.class_order` as a `const` (a producer that read the config and
+then applied a different mapping); and the head's own probes at load time (a
+matrix whose rows are in a different order from the order its artifact
+declares — the only check that looks at what the numbers *do*). Transposing two
+columns turns every breastfeeding photograph into `explicit` with every score
+still in range, every threshold still firing and every count still adding up.
+
+**Today every verdict is `indeterminate`**, because SigLIP 2 has no ONNX export
+in the registry (#79) and the head is a matrix over its embedding. So every
+print, share and contact sheet is blocked, with `load_gate_denied` recorded. That
+is the gate working, not a gap.
+
 ---
 
 ## Decisions taken, with their reasons

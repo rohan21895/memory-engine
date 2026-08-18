@@ -2,7 +2,18 @@
 
 Resolves the open half of [issue #21](https://github.com/rohan21895/memory-engine/issues/21). The **mechanism** was settled by Codex and is shipped as `contracts/schemas/safety-clearance.schema.json`. This document settles **which model**, and it is the input to filling in `models/configs/nsfw-siglip-head.json`, which is currently a deliberately blocking placeholder.
 
-**Status:** recommendation, not yet implemented. `blocks_commercial_release` stays `true` until the eval gate in §7 passes.
+**Status:** the MECHANISM is implemented on `feat/safety-classifier`; the MODEL is not, and cannot be until [#79](https://github.com/rohan21895/memory-engine/issues/79) lands.
+
+What exists now: `packages/safety-gate` (the head, its Platt calibration, the
+prompt bank, the manifest builder and the verifier), the gate wired at all three
+irreversible boundaries, and the §6.6 class-axis defect fixed and pinned in four
+places. What does not exist: a fitted head, because SigLIP 2 has no ONNX export
+in this registry and there is no embedding to fit one over. So every verdict the
+system can currently produce is `indeterminate`, which blocks every print, every
+share and every contact sheet — and that is the designed state, not a gap.
+
+Nothing in §7's eval gate has been run, and `blocks_commercial_release` stays
+`true` until it passes.
 
 ---
 

@@ -9,10 +9,81 @@ import type {
   ValidationCheckCheckId,
 } from "../../../contracts/codegen/generated/typescript/index.js";
 
+import { manifestId } from "../src/clearance.js";
 import { canonicalJson, digestBytes } from "../src/digest.js";
 
 export const HASH_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 export const HASH_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+export const PROXY_B = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+/**
+ * A `SafetyClearance` (issue #21) for the one photograph `makeAlbum` places.
+ *
+ * Written out by hand rather than produced by the Python builder, on purpose:
+ * these tests are the far side of a cross-language contract, and generating the
+ * fixture with the same code that is being checked would make them agree with
+ * themselves. The manifest_id IS computed here, because that is the value the
+ * verifier recomputes, and `contracts/vectors/safety-clearance-manifest-id.json`
+ * is where the two languages are actually reconciled.
+ */
+export function makeClearance(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const items = [
+    {
+      media_id: HASH_B,
+      evidence_id: PROXY_B,
+      verdict: "cleared",
+      scores: { explicit: 0.01, suggestive: 0.02, medical_or_artistic: 0.01 },
+    },
+  ];
+  const manifest: Record<string, unknown> = {
+    schema_version: "v0",
+    manifest_version: 1,
+    created_at: "2026-08-18T09:00:00+05:30",
+    sink: "print",
+    sink_detail: "tiny-book, order not yet placed",
+    classifier: {
+      model: {
+        model_id: "nsfw-siglip-head",
+        version: "1.0.0",
+        weights_blake3: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        config_blake3: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        runtime: "onnxruntime_coreml",
+        precision: "fp32",
+      },
+      ran_at: "2026-08-18T08:59:00+05:30",
+      class_order: ["explicit", "suggestive", "medical_or_artistic"],
+      load_mode: "release",
+    },
+    thresholds: { explicit: 0.3, suggestive: 0.3, medical_or_artistic: 0.3 },
+    items,
+    ...overrides,
+  };
+  const finalItems = manifest.items as Record<string, unknown>[];
+  // The producer's rule, written out here rather than imported from the code
+  // under test: cleared, OR blocked with an attributable item-and-sink
+  // override. An indeterminate item denies regardless.
+  const permitted = (item: Record<string, unknown>): boolean => {
+    if (item.verdict === "cleared") return true;
+    if (item.verdict !== "blocked") return false;
+    const override = item.override as Record<string, unknown> | null | undefined;
+    return (
+      !!override &&
+      override.scope === "item_and_sink" &&
+      typeof override.decided_by === "string" &&
+      override.decided_by.trim() !== ""
+    );
+  };
+  manifest.decision = {
+    cleared_for_publication: finalItems.every(permitted),
+    item_count: finalItems.length,
+    cleared_count: finalItems.filter((item) => item.verdict === "cleared").length,
+    blocked_count: finalItems.filter((item) => item.verdict === "blocked").length,
+    indeterminate_count: finalItems.filter((item) => item.verdict === "indeterminate").length,
+    denied_reason: null,
+  };
+  manifest.manifest_id = manifestId(manifest);
+  return manifest;
+}
 
 const checks: ValidationCheckCheckId[] = [
   "dpi_floor",

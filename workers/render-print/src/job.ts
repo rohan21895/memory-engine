@@ -6,6 +6,7 @@ import type {
   JobSpec,
 } from "../../../contracts/codegen/generated/typescript/index.js";
 
+import { guardPrint, PublicationBlocked } from "./clearance.js";
 import { canonicalJson, digestBytes } from "./digest.js";
 import { asRenderPrintError, RenderPrintError } from "./errors.js";
 import type { IccProfileInput } from "./icc.js";
@@ -24,6 +25,41 @@ export interface RenderPrintJobParams {
   icc_profile: IccProfileInput;
   asset_paths: Record<string, string>;
   font_paths: Record<string, string>;
+  /**
+   * The `SafetyClearance` manifest for this exact book (issue #21).
+   *
+   * A job param rather than a separate file argument, so it is covered by
+   * `params_digest` and therefore by the job's own identity: a book cannot be
+   * re-run with a different clearance without becoming a different job.
+   *
+   * `unknown` rather than a typed shape on purpose. Everything about it is
+   * checked by `guardPrint`, which parses deny-by-default, and typing it here
+   * would invite a caller to believe the type checker had validated it.
+   */
+  safety_clearance: unknown;
+}
+
+/**
+ * The media ids this book will publish, in publication order.
+ *
+ * First appearance wins for a photograph placed on more than one page: the
+ * clearance is about a set of photographs and the order fixes the identity of
+ * that set, so listing a repeat twice would only mean the same verdict has to
+ * be present twice. Deduplicating HERE rather than in the verifier is
+ * deliberate -- the verifier still refuses duplicates, so a producer that
+ * builds a manifest with a repeated id is still caught.
+ */
+export function publicationMediaIds(album: AlbumSpec): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const page of album.pages) {
+    for (const placement of page.placements) {
+      if (seen.has(placement.media_id)) continue;
+      seen.add(placement.media_id);
+      ordered.push(placement.media_id);
+    }
+  }
+  return ordered;
 }
 
 export interface RenderPrintJobDependencies {
@@ -80,6 +116,10 @@ function parseParams(value: Record<string, unknown> | undefined): RenderPrintJob
     icc_profile: iccProfile,
     asset_paths: assetPaths as Record<string, string>,
     font_paths: fontPaths as Record<string, string>,
+    // Read through with no shape check and no default. `undefined` here is a
+    // job that presented no clearance, and `guardPrint` denies it -- which is
+    // the correct handling and the reason there is no `?? {}`.
+    safety_clearance: params.safety_clearance,
   };
 }
 
@@ -149,6 +189,14 @@ export async function runRenderPrintJob(
       throw new RenderPrintError("validation_failed", "The render_print params digest does not match the job.");
     }
     const params = parseParams(job.params);
+
+    // Fail fast, before anything is rendered. This is NOT the enforcement --
+    // see the second call below, immediately before the PDF is written -- it is
+    // here so that a job with no clearance does not burn an hour of compositing
+    // to be refused at the end.
+    const mediaIds = publicationMediaIds(album);
+    guardPrint(params.safety_clearance, { mediaIds });
+
     const pageStore = resolve(params.work_directory, job.job_id, "pages");
     const resumedPages = parseCursor(job, pageStore);
     const resolvePlacementAsset: PlacementAssetResolver = async (placement) => {
@@ -202,6 +250,14 @@ export async function runRenderPrintJob(
         await dependencies.persist(job);
       },
     });
+    // THE ENFORCEMENT. Verified against the ids of the book that was actually
+    // composited, in the same operation that writes the file, so there is no
+    // window in which the checked set and the exported set can differ. A book
+    // cannot be patched once it is in the post.
+    //
+    // `writePdfOnce` is the irreversible act; nothing may go between these two
+    // lines. If you are adding a step here, it belongs above the guard.
+    guardPrint(params.safety_clearance, { mediaIds: publicationMediaIds(album) });
     await writePdfOnce(params.output_path, result);
 
     const finishedAt = now();

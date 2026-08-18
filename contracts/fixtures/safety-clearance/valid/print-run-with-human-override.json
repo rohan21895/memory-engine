@@ -14,6 +14,11 @@
       "precision": "fp32"
     },
     "ran_at": "2026-08-16T18:00:00Z",
+    "class_order": [
+      "explicit",
+      "suggestive",
+      "medical_or_artistic"
+    ],
     "load_mode": "release"
   },
   "thresholds": {
@@ -47,5 +52,5 @@
     "indeterminate_count": 0,
     "denied_reason": null
   },
-  "manifest_id": "937515a01b92f7251a9370c1c29bd9e70af5dbbc9e58c92e83656e020a79c668"
+  "manifest_id": "2077b516076b0d58616b73664c5fc33a33286ac84e0084e9d35e7891f36b02e1"
 }

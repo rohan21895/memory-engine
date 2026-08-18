@@ -1,0 +1,13 @@
+[project]
+name = "memory-engine-share"
+version = "0.0.0"
+requires-python = ">=3.12"
+# Nothing but the safety gate, which is a sibling package rather than an
+# installed distribution and is put on sys.path by publication.py. There is no
+# HTTP client, no storage SDK and no token library here, because there is no
+# upload here -- see the module docstring for exactly what this service is and
+# is not today.
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
