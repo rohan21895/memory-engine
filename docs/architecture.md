@@ -88,6 +88,18 @@ that tensor's own extent, because a bare 112×112 crop has no image to refer to.
 idempotent. Digests are over **bytes**, never a re-serialisation — Python writes
 `1.0` where JavaScript writes `1`.
 
+**Where an id quantises a number, the arithmetic is pinned as well as the
+rounding.** `face_id` rounds each box component of `v * 10000` half away from
+zero, which settles Python's banker's rounding against JavaScript's and Rust's.
+It does not settle *how the product is computed*, and that is a second rule:
+`0.00035` is stored as a double just below 3.5/10000, so the **exact** product
+rounds to 3 while the **binary64** product is exactly 3.5 and rounds to 4. The
+contract pins binary64. Measured, the two readings disagree on 4419 of the
+10000 half-quantum decimal literals in [0,1] — and on **none** of two million
+uniformly random doubles, which is why a suite generated from random boxes
+cannot find it and why `contracts/vectors/face-id.json` carries a vector chosen
+for it specifically.
+
 **A hard cut is the absence of a Transition.** Derived fields are not exported.
 
 ---

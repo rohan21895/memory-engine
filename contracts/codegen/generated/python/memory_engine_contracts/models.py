@@ -2905,8 +2905,23 @@ class FaceRecord(ContractModel):
     # reachable rather than theoretical. The quantum is 1e-4 of the frame -- 0.6px on
     # a 6000px original, finer than any detector's own precision and coarse enough
     # that the last-bit disagreement between two execution providers cannot turn one
-    # face into two. `rotation_deg` does NOT participate, which is why Detection pins
-    # it to 0.
+    # face into two.
+    #
+    # THE PRODUCT IS EVALUATED IN BINARY64, NOT EXACTLY. `v * 10000` is the IEEE-754
+    # double multiplication, correctly rounded to a double, and half-away-from-zero is
+    # then applied to THAT double. Pinning the rounding mode without pinning the
+    # arithmetic leaves two rules, not one: x = 0.00035 is stored as the double
+    # 0.000349999999999999996..., so the EXACT product is 3.4999999999999999644... and
+    # rounds to 3, while the BINARY64 product is exactly 3.5 and rounds to 4. Measured
+    # over the 10000 half-quantum decimal literals in [0,1] the two readings disagree
+    # on 4419 of them, and over two million uniformly random doubles they disagree on
+    # none -- which is why a suite built from random boxes cannot find this, and why
+    # the vector table carries `bbox-half-quantum-only-in-binary64` specifically.
+    # Binary64 is pinned because it is what a producer doing float arithmetic computes
+    # without trying, and because it is what both existing implementations already do;
+    # a third writer reaching for exact rational arithmetic to be 'more correct' would
+    # silently issue a second id for a face that already has one. `rotation_deg` does
+    # NOT participate, which is why Detection pins it to 0.
     #
     # MODEL_ID, VERSION -- detection.detector.model_id and .version, verbatim.
     # model_id is a Slug and cannot contain the separator; ModelRef.version is

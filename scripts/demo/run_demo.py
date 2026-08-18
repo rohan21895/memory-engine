@@ -971,7 +971,14 @@ def stage_dedupe(run: Run, tools: Tools, source: Path,
             captured_utc=record["capture"]["captured_at"].get("utc"),
             favorite=(record.get("user") or {}).get("favorite", False),
         )
-        for record in records.values() if record.get("perceptual")
+        # `image_hash`, not `perceptual`. The block is permitted to exist with a
+        # null image_hash -- a video carries `keyframe_hashes` and no still
+        # digest -- and the algorithm lookup above indexes rather than gets, so
+        # the looser guard turns that record into a KeyError instead of a
+        # candidate with no pHash. packages/ranking-engine skips it correctly;
+        # this filter is the one that drifted.
+        for record in records.values()
+        if ((record.get("perceptual") or {}).get("image_hash"))
     ]
     groups = find_duplicates(candidates)
     if database is not None:

@@ -121,6 +121,38 @@
       "face_id": "fff36914b779a95c9331ba0605fe801ac5369ec91fa50ccd56ff5e47f5f3913b"
     },
     {
+      "name": "bbox-half-quantum-only-in-binary64",
+      "why": "The half of the rounding rule `bbox-on-the-half-quantum` does not reach. There the double product is EXACTLY 3002.5, so both readings of `v * 10000` agree and only the rounding mode is in question. Here the components are decimal literals whose doubles sit just BELOW a half quantum: 0.00035 is 0.000349999999999999996..., whose exact product is 3.49999999999999996... and rounds to 3, while the binary64 product is exactly 3.5 and rounds to 4. The contract pins the binary64 product, so this vector is 4,5,7,5000 and an implementation using exact rational arithmetic produces 3,4,6,5000 and a different id for the same face. h is 0.5 so that one component is unaffected by the question, which keeps a failure legible: three moved digits and one that did not.",
+      "input": {
+        "media_id": "19679a1a0a52f2b254ebec9ac6189dc20ff06268fee50acbf82c6e52bdd7ca72",
+        "frame_time": null,
+        "bbox": {
+          "x": 0.00035,
+          "y": 0.00045,
+          "w": 0.00065,
+          "h": 0.5
+        },
+        "detector": {
+          "model_id": "scrfd-10g-bnkps",
+          "version": "1.0.0"
+        }
+      },
+      "quantised_bbox": [
+        4,
+        5,
+        7,
+        5000
+      ],
+      "quantised_bbox_under_exact_rational_arithmetic": [
+        3,
+        4,
+        6,
+        5000
+      ],
+      "preimage_utf8_hex": "666163653a76311f313936373961316130613532663262323534656265633961633631383964633230666630363236386665653530616362663832633665353262646437636137321f1f342c352c372c353030301f73637266642d3130672d626e6b70731f312e302e30",
+      "face_id": "23231163a0e7aa211c257fc4e43973c0eee5e3c7908b9c56f99af0b4eafafc6e"
+    },
+    {
       "name": "bbox-covers-the-whole-frame",
       "why": "The extremes of the coordinate range: a box at the origin covering the entire oriented frame quantises to 0,0,10000,10000. Confirms the quantum applies to the normalised value and not to a pixel count.",
       "input": {
@@ -200,5 +232,6 @@
       "preimage_utf8_hex": "666163653a76311f313936373961316130613532663262323534656265633961633631383964633230666630363236386665653530616362663832633665353262646437636137321f1f343132382c333031362c313034322c313536331f79756e65742d323032336d61721f312e302e30",
       "face_id": "f7cfe9854836859e47417a59ae1de46397a599d6083f0364ec6f75021ebf97b2"
     }
-  ]
+  ],
+  "bbox_product_arithmetic": "IEEE-754 binary64: v * 10000 is the correctly-rounded double product, and `bbox_rounding` applies to that double rather than to the exact real product. The two readings disagree on 4419 of the 10000 half-quantum decimal literals in [0,1]."
 }

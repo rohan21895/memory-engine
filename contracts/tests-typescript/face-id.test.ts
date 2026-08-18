@@ -66,12 +66,17 @@ interface Vector {
   };
   preimage_utf8_hex: string;
   face_id: string;
+  // Present only on the vectors that exist to pin the quantisation; the two
+  // readings of `v * 10000` disagree there and nowhere else in the table.
+  quantised_bbox?: number[];
+  quantised_bbox_under_exact_rational_arithmetic?: number[];
 }
 
 interface VectorFile {
   domain_tag: string;
   bbox_quantum: number;
   bbox_rounding: string;
+  bbox_product_arithmetic: string;
   separator: { codepoint: number };
   vectors: Vector[];
 }
@@ -157,6 +162,39 @@ test("an integral frame time written as a float gives the same id", () => {
 test("the box rounds half away from zero", () => {
   // 0.30025 * 10000 is exactly 3002.5 as a double. Python's round() gives 3002.
   assert.equal(quantiseBoxComponent(0.30025), 3003);
+});
+
+test("the product is the binary64 one, not the exact one", () => {
+  // The rounding MODE is pinned above; this is the arithmetic under it, which
+  // the 0.30025 case cannot reach because its double product is exactly 3002.5
+  // and both readings agree there. 0.00035 is stored as a double just BELOW
+  // 3.5/10000: the exact product rounds to 3, the binary64 product is exactly
+  // 3.5 and rounds to 4. JavaScript has no way to compute the other reading by
+  // accident, which is precisely why the divergence has to be pinned here as
+  // well -- a Python or Rust writer does.
+  assert.equal(quantiseBoxComponent(0.00035), 4);
+  assert.equal(quantiseBoxComponent(0.00045), 5);
+  assert.equal(quantiseBoxComponent(0.00065), 7);
+
+  const vector = vectorFile.vectors.find(
+    (candidate) => candidate.name === "bbox-half-quantum-only-in-binary64",
+  );
+  assert.ok(vector, "the vector that pins the arithmetic is missing from the table");
+  assert.deepEqual(
+    [vector.input.bbox.x, vector.input.bbox.y, vector.input.bbox.w, vector.input.bbox.h].map(
+      quantiseBoxComponent,
+    ),
+    vector.quantised_bbox,
+  );
+  assert.notDeepEqual(
+    vector.quantised_bbox,
+    vector.quantised_bbox_under_exact_rational_arithmetic,
+    "the vector quantises the same way under both readings, so it pins nothing",
+  );
+  assert.ok(
+    String(vectorFile.bbox_product_arithmetic).toLowerCase().includes("binary64"),
+    "the table does not say which arithmetic the product uses",
+  );
 });
 
 test("a still and a video face are both covered by the fixtures", () => {

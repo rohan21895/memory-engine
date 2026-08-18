@@ -381,6 +381,59 @@ class StageBookkeepingTests(unittest.TestCase):
         self.assertNotIn("every stage ran", text)
 
 
+class DedupeCandidateTests(unittest.TestCase):
+    """A `perceptual` block is not a promise of an `image_hash`.
+
+    The schema lets `perceptual` exist with `image_hash: null` -- that is what a
+    video looks like, carrying `keyframe_hashes` and no still digest. When the
+    pHash algorithm became part of dedupe's comparison key (issue #14) the
+    lookup here became an INDEX rather than a get, while the filter feeding it
+    still only asked whether `perceptual` was present. Those two lines have to
+    agree: the loose filter turns such a record into a KeyError instead of a
+    record with nothing to compare. `packages/ranking-engine`'s own stage guards
+    on `image_hash`; this one drifted, and the demo is the path a reader runs
+    first.
+    """
+
+    def _stage(self, records: dict[str, dict]):
+        run = run_demo.Run(total=1)
+        return run_demo.stage_dedupe(
+            run, run_demo.Tools(), Path("/nonexistent"), records, None
+        )
+
+    def _record(self, media_id: str, perceptual: dict | None) -> dict:
+        return {
+            "media_id": media_id,
+            "perceptual": perceptual,
+            "capture": {"captured_at": {"utc": "2026-03-14T09:13:41Z"}},
+        }
+
+    def test_a_record_with_a_null_image_hash_is_skipped_not_fatal(self) -> None:
+        records = {
+            "a" * 64: self._record(
+                "a" * 64, {"image_hash": None, "keyframe_hashes": []}
+            ),
+        }
+        # Before the filter was tightened this raised KeyError('algorithm').
+        self.assertEqual([], self._stage(records))
+
+    def test_a_record_with_a_digest_still_reaches_dedupe(self) -> None:
+        """Otherwise the fix above could be "skip everything" and still pass."""
+        digest = {
+            "algorithm": "phash-dct-64-v2",
+            "hex": "49dc3d3822581cef",
+            "bits": 64,
+        }
+        records = {
+            "a" * 64: self._record("a" * 64, {"image_hash": digest}),
+            "b" * 64: self._record("b" * 64, {"image_hash": digest}),
+            "c" * 64: self._record("c" * 64, {"image_hash": None}),
+        }
+        groups = self._stage(records)
+        self.assertEqual(1, len(groups), "two identical digests are one group")
+        self.assertEqual(2, groups[0].size, "the hashless record joined a group")
+
+
 class JobSpecTests(unittest.TestCase):
     def test_the_scan_locator_digest_is_order_and_slash_insensitive(self) -> None:
         try:

@@ -1804,6 +1804,80 @@ class TestFaceIdentityIsComputable(unittest.TestCase):
         )
 
 
+class TestFaceIdsCrossReferenceTheirRecords(unittest.TestCase):
+    """A face_id copied onto a MediaRecord must still be a face_id.
+
+    `MediaRecord.faces.face_ids` is a denormalised copy, so it is exactly the
+    kind of field that goes stale when the thing it copies is recomputed --
+    and freezing the encoding (issue #34) moved four of them at once. Nothing
+    checked the copies: the schema only knows they are 64-hex strings, and
+    `check_face_record` never looks at a MediaRecord. So the cascade was
+    verified by the person doing the cascade, which in this repository has
+    never once been enough.
+    """
+
+    def _summaries(self):
+        return [
+            (entry["path"], record)
+            for entry in _entries(schema="media-record")
+            for record in [_fixture(entry)]
+            if (record.get("faces") or {}).get("face_ids")
+        ]
+
+    def _faces_by_id(self):
+        return {
+            record["face_id"]: record
+            for entry in _entries(schema="face-record")
+            for record in [_fixture(entry)]
+        }
+
+    def test_there_is_a_cross_reference_to_check(self):
+        self.assertTrue(
+            self._summaries(),
+            "no MediaRecord fixture lists a face_id, so this guard proves nothing",
+        )
+
+    def test_every_listed_face_id_belongs_to_a_face_record(self):
+        # Compared against the ids alone, not the records: assertIn renders the
+        # container it searched, and a dict of whole FaceRecords buries the one
+        # line that matters under five fixtures of JSON.
+        known = sorted(self._faces_by_id())
+        for path, record in self._summaries():
+            for face_id in record["faces"]["face_ids"]:
+                with self.subTest(fixture=path, face_id=face_id):
+                    self.assertIn(
+                        face_id,
+                        known,
+                        "this MediaRecord names a face no FaceRecord fixture "
+                        "produces. Either the id is stale after a recompute, or "
+                        "it was written by hand -- the failure issue #26 and "
+                        "issue #34 were both about.",
+                    )
+
+    def test_a_listed_face_was_found_in_that_very_media(self):
+        faces = self._faces_by_id()
+        for path, record in self._summaries():
+            for face_id in record["faces"]["face_ids"]:
+                face = faces.get(face_id)
+                if face is None:
+                    continue  # named by the test above
+                with self.subTest(fixture=path, face_id=face_id):
+                    self.assertEqual(
+                        record["media_id"],
+                        face["media_id"],
+                        "a face detected in one photo is listed on another",
+                    )
+
+    def test_the_summary_does_not_claim_more_faces_than_it_names(self):
+        for path, record in self._summaries():
+            with self.subTest(fixture=path):
+                self.assertLessEqual(
+                    len(record["faces"]["face_ids"]),
+                    record["faces"]["face_count"],
+                    "more ids than faces",
+                )
+
+
 class TestFaceIdVectors(unittest.TestCase):
     """The golden input -> face_id table issue #34 asked for.
 
@@ -1883,6 +1957,63 @@ class TestFaceIdVectors(unittest.TestCase):
             bankers,
             "this vector rounds the same way under both rules, so it does not "
             "pin the rule it was added to pin",
+        )
+
+    def test_the_quantised_product_is_the_binary64_one_not_the_exact_one(self):
+        """Pinning the rounding MODE does not pin the arithmetic.
+
+        `bbox-on-the-half-quantum` settles half-to-even against half-away-from-
+        zero, but its double product is exactly 3002.5, so both readings of
+        `v * 10000` agree there and the second question was never asked. It has
+        an answer: 0.00035 is stored as a double just BELOW 3.5/10000, so the
+        EXACT product rounds to 3 while the BINARY64 product is exactly 3.5 and
+        rounds to 4. The contract pins binary64, because that is what a producer
+        doing float arithmetic computes without trying and what both existing
+        implementations do -- and because an implementation reaching for exact
+        rational arithmetic to be more correct would issue a second id for a
+        face that already has one, silently.
+        """
+        from decimal import ROUND_HALF_UP, Decimal
+
+        vector = {v["name"]: v for v in FACE_ID_VECTORS["vectors"]}[
+            "bbox-half-quantum-only-in-binary64"
+        ]
+        box = vector["input"]["bbox"]
+        axes = ("x", "y", "w", "h")
+
+        binary64 = [_quantise(box[axis]) for axis in axes]
+        exact = [
+            int(
+                (Decimal(float(box[axis])) * _BBOX_QUANTUM).to_integral_value(
+                    rounding=ROUND_HALF_UP
+                )
+            )
+            for axis in axes
+        ]
+
+        self.assertNotEqual(
+            binary64,
+            exact,
+            "this vector quantises the same way under both readings of the "
+            "product, so it does not pin the reading it was added to pin",
+        )
+        self.assertEqual(binary64, vector["quantised_bbox"])
+        self.assertEqual(exact, vector["quantised_bbox_under_exact_rational_arithmetic"])
+        self.assertIn(
+            ",".join(str(q) for q in binary64),
+            bytes.fromhex(vector["preimage_utf8_hex"]).decode("utf-8"),
+            "the committed pre-image does not carry the binary64 quantisation",
+        )
+
+    def test_the_table_states_which_arithmetic_the_product_uses(self):
+        """The constant a reader needs in order to write a third implementation.
+        Without it the table looks complete and is not."""
+        self.assertIn("binary64", FACE_ID_VECTORS["bbox_product_arithmetic"].lower())
+        self.assertIn(
+            "BINARY64",
+            DOCUMENTS["face-record.schema.json"]["properties"]["face_id"]["description"],
+            "the vector table pins the arithmetic and the schema does not; the "
+            "schema is the contract",
         )
 
     def test_a_detector_change_moves_the_id(self):
