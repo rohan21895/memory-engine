@@ -32,6 +32,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from support import (  # noqa: E402
     PRINT_SAFE_SIZE,
@@ -429,6 +430,61 @@ class FaceIdentityWiring(unittest.TestCase):
         self.assertEqual(StageStatus.FAILED, faces.status)
         self.assertIn("adaface_ir101_512", faces.detail)
         self.assertIn("arcface_buffalo_l_512", faces.detail)
+
+    def test_changed_embedding_contents_create_a_new_clustering_job(self):
+        with FakeMlRuntime() as host:
+            first = self._run(host)
+            first_faces = _stage(first, "faces")
+            with self._database() as database:
+                embedded = [
+                    record
+                    for record in database.list_faces(limit=1000)
+                    if record.get("embedding")
+                ]
+                self.assertGreaterEqual(len(embedded), 2)
+                dimensions = embedded[0]["embedding"]["dimensions"]
+                identical = [1.0] + [0.0] * (dimensions - 1)
+                for record in embedded:
+                    reference = record["embedding"]
+                    database.vectors.put(
+                        "face",
+                        reference["index_key"],
+                        reference["space"],
+                        identical,
+                    )
+                database.connection.commit()
+
+            second = self._run(host, stages=["faces"])
+
+        second_faces = _stage(second, "faces")
+        self.assertEqual(StageStatus.COMPLETED, second_faces.status, second_faces.detail)
+        self.assertNotEqual(first_faces.job_id, second_faces.job_id)
+        self.assertEqual(1, second_faces.counts["clusters"])
+
+    def test_changed_recognition_pin_creates_a_new_clustering_job(self):
+        from memory_engine_pipeline import modelconfigs
+
+        with FakeMlRuntime() as host:
+            first = self._run(host)
+            first_faces = _stage(first, "faces")
+            real_pin = modelconfigs.registry_pin
+
+            def changed_pin(repo_root, model_id):
+                result = real_pin(repo_root, model_id)
+                if model_id == "arcface-buffalo-l":
+                    result = dict(
+                        result,
+                        version=f"{result['version']}-next",
+                        config_blake3="22" * 32,
+                    )
+                return result
+
+            with patch.object(modelconfigs, "registry_pin", side_effect=changed_pin):
+                second = self._run(host, stages=["faces"])
+
+        second_faces = _stage(second, "faces")
+        self.assertEqual(StageStatus.COMPLETED, second_faces.status, second_faces.detail)
+        self.assertNotEqual(first_faces.job_id, second_faces.job_id)
 
     def test_a_human_answer_about_a_child_survives_re_detection(self):
         """`--reanalyze-faces` rewrites the same face_id; it must not forget it.

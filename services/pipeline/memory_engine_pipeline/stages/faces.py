@@ -46,10 +46,11 @@ is still protected from the guillotine.
 from __future__ import annotations
 
 import json
+import struct
 from typing import Any
 
 from ..events import utc_now
-from ..ids import digest_of
+from ..ids import blake3_hex, digest_of
 from ..jobstore import build_job
 from .base import (
     StageContext,
@@ -89,11 +90,13 @@ def run(ctx: StageContext) -> StageResult:
     )
 
     embeddings: dict[str, Any] = {}
+    embedding_inputs: list[dict[str, Any]] = []
     unreadable: list[str] = []
     spaces: set[str] = set()
     for record in records:
         reference = record.get("embedding")
         if not reference:
+            embedding_inputs.append(_embedding_input(record, None, None))
             continue
         space = reference.get("space")
         values = ctx.database.vectors.get(
@@ -105,7 +108,9 @@ def run(ctx: StageContext) -> StageResult:
             # a face with no vector goes to review, which is where a face whose
             # vector was lost belongs too.
             unreadable.append(record["face_id"])
+            embedding_inputs.append(_embedding_input(record, reference, None))
             continue
+        embedding_inputs.append(_embedding_input(record, reference, values))
         try:
             # The record's OWN space, never a constant. See
             # `faceidentity.embedding_of`: stamping one space on every vector
@@ -142,7 +147,30 @@ def run(ctx: StageContext) -> StageResult:
             counts={"faces": len(records), "embedded": len(embeddings)},
         )
 
-    run_id = _run_id(ctx, records, spaces=spaces)
+    from .. import modelconfigs  # noqa: PLC0415
+
+    try:
+        recognition_pin = modelconfigs.registry_pin(
+            ctx.repo_root, ctx.settings.face_embedding_model
+        )
+    except modelconfigs.ModelConfigError as error:
+        return StageResult(
+            stage=STAGE,
+            status=StageStatus.FAILED,
+            detail=str(error),
+            counts={"faces": len(records), "embedded": len(embeddings)},
+        )
+
+    embedding_set_digest = digest_of(
+        {"face_embeddings": sorted(embedding_inputs, key=lambda item: item["face_id"])}
+    )
+    run_id = _run_id(
+        ctx,
+        records,
+        spaces=spaces,
+        embedding_set_digest=embedding_set_digest,
+        recognition_pin=recognition_pin,
+    )
     job = build_job(
         job_type=JOB_TYPE,
         scope=ctx.settings.scope,
@@ -158,7 +186,10 @@ def run(ctx: StageContext) -> StageResult:
             "spaces": sorted(spaces),
             "faces": len(records),
             "embedded": len(embeddings),
+            "embedding_set_digest": embedding_set_digest,
+            "model_pins": [recognition_pin],
         },
+        models=[recognition_pin],
         priority=350,
     )
     job = ctx.jobs.get(job["job_id"]) or ctx.jobs.ensure(job)
@@ -265,6 +296,7 @@ def run(ctx: StageContext) -> StageResult:
         "eligible_for_automated_output": eligible,
         "awaiting_review": len(records) - eligible,
         "review_questions": len(queue),
+        "embedding_set_digest": embedding_set_digest,
     }
     # No JobSpec outputs are declared. The contract's JobOutput.kind has no
     # value for a review queue -- it is not a record of anything, because
@@ -311,7 +343,12 @@ def _all_faces(ctx: StageContext) -> list[dict[str, Any]]:
 
 
 def _run_id(
-    ctx: StageContext, records: list[dict[str, Any]], *, spaces: set[str]
+    ctx: StageContext,
+    records: list[dict[str, Any]],
+    *,
+    spaces: set[str],
+    embedding_set_digest: str,
+    recognition_pin: dict[str, Any],
 ) -> str:
     """A Slug naming this clustering pass, stable for an unchanged library.
 
@@ -329,9 +366,49 @@ def _run_id(
             "faces": sorted(record["face_id"] for record in records),
             "merge_threshold": faceidentity.MERGE_THRESHOLD,
             "spaces": sorted(spaces),
+            "embedding_set_digest": embedding_set_digest,
+            "recognition_model_pin": recognition_pin,
         }
     )
     return f"{faceidentity.CLUSTERING_METHOD_RUN_PREFIX}-{digest[:16]}"
+
+
+def _embedding_input(
+    record: dict[str, Any],
+    reference: dict[str, Any] | None,
+    values: list[float] | None,
+) -> dict[str, Any]:
+    """The immutable vector evidence that makes a clustering pass one job.
+
+    Face ids address detections, not embeddings. A model upgrade normally
+    preserves every face id, so the vector bytes and their exact reference
+    must participate independently. Values come back from media-db as decoded
+    float32; packing them as little-endian float32 reproduces the indexed bytes
+    without relying on JSON float formatting.
+    """
+    if reference is None:
+        reference_identity = None
+    else:
+        reference_identity = {
+            key: reference.get(key)
+            for key in (
+                "space",
+                "dimensions",
+                "storage",
+                "index_key",
+                "quantization",
+                "normalized",
+            )
+        }
+    vector_digest = None
+    if values is not None:
+        encoded = struct.pack(f"<{len(values)}f", *values)
+        vector_digest = blake3_hex(encoded)
+    return {
+        "face_id": record["face_id"],
+        "reference": reference_identity,
+        "vector_blake3": vector_digest,
+    }
 
 
 def _refresh_media_summaries(
