@@ -86,7 +86,12 @@
         "black_luma_max": 0.02,
         "pocket_luma_max": 0.08,
         "pocket_sharpness_max": 0.06,
-        "histogram_bins": 64
+        "histogram_bins": 64,
+        "face_sharpness_half_point": 0.0008,
+        "face_sharpness_std_edge_px": 112,
+        "face_sharpness_min_edge_px": 16,
+        "face_visibility_floor_score": 0.55,
+        "face_visibility_full_score": 0.9
       },
       "license": {
         "spdx": "NOASSERTION",

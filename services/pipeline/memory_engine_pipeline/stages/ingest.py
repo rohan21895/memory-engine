@@ -443,24 +443,46 @@ def _follow(ctx: StageContext, process: subprocess.Popen[str], checkpoint: Path)
     `Progress`, so tailing it costs nothing and tells the truth -- including
     `units_total: null` while the walk is still discovering.
     """
-    last_seen = -1.0
-    while process.poll() is None:
-        time.sleep(_POLL_INTERVAL_S)
+    # Keyed on (units, message), not units alone: the worker's terminal
+    # checkpoint moves from "scanning local source" to "source scan complete"
+    # at the SAME unit count, and the boundary event is what the scale
+    # harness's phase breakdown is reconstructed from.
+    last_seen: tuple[float, str] | None = None
+
+    def forward(*, force: bool = False) -> None:
+        nonlocal last_seen
         snapshot = read_json(checkpoint)
         if not isinstance(snapshot, dict):
-            continue
+            return
         progress = (snapshot.get("state") or {}).get("progress") or {}
         done = progress.get("units_done")
-        if done is None or done == last_seen:
-            continue
-        last_seen = done
+        if done is None:
+            return
+        seen = (float(done), str(progress.get("message") or ""))
+        # The dedupe is skipped when forcing: an unforced emit inside the
+        # reporter's throttle window is silently DROPPED, so `last_seen` means
+        # "read", not "delivered". The forced terminal call must re-emit even
+        # a state it already read, or the boundary event's existence depends
+        # on poll timing -- a duplicate progress line is harmless, a missing
+        # terminal one loses the phase boundary the scale harness rebuilds.
+        if not force and seen == last_seen:
+            return
+        last_seen = seen
         ctx.reporter.progress(
             STAGE,
             units_done=float(done),
             units_total=progress.get("units_total"),
             unit=progress.get("unit") or "files",
             message=progress.get("message") or "",
+            force=force,
         )
+
+    while process.poll() is None:
+        time.sleep(_POLL_INTERVAL_S)
+        forward()
+    # One final read AFTER the worker exits: a scan that finishes between two
+    # polls otherwise never surfaces its terminal checkpoint.
+    forward(force=True)
 
 
 def _last_json_line(stdout: str) -> dict[str, Any]:

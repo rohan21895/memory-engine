@@ -351,7 +351,9 @@ def run(ctx: StageContext) -> StageResult:
         for start in range(0, len(photos), per_page)
     ]
     try:
-        pages = layout_album(requests, profile, cover=photos[0])
+        pages = layout_album(
+            requests, profile, cover=_cover_photo(photos, planned.scores)
+        )
     except LayoutError as error:
         ctx.jobs.fail(job, code="validation_failed", message="layout failed",
                       retryable=False)
@@ -579,6 +581,29 @@ def _photo(ctx: StageContext, record: Mapping[str, Any]) -> Any:
         ),
         salience=None,
     )
+
+
+def _cover_photo(photos: list[Any], scores: Mapping[str, Any]) -> Any:
+    """The cover is the HERO -- the best photo in the book -- not page one.
+
+    The cover page and the first interior page sit back to back in the
+    rendered PDF, and `cover=photos[0]` put the identical photo on both
+    (`photos` is chronological, so the cover was just whichever moment came
+    first). A photo book's cover repeats a highlight from inside; when the
+    highlight IS chronologically first, the runner-up takes the cover so the
+    same image never faces itself.
+    """
+    if len(photos) < 2:
+        return photos[0]
+
+    def value(photo: Any) -> float:
+        score = scores.get(photo.media_id)
+        return float(score.value) if score is not None else 0.0
+
+    hero = min(photos, key=lambda p: (-value(p), p.media_id))
+    if hero.media_id != photos[0].media_id:
+        return hero
+    return min(photos[1:], key=lambda p: (-value(p), p.media_id))
 
 
 #: A face smaller than this fraction of the frame is background, and its focus

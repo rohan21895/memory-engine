@@ -53,6 +53,7 @@ __all__ = [
     "ClassicalQuality",
     "HISTOGRAM_BINS",
     "SUPPORTED_PROXY_KINDS",
+    "face_visibility",
     "measure",
     "measure_face_sharpness",
 ]
@@ -92,6 +93,22 @@ FACE_SHARPNESS_HALF_POINT = 8.0e-4
 #: Below this many proxy pixels on either edge, a crop's Laplacian is sensor
 #: noise, not focus evidence; the face is reported as unmeasurable (None).
 FACE_SHARPNESS_MIN_EDGE_PX = 16
+
+# Detector confidence as a visibility proxy. SCRFD's detection_score drops
+# when a face is partially covered -- measured on a real library: faces
+# behind a held-up flag scored 0.61-0.77 against 0.82-0.91 for the same
+# child's clear faces. Mapped linearly: at or below the floor a face
+# contributes nothing to "this photo shows a face well", at the ceiling it
+# contributes fully. A proxy, not an occlusion model -- FaceAttributes has
+# fields for the real thing when a model earns its license audit.
+FACE_VISIBILITY_FLOOR_SCORE = 0.55
+FACE_VISIBILITY_FULL_SCORE = 0.90
+
+
+def face_visibility(detection_score: float) -> float:
+    """Detector confidence -> a [0,1] visibility factor. See the constants."""
+    span = FACE_VISIBILITY_FULL_SCORE - FACE_VISIBILITY_FLOOR_SCORE
+    return _quantise((float(detection_score) - FACE_VISIBILITY_FLOOR_SCORE) / span)
 
 # Clipping tolerated before it costs anything. Specular highlights and genuine
 # black are normal; a blown sky or a crushed shadow is not.

@@ -337,59 +337,119 @@ def run(ctx: StageContext) -> StageResult:
     )
 
 
+#: Fusion formula version for `attributes.quality`. Bumped when the formula
+#: changes so the backfill recomputes every face rather than a silent
+#: redefinition riding on old numbers. 1-1-0: sharpness x visibility.
+_FACE_QUALITY_RUN_ID = "face-quality-1-1-0"
+
+#: A face below this fraction of the frame is background; it neither lifts a
+#: photo's face_quality nor should its blur condemn one. Mirrors the album
+#: stage's significance floor.
+_FACE_SUMMARY_MIN_AREA = 0.02
+
+
 def _backfill_face_sharpness(ctx: StageContext, records: list[dict[str, Any]]) -> int:
-    """Measure and store sharpness for every face that does not have one yet.
+    """Measure and fuse face quality for every face not on the current formula.
 
     Self-repairing rather than a migration: the same pass covers faces written
-    before the measure existed and faces written by this run, and a face whose
-    proxy has gone missing is simply left unmeasured (None) -- absence of the
-    proxy must not fabricate a focus claim.
+    before the measure existed, faces written by this run, and faces measured
+    under an older fusion formula. A face whose proxy has gone missing is left
+    unmeasured (None) -- absence of the proxy must not fabricate a claim.
 
-    Writes `attributes.sharpness` (the measurement) and `attributes.quality`
-    (the fused face score album selection sorts on -- today that fusion is
-    sharpness alone, and the Score's run_id says which executor produced it,
-    so a later fusion that adds eyes-open or pose is a new run, not a silent
-    redefinition).
+    Writes, per face, `attributes.sharpness` (the focus measurement) and
+    `attributes.quality` = sharpness x visibility (the fused score album
+    selection sorts on; visibility is the detector-confidence proxy from
+    `classical.face_visibility`). Then, per touched photo,
+    `MediaRecord.quality.face_quality` = the MAX fused quality over its
+    significant faces -- max, not mean, because "at least one face is clearly
+    visible and in focus" is the claim a family album cares about.
     """
-    from ..classical import EXECUTOR_VERSION, measure_face_sharpness  # noqa: PLC0415
+    from ..classical import face_visibility, measure_face_sharpness  # noqa: PLC0415
 
     pending: dict[str, list[dict[str, Any]]] = {}
     for record in records:
         attributes = record.get("attributes") or {}
-        if attributes.get("sharpness") is None:
+        quality = attributes.get("quality") or {}
+        if (
+            attributes.get("sharpness") is None
+            or quality.get("run_id") != _FACE_QUALITY_RUN_ID
+        ):
             pending.setdefault(record["media_id"], []).append(record)
     if not pending:
         return 0
 
-    run_id = f"face-sharpness-{EXECUTOR_VERSION.replace('.', '-')}"
     updated = 0
     for media_id, faces in sorted(pending.items()):
-        proxies = ctx.database.proxies_for_media(media_id, kind="thumbnail_512")
-        if not proxies:
-            continue
-        path = proxies[0].get("path")
-        if not path or not Path(path).is_file():
-            continue
-        boxes = [face["detection"]["bbox"] for face in faces]
-        try:
-            values = measure_face_sharpness(path, boxes)
-        except Exception as error:  # noqa: BLE001 - one bad proxy must not
-            # abort the stage; the face stays unmeasured and the gate treats
-            # that as "no focus evidence", never as sharp.
-            ctx.reporter.event(
-                STAGE, "note", f"face sharpness failed for {media_id[:12]}: {error}"
-            )
-            continue
-        for face, value in zip(faces, values, strict=True):
-            if value is None:
-                continue
+        needs_measure = [
+            face for face in faces
+            if (face.get("attributes") or {}).get("sharpness") is None
+        ]
+        if needs_measure:
+            proxies = ctx.database.proxies_for_media(media_id, kind="thumbnail_512")
+            path = proxies[0].get("path") if proxies else None
+            if path and Path(path).is_file():
+                boxes = [face["detection"]["bbox"] for face in needs_measure]
+                try:
+                    values = measure_face_sharpness(path, boxes)
+                except Exception as error:  # noqa: BLE001 - one bad proxy must
+                    # not abort the stage; the face stays unmeasured and the
+                    # album gate treats that as "no focus evidence", never as
+                    # sharp.
+                    ctx.reporter.event(
+                        STAGE, "note",
+                        f"face sharpness failed for {media_id[:12]}: {error}",
+                    )
+                    values = [None] * len(needs_measure)
+                for face, value in zip(needs_measure, values, strict=True):
+                    if value is not None:
+                        attributes = dict(face.get("attributes") or {})
+                        attributes["sharpness"] = value
+                        face["attributes"] = attributes
+
+        for face in faces:
             attributes = dict(face.get("attributes") or {})
-            attributes["sharpness"] = value
-            attributes["quality"] = {"value": value, "run_id": run_id}
+            sharpness = attributes.get("sharpness")
+            if sharpness is None:
+                continue
+            fused = round(
+                sharpness * face_visibility(face["detection"]["detection_score"]), 6
+            )
+            attributes["quality"] = {"value": fused, "run_id": _FACE_QUALITY_RUN_ID}
             face["attributes"] = attributes
             ctx.database.put_face(face)
             updated += 1
+
+        _refresh_face_quality_summary(ctx, media_id)
     return updated
+
+
+def _refresh_face_quality_summary(ctx: StageContext, media_id: str) -> None:
+    """MediaRecord.quality.face_quality from the photo's significant faces.
+
+    This is the number photo-quality fusion already knows how to weigh (0.18
+    in the default profile) -- the plug was in the contract and the ranking
+    engine all along; this writes the value into it.
+    """
+    fused = [
+        ((face.get("attributes") or {}).get("quality") or {}).get("value")
+        for face in ctx.database.faces_for_media(media_id)
+        if ((face.get("attributes") or {}).get("quality") or {}).get("value")
+        is not None
+        and (face["detection"].get("face_area_ratio") or 0.0)
+        >= _FACE_SUMMARY_MIN_AREA
+    ]
+    if not fused:
+        return
+    record = ctx.database.get_media(media_id)
+    if record is None:
+        return
+    quality = dict(record.get("quality") or {})
+    score = {"value": max(fused), "run_id": _FACE_QUALITY_RUN_ID}
+    if quality.get("face_quality") == score:
+        return
+    quality["face_quality"] = score
+    record["quality"] = quality
+    ctx.database.put_media(record)
 
 
 def _all_faces(ctx: StageContext) -> list[dict[str, Any]]:
