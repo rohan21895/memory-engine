@@ -332,16 +332,26 @@ fn same_size_valid_json_artifact_corruption_fails_journal_recovery() {
         .expect("journal contains an output delta");
     let original = fs::read(&artifact).expect("record artifact");
     let record: MediaRecord = serde_json::from_slice(&original).expect("MediaRecord JSON");
-    let source_path = record.sources[0].path.as_bytes();
-    let mut replacement = source_path.to_vec();
-    let last = replacement.last_mut().expect("source path is nonempty");
-    *last = if *last == b'x' { b'y' } else { b'x' };
+    // Search for the path as it is SERIALIZED, not as the OS spells it: on
+    // Windows the path contains backslashes, which JSON escapes as `\\`, so
+    // the raw bytes never occur in the artifact and the search below would
+    // panic before corrupting anything. Serializing the string (quotes
+    // included) yields the exact byte run the artifact holds on every OS.
+    let source_json =
+        serde_json::to_string(&record.sources[0].path).expect("source path serializes");
+    let needle = source_json.as_bytes();
+    let mut replacement = needle.to_vec();
+    // Flip the filename's last character -- the byte before the closing
+    // quote. Filenames here end alphanumeric, so the result is still valid
+    // JSON of identical length.
+    let last = replacement.len() - 2;
+    replacement[last] = if replacement[last] == b'x' { b'y' } else { b'x' };
     let offset = original
-        .windows(source_path.len())
-        .position(|window| window == source_path)
+        .windows(needle.len())
+        .position(|window| window == needle)
         .expect("serialized source path");
     let mut corrupted = original.clone();
-    corrupted[offset..offset + source_path.len()].copy_from_slice(&replacement);
+    corrupted[offset..offset + needle.len()].copy_from_slice(&replacement);
     assert_eq!(corrupted.len(), original.len());
     serde_json::from_slice::<MediaRecord>(&corrupted).expect("still-valid MediaRecord JSON");
     fs::write(&artifact, corrupted).expect("same-size artifact corruption");
