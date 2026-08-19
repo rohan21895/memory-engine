@@ -35,6 +35,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "packages" / "prompt-engine"))
+sys.path.insert(0, str(REPO_ROOT / "packages" / "safety-gate"))
 
 # Planted in the proxies. The Node test searches the emitted request body for
 # every one of these, so they are declared here rather than duplicated there.
@@ -185,12 +186,39 @@ def main() -> int:
     ):
         try:
             album_taste.run_album_taste(
-                plan, grant=grant, ledger=ledger, sender=sender
+                plan, grant=grant, ledger=ledger, sender=sender, clearance=None
             )
         except transport.EgressBlocked as blocked:
             blocks[name] = blocked.code
         else:  # pragma: no cover - a send with no consent is the failure
             blocks[name] = "NOT BLOCKED"
+
+    # The third refusal is the safety gate's, and it is DELIBERATELY a
+    # different exception type: consent covers whether a sheet may be sent,
+    # clearance covers what is on it. Valid consent plus no clearance must
+    # still send nothing.
+    from memory_engine_safety.verify import PublicationBlocked
+
+    consented = transport.EgressGrant(
+        requires_egress=True,
+        consent=transport.ConsentRef(
+            ledger_entry_id="3f2a1c58-4b7e-4c21-9a6d-0e51b7c9d420",
+            scope=transport.REQUIRED_CONSENT_SCOPE,
+            granted_at="2026-01-01T00:00:00+00:00",
+        ),
+        destination=transport.REQUIRED_DESTINATION,
+        payload_kind="contact_sheet",
+    )
+    try:
+        album_taste.run_album_taste(
+            plan, grant=consented, ledger=ledger, sender=sender, clearance=None
+        )
+    except PublicationBlocked:
+        blocks["clearance_absent"] = "safety_clearance"
+    except transport.EgressBlocked as blocked:  # pragma: no cover - wrong type
+        blocks["clearance_absent"] = f"WRONG TYPE: {blocked.code}"
+    else:  # pragma: no cover - a send with no clearance is the failure
+        blocks["clearance_absent"] = "NOT BLOCKED"
 
     out.mkdir(parents=True, exist_ok=True)
     (out / "request-body.json").write_bytes(prepared.body_bytes)

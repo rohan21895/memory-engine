@@ -160,6 +160,12 @@ test("no bytes leave without a consent-ledger entry", () => {
       "egress_not_declared",
       "a job that declared no egress was allowed to use the network",
     );
+    assert.equal(
+      probeRun.local.blocks.clearance_absent,
+      "safety_clearance",
+      "valid consent with no safety clearance was allowed to send -- and via " +
+        "the wrong exception type if the value names one",
+    );
     // The sender is the witness: a ledger assertion alone would still pass if
     // the ledger were the broken thing.
     assert.equal(probeRun.local.sender_calls, 0, "the transport called the sender");
