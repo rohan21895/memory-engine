@@ -41,30 +41,68 @@ const script = scriptSource
   .split("\n")
   .filter((line) => line.trim() !== "" && !/^\s*#/.test(line))
   .join("\n");
+// Stricter still than comment-stripping: only a `run "label" ...` invocation
+// counts as running a command. A bare mention on an executable line (an echo,
+// a variable assignment) is still not execution.
+const executableRunLines = script
+  .split("\n")
+  .map((line) => line.trim())
+  .filter(
+    (line) => /^run\s+/.test(line) || /^\(\s*cd\b.*\brun\s+/.test(line),
+  );
 
 // Reasons, not just a skip list. Each says why the local script cannot or need
 // not run this, so a reader can judge whether the exemption is still true.
 const EXEMPT = [
   [/^npm ci\b/, "installs dependencies; the local tree already has them"],
   [/^python3 -m pip install/, "installs dependencies"],
+  [/^brew install ffmpeg@7$/, "installs the supported macOS pipeline runtime"],
+  [/^sudo apt-get install\b/, "installs the Linux runner's pipeline prerequisite"],
+  [/^brew link --force ffmpeg@7$/, "places the keg-only CI runtime on PATH"],
   [/^cargo test .*apps\/desktop/, "Windows Desktop job; not platform-independent"],
   [/^cargo test .*workers\/ingest/, "run by run-workspace-check.mjs, which the script does call"],
   [/^npm run codegen:check/, "same check as check-codegen-freshness.mjs, which the script calls"],
   [/^npm run lint$/, "run by run-workspace-check.mjs lint"],
   [/^npm test$/, "run by run-workspace-check.mjs test"],
+  [
+    /^python3 services\/pipeline\/tests\/run_required_suite\.py$/,
+    "run by the undeferred workspace test command on supported local hardware",
+  ],
 ];
 
 const commands = [
   ...new Set(
     workflow
       .split("\n")
-      .map((line) => line.match(/^\s*-\s+run:\s+(.*)$/))
+      // Both spellings of a single-line command: a bare `- run: cmd` list item
+      // and the `run: cmd` of a NAMED step. The first version matched only the
+      // bare form, so moving a command into a named step (for an `if:` guard)
+      // made it invisible here -- and the deferred-pipeline check then reported
+      // the required suite missing while the workflow still ran it.
+      .map((line) => line.match(/^\s*(?:-\s+)?run:\s+(.*)$/))
       .filter(Boolean)
-      .map((m) => m[1].trim()),
+      .map((m) => m[1].trim())
+      // Multi-line blocks (`run: |`) carry no command on this line. They are
+      // deliberately out of scope: each is a named, workflow-specific script,
+      // not a command local-ci.sh could mirror verbatim.
+      .filter((command) => command !== "|" && command !== ">"),
   ),
 ];
 
 const missing = [];
+const deferredPipelineCommand =
+  "node scripts/ci/run-workspace-check.mjs test --defer-pipeline";
+const requiredPipelineCommand =
+  "python3 services/pipeline/tests/run_required_suite.py";
+if (
+  commands.includes(deferredPipelineCommand) &&
+  !commands.includes(requiredPipelineCommand)
+) {
+  missing.push({
+    command: requiredPipelineCommand,
+    signature: "required because the Linux workspace job defers services/pipeline",
+  });
+}
 for (const command of commands) {
   const exemption = EXEMPT.find(([pattern]) => pattern.test(command));
   if (exemption) continue;
@@ -89,14 +127,17 @@ for (const command of commands) {
 
   if (!signature) {
     missing.push({ command, signature: "(could not derive one)" });
-  } else if (!script.includes(signature)) {
+  } else if (!executableRunLines.some((line) => line.includes(signature))) {
     missing.push({ command, signature });
   }
 }
 
 if (missing.length === 0) {
+  const requiredCommandCount = commands.filter(
+    (command) => !EXEMPT.some(([pattern]) => pattern.test(command)),
+  ).length;
   console.log(
-    `local-ci.sh covers all ${commands.length - EXEMPT.length} platform-independent workflow commands.`,
+    `local-ci.sh covers all ${requiredCommandCount} platform-independent workflow commands.`,
   );
   process.exit(0);
 }

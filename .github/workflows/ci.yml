@@ -66,12 +66,18 @@ jobs:
       # services/pipeline's tests ERROR rather than skip when they are absent,
       # which is deliberate -- a skipped measurement must not read as a passing
       # one -- so CI has to carry them.
-      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "pillow>=10.0" "numpy>=1.26" ./workers/ml-runtime
+      #
+      # onnx is here so the precision-check tests in models/tests that build a
+      # SYNTHETIC graph run rather than skip -- the required-suite runner
+      # refuses undeclared skips, and these two need only the package, not the
+      # 857MB exported artifact (which has its own declared exclusions).
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "pillow>=10.0" "numpy>=1.26" "onnx>=1.16" ./workers/ml-runtime
       - run: npm ci --ignore-scripts
-      - run: npm test
-      # Unlike unittest's default runner, this exits non-zero if any required
-      # ml-runtime module or test is skipped.
-      - run: python3 workers/ml-runtime/tests/run_required_suite.py
+      # The Linux host has no NVDEC device and the production ingest worker
+      # correctly refuses software decode. Run every other workspace component
+      # here and defer services/pipeline to the required macOS VideoToolbox job
+      # below. The runner names the deferral rather than reporting a skip/pass.
+      - run: node scripts/ci/run-workspace-check.mjs test --defer-pipeline
       # CLAUDE.md hard rule 7: "Model swaps are gated by the eval harness in
       # CI." Until this step existed the harness was a library nothing but its
       # own test file imported, so the rule was not true. Every committed
@@ -86,6 +92,91 @@ jobs:
       - name: Eval harness regression gate
         working-directory: packages/eval-harness
         run: python3 -m memory_engine_eval.harness gates/*.gate.json
+
+  pipeline-integration:
+    name: Pipeline Integration (VideoToolbox)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # The supported runtime is FFmpeg 7. An unversioned install pulled 8.1.2:
+      # its capability tables advertised the full VideoToolbox pipeline, but
+      # every real proxy command failed. Pin the major and link the keg-only
+      # formula so both the Python fixture builder and Rust worker resolve it.
+      - run: brew install ffmpeg@7
+      - run: brew link --force ffmpeg@7
+      - run: python3 -m pip install --upgrade pip
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "pillow>=10.0" "numpy>=1.26" ./workers/ml-runtime
+      - run: npm ci --ignore-scripts
+      # `cargo test` only creates a debug worker and vitest does not emit
+      # render-video/dist. Build the exact artifacts the pipeline invokes.
+      - run: cargo build --release --manifest-path workers/ingest/Cargo.toml --all-features
+      - run: npm run build --workspace @memory-engine/render-video
+      # Capability tables are not proof: FFmpeg 7 and 8 both advertised this
+      # complete chain on the hosted runner and the worker still failed at
+      # runtime (#106). So the chain is PROBED with real frames, and what runs
+      # next depends on what the probe proved -- never on what was advertised.
+      # Exercise synthetic bytes here so stderr is safe to publish; production
+      # worker errors deliberately redact source details.
+      - name: Probe the VideoToolbox production chain with real frames
+        id: videotoolbox
+        continue-on-error: true
+        run: |
+          pipeline_fixture_source="${RUNNER_TEMP}/memory-engine-vt-source.mp4"
+          pipeline_fixture_proxy="${RUNNER_TEMP}/memory-engine-vt-proxy.mp4"
+          ffmpeg -hide_banner -nostdin -loglevel error \
+            -f lavfi -i "testsrc2=size=320x240:rate=30" -t 1 \
+            -c:v libx264 -pix_fmt yuv420p -y "${pipeline_fixture_source}"
+          ffmpeg -hide_banner -nostdin -loglevel info \
+            -hwaccel videotoolbox -hwaccel_output_format videotoolbox_vld \
+            -i "${pipeline_fixture_source}" -map 0:v:0 -map '0:a?' \
+            -map_metadata -1 \
+            -vf "scale_vt=w=ceil(iw*480/ih/2)*2:h=480,hwdownload,format=nv12,setsar=1,showinfo" \
+            -fps_mode passthrough -c:v h264_videotoolbox -allow_sw 0 \
+            -profile:v high -b:v 1060660 -c:a aac -b:a 96k \
+            -movflags +faststart -y "${pipeline_fixture_proxy}"
+      # The gate itself, wherever the probe proved the hardware real. On a
+      # future self-hosted or vendor Apple-silicon runner this turns the full
+      # required suite back on with no workflow change.
+      - name: Hardware pipeline suite (required wherever the chain works)
+        if: steps.videotoolbox.outcome == 'success'
+        run: python3 services/pipeline/tests/run_required_suite.py
+      # Owner decision on #106, option 3: hosted GitHub macOS advertises
+      # VideoToolbox but cannot initialise it, so on these runners the
+      # hardware gate is declared NOT RUN -- loudly, with the issue that
+      # documents why -- rather than skipped in a way that reads as a pass.
+      # Green on this job therefore means "software smoke passed", never
+      # "hardware gate passed"; #91 and the Phase 1 hardware gate remain open
+      # until the suite runs on real Apple silicon.
+      - name: 'Hardware gate NOT RUN here — see #106'
+        if: steps.videotoolbox.outcome != 'success'
+        run: |
+          echo "::notice title=Hardware gate NOT RUN::This hosted runner advertises VideoToolbox but cannot initialise it (#106). The 88-test hardware suite must run on real Apple silicon and is executed on the maintainer's machine; green here covers the software smoke only."
+      # What CAN honestly execute here: the same fixture build, container
+      # conventions and probe reporting through a software decode, so parsing,
+      # proxy shape and failure surfacing are still exercised on every PR.
+      - name: Software-decode smoke (runs where the hardware gate cannot)
+        if: steps.videotoolbox.outcome != 'success'
+        run: |
+          smoke_source="${RUNNER_TEMP}/memory-engine-sw-source.mp4"
+          smoke_proxy="${RUNNER_TEMP}/memory-engine-sw-proxy.mp4"
+          ffmpeg -hide_banner -nostdin -loglevel error \
+            -f lavfi -i "testsrc2=size=320x240:rate=30" -t 1 \
+            -c:v libx264 -pix_fmt yuv420p -y "${smoke_source}"
+          ffmpeg -hide_banner -nostdin -loglevel error \
+            -i "${smoke_source}" -map 0:v:0 -map '0:a?' -map_metadata -1 \
+            -vf "scale=w=ceil(iw*240/ih/2)*2:h=240,setsar=1" \
+            -fps_mode passthrough -c:v libx264 -pix_fmt yuv420p \
+            -movflags +faststart -y "${smoke_proxy}"
+          height=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=height -of csv=p=0 "${smoke_proxy}")
+          test "${height}" = "240" || { echo "proxy height ${height} != 240"; exit 1; }
 
   windows-ingest:
     name: Windows Ingest
@@ -148,11 +239,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -m pip install --upgrade pip
-      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4"
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "protobuf>=5.28.1,<6"
       # Golden tests: schemas are well formed, every fixture behaves as the
       # manifest declares, cross-field invariants hold, and the committed
       # bindings both parse and round-trip the fixtures.
-      - run: python3 -m unittest discover -s contracts/tests -v
+      - run: python3 scripts/ci/run-required-unittest.py contracts/tests
 
   demo-scripts:
     name: Demo Scripts
@@ -170,7 +261,7 @@ jobs:
       # which did not run can never read as a pass. No ffmpeg here on purpose --
       # the generator's --no-video path is exercised instead, and it is required
       # to declare itself incomplete rather than exit 0.
-      - run: python3 -m unittest discover -s scripts/demo/tests -v
+      - run: python3 scripts/ci/run-required-unittest.py scripts/demo/tests
 
   egress-test:
     name: Egress Test

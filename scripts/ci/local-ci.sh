@@ -30,13 +30,16 @@ run "ci parity"              node scripts/ci/check-local-ci-parity.mjs
 run "codegen freshness"      node scripts/ci/check-codegen-freshness.mjs
 run "shadow guard tests"     node --test scripts/ci/check-no-shadow-files.test.mjs
 run "shadow files"           node scripts/ci/check-no-shadow-files.mjs
+run "CI/local parity"        node scripts/ci/check-local-ci-parity.mjs
 run "lint (workspace)"       node scripts/ci/run-workspace-check.mjs lint
+# These are test prerequisites, not redundant builds: pipeline tests invoke
+# the release ingest path and the compiled render-video CLI by contract.
+run "ingest release"         cargo build --release --manifest-path workers/ingest/Cargo.toml --all-features
+run "render-video build"     npm run build --workspace @memory-engine/render-video
 run "test (workspace)"       node scripts/ci/run-workspace-check.mjs test
-run "contracts"              python3 -m unittest discover -s contracts/tests
+run "contracts"              python3 scripts/ci/run-required-unittest.py contracts/tests
 run "egress"                 npm run test:egress --silent
-run "demo scripts"           python3 -m unittest discover -s scripts/demo/tests
-[ -f workers/ml-runtime/tests/run_required_suite.py ] && \
-  run "ml-runtime required"  python3 workers/ml-runtime/tests/run_required_suite.py
+run "demo scripts"           python3 scripts/ci/run-required-unittest.py scripts/demo/tests
 if [ -d packages/eval-harness/gates ]; then
   ( cd packages/eval-harness && run "eval gate" python3 -m memory_engine_eval.harness gates/*.gate.json ) || fail=1
 fi
