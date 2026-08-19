@@ -48,6 +48,7 @@ __all__ = [
     "FaceCrop",
     "MlRuntimeClient",
     "MlRuntimeError",
+    "MlRuntimePinMismatch",
     "MlRuntimeUnavailable",
     "RuntimeStatus",
     "probe",
@@ -62,6 +63,17 @@ _PROTO_ROOT = _REPO_ROOT / "contracts" / "proto"
 
 class MlRuntimeError(RuntimeError):
     """An inference call failed in a way the caller must not treat as data."""
+
+
+class MlRuntimePinMismatch(MlRuntimeError):
+    """The host answered with a different model than the caller established.
+
+    Distinct from the base error because callers must NOT handle it the way
+    they handle a transient failure: a deadline or a dropped connection is one
+    batch's problem and a retry is honest, but a pin skew means every
+    subsequent answer would come from a model nobody vetted -- the exact
+    silent-model-swap CLAUDE.md rule 7 forbids. It aborts the run, loudly.
+    """
 
 
 class MlRuntimeUnavailable(MlRuntimeError):
@@ -650,7 +662,7 @@ class MlRuntimeClient:
 
         actual_pin = _model_pin(response.pin)
         if actual_pin["model_id"] != model_id:
-            raise MlRuntimeError(
+            raise MlRuntimePinMismatch(
                 f"Infer({model_id}) response pin model_id expected {model_id!r}, "
                 f"got {actual_pin['model_id']!r}"
             )
@@ -663,7 +675,7 @@ class MlRuntimeClient:
                 "config_blake3",
             ):
                 if actual_pin[field_name] != expected_pin[field_name]:
-                    raise MlRuntimeError(
+                    raise MlRuntimePinMismatch(
                         f"Infer({model_id}) response pin {field_name} expected "
                         f"{expected_pin[field_name]!r}, got "
                         f"{actual_pin[field_name]!r}; ListModels and Infer disagree "

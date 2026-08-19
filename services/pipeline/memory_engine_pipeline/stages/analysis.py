@@ -765,6 +765,11 @@ def _run_models(
                     items=proxies,
                     alignment="none",
                 )
+            except mlruntime.MlRuntimePinMismatch:
+                # A pin skew is not one batch's weather: every later answer
+                # would come from a model nobody vetted. It aborts the stage
+                # through the run-level handler, which names the skew.
+                raise
             except mlruntime.MlRuntimeError as error:
                 # One refused batch fails its own records, retryably, and the
                 # rest of the library continues. The stage's closing roll-up
@@ -872,6 +877,8 @@ def _run_models(
                     items=proxies,
                     alignment="none",
                 )
+            except mlruntime.MlRuntimePinMismatch:
+                raise
             except mlruntime.MlRuntimeError as error:
                 _fail_batch(
                     ctx, by_media, step=FACE_STEP, error=error,
@@ -1201,6 +1208,8 @@ def _run_face_embedding(
                 stored_by_face=stored_by_face,
                 face_stack=face_stack,
             )
+        except mlruntime.MlRuntimePinMismatch:
+            raise
         except mlruntime.MlRuntimeError as error:
             _fail_batch(
                 ctx, dict(batch), step=FACE_EMBEDDING_STEP, error=error,
