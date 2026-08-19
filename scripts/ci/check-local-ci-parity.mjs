@@ -23,10 +23,24 @@ const workflow = readFileSync(
   path.join(repositoryRoot, ".github/workflows/ci.yml"),
   "utf8",
 );
-const script = readFileSync(
+// Only the EXECUTABLE lines of the script count as coverage. The first version
+// of this checker read the whole file and matched with `String.includes`, so a
+// command named only in a COMMENT satisfied it -- and the shipped local-ci.sh
+// referenced this very checker in a comment and never ran it, yet the checker
+// reported full coverage. A guard against vacuous passing, passing vacuously.
+// (Found by the shipping agent, on the parent PR #98.)
+//
+// A line is executable if it is not blank and not a comment after the shell's
+// own rules: leading whitespace then `#`. That is deliberately strict -- a
+// command must be RUN to count, and prose about a command is not running it.
+const scriptSource = readFileSync(
   path.join(repositoryRoot, "scripts/ci/local-ci.sh"),
   "utf8",
 );
+const script = scriptSource
+  .split("\n")
+  .filter((line) => line.trim() !== "" && !/^\s*#/.test(line))
+  .join("\n");
 
 // Reasons, not just a skip list. Each says why the local script cannot or need
 // not run this, so a reader can judge whether the exemption is still true.
