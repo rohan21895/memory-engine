@@ -61,7 +61,10 @@ PLANNER = "album-planner"
 #: zero-shot expression ranking (smile/awake/sleeping/composed), sleeping cap,
 #: crowd-bucket type diversity. Bumped so the same library re-plans as a
 #: different album rather than silently mutating an existing identity.
-PLANNER_VERSION = "0.2.0"
+#: 0.3.0: aesthetic axis in selection; editorial pacing (day-grouped pages,
+#: full-bleed heroes, blur-backdrop solos, orientation-matched duos).
+#: 0.3.1: full-bleed requests step down to the bokeh hero, not a white inset.
+PLANNER_VERSION = "0.3.1"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
@@ -377,10 +380,15 @@ def run(ctx: StageContext) -> StageResult:
     )
 
     per_page = max(1, ctx.settings.album_photos_per_page)
-    requests = [
-        PageRequest(photos=tuple(photos[start : start + per_page]))
-        for start in range(0, len(photos), per_page)
-    ]
+    if per_page == 1:
+        # The default: editorial pacing. An explicit --photos-per-page keeps
+        # the plain chunking below -- the user asked for a specific density.
+        requests = _page_requests(photos, by_id, planned.scores, profile)
+    else:
+        requests = [
+            PageRequest(photos=tuple(photos[start : start + per_page]))
+            for start in range(0, len(photos), per_page)
+        ]
     try:
         pages = layout_album(
             requests, profile, cover=_cover_photo(photos, planned.scores)
@@ -665,6 +673,122 @@ def _min_face_sharpness(ctx: StageContext, media_id: str) -> float | None:
         >= _FACE_SHARPNESS_MIN_AREA
     ]
     return min(values) if values else None
+
+
+#: How many pages may carry a full-bleed photo (besides the cover). Full
+#: bleed is the loudest voice on a spread; six of them across a book is
+#: drama, twenty is shouting.
+_MAX_FULL_BLEED_PAGES = 6
+#: A photo within this relative aspect distance of the page can go full
+#: bleed without the cover crop eating a meaningful part of the frame.
+_FULL_BLEED_ASPECT_TOLERANCE = 0.20
+
+
+def _page_requests(
+    photos: list[Any], by_id: Mapping[str, Any], scores: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> "list[Any]":
+    """Editorial pacing: heroes breathe alone, a day's other frames share.
+
+    The rhythm, not a packing problem: each capture day opens with its best
+    photo on a solo page (full bleed when the aspect and pixels allow it,
+    otherwise inset over a blurred bokeh of itself), and the day's remaining
+    frames pair up two to a page when their orientations agree. A day with a
+    single photo is simply a solo page. Chronology is preserved across days
+    and within a day's shared pages; only the day's opener jumps its queue,
+    the way a chapter title does.
+    """
+    from memory_engine_album.layout import (  # noqa: PLC0415
+        BLUR_HERO,
+        FULL_BLEED,
+        PageRequest,
+    )
+
+    trim = profile.get("trim_size_mm") or {}
+    bleed = float(profile.get("bleed_mm") or 0.0)
+    page_w_mm = float(trim.get("width_mm") or 1.0) + 2.0 * bleed
+    page_h_mm = float(trim.get("height_mm") or 1.0) + 2.0 * bleed
+    page_aspect = page_w_mm / page_h_mm
+    dpi_floor = float(profile.get("dpi_floor") or 300.0)
+
+    def value(photo: Any) -> float:
+        score = scores.get(photo.media_id)
+        return float(score.value) if score is not None else 0.0
+
+    def day_of(photo: Any) -> str:
+        record = by_id.get(photo.media_id) or {}
+        utc = ((record.get("capture") or {}).get("captured_at") or {}).get("utc") or ""
+        return str(utc)[:10]
+
+    def portrait(photo: Any) -> bool:
+        return photo.aspect < 1.0
+
+    def full_bleed_safe(photo: Any) -> bool:
+        if abs(photo.aspect / page_aspect - 1.0) > _FULL_BLEED_ASPECT_TOLERANCE:
+            return False
+        # 5% headroom over the floor at bleed size; the layout ladder still
+        # verifies exactly and falls back to an inset if a face lands in the
+        # trim zone.
+        return (
+            photo.pixel_width >= dpi_floor * 1.05 * page_w_mm / 25.4
+            and photo.pixel_height >= dpi_floor * 1.05 * page_h_mm / 25.4
+        )
+
+    groups: list[list[Any]] = []
+    current_day: str | None = None
+    for photo in photos:  # already chronological
+        day = day_of(photo)
+        if not groups or day != current_day:
+            groups.append([])
+            current_day = day
+        groups[-1].append(photo)
+
+    requests: list[Any] = []
+    full_bleed_left = _MAX_FULL_BLEED_PAGES
+
+    def solo(photo: Any) -> None:
+        nonlocal full_bleed_left
+        if full_bleed_left > 0 and full_bleed_safe(photo):
+            full_bleed_left -= 1
+            requests.append(PageRequest(photos=(photo,), template=FULL_BLEED))
+        else:
+            requests.append(PageRequest(photos=(photo,), template=BLUR_HERO))
+
+    def duo(first: Any, second: Any) -> None:
+        # Two portraits stand side by side; two landscapes stack. fit_grid,
+        # not grid: each photo keeps its own aspect centred in its cell.
+        # Mixed orientations never share -- even aspect-fitted, a page of one
+        # tall and one wide frame reads as a mistake, not a pairing.
+        template = "fit_grid_2x1" if portrait(first) else "fit_grid_1x2"
+        requests.append(PageRequest(photos=(first, second), template=template))
+
+    for group in groups:
+        if len(group) == 1:
+            solo(group[0])
+            continue
+        if len(group) == 2:
+            first, second = group
+            if portrait(first) == portrait(second):
+                duo(first, second)
+            else:
+                solo(first)
+                solo(second)
+            continue
+        best = max(group, key=lambda p: (value(p), p.media_id))
+        solo(best)
+        pending: dict[bool, Any] = {}
+        for photo in group:
+            if photo is best:
+                continue
+            held = pending.pop(portrait(photo), None)
+            if held is None:
+                pending[portrait(photo)] = photo
+            else:
+                duo(held, photo)
+        for orientation in sorted(pending):
+            solo(pending[orientation])
+
+    return requests
 
 
 def _min_head_sharpness(ctx: StageContext, media_id: str) -> float | None:

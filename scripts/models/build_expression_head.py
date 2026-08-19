@@ -81,6 +81,22 @@ AXES: dict[str, dict[str, list[str]]] = {
             "an active playing child",
         ],
     },
+    # Aesthetic appeal: the axis that separates "the best photo of this
+    # moment" from "a photo of this moment". Deliberately about light,
+    # composition and clutter -- properties a phone burst varies frame to
+    # frame -- not about the subject, which selection's other axes own.
+    "aesthetic": {
+        "positive": [
+            "a stunning professional photograph with beautiful soft light",
+            "a beautifully composed portrait, clean background, gorgeous natural light",
+            "a magazine quality family photo with rich pleasing colors",
+        ],
+        "negative": [
+            "a cluttered messy snapshot with harsh flash and distracting background",
+            "a dim murky phone photo with washed out colors",
+            "a badly framed picture with clutter and poor lighting",
+        ],
+    },
     # A composed photograph versus a frame nobody would print: limbs
     # mid-gesture, subject adjusting hair, motion-smeared candid.
     "composed": {

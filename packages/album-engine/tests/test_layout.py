@@ -662,7 +662,9 @@ class TestLayoutPage(unittest.TestCase):
         page = L.layout_page(
             (src,), PERFECT, page_index=1, side="left", template=L.FULL_BLEED
         )
-        self.assertEqual(L.SINGLE_INSET, page["layout"]["template_id"])
+        # The step-down from a refused full bleed is the bokeh hero since 0.3.1;
+        # the point stands: the bleed was abandoned, never shrunk or face-guttered.
+        self.assertEqual(L.BLUR_HERO, page["layout"]["template_id"])
         placement = page["placements"][0]
         self.assertEqual(0, placement["face_safety"]["faces_in_gutter"])
         self.assertTrue(L.placement_is_print_safe(placement, PERFECT["dpi_floor"]))
@@ -1683,7 +1685,9 @@ class TestTiesAndCost(unittest.TestCase):
             side="single",
             template=L.FULL_BLEED,
         )
-        self.assertEqual(L.SINGLE_INSET, page["layout"]["template_id"])
+        # The step-down from a refused full bleed is the bokeh hero since 0.3.1;
+        # the point stands: the bleed was abandoned, never shrunk or face-guttered.
+        self.assertEqual(L.BLUR_HERO, page["layout"]["template_id"])
         self.assertEqual([], page["placements"][0]["bleeds"])
         frame = page["placements"][0]["frame"]
         self.assertGreater(frame["x_mm"], 0.0)
@@ -1776,3 +1780,39 @@ def _rect(rect) -> tuple[float, float, float, float]:
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestBlurHero(unittest.TestCase):
+    """blur_hero: an inset photo over a blurred, dimmed backdrop of itself --
+    white margins become bokeh, and the backdrop media is always the page's
+    own photo so the render job's asset set never grows."""
+
+    def test_the_page_carries_its_own_photo_as_backdrop(self):
+        page = L.layout_page(
+            (photo(1, w=4000, h=6000),), LAYFLAT, page_index=1, side="left",
+            template=L.BLUR_HERO,
+        )
+        self.assertEqual(L.BLUR_HERO, page["layout"]["template_id"])
+        background = page["background"]
+        self.assertEqual("media_blur", background["kind"])
+        self.assertEqual(mid(1), background["media_id"])
+        self.assertEqual(1, len(page["placements"]))
+        frame = page["placements"][0]["frame"]
+        # Geometrically an inset: inside the content box, aspect preserved.
+        self.assertAlmostEqual(
+            frame["width_mm"] / frame["height_mm"], 4000 / 6000, places=2
+        )
+
+    def test_other_templates_keep_a_solid_background(self):
+        page = L.layout_page(
+            (photo(1),), LAYFLAT, page_index=1, side="left",
+            template=L.SINGLE_INSET,
+        )
+        self.assertEqual("solid", page["background"]["kind"])
+
+    def test_blur_hero_takes_exactly_one_photo(self):
+        with self.assertRaises(L.LayoutError):
+            L.layout_page(
+                (photo(1), photo(2)), LAYFLAT, page_index=1, side="left",
+                template=L.BLUR_HERO,
+            )

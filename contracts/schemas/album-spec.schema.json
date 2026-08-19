@@ -238,14 +238,32 @@
           "oneOf": [{ "$ref": "common.schema.json#/$defs/Slug" }, { "type": "null" }]
         },
         "background": {
+          "description": "Page decor behind the placements. `media_blur` fills the page with a heavily blurred, slightly dimmed cover-crop of one of THIS page's placed photos -- decor, not content, so no DPI floor or face-safety semantics apply to it. media_id is required for `media_blur` and must reference a media placed on the same page, so the render job's asset set never grows because of a backdrop.",
           "oneOf": [
             {
               "type": "object",
               "additionalProperties": false,
               "required": ["kind"],
               "properties": {
-                "kind": { "type": "string", "enum": ["solid", "none"] },
-                "color_hex": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "default": "#ffffff" }
+                "kind": { "type": "string", "enum": ["solid", "none", "media_blur"] },
+                "color_hex": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "default": "#ffffff" },
+                "media_id": {
+                  "oneOf": [{ "$ref": "common.schema.json#/$defs/Blake3Hash" }, { "type": "null" }]
+                },
+                "blur_sigma_norm": {
+                  "description": "Blur radius as a fraction of the page's long edge. The default 0.02 reads as studio bokeh at any print size.",
+                  "type": "number",
+                  "minimum": 0.005,
+                  "maximum": 0.1,
+                  "default": 0.02
+                },
+                "dim": {
+                  "description": "Multiplier on the backdrop's brightness so the sharp photo separates from its own blur.",
+                  "type": "number",
+                  "minimum": 0.4,
+                  "maximum": 1,
+                  "default": 0.82
+                }
               }
             },
             { "type": "null" }

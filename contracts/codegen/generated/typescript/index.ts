@@ -181,18 +181,40 @@ export const PageSideValues = [
   "inside_flap",
 ] as const satisfies readonly PageSide[];
 
-export type PageBackgroundKind = "solid" | "none";
+export type PageBackgroundKind = "solid" | "none" | "media_blur";
 
 export const PageBackgroundKindValues = [
   "solid",
   "none",
+  "media_blur",
 ] as const satisfies readonly PageBackgroundKind[];
 
+/**
+ * Page decor behind the placements. `media_blur` fills the page with a heavily blurred,
+ * slightly dimmed cover-crop of one of THIS page's placed photos -- decor, not content, so
+ * no DPI floor or face-safety semantics apply to it. media_id is required for `media_blur`
+ * and must reference a media placed on the same page, so the render job's asset set never
+ * grows because of a backdrop.
+ */
 export interface PageBackground {
   kind: PageBackgroundKind;
 
   /** Default: "#ffffff". */
   color_hex?: string;
+
+  media_id?: Blake3Hash | null;
+
+  /**
+   * Blur radius as a fraction of the page's long edge. The default 0.02 reads as studio
+   * bokeh at any print size. Default: 0.02.
+   */
+  blur_sigma_norm?: number;
+
+  /**
+   * Multiplier on the backdrop's brightness so the sharp photo separates from its own
+   * blur. Default: 0.82.
+   */
+  dim?: number;
 }
 
 export interface Page {
@@ -212,6 +234,13 @@ export interface Page {
    */
   section_id?: Slug | null;
 
+  /**
+   * Page decor behind the placements. `media_blur` fills the page with a heavily blurred,
+   * slightly dimmed cover-crop of one of THIS page's placed photos -- decor, not content,
+   * so no DPI floor or face-safety semantics apply to it. media_id is required for
+   * `media_blur` and must reference a media placed on the same page, so the render job's
+   * asset set never grows because of a backdrop.
+   */
   background?: PageBackground | null;
 
   /** Default: []. */

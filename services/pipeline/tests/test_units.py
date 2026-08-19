@@ -579,6 +579,101 @@ class AutoDevelop(unittest.TestCase):
             develop.plan_develop_ops(self.root / "missing.png", self.MEDIA_ID)
 
 
+class EditorialPacing(unittest.TestCase):
+    """Day-grouped page requests: heroes breathe alone, a day's other frames
+    share a page when their orientations agree, chronology survives."""
+
+    PROFILE = {
+        "trim_size_mm": {"width_mm": 200.0, "height_mm": 300.0},
+        "bleed_mm": 3.0,
+        "dpi_floor": 300.0,
+    }
+
+    class _Score:
+        def __init__(self, value):
+            self.value = value
+
+    class _Photo:
+        def __init__(self, media_id, w, h):
+            self.media_id, self.pixel_width, self.pixel_height = media_id, w, h
+
+        @property
+        def aspect(self):
+            return self.pixel_width / self.pixel_height
+
+    def _photo(self, tag, w=3000, h=4000):
+        return self._Photo((tag.encode().hex() + "0" * 64)[:64], w, h)
+
+    def _requests(self, day_specs):
+        """day_specs: list of (day, [(tag, w, h, score)...])."""
+        from memory_engine_pipeline.stages.album import _page_requests
+
+        photos, by_id, scores = [], {}, {}
+        for day, entries in day_specs:
+            for tag, w, h, value in entries:
+                photo = self._photo(tag, w, h)
+                photos.append(photo)
+                by_id[photo.media_id] = {
+                    "capture": {"captured_at": {"utc": f"{day}T10:00:00+05:30"}}
+                }
+                scores[photo.media_id] = self._Score(value)
+        return _page_requests(photos, by_id, scores, self.PROFILE), photos
+
+    def test_a_single_photo_day_is_a_solo_page(self):
+        requests, _ = self._requests([("2026-03-01", [("a", 3000, 4000, 0.8)])])
+        self.assertEqual(1, len(requests))
+        self.assertEqual(1, len(requests[0].photos))
+
+    def test_a_days_best_opens_solo_and_matching_pair_shares(self):
+        requests, photos = self._requests([
+            ("2026-03-01", [
+                ("a", 3000, 4000, 0.6), ("b", 3000, 4000, 0.9), ("c", 3000, 4000, 0.5),
+            ]),
+        ])
+        self.assertEqual(2, len(requests))
+        self.assertEqual((photos[1].media_id,), tuple(p.media_id for p in requests[0].photos))
+        self.assertEqual("fit_grid_2x1", requests[1].template)  # two portraits side by side
+        self.assertEqual(
+            (photos[0].media_id, photos[2].media_id),
+            tuple(p.media_id for p in requests[1].photos),
+        )
+
+    def test_mixed_orientations_never_share_a_page(self):
+        requests, _ = self._requests([
+            ("2026-03-01", [("a", 3000, 4000, 0.6), ("b", 4000, 3000, 0.5)]),
+        ])
+        self.assertEqual(2, len(requests))
+        self.assertTrue(all(len(r.photos) == 1 for r in requests))
+
+    def test_landscape_pairs_stack(self):
+        requests, _ = self._requests([
+            ("2026-03-01", [("a", 4000, 3000, 0.6), ("b", 4000, 3000, 0.5)]),
+        ])
+        self.assertEqual(1, len(requests))
+        self.assertEqual("fit_grid_1x2", requests[0].template)
+
+    def test_an_aspect_matched_hero_goes_full_bleed_and_others_get_bokeh(self):
+        from memory_engine_album.layout import BLUR_HERO, FULL_BLEED
+
+        # Page bleed aspect ~0.673. 4000x6000 is 0.667 -> full bleed; a square
+        # photo is far off -> blur_hero.
+        requests, _ = self._requests([
+            ("2026-03-01", [("a", 4000, 6000, 0.9)]),
+            ("2026-03-02", [("b", 4000, 4000, 0.8)]),
+        ])
+        self.assertEqual(FULL_BLEED, requests[0].template)
+        self.assertEqual(BLUR_HERO, requests[1].template)
+
+    def test_chronology_survives_across_days(self):
+        requests, photos = self._requests([
+            ("2026-03-01", [("a", 3000, 4000, 0.5)]),
+            ("2026-03-02", [("b", 3000, 4000, 0.9)]),
+            ("2026-03-03", [("c", 3000, 4000, 0.7)]),
+        ])
+        flattened = [p.media_id for r in requests for p in r.photos]
+        self.assertEqual([p.media_id for p in photos], flattened)
+
+
 class RuntimeClient(unittest.TestCase):
     """The correlation and validation rules the proto states but cannot enforce."""
 

@@ -204,6 +204,11 @@ class SelectionPolicy:
     # exactly the signal. All weights are against a quality term spanning [0,1].
     weight_smile: float = 0.35
     weight_composed: float = 0.25
+    # The strongest expression weight: "bring the best photos". Percentile of
+    # the zero-shot aesthetic contrast (light, composition, clutter). At 0.55
+    # it can overturn a mid-size quality-standing gap but not a large one --
+    # a technically ruined frame still loses however pretty its light.
+    weight_aesthetic: float = 0.55
     # Penalty for eyes that read closed on a photo that does NOT read as a
     # sleeping shot: an adult mid-blink, a grimace. Large on purpose -- it
     # must be able to undo a full smile bonus and most of a quality lead.
@@ -287,7 +292,7 @@ class SelectionPolicy:
         for name in (
             "weight_quality", "weight_time", "weight_place", "weight_scene",
             "weight_person", "weight_redundancy",
-            "weight_smile", "weight_composed", "mid_blink_penalty",
+            "weight_smile", "weight_composed", "weight_aesthetic", "mid_blink_penalty",
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0.0:
@@ -362,6 +367,7 @@ class SelectionCandidate:
     # every expression term then stays neutral for this candidate.
     smile: float | None = None
     awake: float | None = None
+    aesthetic: float | None = None
     sleeping: float | None = None
     composed: float | None = None
     embedding: tuple[float, ...] | None = None
@@ -592,6 +598,7 @@ def candidate_from_media_record(
         face_cut=bool(face_cut),
         smile=_expression_axis(expression, "smile"),
         awake=_expression_axis(expression, "awake"),
+        aesthetic=_expression_axis(expression, "aesthetic"),
         sleeping=_expression_axis(expression, "sleeping"),
         composed=_expression_axis(expression, "composed"),
         embedding=tuple(float(x) for x in embedding) if embedding is not None else None,
@@ -1326,6 +1333,7 @@ def _greedy(
     # Expression axes as percentiles WITHIN this pool (the absolute zero-shot
     # values are uncalibrated; the ordering over one library is the signal).
     smile_pct = _axis_percentiles(survivors, lambda c: c.smile)
+    aesthetic_pct = _axis_percentiles(survivors, lambda c: c.aesthetic)
     awake_pct = _axis_percentiles(survivors, lambda c: c.awake)
     sleeping_pct = _axis_percentiles(survivors, lambda c: c.sleeping)
     composed_pct = _axis_percentiles(survivors, lambda c: c.composed)
@@ -1415,6 +1423,7 @@ def _greedy(
         # than either bonus can pay.
         value += policy.weight_smile * smile_pct[media_id]
         value += policy.weight_composed * composed_pct[media_id]
+        value += policy.weight_aesthetic * aesthetic_pct[media_id]
         if is_mid_blink[media_id]:
             value -= policy.mid_blink_penalty
         return _quantise(value)

@@ -197,12 +197,37 @@ class PageSide(str, Enum):
 class PageBackgroundKind(str, Enum):
     SOLID = "solid"
     NONE = "none"
+    MEDIA_BLUR = "media_blur"
 
 
 class PageBackground(ContractModel):
+    """
+    Page decor behind the placements. `media_blur` fills the page with a heavily
+    blurred, slightly dimmed cover-crop of one of THIS page's placed photos --
+    decor, not content, so no DPI floor or face-safety semantics apply to it.
+    media_id is required for `media_blur` and must reference a media placed on the
+    same page, so the render job's asset set never grows because of a backdrop.
+    """
+
     kind: PageBackgroundKind
 
     color_hex: str = Field(default="#ffffff")
+
+    media_id: Blake3Hash | None = Field(default=None)
+
+    # Blur radius as a fraction of the page's long edge. The default 0.02 reads as
+    # studio bokeh at any print size.
+    blur_sigma_norm: float = Field(
+        default=0.02,
+        description="Blur radius as a fraction of the page's long edge. The default 0.02 reads as studio bokeh at any print size.",
+    )
+
+    # Multiplier on the backdrop's brightness so the sharp photo separates from its
+    # own blur.
+    dim: float = Field(
+        default=0.82,
+        description="Multiplier on the backdrop's brightness so the sharp photo separates from its own blur.",
+    )
 
 
 class Page(ContractModel):
@@ -224,7 +249,15 @@ class Page(ContractModel):
         description="Narrative section this page belongs to, used by the diversity constraints (people/scenery/detail balance per section).",
     )
 
-    background: PageBackground | None = Field(default=None)
+    # Page decor behind the placements. `media_blur` fills the page with a heavily
+    # blurred, slightly dimmed cover-crop of one of THIS page's placed photos --
+    # decor, not content, so no DPI floor or face-safety semantics apply to it.
+    # media_id is required for `media_blur` and must reference a media placed on the
+    # same page, so the render job's asset set never grows because of a backdrop.
+    background: PageBackground | None = Field(
+        default=None,
+        description="Page decor behind the placements. `media_blur` fills the page with a heavily blurred, slightly dimmed cover-crop of one of THIS page's placed photos -- decor, not content, so no DPI floor or face-safety semantics apply to it. media_id is...",
+    )
 
     placements: list[Placement] = Field(default_factory=list)
 

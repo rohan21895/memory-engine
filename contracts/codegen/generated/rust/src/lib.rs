@@ -214,14 +214,35 @@ pub enum PageBackgroundKind {
 
     #[serde(rename = "none")]
     None,
+
+    #[serde(rename = "media_blur")]
+    MediaBlur,
 }
 
+/// Page decor behind the placements. `media_blur` fills the page with a heavily
+/// blurred, slightly dimmed cover-crop of one of THIS page's placed photos -- decor,
+/// not content, so no DPI floor or face-safety semantics apply to it. media_id is
+/// required for `media_blur` and must reference a media placed on the same page, so the
+/// render job's asset set never grows because of a backdrop.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PageBackground {
     pub kind: PageBackgroundKind,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_hex: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_id: Option<Blake3Hash>,
+
+    /// Blur radius as a fraction of the page's long edge. The default 0.02 reads as studio
+    /// bokeh at any print size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blur_sigma_norm: Option<f64>,
+
+    /// Multiplier on the backdrop's brightness so the sharp photo separates from its own
+    /// blur.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dim: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -240,6 +261,11 @@ pub struct Page {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub section_id: Option<Slug>,
 
+    /// Page decor behind the placements. `media_blur` fills the page with a heavily
+    /// blurred, slightly dimmed cover-crop of one of THIS page's placed photos -- decor,
+    /// not content, so no DPI floor or face-safety semantics apply to it. media_id is
+    /// required for `media_blur` and must reference a media placed on the same page, so the
+    /// render job's asset set never grows because of a backdrop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<PageBackground>,
 

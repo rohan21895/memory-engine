@@ -65,6 +65,7 @@ __all__ = [
     "DEFAULT_INNER_GUTTER_MM",
     "FULL_BLEED",
     "SINGLE_INSET",
+    "BLUR_HERO",
     "Face",
     "GridSpec",
     "LayoutError",
@@ -80,6 +81,7 @@ __all__ = [
     "full_bleed_frame",
     "grid_frames",
     "grid_template_id",
+    "fit_cell",
     "inset_frame",
     "layout_album",
     "layout_page",
@@ -142,6 +144,11 @@ DEFAULT_INNER_GUTTER_MM: Final = 6.0
 
 FULL_BLEED: Final = "full_bleed"
 SINGLE_INSET: Final = "single_inset"
+#: A single photo at its largest inset size over a heavily blurred, dimmed
+#: cover-crop of ITSELF as the page background -- the studio treatment for a
+#: photo whose aspect does not match the page. The margins become bokeh
+#: instead of white bands.
+BLUR_HERO: Final = "blur_hero"
 
 _SPINE_BY_SIDE: Final[Mapping[str, str | None]] = {
     # A left-hand page binds on its RIGHT edge and a right-hand page on its LEFT.
@@ -658,6 +665,18 @@ def grid_frames(geom: PageGeometry, spec: GridSpec) -> list[RectMm]:
 
 def grid_template_id(spec: GridSpec) -> str:
     return f"grid_{spec.columns}x{spec.rows}"
+
+
+def fit_cell(cell: RectMm, aspect: float) -> RectMm:
+    """Largest rect of `aspect` centred in `cell` -- the inset treatment for a
+    grid slot. A grid cell's own aspect belongs to the page, not to the
+    photo, and cover-cropping a 3:4 portrait into a 1:3 column keeps 44% of
+    the frame; a paid album shows the photograph, not a core sample of it."""
+    aspect = _positive(aspect, "aspect")
+    width = min(cell.width_mm, cell.height_mm * aspect)
+    height = width / aspect
+    cx, cy = cell.center
+    return RectMm(cx - width / 2.0, cy - height / 2.0, width, height).rounded()
 
 
 # ---------------------------------------------------------------------------
@@ -1244,11 +1263,41 @@ def _arrangements(
         if n != 1:
             raise LayoutError(f"{FULL_BLEED} takes exactly one photo, got {n}")
         add_full_bleed()
+        # The graceful step-down is the bokeh hero, not a white inset: a page
+        # that ASKED for full bleed wants the photo to own the page, and a
+        # 3000px phone portrait that cannot hold 300 DPI at bleed size still
+        # can over its own blurred backdrop.
+        options.append(
+            _Arrangement(BLUR_HERO, (inset_frame(geom, photos[0].aspect),), None)
+        )
         add_single_inset()
     elif template == SINGLE_INSET:
         if n != 1:
             raise LayoutError(f"{SINGLE_INSET} takes exactly one photo, got {n}")
         add_single_inset()
+    elif template == BLUR_HERO:
+        if n != 1:
+            raise LayoutError(f"{BLUR_HERO} takes exactly one photo, got {n}")
+        # Geometrically an inset; the backdrop is attached by layout_page.
+        options.append(
+            _Arrangement(BLUR_HERO, (inset_frame(geom, photos[0].aspect),), None)
+        )
+    elif template.startswith("fit_grid_"):
+        try:
+            cols, rows = (int(part) for part in template[len("fit_grid_") :].split("x", 1))
+        except ValueError as exc:
+            raise LayoutError(f"unrecognised grid template {template!r}") from exc
+        spec = GridSpec(cols, rows, gutter_mm)
+        if spec.cells < n:
+            raise LayoutError(f"template {template!r} has {spec.cells} cells for {n} photos")
+        cells = grid_frames(geom, spec)[:n]
+        options.append(
+            _Arrangement(
+                f"fit_grid_{cols}x{rows}",
+                tuple(fit_cell(cell, photo.aspect) for cell, photo in zip(cells, photos)),
+                spec,
+            )
+        )
     elif template.startswith("grid_"):
         try:
             cols, rows = (int(part) for part in template[len("grid_") :].split("x", 1))
@@ -1444,6 +1493,16 @@ def layout_page(
         )
         page["section_id"] = section_id
         page["placements"] = placements
+        if arrangement.template_id == BLUR_HERO:
+            # Decor from the page's own photo: the contract requires the
+            # backdrop media to be placed on the same page, which keeps the
+            # render job's asset set unchanged.
+            page["background"] = {
+                "kind": "media_blur",
+                "media_id": photos[0].media_id,
+                "blur_sigma_norm": 0.02,
+                "dim": 0.82,
+            }
         page["layout"] = {
             # "template", not "constraint_solver": this picks the first template
             # in an ordered ladder that satisfies the hard constraints and shrinks

@@ -375,6 +375,52 @@ export async function renderPage(
       : "#ffffff";
 
   const composites: OverlayOptions[] = [];
+
+  if (background?.kind === "media_blur") {
+    // Decor, not content: the backdrop is a heavily blurred, slightly dimmed
+    // cover-crop of a photo already PLACED on this page (the contract requires
+    // that, so the job's asset set never grows because of a backdrop). No DPI
+    // floor and no face safety apply -- nothing in it survives the blur.
+    const source = inputs.placements.find(
+      (entry) => entry.placement.media_id === background.media_id,
+    );
+    if (!source) {
+      throw new RenderPrintError(
+        "validation_failed",
+        `page ${context.page.page_index} declares a media_blur background of ` +
+          `${background.media_id ?? "null"}, which is not placed on this page.`,
+      );
+    }
+    const sigmaNorm = background.blur_sigma_norm ?? 0.02;
+    const dim = background.dim ?? 0.82;
+    // Blurring at print resolution with a ~70px sigma costs seconds per page;
+    // blurring an 8x downscale with sigma/8 and scaling back is visually
+    // identical for a backdrop this soft, and deterministic.
+    //
+    // TWO pipelines through a buffer, not one: sharp holds a single resize
+    // slot per pipeline (exactly like its single `linear` slot -- see
+    // enhance.ts), so chaining cover-downscale and fill-upscale in one
+    // pipeline silently keeps only the second call and the "backdrop" ships
+    // as a sharp, distorted copy of the photo.
+    const scale = 8;
+    const sigma = Math.max(0.3, (sigmaNorm * Math.max(widthPx, heightPx)) / scale);
+    const small = await sharp(source.bytes)
+      .autoOrient()
+      .resize(Math.max(1, Math.round(widthPx / scale)), Math.max(1, Math.round(heightPx / scale)), {
+        fit: "cover",
+      })
+      .removeAlpha()
+      .blur(sigma)
+      .linear(dim, 0)
+      .png({ compressionLevel: 1, adaptiveFiltering: false })
+      .toBuffer();
+    const backdrop = await sharp(small)
+      .resize(widthPx, heightPx, { fit: "fill" })
+      .png({ compressionLevel: 1, adaptiveFiltering: false })
+      .toBuffer();
+    composites.push({ input: backdrop, left: 0, top: 0 });
+  }
+
   for (const { placement, bytes } of inputs.placements) {
     const rendered = await renderPlacement(placement, bytes, context.dpi, context.dpiFloor);
     composites.push({ input: rendered.image, left: rendered.left, top: rendered.top });
