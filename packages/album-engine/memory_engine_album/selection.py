@@ -204,8 +204,23 @@ class SelectionPolicy:
     weight_person: float = 0.60
     weight_redundancy: float = 0.80
     # Cosine similarity below which two photos are simply different pictures
-    # and attract no redundancy penalty at all.
+    # and attract no redundancy penalty at all. This is a FLOOR, not the
+    # operating point: a homogeneous library (one baby, one home) measures
+    # 0.74 median similarity between photos taken DAYS apart, so a fixed free
+    # zone turns the penalty into a constant offset that discriminates
+    # nothing. `select` calibrates the actual free zone to the library's own
+    # measured similarity, never below this value.
     redundancy_free_similarity: float = 0.60
+
+    # --- shots ------------------------------------------------------------
+    # At or above this similarity, two photos taken within `burst_window_s`
+    # of each other are the same photograph being taken repeatedly -- a
+    # burst, a re-pose, a "wait, one more". An album gets ONE of them however
+    # good the others are; a penalty cannot express that, because a burst of
+    # a great moment out-scores a single frame of an ordinary one on quality
+    # alone, which is precisely the failure this knob exists to stop.
+    shot_similarity: float = 0.93
+    burst_window_s: float = 180.0
 
     # --- timeline ---------------------------------------------------------
     # 0 means "one bin per photo we intend to select, capped", which makes the
@@ -219,7 +234,7 @@ class SelectionPolicy:
     def validate(self) -> None:
         for name in (
             "quality_floor", "max_per_person_fraction", "min_non_people_fraction",
-            "redundancy_free_similarity", "hero_quality",
+            "redundancy_free_similarity", "hero_quality", "shot_similarity",
         ):
             value = getattr(self, name)
             # NaN is the reason this is `not (0 <= v <= 1)` and not `v < 0 or
@@ -241,6 +256,8 @@ class SelectionPolicy:
             raise SelectionError("policy.time_bins must be >= 0 and max_time_bins >= 1")
         if self.min_long_edge_px is not None and self.min_long_edge_px <= 0:
             raise SelectionError("policy.min_long_edge_px must be positive when set")
+        if not math.isfinite(self.burst_window_s) or self.burst_window_s < 0.0:
+            raise SelectionError("policy.burst_window_s must be finite and non-negative")
 
 
 DEFAULT_POLICY = SelectionPolicy()
@@ -1028,6 +1045,99 @@ def _rank_within_classes(
     return tuple(classes), standing
 
 
+def _shot_groups(
+    survivors: Sequence[SelectionCandidate], policy: SelectionPolicy
+) -> dict[str, str]:
+    """media_id -> shot-group id. One group = one photograph taken repeatedly.
+
+    Two photos join a group when they were captured within `burst_window_s` of
+    each other AND their embeddings agree at `shot_similarity` or above.
+    Membership is transitive (union-find), because a 40-frame burst drifts:
+    frame 1 and frame 40 may sit below the threshold while every adjacent pair
+    is above it, and they are still the same photograph being taken.
+
+    Photos with no embedding or no usable capture time are singleton groups --
+    absence of evidence must not merge anything.
+
+    Deterministic: candidates are walked in (time, media_id) order and each is
+    compared against a bounded window of predecessors, so the grouping does
+    not depend on dict order or float summation order.
+    """
+    parent: dict[str, str] = {c.media_id: c.media_id for c in survivors}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            # Smaller id wins, so the group id is stable however links arrive.
+            parent[max(ra, rb)] = min(ra, rb)
+
+    timed = sorted(
+        (
+            (seconds, c.media_id, c)
+            for c in survivors
+            if (seconds := _epoch_seconds(c)) is not None and c.embedding is not None
+        ),
+        key=lambda entry: (entry[0], entry[1]),
+    )
+    # ponytail: bounded lookback (16 predecessors) instead of all pairs in the
+    # window; adjacent frames of a burst are always neighbours in time order,
+    # and the union is transitive, so a longer chain still merges.
+    for index, (seconds, media_id, candidate) in enumerate(timed):
+        for prev_seconds, prev_id, prev in reversed(timed[max(0, index - 16):index]):
+            if seconds - prev_seconds > policy.burst_window_s:
+                break
+            if find(prev_id) == find(media_id):
+                continue
+            if _similarity(candidate.embedding, prev.embedding) >= policy.shot_similarity:
+                union(media_id, prev_id)
+    return {media_id: find(media_id) for media_id in parent}
+
+
+def _calibrated_redundancy(
+    survivors: Sequence[SelectionCandidate], policy: SelectionPolicy
+) -> tuple[float, float]:
+    """(free_similarity, slope_denominator) for the redundancy penalty.
+
+    The free zone is the similarity of two photos that are simply DIFFERENT
+    pictures -- and that number belongs to the library, not to the policy. A
+    varied travel library measures ~0.4 between unrelated photos; a one-baby
+    one-home library measures ~0.74 between photos taken days apart. A fixed
+    threshold that is right for one is a constant offset in the other, and a
+    constant offset discriminates nothing.
+
+    So: free = max(policy floor, median similarity of a deterministic sample
+    of candidate pairs), and the penalty runs linearly from 0 at `free` to the
+    full `weight_redundancy` at `shot_similarity` -- "as similar as a burst
+    frame" costs the whole weight, "as similar as two photos of the same life"
+    costs nothing.
+    """
+    embedded = sorted(
+        (c for c in survivors if c.embedding is not None), key=lambda c: c.media_id
+    )
+    free = policy.redundancy_free_similarity
+    if len(embedded) >= 8:
+        # Thin to at most 48 candidates (every k-th in media_id order), then
+        # take all pairs: <= 1128 similarities, O(1) in library size.
+        stride = max(1, len(embedded) // 48)
+        sample = embedded[::stride][:48]
+        sims = sorted(
+            _similarity(a.embedding, b.embedding)
+            for i, a in enumerate(sample)
+            for b in sample[i + 1:]
+        )
+        median = sims[len(sims) // 2]
+        if math.isfinite(median):
+            free = max(free, min(median, policy.shot_similarity))
+    denominator = max(policy.shot_similarity - free, 0.02)
+    return free, denominator
+
+
 def _greedy(
     survivors: Sequence[SelectionCandidate],
     by_id: Mapping[str, SelectionCandidate],
@@ -1084,11 +1194,15 @@ def _greedy(
     closest: dict[str, float] = {}
 
     cap = _person_cap(survivors, target_count, policy)
+    shot_of = _shot_groups(survivors, policy)
+    shot_counts: dict[str, int] = {}
+    redundancy_free, redundancy_denom = _calibrated_redundancy(survivors, policy)
 
     def commit(media_id: str) -> None:
         candidate = by_id[media_id]
         selected.append(media_id)
         remaining.remove(media_id)
+        shot_counts[shot_of[media_id]] = shot_counts.get(shot_of[media_id], 0) + 1
         time_counts[time_key[media_id]] = time_counts.get(time_key[media_id], 0) + 1
         place_counts[place_key[media_id]] = place_counts.get(place_key[media_id], 0) + 1
         scene_counts[scene_key[media_id]] = scene_counts.get(scene_key[media_id], 0) + 1
@@ -1118,8 +1232,13 @@ def _greedy(
         )
 
         if candidate.embedding is not None:
-            value -= policy.weight_redundancy * max(
-                0.0, closest.get(media_id, 0.0) - policy.redundancy_free_similarity
+            # Linear from 0 at the calibrated free zone to the full weight at
+            # the shot boundary. Clamped: beyond the shot boundary the hard
+            # per-shot cap is the enforcement, not a larger number here.
+            value -= policy.weight_redundancy * min(
+                1.0,
+                max(0.0, closest.get(media_id, 0.0) - redundancy_free)
+                / redundancy_denom,
             )
         return _quantise(value)
 
@@ -1165,6 +1284,13 @@ def _greedy(
     )
     blocked: set[str] = set()
 
+    # One photo per shot group, until every group is spent. Only when the
+    # album still has empty slots and every distinct shot is already in does a
+    # second frame of a burst become eligible -- and then a third, and so on.
+    # A relaxation round, not a weight: 24 slots against 4 shot groups must
+    # come back 4-then-deepen, never 24 frames of the best burst.
+    allowed_per_shot = 1
+
     while len(selected) < target_count and remaining:
         slots_left = target_count - len(selected)
         non_people_selected = sum(1 for m in selected if not by_id[m].person_ids)
@@ -1204,7 +1330,18 @@ def _greedy(
             # than quietly overfilling one person's share; the shortfall is
             # measured and reported by `_measure_constraints`.
             break
-        best_id = min(eligible, key=lambda m: (-gain(m), m))
+
+        fresh_shots = [
+            m for m in eligible
+            if shot_counts.get(shot_of[m], 0) < allowed_per_shot
+        ]
+        if not fresh_shots:
+            # Every eligible photo is another frame of a shot the album
+            # already has. Deepen the whole album by one frame per shot
+            # rather than stopping short -- the user asked for N pages.
+            allowed_per_shot += 1
+            continue
+        best_id = min(fresh_shots, key=lambda m: (-gain(m), m))
         commit(best_id)
 
     return selected, sorted(blocked)

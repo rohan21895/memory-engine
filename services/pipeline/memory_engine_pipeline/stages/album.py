@@ -166,7 +166,21 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
             ),
             counts={"clusters": len(clusters)},
         )
-    event = max(dated, key=lambda cluster: cluster.size)
+    # The album covers the LIBRARY, not the loudest weekend in it. Every dated
+    # event contributes candidates; the selector's time-coverage axis is what
+    # spreads the book across them, and its per-shot cap is what stops one
+    # afternoon's burst from filling it. Pooled as a spanning pseudo-cluster so
+    # everything downstream (title, report count) keeps one shape.
+    from memory_engine_album.clustering import EventCluster  # noqa: PLC0415
+
+    ordered = sorted(dated, key=lambda c: (c.start_utc or 0.0, c.media_ids))
+    event = EventCluster(
+        cluster_id=ordered[0].cluster_id if len(ordered) == 1 else "library-span",
+        media_ids=tuple(m for cluster in ordered for m in cluster.media_ids),
+        kind="dated",
+        start_utc=min(c.start_utc for c in ordered if c.start_utc is not None),
+        end_utc=max(c.end_utc for c in ordered if c.end_utc is not None),
+    )
 
     from memory_engine_album.selection import (  # noqa: PLC0415
         SelectionPolicy,
@@ -553,13 +567,43 @@ def _photo(ctx: StageContext, record: Mapping[str, Any]) -> Any:
         faces=tuple(
             Face(
                 face_id=box.face_id,
-                box=NormBox(box.x, box.y, box.w, box.h),
+                box=_face_norm_box(box),
                 is_subject=box.is_subject,
             )
             for box in boxes
         ),
         salience=None,
     )
+
+
+_FACE_BOX_SLACK = 1e-5
+
+
+def _face_norm_box(box: Any) -> "NormBox":
+    """A stored face rectangle as an exact NormBox.
+
+    Face rectangles are float32 evidence from the detector: a face touching
+    the image edge legitimately arrives with x+w = 1 + 2e-8, and layout's
+    NormBox rightly refuses anything past 1. Epsilon overflow (within
+    _FACE_BOX_SLACK) is measurement noise and is clamped here, at the one
+    boundary where approximate evidence enters exact geometry. Anything larger
+    still raises through the constructor -- a genuinely out-of-image rectangle
+    is a detector bug, not noise, and clamping it would hide it.
+    """
+    from memory_engine_album.layout import NormBox  # noqa: PLC0415
+
+    x, y, w, h = float(box.x), float(box.y), float(box.w), float(box.h)
+    if -_FACE_BOX_SLACK <= x < 0.0:
+        w += x
+        x = 0.0
+    if -_FACE_BOX_SLACK <= y < 0.0:
+        h += y
+        y = 0.0
+    if 1.0 < x + w <= 1.0 + _FACE_BOX_SLACK:
+        w = 1.0 - x
+    if 1.0 < y + h <= 1.0 + _FACE_BOX_SLACK:
+        h = 1.0 - y
+    return NormBox(x, y, w, h)
 
 
 def _title(cluster: Any) -> str:
