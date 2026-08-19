@@ -426,6 +426,44 @@ class MlRuntimeClient:
 
     # -- calls -----------------------------------------------------------
 
+    def load_model(self, model_id: str, *, timeout_s: float = 600.0) -> bool:
+        """Ask the host to load `model_id` now, before any inference deadline.
+
+        Loading SigLIP 2 from disk takes longer than a single batch does, and
+        folding that cost into the first Infer call's deadline makes the first
+        batch of every cold run fail DEADLINE_EXCEEDED while every later batch
+        passes -- a failure that looks intermittent and is really just "the
+        model was not warm". Warm-up gets its own generous deadline instead.
+
+        Returns False when the host does not offer LoadModel at all; the first
+        Infer call then pays for the load, which the caller's batch deadline
+        must absorb. A host that offers it and REFUSES still raises -- refusal
+        means inference cannot work either, and the refusal names why.
+        """
+        pb = self._pb
+        try:
+            response = self._stub.LoadModel(
+                pb.LoadModelRequest(model_id=model_id), timeout=timeout_s
+            )
+        except self._grpc.RpcError as error:
+            code = getattr(error, "code", lambda: None)()
+            if getattr(code, "name", "") == "UNIMPLEMENTED":
+                return False
+            raise MlRuntimeError(
+                f"LoadModel({model_id}) failed at the transport: "
+                f"{getattr(code, 'name', 'RPC_ERROR')}"
+            ) from error
+        if not response.loaded:
+            code = (
+                pb.ErrorCode.Name(response.error.code)
+                .removeprefix("ERROR_CODE_")
+                .lower()
+            )
+            raise MlRuntimeError(
+                f"LoadModel({model_id}) was refused: {code}: {response.error.message}"
+            )
+        return True
+
     def infer_proxies(
         self,
         *,
@@ -434,6 +472,7 @@ class MlRuntimeClient:
         items: Mapping[str, str],
         alignment: str = "none",
         priority: int = 100,
+        timeout_s: float | None = None,
     ) -> InferOutcome:
         """One batch. `items` maps the caller's item_id to a proxy id.
 
@@ -447,7 +486,7 @@ class MlRuntimeClient:
         exactly this reason.
         """
         pb = self._pb
-        deadline = self.deadline_for(len(items))
+        deadline = self.deadline_for(len(items)) if timeout_s is None else timeout_s
         alignment_value = {
             "none": pb.ALIGNMENT_NONE,
             "needs_alignment": pb.ALIGNMENT_NEEDS_ALIGNMENT,
