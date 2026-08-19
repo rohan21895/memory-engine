@@ -140,6 +140,33 @@ class Settings:
     render_print: bool = True
     render_video: bool = True
 
+    # ---- Tier 3, the only thing here that leaves the device ----------------
+    #
+    # DEFAULT OFF, and off is the absence of a request rather than a disabled
+    # feature. Inferring intent from the presence of an API key would mean a
+    # key exported for some unrelated tool silently authorises uploading this
+    # user's photographs.
+    tier3_enabled: bool = False
+    # Compose the sheet, write the exact request body to the workdir, and stop
+    # before the egress check. The inspection mode, and the reason a person can
+    # decide what they are agreeing to before agreeing to it.
+    tier3_dry_run: bool = False
+    # Pinned here as well as in `album_taste.MODEL_ID` so that "which model
+    # answered" is settable per run without editing a package, and recorded in
+    # the run report either way. CLAUDE.md rule 7: no silent model swap.
+    tier3_model: str = "claude-sonnet-5"
+    # Path to a ConsentRef JSON. None means `<workdir>/tier3-consent.json`.
+    # Absence of the file blocks; it does not default to permission.
+    tier3_consent_path: str | None = None
+    # Path to a safety-clearance manifest covering every photograph on the
+    # contact sheet. None means `<workdir>/tier3-clearance.json`. Absence
+    # blocks at the safety gate -- consent says a sheet MAY be sent, clearance
+    # says what is ON it, and neither implies the other.
+    tier3_clearance_path: str | None = None
+    # Candidates shown per slot wanted. Below 2 there is nothing to reject and
+    # the upload buys nothing; the sheet's own 64-cell ceiling caps the top.
+    tier3_pool_multiplier: int = 3
+
 
 @dataclass(slots=True)
 class StageContext:

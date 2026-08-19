@@ -1319,7 +1319,27 @@ class AnthropicSender:
         *,
         timeout_s: float = 120.0,
     ) -> None:
-        if client is None:
+        # CONSTRUCTION MUST NOT REQUIRE THE SDK, AND MUST NOT BUILD A CLIENT.
+        #
+        # This used to import `anthropic` and construct the client here, which
+        # contradicted the sentence it raised: "no API key is required to build
+        # a request -- only to send one". A caller builds the sender as an
+        # ARGUMENT to the call that checks consent, so Python evaluated it
+        # first, and an egress refusal was reported as a missing dependency.
+        # Measured: with a REVOKED consent record and the SDK absent, the
+        # pipeline's taste stage failed with "the anthropic SDK is not
+        # installed" -- true, useless, and hiding the fact that the user had
+        # withdrawn permission. Nothing was sent either way, so the bug was
+        # invisible in the ledger; it was visible only in what the operator was
+        # told, which is exactly the "no silent anything" surface.
+        #
+        # Deferring to first call means a blocked send never touches the SDK,
+        # and the reason a caller sees is the reason that applies.
+        self._client = client
+        self._timeout_s = timeout_s
+
+    def _resolve(self) -> Any:
+        if self._client is None:
             try:
                 import anthropic  # noqa: F401
             except ImportError as exc:  # pragma: no cover - needs the SDK absent
@@ -1328,8 +1348,8 @@ class AnthropicSender:
                     "client, and note that no API key is required to build a "
                     "request -- only to send one"
                 ) from exc
-            client = anthropic.Anthropic(max_retries=0, timeout=timeout_s)
-        self._client = client
+            self._client = anthropic.Anthropic(max_retries=0, timeout=self._timeout_s)
+        return self._client
 
     #: Exceptions that mean OUR code is wrong, not that the network is. They
     #: are re-raised unchanged rather than translated: a `TypeError: unexpected
@@ -1340,8 +1360,9 @@ class AnthropicSender:
     _LOCAL_ERRORS = (TypeError, ValueError, AttributeError, KeyError, NameError)
 
     def __call__(self, prepared: PreparedRequest) -> Any:
+        client = self._resolve()
         try:
-            return self._client.messages.create(**dict(prepared.body))
+            return client.messages.create(**dict(prepared.body))
         except self._LOCAL_ERRORS:
             raise
         except Exception as exc:  # translated below, then re-raised as SenderFault

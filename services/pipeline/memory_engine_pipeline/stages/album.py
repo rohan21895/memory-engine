@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -106,23 +107,39 @@ def _analysed_records(ctx: StageContext) -> list[dict[str, Any]]:
     return records
 
 
-def run(ctx: StageContext) -> StageResult:
-    upstream = ctx.require("ingest", "analysis", "faces", "ranking")
-    if upstream is not None:
-        return blocked_by(STAGE, upstream)
+@dataclass(frozen=True, slots=True)
+class SelectionPlan:
+    """The largest dated event, its scoreable candidates, and what was chosen.
 
-    profile = _vendor_profile(ctx)
-    if profile is None:
-        return StageResult(
-            stage=STAGE,
-            status=StageStatus.FAILED,
-            detail=f"no vendor profile named {ctx.settings.vendor_profile!r}",
-        )
+    Extracted so the Tier 3 taste stage can reach the SAME candidate pool this
+    stage lays out, rather than rebuilding clustering and selection alongside
+    it. Two implementations of "which photos are in play" would drift, and the
+    day they drifted the frontier model would be shown one shortlist while the
+    book was laid out from another -- a disagreement with no error in it.
+    """
 
+    records: list[dict[str, Any]]
+    by_id: dict[str, dict[str, Any]]
+    scores: dict[str, Any]
+    event: Any
+    candidates: list[Any]
+    selection: Any
+    wanted: int
+
+
+def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | StageResult:
+    """The candidate pool and the classical selection, or the reason there is none.
+
+    Returns a `StageResult` on every early exit so the caller can return it
+    unchanged: the reasons an album cannot be planned (nothing analysed, no
+    dated cluster, nothing scoreable) are exactly the reasons a taste pass
+    cannot run, and stating them twice in two voices is how the two stages
+    start disagreeing about why they did nothing.
+    """
     records = _analysed_records(ctx)
     if not records:
         return StageResult(
-            stage=STAGE,
+            stage=stage,
             status=StageStatus.SKIPPED,
             detail=(
                 "no record in the library has finished analysis, so there is nothing "
@@ -141,7 +158,7 @@ def run(ctx: StageContext) -> StageResult:
     dated = [cluster for cluster in clusters if cluster.kind == "dated"]
     if not dated:
         return StageResult(
-            stage=STAGE,
+            stage=stage,
             status=StageStatus.SKIPPED,
             detail=(
                 f"{len(clusters)} cluster(s) found, none of them dated; an album needs a "
@@ -149,7 +166,7 @@ def run(ctx: StageContext) -> StageResult:
             ),
             counts={"clusters": len(clusters)},
         )
-    target = max(dated, key=lambda cluster: cluster.size)
+    event = max(dated, key=lambda cluster: cluster.size)
 
     from memory_engine_album.selection import (  # noqa: PLC0415
         SelectionPolicy,
@@ -161,7 +178,7 @@ def run(ctx: StageContext) -> StageResult:
 
     space = EMBEDDING_SPACES.get(ctx.settings.embedding_model, (None, 0))[0]
     candidates = []
-    for media_id in target.media_ids:
+    for media_id in event.media_ids:
         record = by_id.get(media_id)
         score = scores.get(media_id)
         if record is None or score is None:
@@ -174,7 +191,7 @@ def run(ctx: StageContext) -> StageResult:
         )
     if not candidates:
         return StageResult(
-            stage=STAGE,
+            stage=stage,
             status=StageStatus.SKIPPED,
             detail="the largest event yielded no scoreable candidates",
         )
@@ -184,7 +201,7 @@ def run(ctx: StageContext) -> StageResult:
     selection = select(candidates, wanted, policy=policy)
     if not selection.selected:
         return StageResult(
-            stage=STAGE,
+            stage=stage,
             status=StageStatus.SKIPPED,
             detail="the selector rejected every candidate",
             counts={
@@ -195,6 +212,39 @@ def run(ctx: StageContext) -> StageResult:
                 ],
             },
         )
+
+    return SelectionPlan(
+        records=records,
+        by_id=by_id,
+        scores=scores,
+        event=event,
+        candidates=candidates,
+        selection=selection,
+        wanted=wanted,
+    )
+
+
+def run(ctx: StageContext) -> StageResult:
+    upstream = ctx.require("ingest", "analysis", "faces", "ranking")
+    if upstream is not None:
+        return blocked_by(STAGE, upstream)
+
+    profile = _vendor_profile(ctx)
+    if profile is None:
+        return StageResult(
+            stage=STAGE,
+            status=StageStatus.FAILED,
+            detail=f"no vendor profile named {ctx.settings.vendor_profile!r}",
+        )
+
+    planned = plan_selection(ctx)
+    if isinstance(planned, StageResult):
+        return planned
+    by_id = planned.by_id
+    target = planned.event
+    candidates = planned.candidates
+    selection = planned.selection
+    wanted = planned.wanted
 
     # The photos, and therefore the face rectangles, are assembled BEFORE the
     # job identity is computed, because the rectangles are an input to the

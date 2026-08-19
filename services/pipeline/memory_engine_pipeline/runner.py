@@ -51,7 +51,7 @@ from typing import Any, Callable
 from .events import ProgressReporter, utc_now
 from .ids import digest_of, source_locator_digest
 from .jobstore import JobStore
-from .stages import album, analysis, faces, ingest, ranking, render, story
+from .stages import album, analysis, faces, ingest, ranking, render, story, taste
 from .stages.base import (
     Settings,
     StageContext,
@@ -73,6 +73,11 @@ STAGE_ORDER: tuple[Stage, ...] = (
     # the album's face-safe layout reads the rectangles it stores.
     (faces.STAGE, faces.run),
     (ranking.STAGE, ranking.run),
+    # Tier 3 before album, and reading the same shortlist album will lay out.
+    # It is the only stage that opens a socket, it is off by default, and it
+    # SKIPS rather than blocks when it is not wanted -- a pipeline whose album
+    # depended on a cloud call would be a pipeline that stops working offline.
+    (taste.STAGE, taste.run),
     (album.STAGE, album.run),
     (render.STAGE, render.run),
     (story.STAGE, story.run),

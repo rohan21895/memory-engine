@@ -93,6 +93,51 @@ def validate_job(job: Mapping[str, Any]) -> None:
         )
 
 
+_LOCAL_EGRESS: Mapping[str, Any] = {
+    "requires_egress": False,
+    "consent": None,
+    "destination": None,
+    "payload_kind": None,
+    "estimated_bytes": None,
+}
+
+
+def _normalized_egress(egress: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A complete EgressDeclaration, or a refusal naming what is missing.
+
+    Every key is written out even when null, because `EgressDeclaration` sets
+    `additionalProperties: false` and a partial object would validate while
+    saying less than the contract asks. The `requires_egress: true` branch is
+    checked here as well as by the schema so the error names the CALLER's
+    omission -- a jsonschema message about an `if`/`then` block is technically
+    correct and tells nobody which stage forgot its consent.
+    """
+    if egress is None:
+        return dict(_LOCAL_EGRESS)
+    if not isinstance(egress, Mapping):
+        raise JobValidationError("egress must be a mapping")
+    unknown = sorted(set(egress) - set(_LOCAL_EGRESS))
+    if unknown:
+        raise JobValidationError(f"egress declaration has unknown field(s): {unknown}")
+    declaration = dict(_LOCAL_EGRESS)
+    declaration.update(egress)
+    requires = declaration["requires_egress"]
+    if not isinstance(requires, bool):
+        raise JobValidationError("egress.requires_egress must be a JSON boolean")
+    if requires:
+        missing = [
+            name
+            for name in ("consent", "destination", "payload_kind")
+            if declaration.get(name) in (None, "")
+        ]
+        if missing:
+            raise JobValidationError(
+                "a job that requires egress must name its "
+                f"{', '.join(missing)}; no network egress without a consent-ledger entry"
+            )
+    return declaration
+
+
 def build_job(
     *,
     job_type: str,
@@ -106,6 +151,7 @@ def build_job(
     depends_on: Sequence[str] = (),
     priority: int = 500,
     resumable: bool = True,
+    egress: Mapping[str, Any] | None = None,
     requirements: Mapping[str, Any] | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -155,17 +201,19 @@ def build_job(
         "params_digest": digest,
         "scope": scope,
         "priority": priority,
-        # Local work, every stage. `requires_egress: false` is written out
-        # rather than omitted because an absent declaration and a negative one
-        # must not look the same -- the contract says so and the CI egress test
-        # depends on it.
-        "egress": {
-            "requires_egress": False,
-            "consent": None,
-            "destination": None,
-            "payload_kind": None,
-            "estimated_bytes": None,
-        },
+        # Local work unless the caller declares otherwise. `requires_egress:
+        # false` is written out rather than omitted because an absent
+        # declaration and a negative one must not look the same -- the contract
+        # says so and the CI egress test depends on it.
+        #
+        # The DEFAULT is the local one, deliberately: a stage that touches the
+        # network has to say so at its own call site, in a diff, rather than
+        # inheriting a permissive default from here. `_normalized_egress`
+        # refuses a declaration that claims egress without naming its consent,
+        # so the schema's conditional requirement fails at build time with a
+        # message about the caller rather than at validation time with a
+        # message about JSON Schema.
+        "egress": _normalized_egress(egress),
         "state": {
             "status": "pending",
             "attempts": 0,
