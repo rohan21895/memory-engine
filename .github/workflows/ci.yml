@@ -66,7 +66,12 @@ jobs:
       # services/pipeline's tests ERROR rather than skip when they are absent,
       # which is deliberate -- a skipped measurement must not read as a passing
       # one -- so CI has to carry them.
-      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "pillow>=10.0" "numpy>=1.26" ./workers/ml-runtime
+      #
+      # onnx is here so the precision-check tests in models/tests that build a
+      # SYNTHETIC graph run rather than skip -- the required-suite runner
+      # refuses undeclared skips, and these two need only the package, not the
+      # 857MB exported artifact (which has its own declared exclusions).
+      - run: python3 -m pip install "pydantic>=2.7" "jsonschema>=4.20" "blake3>=0.4" "pillow>=10.0" "numpy>=1.26" "onnx>=1.16" ./workers/ml-runtime
       - run: npm ci --ignore-scripts
       # The Linux host has no NVDEC device and the production ingest worker
       # correctly refuses software decode. Run every other workspace component

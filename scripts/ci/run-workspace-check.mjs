@@ -35,6 +35,28 @@ if (!existsSync(fetchedYuNet)) {
     "test_fetch_weights.PayloadShapeChecks.test_the_real_fetched_yunet_passes_if_it_is_here",
   ]);
 }
+// The SigLIP 2 vision tower is BUILT here, never shipped: 857MB, exported by
+// scripts/models/export_siglip2_vision_onnx.py on a machine with the weights.
+// The tests that read the exported artifact cannot run on a checkout-only
+// runner and are removed explicitly -- the config-only tests in the same file
+// still run, and the exclusion self-repairs: an export on disk puts them back.
+const exportedSiglip = path.join(
+  repositoryRoot,
+  "models",
+  "weights",
+  "siglip2-so400m-patch14-384-vision.onnx",
+);
+if (!existsSync(exportedSiglip)) {
+  const modelsKey = path.join(repositoryRoot, "models");
+  optionalPythonTests.set(modelsKey, [
+    ...(optionalPythonTests.get(modelsKey) ?? []),
+    "test_exported_artifacts.TheExportedGraphMatchesTheConfig.test_a_config_bound_to_the_wrong_output_name_is_caught",
+    "test_exported_artifacts.TheExportedGraphMatchesTheConfig.test_a_wrong_declared_dimensionality_is_caught",
+    "test_exported_artifacts.TheExportedGraphMatchesTheConfig.test_the_graph_satisfies_every_binding_the_config_declares",
+    "test_exported_artifacts.TheStoredPrecisionMatchesTheDeclaration.test_a_declaration_the_artifact_contradicts_is_caught",
+    "test_exported_artifacts.TheStoredPrecisionMatchesTheDeclaration.test_the_artifact_stores_the_precision_the_config_declares",
+  ]);
+}
 
 for (const manifest of findFilesNamed("package.json")) {
   if (manifest === path.join(repositoryRoot, "package.json")) {
