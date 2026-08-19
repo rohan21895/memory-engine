@@ -37,6 +37,13 @@ export interface RenderPrintJobParams {
    * would invite a caller to believe the type checker had validated it.
    */
   safety_clearance: unknown;
+  /**
+   * Accept a `load_mode: "development"` clearance. Only the literal `true`
+   * counts, and because it is a param it is covered by `params_digest`: a
+   * development render is a different job identity from a release render of
+   * the same book, never a mode someone forgot to turn off.
+   */
+  allow_development_load_mode?: boolean;
 }
 
 /**
@@ -120,6 +127,9 @@ function parseParams(value: Record<string, unknown> | undefined): RenderPrintJob
     // job that presented no clearance, and `guardPrint` denies it -- which is
     // the correct handling and the reason there is no `?? {}`.
     safety_clearance: params.safety_clearance,
+    // Strict equality with `true`, not truthiness: a string "false" in a
+    // hand-edited job file must not open the development door.
+    allow_development_load_mode: params.allow_development_load_mode === true,
   };
 }
 
@@ -223,7 +233,10 @@ export async function runRenderPrintJob(
     // here so that a job with no clearance does not burn an hour of compositing
     // to be refused at the end.
     const mediaIds = publicationMediaIds(album);
-    guardPrint(params.safety_clearance, { mediaIds });
+    guardPrint(params.safety_clearance, {
+      mediaIds,
+      allowDevelopmentLoadMode: params.allow_development_load_mode,
+    });
 
     const pageStore = resolve(params.work_directory, job.job_id, "pages");
     const resumedPages = parseCursor(job, pageStore);
@@ -285,7 +298,10 @@ export async function runRenderPrintJob(
     //
     // `writePdfOnce` is the irreversible act; nothing may go between these two
     // lines. If you are adding a step here, it belongs above the guard.
-    guardPrint(params.safety_clearance, { mediaIds: publicationMediaIds(album) });
+    guardPrint(params.safety_clearance, {
+      mediaIds: publicationMediaIds(album),
+      allowDevelopmentLoadMode: params.allow_development_load_mode,
+    });
     await writePdfOnce(params.output_path, result);
 
     const finishedAt = now();

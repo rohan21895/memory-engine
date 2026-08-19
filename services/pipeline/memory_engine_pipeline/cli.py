@@ -91,6 +91,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "the safety gate; consent does not imply clearance")
     parser.add_argument("--tier3-pool", type=int, default=_DEFAULTS.tier3_pool_multiplier,
                         help="candidates shown per album slot wanted")
+    parser.add_argument("--print-clearance", default=None,
+                        help="path to the print SafetyClearance manifest (default "
+                             "<workdir>/print-clearance.json). Absence blocks at "
+                             "the renderer's gate")
+    parser.add_argument("--allow-development-clearance", action="store_true",
+                        help="accept a load_mode=development print clearance. "
+                             "Recorded in the render job's params; never a default")
     parser.add_argument("--no-render-print", action="store_true")
     parser.add_argument("--no-render-video", action="store_true")
     parser.add_argument("--quiet", action="store_true",
@@ -115,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
         reel_seconds=args.reel_seconds,
         render_print=not args.no_render_print,
         render_video=not args.no_render_video,
+        print_clearance_path=args.print_clearance,
+        allow_development_clearance=args.allow_development_clearance,
         # --tier3-dry-run implies --tier3: asking to see what would be sent is
         # asking for the pass to run, and requiring both flags would mean the
         # inspection mode silently does nothing for anyone who forgot one.

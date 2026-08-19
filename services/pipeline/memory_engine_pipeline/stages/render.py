@@ -201,12 +201,38 @@ def run(ctx: StageContext) -> StageResult:
             "profile under that name. Development only — pass --icc-profile before "
             "sending anything to a printer.",
         )
+    clearance_file = (
+        Path(ctx.settings.print_clearance_path)
+        if ctx.settings.print_clearance_path
+        else ctx.workdir / "print-clearance.json"
+    )
+    safety_clearance = None
+    if clearance_file.is_file():
+        try:
+            safety_clearance = json.loads(clearance_file.read_text(encoding="utf-8"))
+        except ValueError:
+            # Hand the absence through: the renderer's gate denies it with its
+            # own reason. Never a skip, never a default.
+            ctx.reporter.event(
+                STAGE, "note", f"{clearance_file.name} is not parseable JSON"
+            )
+    if ctx.settings.allow_development_clearance:
+        ctx.reporter.event(
+            STAGE,
+            "note",
+            "development clearance mode: a load_mode=development safety "
+            "clearance will be accepted for this render. Not for real prints.",
+        )
     params: dict[str, Any] = {
         "output_path": str(output_pdf),
         "work_directory": str(work_directory),
         "icc_profile": icc_profile,
         "asset_paths": asset_paths,
         "font_paths": {},
+        "safety_clearance": safety_clearance,
+        "allow_development_load_mode": bool(
+            ctx.settings.allow_development_clearance
+        ),
     }
     job = build_job(
         job_type="render_print",

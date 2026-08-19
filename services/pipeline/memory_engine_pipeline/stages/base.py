@@ -140,6 +140,15 @@ class Settings:
     render_print: bool = True
     render_video: bool = True
 
+    # Path to the print SafetyClearance manifest. None means
+    # `<workdir>/print-clearance.json`. Absence is handed to the renderer as an
+    # absent clearance, which its gate denies -- never skipped here.
+    print_clearance_path: str | None = None
+    # Accept a `load_mode: "development"` clearance for the print sink. Off by
+    # default; travels into the render job's params (and so its digest), and is
+    # announced in the event stream every time it is used.
+    allow_development_clearance: bool = False
+
     # ---- Tier 3, the only thing here that leaves the device ----------------
     #
     # DEFAULT OFF, and off is the absence of a request rather than a disabled

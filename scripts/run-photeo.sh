@@ -59,10 +59,22 @@ echo "   ok"
 
 step "ingest worker"
 INGEST="$ROOT/workers/ingest/target/release/memory-engine-ingest"
-if [ ! -x "$INGEST" ]; then
+if [ ! -x "$INGEST" ] || [ -n "$(find "$ROOT/workers/ingest/src" -newer "$INGEST" -name '*.rs' 2>/dev/null | head -1)" ]; then
   command -v cargo >/dev/null || { echo "missing: cargo (install Rust to build the ingest worker)" >&2; exit 2; }
   cargo build --release --manifest-path "$ROOT/workers/ingest/Cargo.toml" || exit 2
 fi
+echo "   ok"
+
+# A dist older than its src silently runs last week's renderer -- this exact
+# mistake has produced corrupt output more than once, so it is checked every run.
+step "render workers"
+for worker in render-print render-video; do
+  DIST="$ROOT/workers/$worker/dist"
+  if [ ! -d "$DIST" ] || [ -n "$(find "$ROOT/workers/$worker/src" -newer "$DIST" -name '*.ts' 2>/dev/null | head -1)" ]; then
+    echo "   rebuilding $worker (dist missing or older than src)"
+    (cd "$ROOT/workers/$worker" && npm install --silent && npm run build --silent && touch dist) || exit 2
+  fi
+done
 echo "   ok"
 
 step "library database"
@@ -91,12 +103,42 @@ done
 grep -q "serving" "$HOST_LOG" || { echo "model host never came up; see $HOST_LOG" >&2; exit 2; }
 echo "   serving on 127.0.0.1:$PORT"
 
-step "pipeline"
+# The print renderer refuses a book without a safety clearance, and the
+# clearance is computed over the exact album that will be printed. So: plan
+# everything except the print first, classify that album, then render it.
+SAFETY_HEAD="$ROOT/models/weights/safety-head/nsfw-siglip-head.v1.json"
+
+step "pipeline (plan + videos)"
 MEMORY_ENGINE_ALLOW_UNVERIFIED_MODELS=1 \
 PYTHONPATH="$ROOT/services/pipeline" \
   "$VENV/bin/python" -m memory_engine_pipeline "${SOURCES[@]}" \
-  --workdir "$WORKDIR" --ml-runtime "127.0.0.1:$PORT" "${EXTRA_ARGS[@]}"
+  --workdir "$WORKDIR" --ml-runtime "127.0.0.1:$PORT" \
+  --no-render-print "${EXTRA_ARGS[@]}"
 CODE=$?
+
+if [ -f "$SAFETY_HEAD" ]; then
+  step "print safety clearance"
+  "$VENV/bin/python" "$ROOT/scripts/classify_album_clearance.py" --workdir "$WORKDIR"
+  CLEARANCE=$?
+  if [ $CLEARANCE -ne 0 ]; then
+    echo "   one or more photos were blocked; the album will not print until they"
+    echo "   are excluded (MediaRecord.exclusion) or a human override is recorded."
+  fi
+  step "pipeline (print render)"
+  MEMORY_ENGINE_ALLOW_UNVERIFIED_MODELS=1 \
+  PYTHONPATH="$ROOT/services/pipeline" \
+    "$VENV/bin/python" -m memory_engine_pipeline "${SOURCES[@]}" \
+    --workdir "$WORKDIR" --ml-runtime "127.0.0.1:$PORT" \
+    --no-render-video --allow-development-clearance "${EXTRA_ARGS[@]}"
+  PRINT_CODE=$?
+  [ $PRINT_CODE -ne 0 ] && CODE=$PRINT_CODE
+else
+  step "print safety clearance"
+  echo "   SKIPPING the album PDF: no safety classifier head at"
+  echo "   $SAFETY_HEAD"
+  echo "   Build it once with: python scripts/models/build_safety_head.py"
+  echo "   (downloads the SigLIP 2 text tower; needs torch + transformers)"
+fi
 
 step "outputs"
 found=0
