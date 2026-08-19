@@ -97,6 +97,23 @@ AXES: dict[str, dict[str, list[str]]] = {
             "a badly framed picture with clutter and poor lighting",
         ],
     },
+    # Only the intended subjects in frame. The failure this axis exists for:
+    # a studio assistant half-visible at the right edge of an otherwise
+    # perfect window portrait -- her face turned away, so no face detector
+    # fires, and the intruding body even made the frame MORE distinct to the
+    # redundancy logic. Judged at the whole-frame level, where it lives.
+    "clean_frame": {
+        "positive": [
+            "a clean deliberate photograph of only the intended subjects",
+            "a professional portrait with a tidy uncluttered frame",
+            "a posed photo where every visible person belongs in the scene",
+        ],
+        "negative": [
+            "an assistant or bystander accidentally caught at the edge of the frame",
+            "a stranger half visible at the border of the picture",
+            "a behind the scenes photo with crew members visible",
+        ],
+    },
     # A composed photograph versus a frame nobody would print: limbs
     # mid-gesture, subject adjusting hair, motion-smeared candid.
     "composed": {

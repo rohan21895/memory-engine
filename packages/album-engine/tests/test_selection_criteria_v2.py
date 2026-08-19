@@ -195,3 +195,49 @@ class PairDistinctness(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BetterVersionOfTheSamePicture(unittest.TestCase):
+    """Within a shot group, a frame beaten somewhere and winning nowhere is a
+    worse version of an existing photograph -- never selectable. Born from a
+    real page: an assistant half-visible at the frame edge, face turned away
+    (no face detector fires), and the intruding body even made the frame MORE
+    distinct to the redundancy logic, so distinctness PREFERRED it."""
+
+    def _twins(self, **helper_overrides):
+        def unit(*c):
+            n = sum(x * x for x in c) ** 0.5
+            return tuple(x / n for x in c)
+
+        base = dict(
+            captured_utc="2026-03-01T12:00:00+00:00",
+            embedding=unit(1.0, 0.02, 0.0, 0.0), embedding_space="s",
+            smile=0.02, awake=0.03, aesthetic=0.05, clean_frame=0.028,
+        )
+        clean = cand("clean", 0.80, **base)
+        helper_kwargs = dict(base)
+        helper_kwargs["captured_utc"] = "2026-03-01T12:00:30+00:00"
+        helper_kwargs["embedding"] = unit(1.0, 0.025, 0.0, 0.0)
+        helper_kwargs.update(helper_overrides)
+        helper = cand("helper", 0.82, **helper_kwargs)
+        return clean, helper
+
+    def test_the_crew_contaminated_twin_is_never_selected(self):
+        # Real numbers from the maternity shoot: clean_frame 0.028 vs 0.008.
+        clean, helper = self._twins(clean_frame=0.008)
+        result = select([clean, helper], 2)
+        self.assertIn(mid("clean"), result.selected)
+        self.assertNotIn(mid("helper"), result.selected)
+
+    def test_frames_that_trade_wins_are_both_genuine_alternatives(self):
+        # One frame has the better smile, the other the cleaner frame: no
+        # domination, both eligible, the objective decides.
+        clean, rival = self._twins(clean_frame=0.008, smile=0.08)
+        result = select([clean, rival], 2)
+        self.assertEqual(2, len(result.selected))
+
+    def test_a_blink_variant_loses_to_its_own_twin(self):
+        clean, blink = self._twins(awake=-0.01)
+        result = select([clean, blink], 2)
+        self.assertNotIn(mid("blink"), result.selected)
+        self.assertIn(mid("clean"), result.selected)

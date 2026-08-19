@@ -274,6 +274,14 @@ class SelectionPolicy:
     # ineligible while anything more distinct remains -- relaxed only when
     # the pool has nothing else, because a short book beats an empty one.
     max_selected_similarity: float = 0.92
+    # Within one shot group the frames are the SAME picture except for
+    # defects, so the clean_frame contrast compares like with like: lighting
+    # and subjects cancel, and what remains is the assistant caught at the
+    # frame edge. A frame more than this far below its own group's best is a
+    # worse version of an existing photograph, and a worse version of a
+    # picture the album can already have is never selectable. Measured: a
+    # crew-contaminated take sat 0.020 under its clean twins.
+    clean_frame_group_margin: float = 0.015
 
     # --- timeline ---------------------------------------------------------
     # 0 means "one bin per photo we intend to select, capped", which makes the
@@ -290,7 +298,7 @@ class SelectionPolicy:
             "redundancy_free_similarity", "hero_quality", "shot_similarity",
             "face_sharpness_floor", "head_sharpness_floor",
             "max_sleeping_fraction", "sleeping_min_contrast",
-            "max_selected_similarity",
+            "max_selected_similarity", "clean_frame_group_margin",
         ):
             value = getattr(self, name)
             # NaN is the reason this is `not (0 <= v <= 1)` and not `v < 0 or
@@ -378,6 +386,7 @@ class SelectionCandidate:
     smile: float | None = None
     awake: float | None = None
     aesthetic: float | None = None
+    clean_frame: float | None = None
     sleeping: float | None = None
     composed: float | None = None
     embedding: tuple[float, ...] | None = None
@@ -609,6 +618,7 @@ def candidate_from_media_record(
         smile=_expression_axis(expression, "smile"),
         awake=_expression_axis(expression, "awake"),
         aesthetic=_expression_axis(expression, "aesthetic"),
+        clean_frame=_expression_axis(expression, "clean_frame"),
         sleeping=_expression_axis(expression, "sleeping"),
         composed=_expression_axis(expression, "composed"),
         embedding=tuple(float(x) for x in embedding) if embedding is not None else None,
@@ -1338,6 +1348,8 @@ def _greedy(
     cap = _person_cap(survivors, target_count, policy)
     shot_of = _shot_groups(survivors, policy)
     shot_counts: dict[str, int] = {}
+
+    worse_version = _dominated_within_shot(survivors, shot_of, policy)
     redundancy_free, redundancy_denom = _calibrated_redundancy(survivors, policy)
 
     # Expression axes as percentiles WITHIN this pool (the absolute zero-shot
@@ -1523,6 +1535,8 @@ def _greedy(
                 # A cap, not a rejection: sleeping-baby photos are a cherished
                 # type, but a book that is a third closed eyes is a nap log.
                 continue
+            if worse_version[media_id]:
+                continue
             eligible.append(media_id)
 
         if not eligible:
@@ -1566,6 +1580,78 @@ def _greedy(
         commit(best_id)
 
     return selected, sorted(blocked)
+
+
+#: The margins at which one frame of a shot BEATS another on a signal.
+#: Within a shot group the frames are the same picture except for defects --
+#: same people, same light, same set -- so raw differences compare like with
+#: like and each margin is "a difference a person would see on the page":
+#: an assistant in the frame, a blink, visibly worse focus on someone's face.
+#: clean_frame's margin lives on the policy (it was calibrated on a real
+#: contaminated take, 0.020 under its clean twins); the rest are fixed here.
+_VERSION_SIGNAL_MARGINS: "tuple[tuple[str, float], ...]" = (
+    ("awake", 0.02),        # someone is mid-blink in this variant
+    ("smile", 0.025),       # clearly worse expressions, same instant
+    ("aesthetic", 0.02),    # worse light or framing of the same scene
+    ("face_sharpness", 0.15),  # a face visibly softer than its twin
+)
+_VERSION_VALUE_MARGIN = 0.05  # decisively out-scored overall
+
+
+def _dominated_within_shot(
+    survivors: Sequence[SelectionCandidate],
+    shot_of: Mapping[str, str],
+    policy: SelectionPolicy,
+) -> dict[str, bool]:
+    """media_id -> True when a group-mate is simply the better version of it.
+
+    "Is there a better version of the same picture?" as Pareto dominance
+    with perceptual margins: frame X is a worse version of frame Y (same
+    shot group) when Y beats X by the margin on at least one signal and X
+    beats Y on none. Two frames that trade wins -- best smile against best
+    focus -- are genuine alternatives and BOTH stay eligible; the greedy's
+    objective picks between them. Only the frame that loses somewhere and
+    wins nowhere is excluded, which also guarantees every group keeps at
+    least one eligible frame (domination is a strict partial order).
+
+    Hard exclusion, not a penalty: the better version is itself a survivor
+    in the same group, so nothing the group can offer is lost.
+    """
+    signals: list[tuple[Callable[[SelectionCandidate], float | None], float]] = [
+        (lambda c: c.clean_frame, policy.clean_frame_group_margin),
+    ]
+    signals.extend(
+        ((lambda c, _n=name: getattr(c, _n)), margin)
+        for name, margin in _VERSION_SIGNAL_MARGINS
+    )
+    signals.append((lambda c: c.score.value, _VERSION_VALUE_MARGIN))
+
+    def beats(better: SelectionCandidate, worse: SelectionCandidate) -> bool:
+        won = False
+        for getter, margin in signals:
+            a, b = getter(better), getter(worse)
+            if a is None or b is None:
+                continue
+            if b - a > margin:
+                return False  # `worse` wins somewhere: no domination
+            if a - b > margin:
+                won = True
+        return won
+
+    groups: dict[str, list[SelectionCandidate]] = {}
+    for candidate in survivors:
+        groups.setdefault(shot_of[candidate.media_id], []).append(candidate)
+
+    dominated = {c.media_id: False for c in survivors}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        for candidate in members:
+            for other in members:
+                if other is not candidate and beats(other, candidate):
+                    dominated[candidate.media_id] = True
+                    break
+    return dominated
 
 
 def _axis_percentiles(

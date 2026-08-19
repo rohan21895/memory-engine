@@ -66,7 +66,7 @@ PLANNER = "album-planner"
 #: 0.3.1: full-bleed requests step down to the bokeh hero, not a white inset.
 #: 0.4.0: hard pair-distinctness cap (max_selected_similarity) and the shot
 #: window widened to a full session -- no two near-identical frames in a book.
-PLANNER_VERSION = "0.4.0"
+PLANNER_VERSION = "0.4.1"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
