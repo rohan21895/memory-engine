@@ -42,6 +42,7 @@ consumed and refuses a proxy kind it was not calibrated for.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,7 @@ __all__ = [
     "HISTOGRAM_BINS",
     "SUPPORTED_PROXY_KINDS",
     "measure",
+    "measure_face_sharpness",
 ]
 
 EXECUTOR_ID = "classical-quality"
@@ -72,6 +74,24 @@ NOISE_HALF_POINT = 0.012
 
 # Luma std-dev that reads as full contrast.
 CONTRAST_FULL_SCALE = 0.30
+
+# --- face sharpness ---------------------------------------------------------
+# Whole-image Laplacian variance is NOT scale-invariant: a close-up portrait is
+# mostly smooth skin, so its variance is diluted and a global measure flags
+# exactly the photos with tack-sharp eyes and creamy bokeh -- the best
+# portraits in the library. So every face is measured at ONE standard crop
+# size, which makes a 40px face and a 400px face comparable claims.
+#
+# Calibrated on a real 439-face library at 112px crops: in-focus faces span
+# 2e-4 to 6e-3 (a shallow-depth-of-field close-up measured 5.5e-3, p90);
+# visibly blurred faces cluster below 1e-4, two orders of magnitude under the
+# median. The half point sits at that library's median so 0.5 reads "typical
+# in-focus face".
+FACE_SHARPNESS_STD_EDGE_PX = 112
+FACE_SHARPNESS_HALF_POINT = 8.0e-4
+#: Below this many proxy pixels on either edge, a crop's Laplacian is sensor
+#: noise, not focus evidence; the face is reported as unmeasurable (None).
+FACE_SHARPNESS_MIN_EDGE_PX = 16
 
 # Clipping tolerated before it costs anything. Specular highlights and genuine
 # black are normal; a blown sky or a crushed shadow is not.
@@ -283,3 +303,53 @@ def measure(proxy_path: str | Path, *, proxy_kind: str = "thumbnail_512") -> Cla
             "entropy": round(_entropy(luma), 6),
         },
     )
+
+
+def measure_face_sharpness(
+    proxy_path: str | Path,
+    boxes: Sequence[Mapping[str, float]],
+    *,
+    proxy_kind: str = "thumbnail_512",
+) -> list[float | None]:
+    """Sharpness of each face crop, in box order. None = too small to measure.
+
+    `boxes` are normalised {x, y, w, h} against the ORIENTED image, which is
+    what the thumbnail proxy is. Each crop is resized to
+    FACE_SHARPNESS_STD_EDGE_PX square before measuring -- see the constant
+    block for why scale normalisation is the whole point.
+    """
+    import numpy  # noqa: PLC0415
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
+    if proxy_kind not in SUPPORTED_PROXY_KINDS:
+        raise ClassicalQualityError(
+            f"face sharpness is calibrated for {sorted(SUPPORTED_PROXY_KINDS)}, "
+            f"not {proxy_kind!r}"
+        )
+    path = Path(proxy_path)
+    if not path.is_file():
+        raise ClassicalQualityError("proxy file is missing")
+
+    with Image.open(path) as handle:
+        grey = ImageOps.exif_transpose(handle).convert("L")
+        width, height = grey.size
+        results: list[float | None] = []
+        for box in boxes:
+            x0 = max(0, int(float(box["x"]) * width))
+            y0 = max(0, int(float(box["y"]) * height))
+            x1 = min(width, int((float(box["x"]) + float(box["w"])) * width))
+            y1 = min(height, int((float(box["y"]) + float(box["h"])) * height))
+            if x1 - x0 < FACE_SHARPNESS_MIN_EDGE_PX or y1 - y0 < FACE_SHARPNESS_MIN_EDGE_PX:
+                results.append(None)
+                continue
+            crop = grey.crop((x0, y0, x1, y1)).resize(
+                (FACE_SHARPNESS_STD_EDGE_PX, FACE_SHARPNESS_STD_EDGE_PX),
+                Image.LANCZOS,
+            )
+            array = numpy.asarray(crop, dtype=numpy.float64) / 255.0
+            results.append(
+                _quantise(
+                    _saturating(_laplacian_variance(array), FACE_SHARPNESS_HALF_POINT)
+                )
+            )
+    return results

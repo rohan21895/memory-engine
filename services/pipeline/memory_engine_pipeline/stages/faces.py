@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import struct
+from pathlib import Path
 from typing import Any
 
 from ..events import utc_now
@@ -79,6 +80,12 @@ def run(ctx: StageContext) -> StageResult:
             status=StageStatus.COMPLETED,
             detail="no face was detected anywhere in this library",
             counts={"faces": 0},
+        )
+
+    backfilled = _backfill_face_sharpness(ctx, records)
+    if backfilled:
+        ctx.reporter.event(
+            STAGE, "note", f"measured face sharpness for {backfilled} face(s)"
         )
 
     from memory_engine_face.clustering import FaceObservation  # noqa: PLC0415
@@ -328,6 +335,61 @@ def run(ctx: StageContext) -> StageResult:
         counts=counts,
         outputs=(str(queue_path),),
     )
+
+
+def _backfill_face_sharpness(ctx: StageContext, records: list[dict[str, Any]]) -> int:
+    """Measure and store sharpness for every face that does not have one yet.
+
+    Self-repairing rather than a migration: the same pass covers faces written
+    before the measure existed and faces written by this run, and a face whose
+    proxy has gone missing is simply left unmeasured (None) -- absence of the
+    proxy must not fabricate a focus claim.
+
+    Writes `attributes.sharpness` (the measurement) and `attributes.quality`
+    (the fused face score album selection sorts on -- today that fusion is
+    sharpness alone, and the Score's run_id says which executor produced it,
+    so a later fusion that adds eyes-open or pose is a new run, not a silent
+    redefinition).
+    """
+    from ..classical import EXECUTOR_VERSION, measure_face_sharpness  # noqa: PLC0415
+
+    pending: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        attributes = record.get("attributes") or {}
+        if attributes.get("sharpness") is None:
+            pending.setdefault(record["media_id"], []).append(record)
+    if not pending:
+        return 0
+
+    run_id = f"face-sharpness-{EXECUTOR_VERSION.replace('.', '-')}"
+    updated = 0
+    for media_id, faces in sorted(pending.items()):
+        proxies = ctx.database.proxies_for_media(media_id, kind="thumbnail_512")
+        if not proxies:
+            continue
+        path = proxies[0].get("path")
+        if not path or not Path(path).is_file():
+            continue
+        boxes = [face["detection"]["bbox"] for face in faces]
+        try:
+            values = measure_face_sharpness(path, boxes)
+        except Exception as error:  # noqa: BLE001 - one bad proxy must not
+            # abort the stage; the face stays unmeasured and the gate treats
+            # that as "no focus evidence", never as sharp.
+            ctx.reporter.event(
+                STAGE, "note", f"face sharpness failed for {media_id[:12]}: {error}"
+            )
+            continue
+        for face, value in zip(faces, values, strict=True):
+            if value is None:
+                continue
+            attributes = dict(face.get("attributes") or {})
+            attributes["sharpness"] = value
+            attributes["quality"] = {"value": value, "run_id": run_id}
+            face["attributes"] = attributes
+            ctx.database.put_face(face)
+            updated += 1
+    return updated
 
 
 def _all_faces(ctx: StageContext) -> list[dict[str, Any]]:

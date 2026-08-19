@@ -438,6 +438,75 @@ class ClassicalQuality(unittest.TestCase):
             classical.measure(self.root / "does-not-exist.jpg")
 
 
+class FaceSharpness(unittest.TestCase):
+    """The face measure must be SCALE-NORMALISED, or it re-creates the bug it
+    exists to fix: a big in-focus face reading softer than a small one."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="mep-fs-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _photo(self, blur_box=None) -> Path:
+        """A 512x384 grey canvas with two 'faces' bearing the same structured
+        pattern at two scales, one optionally Gaussian-blurred.
+
+        The pattern is a deterministic coarse checkerboard, not noise: noise
+        does not survive resampling (which is why real cameras cannot use it
+        as a focus target either), while edges -- like eyes and mouths -- do.
+        """
+        from PIL import Image, ImageDraw, ImageFilter
+
+        board = Image.new("L", (256, 256), 40)
+        draw = ImageDraw.Draw(board)
+        for row in range(8):
+            for column in range(8):
+                if (row + column) % 2 == 0:
+                    draw.rectangle(
+                        (column * 32, row * 32, column * 32 + 31, row * 32 + 31),
+                        fill=215,
+                    )
+        image = Image.new("L", (512, 384), 128)
+        image.paste(board.resize((204, 154)), (20, 20))       # big face
+        image.paste(board.resize((51, 38)), (300, 100))       # small face
+        if blur_box is not None:
+            region = image.crop(blur_box)
+            image.paste(region.filter(ImageFilter.GaussianBlur(6)), blur_box)
+        path = self.root / "faces.jpg"
+        image.save(path, format="JPEG", quality=92)
+        return path
+
+    BIG = {"x": 20 / 512, "y": 20 / 384, "w": 204 / 512, "h": 154 / 384}
+    SMALL = {"x": 300 / 512, "y": 100 / 384, "w": 51 / 512, "h": 38 / 384}
+
+    def test_a_blurred_face_measures_far_below_a_sharp_one(self):
+        sharp = classical.measure_face_sharpness(self._photo(), [self.BIG, self.SMALL])
+        blurred = classical.measure_face_sharpness(
+            self._photo(blur_box=(20, 20, 224, 174)), [self.BIG, self.SMALL]
+        )
+        self.assertLess(blurred[0], sharp[0] * 0.5, "blur must be unmistakable")
+        self.assertAlmostEqual(blurred[1], sharp[1], delta=0.05,
+                               msg="the untouched face must be unaffected")
+
+    def test_scale_normalisation_makes_big_and_small_faces_comparable(self):
+        big, small = classical.measure_face_sharpness(
+            self._photo(), [self.BIG, self.SMALL]
+        )
+        # Same texture at two scales: the two readings must be the same claim,
+        # not an order of magnitude apart as raw Laplacian variance would be.
+        self.assertLess(abs(big - small), 0.25)
+
+    def test_a_tiny_crop_is_none_not_a_number(self):
+        tiny = {"x": 0.1, "y": 0.1, "w": 10 / 512, "h": 8 / 384}
+        values = classical.measure_face_sharpness(self._photo(), [tiny, self.BIG])
+        self.assertIsNone(values[0])
+        self.assertIsNotNone(values[1])
+
+    def test_the_measure_is_deterministic(self):
+        path = self._photo()
+        first = classical.measure_face_sharpness(path, [self.BIG, self.SMALL])
+        self.assertEqual(first, classical.measure_face_sharpness(path, [self.BIG, self.SMALL]))
+
+
 class RuntimeClient(unittest.TestCase):
     """The correlation and validation rules the proto states but cannot enforce."""
 

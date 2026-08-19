@@ -179,6 +179,12 @@ class SelectionPolicy:
     # unknown. Passing the unknown case is how a load gate silently admits
     # unverified input.
     min_long_edge_px: int | None = None
+    # Floor on the candidate's measured FACE sharpness (scale-normalised, see
+    # classical.measure_face_sharpness). 0.12 is one order of magnitude under
+    # a typical in-focus face on the calibration library and just above its
+    # visibly-blurred cluster. A candidate with no measurement passes -- see
+    # `_apply_quality_floor`.
+    face_sharpness_floor: float = 0.12
 
     # --- people -----------------------------------------------------------
     min_per_person: int = 1
@@ -235,6 +241,7 @@ class SelectionPolicy:
         for name in (
             "quality_floor", "max_per_person_fraction", "min_non_people_fraction",
             "redundancy_free_similarity", "hero_quality", "shot_similarity",
+            "face_sharpness_floor",
         ):
             value = getattr(self, name)
             # NaN is the reason this is `not (0 <= v <= 1)` and not `v < 0 or
@@ -303,6 +310,10 @@ class SelectionCandidate:
     user_favorite: bool = False
 
     long_edge_px: int | None = None
+    # Minimum scale-normalised sharpness across the photo's significant faces,
+    # or None when no face was measured. Supplied by the caller (the face rows
+    # live outside the MediaRecord); None never fails the face floor.
+    face_sharpness: float | None = None
     embedding: tuple[float, ...] | None = None
     # `ContentAnalysis.embedding.space` -- WHICH model produced the floats.
     # Carried because cosine similarity between two different spaces is a number
@@ -455,6 +466,7 @@ def candidate_from_media_record(
     *,
     embedding: Sequence[float] | None = None,
     place_key: str | None = None,
+    face_sharpness: float | None = None,
 ) -> SelectionCandidate:
     """A contract MediaRecord + its FusedScore -> SelectionCandidate.
 
@@ -522,6 +534,7 @@ def candidate_from_media_record(
         user_hidden=bool(user.get("hidden", False)),
         user_favorite=bool(user.get("favorite", False)),
         long_edge_px=long_edge,
+        face_sharpness=float(face_sharpness) if face_sharpness is not None else None,
         embedding=tuple(float(x) for x in embedding) if embedding is not None else None,
         embedding_space=embedding_space if embedding is not None else None,
     )
@@ -963,16 +976,47 @@ def _apply_quality_floor(
     policy: SelectionPolicy,
     rejections: list[Rejection],
 ) -> tuple[list[SelectionCandidate], tuple[str, ...]]:
-    """The absolute floor, waived for irreplaceable subjects.
+    """The absolute floors, waived for irreplaceable subjects.
 
-    A person with no photo above the floor is 'scarce', and their single best
-    photo survives the cut however poor it is. Only one photo per scarce person
-    is rescued: the point is that grandmother appears, not that a bad run of
-    photos of grandmother fills the book.
+    Two floors, one waiver. `quality_floor` is the fused-score floor;
+    `face_sharpness_floor` rejects a photo whose measured FACE is out of focus
+    -- measured on the face region precisely because global sharpness flags
+    shallow-depth-of-field portraits, the best photos in a library. A photo
+    with no face-sharpness measurement passes this floor: absence of the
+    measure is not evidence of blur (the gate that turns absence into a block
+    is the safety gate's job, not a quality heuristic's).
+
+    A person with no photo passing both floors is 'scarce', and their single
+    best photo survives the cut however poor it is. Only one photo per scarce
+    person is rescued: the point is that grandmother appears, not that a bad
+    run of photos of grandmother fills the book.
     """
+    def failure(candidate: SelectionCandidate) -> str | None:
+        if candidate.score.value < policy.quality_floor:
+            return f"{candidate.score.value:.3f} < {policy.quality_floor:.3f}"
+        if (
+            candidate.face_sharpness is not None
+            and candidate.face_sharpness < policy.face_sharpness_floor
+        ):
+            return (
+                f"face sharpness {candidate.face_sharpness:.3f} < "
+                f"{policy.face_sharpness_floor:.3f}: the face is out of focus"
+            )
+        return None
+
+    verdicts = {c.media_id: failure(c) for c in survivors}
+    covered = {
+        person
+        for candidate in survivors
+        if verdicts[candidate.media_id] is None
+        for person in candidate.person_ids
+    }
+
     best_for_person: dict[str, tuple[float, str]] = {}
     for candidate in survivors:  # already media_id-sorted
         for person in sorted(candidate.person_ids):
+            if person in covered:
+                continue
             current = best_for_person.get(person)
             # Explicit tiebreak on media_id: two equally-scored photos of the
             # same person must rescue the same one on every machine.
@@ -980,18 +1024,14 @@ def _apply_quality_floor(
             if current is None or challenger < (-current[0], current[1]):
                 best_for_person[person] = (candidate.score.value, candidate.media_id)
 
-    rescued = {
-        media_id
-        for _, (value, media_id) in sorted(best_for_person.items())
-        if value < policy.quality_floor
-    }
+    rescued = {media_id for _, media_id in best_for_person.values()}
 
     kept: list[SelectionCandidate] = []
     for candidate in survivors:
-        if candidate.score.value < policy.quality_floor and candidate.media_id not in rescued:
+        reason = verdicts[candidate.media_id]
+        if reason is not None and candidate.media_id not in rescued:
             rejections.append(
-                Rejection(candidate.media_id, "below_quality_floor",
-                          f"{candidate.score.value:.3f} < {policy.quality_floor:.3f}")
+                Rejection(candidate.media_id, "below_quality_floor", reason)
             )
             continue
         kept.append(candidate)

@@ -201,7 +201,12 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
             ctx.database.vectors.get("media", media_id, space) if space else None
         )
         candidates.append(
-            candidate_from_media_record(record, score, embedding=embedding)
+            candidate_from_media_record(
+                record,
+                score,
+                embedding=embedding,
+                face_sharpness=_min_face_sharpness(ctx, media_id),
+            )
         )
     if not candidates:
         return StageResult(
@@ -574,6 +579,29 @@ def _photo(ctx: StageContext, record: Mapping[str, Any]) -> Any:
         ),
         salience=None,
     )
+
+
+#: A face smaller than this fraction of the frame is background, and its focus
+#: is a statement about the lens, not the photograph. Gate on faces people
+#: will actually look at in print.
+_FACE_SHARPNESS_MIN_AREA = 0.02
+
+
+def _min_face_sharpness(ctx: StageContext, media_id: str) -> float | None:
+    """The softest measured significant face in this photo, or None.
+
+    Min, not mean: one out-of-focus subject ruins the page even when the other
+    two faces are sharp. Faces below the area floor and faces without a
+    measurement are ignored -- absence of the measure is not blur evidence.
+    """
+    values = [
+        (face.get("attributes") or {}).get("sharpness")
+        for face in ctx.database.faces_for_media(media_id)
+        if (face.get("attributes") or {}).get("sharpness") is not None
+        and (face["detection"].get("face_area_ratio") or 0.0)
+        >= _FACE_SHARPNESS_MIN_AREA
+    ]
+    return min(values) if values else None
 
 
 _FACE_BOX_SLACK = 1e-5
