@@ -41,9 +41,11 @@ export interface RenderPrintJobParams {
    * Accept a `load_mode: "development"` clearance. Only the literal `true`
    * counts, and because it is a param it is covered by `params_digest`: a
    * development render is a different job identity from a release render of
-   * the same book, never a mode someone forgot to turn off.
+   * the same book, never a mode someone forgot to turn off. Non-optional in
+   * the PARSED shape -- `parseParams` always resolves it to a boolean, so no
+   * caller ever holds an `undefined` to forward.
    */
-  allow_development_load_mode?: boolean;
+  allow_development_load_mode: boolean;
 }
 
 /**

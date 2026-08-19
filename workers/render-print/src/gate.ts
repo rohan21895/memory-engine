@@ -3,6 +3,7 @@ import type {
   ValidationCheckCheckId,
 } from "../../../contracts/codegen/generated/typescript/index.js";
 
+import { IMPLEMENTED_ENHANCEMENTS } from "./enhance.js";
 import { RenderPrintError } from "./errors.js";
 
 const REQUIRED_CHECKS = new Set<ValidationCheckCheckId>([
@@ -100,10 +101,14 @@ export function assertRenderGate(spec: AlbumSpec): void {
       if (enhancements.some((operation) => !operation.license_cleared)) {
         fail(`${placement.placement_id} contains an enhancement without commercial clearance.`);
       }
-      if (enhancements.length > 0) {
+      const unexecutable = enhancements.filter(
+        (operation) => !IMPLEMENTED_ENHANCEMENTS.has(operation.kind),
+      );
+      if (unexecutable.length > 0) {
         fail(
-          `${placement.placement_id} declares ${enhancements.length} enhancement operation(s), but ` +
-            "enhancement execution is not implemented; rendering would silently use the original source.",
+          `${placement.placement_id} declares enhancement kind(s) ` +
+            `${unexecutable.map((operation) => operation.kind).join(", ")} that this ` +
+            "renderer cannot execute; rendering would silently use the original source.",
         );
       }
     }

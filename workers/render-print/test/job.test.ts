@@ -141,7 +141,7 @@ describe("render_print JobSpec execution", () => {
     await expect(access(output)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("does not resolve originals or create a PDF for a licensed but unexecuted enhancement", async () => {
+  it("does not resolve originals or create a PDF for an enhancement it cannot execute", async () => {
     const directory = await mkdtemp(join(tmpdir(), "render-print-enhancement-refusal-"));
     const output = join(directory, "blocked.pdf");
     const params = {
@@ -154,14 +154,14 @@ describe("render_print JobSpec execution", () => {
     };
     const album = makeAlbum();
     album.pages[0]!.placements[0]!.enhancement_ops = [
-      { op_id: "licensed-sharpen", kind: "sharpen", order: 0, license_cleared: true },
+      { op_id: "licensed-denoise", kind: "denoise", order: 0, license_cleared: true },
     ];
 
     const failed = await runRenderPrintJob(makeJob(params), album, { persist: async () => undefined });
 
     expect(failed.state.status).toBe("failed");
     expect(failed.error).toMatchObject({ code: "validation_failed", retryable: false });
-    expect(failed.error?.message).toMatch(/enhancement execution is not implemented/);
+    expect(failed.error?.message).toMatch(/cannot execute/);
     await expect(access(output)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

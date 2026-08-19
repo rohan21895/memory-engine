@@ -14,11 +14,13 @@ import { loadAndCheckIccProfile } from "../src/icc.js";
 import { makeAlbum } from "./helpers.js";
 
 describe("the non-overridable print gate", () => {
-  it("accepts the golden validation report only when its unsupported enhancement plan is empty", async () => {
+  it("refuses the golden report's denoise plan but accepts it once the plan is executable", async () => {
     const fixture = JSON.parse(
       await readFile(resolve("../../contracts/fixtures/album-spec/valid/album-thailand-validated.json"), "utf8"),
     ) as AlbumSpec;
-    expect(() => assertRenderGate(fixture)).toThrow(/enhancement execution is not implemented/);
+    // The Thailand fixture carries a licensed `denoise` op, which this
+    // renderer cannot execute -- rendering would silently ship the original.
+    expect(() => assertRenderGate(fixture)).toThrow(/cannot execute/);
     for (const page of fixture.pages) {
       for (const placement of page.placements) placement.enhancement_ops = [];
     }
@@ -75,13 +77,27 @@ describe("the non-overridable print gate", () => {
     expect(() => assertRenderGate(wrongCount)).toThrow(/19 pages/);
   });
 
-  it.each(EnhancementOpKindValues)("refuses a licensed %s plan until enhancement execution is wired", (kind) => {
+  const implementedKinds = ["exposure", "white_balance", "sharpen"] as const;
+  const unimplementedKinds = EnhancementOpKindValues.filter(
+    (kind) => !(implementedKinds as readonly string[]).includes(kind),
+  );
+
+  it.each(implementedKinds)("accepts a licensed %s plan the renderer can execute", (kind) => {
     const spec = makeAlbum();
     spec.pages[0]!.placements[0]!.enhancement_ops = [
       { op_id: `licensed-${kind}`, kind, order: 0, license_cleared: true },
     ];
 
-    expect(() => assertRenderGate(spec)).toThrow(/enhancement execution is not implemented/);
+    expect(() => assertRenderGate(spec)).not.toThrow();
+  });
+
+  it.each(unimplementedKinds)("refuses a licensed %s plan this renderer cannot execute", (kind) => {
+    const spec = makeAlbum();
+    spec.pages[0]!.placements[0]!.enhancement_ops = [
+      { op_id: `licensed-${kind}`, kind, order: 0, license_cleared: true },
+    ];
+
+    expect(() => assertRenderGate(spec)).toThrow(/cannot execute/);
   });
 
   it("loads and identifies Sharp's deterministic CMYK profile", async () => {

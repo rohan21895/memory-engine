@@ -9,6 +9,7 @@ import type {
 } from "../../../contracts/codegen/generated/typescript/index.js";
 
 import { canonicalJson, digestBytes, digestParts } from "./digest.js";
+import { applyEnhancements } from "./enhance.js";
 import { RenderPrintError } from "./errors.js";
 import type { CheckedIccProfile } from "./icc.js";
 
@@ -288,8 +289,19 @@ async function renderPlacement(
   const targetHeight = mmToSize(placement.frame.height_mm, dpi);
   let pipeline = sharp(oriented)
     .extract({ left: x0, top: y0, width: cropWidth, height: cropHeight })
-    .resize(targetWidth, targetHeight, { fit: "fill", kernel: sharp.kernel.lanczos3 })
-    .ensureAlpha();
+    .resize(targetWidth, targetHeight, { fit: "fill", kernel: sharp.kernel.lanczos3 });
+  if ((placement.enhancement_ops ?? []).length > 0) {
+    // Baked through a lossless intermediate rather than chained: sharp applies
+    // queued operations in ITS order, not call order, so `linear` on a
+    // still-alpha-free image is only guaranteed by finishing this pipeline
+    // before alpha exists. removeAlpha first: per-channel linear wants exactly
+    // the colour bands, and a PNG source may carry four.
+    const developed = await applyEnhancements(pipeline.removeAlpha(), placement)
+      .png({ compressionLevel: 1, adaptiveFiltering: false })
+      .toBuffer();
+    pipeline = sharp(developed);
+  }
+  pipeline = pipeline.ensureAlpha();
 
   if (placement.border && placement.border.width_mm > 0) {
     const borderWidth = Math.max(1, mmToPixels(placement.border.width_mm, dpi));

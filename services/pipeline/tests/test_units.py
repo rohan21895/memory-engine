@@ -24,7 +24,7 @@ from support import (  # noqa: E402
     write_photo,
 )
 
-from memory_engine_pipeline import classical, ids, inventory, mlruntime  # noqa: E402
+from memory_engine_pipeline import classical, develop, ids, inventory, mlruntime  # noqa: E402
 from memory_engine_pipeline.jobstore import (  # noqa: E402
     JobValidationError,
     build_job,
@@ -505,6 +505,78 @@ class FaceSharpness(unittest.TestCase):
         path = self._photo()
         first = classical.measure_face_sharpness(path, [self.BIG, self.SMALL])
         self.assertEqual(first, classical.measure_face_sharpness(path, [self.BIG, self.SMALL]))
+
+
+class AutoDevelop(unittest.TestCase):
+    """The develop planner corrects what it measured and never past its caps --
+    a night scene must stay a night scene."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="mep-dev-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _photo(self, name, pixels) -> Path:
+        """`pixels` is a callable (x, y) -> (r, g, b) on a 64x64 canvas."""
+        from PIL import Image
+
+        image = Image.new("RGB", (64, 64))
+        image.putdata([pixels(x, y) for y in range(64) for x in range(64)])
+        path = self.root / f"{name}.png"
+        image.save(path, format="PNG")
+        return path
+
+    MEDIA_ID = "f" * 64
+
+    def test_a_well_exposed_neutral_photo_gets_only_print_sharpening(self):
+        # A full 0..255 grey ramp: true blacks, true whites, mid median, no cast.
+        path = self._photo("ramp", lambda x, y: ((x * 4 + 2,) * 3))
+        ops = develop.plan_develop_ops(path, self.MEDIA_ID)
+        self.assertEqual(["sharpen"], [op["kind"] for op in ops])
+        self.assertEqual(
+            {"sigma": 1.0, "flat": 0.6, "jagged": 1.4}, ops[0]["parameters"]
+        )
+
+    def test_a_dark_photo_gets_a_capped_brightness_lift(self):
+        # A 0..100 ramp: median luma ~0.2, well under the 0.32 trigger, and the
+        # unlifted target 0.42/0.2 = 2.1 must be capped at 1.30.
+        path = self._photo("dark", lambda x, y: ((int(x * 100 / 63),) * 3))
+        ops = develop.plan_develop_ops(path, self.MEDIA_ID)
+        exposure = next(op for op in ops if op["kind"] == "exposure")
+        self.assertEqual(1.30, exposure["parameters"]["brightness"])
+        # Renderer ranges: black_point [0, 0.2], white_point [0.8, 1].
+        self.assertLessEqual(exposure["parameters"]["black_point"], 0.10)
+        self.assertGreaterEqual(exposure["parameters"]["white_point"], 0.85)
+
+    def test_a_strong_cast_is_capped_and_the_reason_says_so(self):
+        # Flat warm orange: raw grey-world blue gain ~1.6 must apply AT the
+        # 1.15 cap, never fully neutralised -- lamplight is a scene.
+        path = self._photo("warm", lambda x, y: (200, 150, 90))
+        ops = develop.plan_develop_ops(path, self.MEDIA_ID)
+        balance = next(op for op in ops if op["kind"] == "white_balance")
+        self.assertEqual(1.15, balance["parameters"]["gain_b"])
+        self.assertAlmostEqual(balance["parameters"]["gain_r"], 1 / 1.15, places=5)
+        self.assertIn("capped", balance["reason"])
+
+    def test_a_near_neutral_photo_gets_no_white_balance_churn(self):
+        # 1% deviation is under the 3% skip threshold: no op.
+        path = self._photo("near", lambda x, y: (130, 128, 127))
+        ops = develop.plan_develop_ops(path, self.MEDIA_ID)
+        self.assertNotIn("white_balance", [op["kind"] for op in ops])
+
+    def test_the_plan_is_deterministic_and_contract_shaped(self):
+        path = self._photo("warm", lambda x, y: (200, 150, 90))
+        first = develop.plan_develop_ops(path, self.MEDIA_ID)
+        self.assertEqual(first, develop.plan_develop_ops(path, self.MEDIA_ID))
+        for index, op in enumerate(first):
+            self.assertEqual(index, op["order"])
+            self.assertIsNone(op["model"])
+            self.assertTrue(op["license_cleared"])
+            self.assertTrue(op["op_id"].endswith(self.MEDIA_ID[:8]))
+        self.assertEqual("sharpen", first[-1]["kind"], "sharpening is always last")
+
+    def test_an_unreadable_proxy_fails_the_plan_loudly(self):
+        with self.assertRaises(Exception):
+            develop.plan_develop_ops(self.root / "missing.png", self.MEDIA_ID)
 
 
 class RuntimeClient(unittest.TestCase):

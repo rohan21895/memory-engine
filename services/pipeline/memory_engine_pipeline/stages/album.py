@@ -288,6 +288,27 @@ def run(ctx: StageContext) -> StageResult:
             ),
         )
 
+    # Develop ops are an input to the album's identity for the same reason the
+    # face rectangles are: they change every printed pixel, so a formula change
+    # must re-plan as a different album, never mutate an existing one.
+    from ..develop import DEVELOP_VERSION, plan_develop_ops  # noqa: PLC0415
+
+    develop_ops: dict[str, list[dict[str, Any]]] = {}
+    for media_id in selection.selected:
+        proxies = ctx.database.proxies_for_media(media_id, kind="thumbnail_512")
+        path = proxies[0].get("path") if proxies else None
+        if not path or not Path(path).is_file():
+            return StageResult(
+                stage=STAGE,
+                status=StageStatus.FAILED,
+                detail=(
+                    f"{media_id[:12]} has no readable thumbnail proxy, so its "
+                    "develop corrections cannot be measured; one undeveloped "
+                    "photo must not ship next to twenty-three developed ones"
+                ),
+            )
+        develop_ops[media_id] = plan_develop_ops(path, media_id)
+
     inputs_digest = digest_of(
         {
             "planner": PLANNER,
@@ -304,6 +325,8 @@ def run(ctx: StageContext) -> StageResult:
             "vendor_profile": profile,
             "photos_per_page": ctx.settings.album_photos_per_page,
             "target_count": wanted,
+            "develop_version": DEVELOP_VERSION,
+            "develop": develop_ops,
         }
     )
     job = build_job(
@@ -361,6 +384,13 @@ def run(ctx: StageContext) -> StageResult:
             stage=STAGE, status=StageStatus.FAILED,
             detail=f"layout refused this album: {error}", job_id=job["job_id"],
         )
+
+    # Layout owns geometry; the develop plan owns pixels. Attached here so
+    # every placement of a photo -- including the cover's repeat of the hero
+    # -- prints through the same corrections.
+    for page in pages:
+        for placement in page["placements"]:
+            placement["enhancement_ops"] = develop_ops[placement["media_id"]]
 
     from memory_engine_album.validator import (  # noqa: PLC0415
         DocumentColor,
