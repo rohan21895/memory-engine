@@ -1,13 +1,17 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::fs::File;
+
 use chrono::Utc;
 use memory_engine_contracts::{
-    Checkpoint, JobOutput, JobOutputKind, JobSpec, JobSpecJobType, JobStateStatus, Progress,
-    ProgressUnit,
+    Checkpoint, JobOutput, JobOutputKind, JobSpec, JobSpecJobType, JobState, JobStateStatus,
+    Progress, ProgressUnit,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -20,6 +24,7 @@ use crate::{
 };
 
 const CHECKPOINT_VERSION: i64 = 1;
+const SCAN_JOURNAL_VERSION: i64 = 1;
 
 #[derive(Debug, Error)]
 pub enum JobExecutionError {
@@ -45,6 +50,8 @@ pub enum JobExecutionError {
     PersistedRecordUnreadable,
     #[error("persisted media record does not match its JobOutput integrity metadata")]
     PersistedRecordIntegrity,
+    #[error("scan checkpoint journal is missing or corrupt: {0}")]
+    CheckpointJournal(&'static str),
     #[error(transparent)]
     Ingest(#[from] IngestError),
 }
@@ -54,20 +61,673 @@ pub struct CheckpointStore {
     path: PathBuf,
 }
 
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "record_type", rename_all = "snake_case")]
+enum ScanJournalRecord {
+    Header {
+        version: i64,
+        job: Box<JobSpec>,
+    },
+    Seed {
+        version: i64,
+        job_id: String,
+        output: Option<JobOutput>,
+        partial_output_id: Option<String>,
+        completed_input_id: Option<String>,
+    },
+    Progress {
+        version: i64,
+        job_id: String,
+        sequence: u64,
+        state: Box<JobState>,
+        cursor: Option<String>,
+        checkpoint_updated_at: Option<String>,
+        output: Option<JobOutput>,
+        replaced_output_id: Option<String>,
+        partial_output_id: Option<String>,
+        replaced_partial_output_id: Option<String>,
+    },
+    Commit {
+        version: i64,
+        job_id: String,
+        snapshot_blake3: String,
+    },
+}
+
+#[derive(Debug, Default)]
+struct ScanOutputDelta {
+    output: Option<JobOutput>,
+    replaced_output_id: Option<String>,
+    partial_output_id: Option<String>,
+    replaced_partial_output_id: Option<String>,
+}
+
 impl CheckpointStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 
-    pub fn save(&self, job: &JobSpec) -> Result<(), JobExecutionError> {
+    fn sidecar(&self, suffix: &str) -> PathBuf {
+        let mut path = self.path.as_os_str().to_owned();
+        path.push(suffix);
+        PathBuf::from(path)
+    }
+
+    fn journal_path(&self) -> PathBuf {
+        self.sidecar(".scan-journal")
+    }
+
+    fn journal_required_path(&self) -> PathBuf {
+        self.sidecar(".scan-journal-required")
+    }
+
+    fn ensure_parent(&self) -> Result<(), JobExecutionError> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(JobExecutionError::Checkpoint)?;
         }
+        Ok(())
+    }
+
+    fn write_snapshot_bytes(&self, bytes: &[u8]) -> Result<(), JobExecutionError> {
+        self.ensure_parent()?;
+        let temporary = self.path.with_extension("tmp");
+        write_durable(&temporary, bytes)?;
+        fs::rename(temporary, &self.path).map_err(JobExecutionError::Checkpoint)?;
+        sync_parent_directory(&self.path)
+    }
+
+    fn append_journal(&self, record: &ScanJournalRecord) -> Result<(), JobExecutionError> {
+        let mut bytes = serde_json::to_vec(record).map_err(JobExecutionError::Serialize)?;
+        bytes.push(b'\n');
+        let mut journal = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.journal_path())
+            .map_err(JobExecutionError::Checkpoint)?;
+        journal
+            .write_all(&bytes)
+            .and_then(|()| journal.sync_data())
+            .map_err(JobExecutionError::Checkpoint)
+    }
+
+    fn remove_if_present(path: &Path) -> Result<(), JobExecutionError> {
+        match fs::remove_file(path) {
+            Ok(()) => sync_parent_directory(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(JobExecutionError::Checkpoint(error)),
+        }
+    }
+
+    /// Atomically compact the complete JobSpec and retire any scan journal.
+    pub fn save(&self, job: &JobSpec) -> Result<(), JobExecutionError> {
+        self.ensure_parent()?;
         let bytes = serde_json::to_vec_pretty(job).map_err(JobExecutionError::Serialize)?;
         let temporary = self.path.with_extension("tmp");
-        fs::write(&temporary, bytes).map_err(JobExecutionError::Checkpoint)?;
-        fs::rename(temporary, &self.path).map_err(JobExecutionError::Checkpoint)
+        write_durable(&temporary, &bytes)?;
+
+        let marker = self.journal_required_path();
+        let journal = self.journal_path();
+        if marker.is_file() {
+            if !journal.is_file() {
+                return Err(JobExecutionError::CheckpointJournal(
+                    "required journal is absent",
+                ));
+            }
+            self.append_journal(&ScanJournalRecord::Commit {
+                version: SCAN_JOURNAL_VERSION,
+                job_id: job.job_id.clone(),
+                snapshot_blake3: blake3::hash(&bytes).to_hex().to_string(),
+            })?;
+        }
+
+        fs::rename(temporary, &self.path).map_err(JobExecutionError::Checkpoint)?;
+        sync_parent_directory(&self.path)?;
+        // Marker first: if cleanup is interrupted, an orphaned journal beside a
+        // complete snapshot is harmless. The reverse order would leave a marker
+        // requiring a journal that had already been deleted.
+        Self::remove_if_present(&marker)?;
+        Self::remove_if_present(&journal)
     }
+
+    /// Start a scan journal once. The header contains only the constant-sized
+    /// job configuration and progress state. A legacy full checkpoint is
+    /// migrated with one seed delta per existing output rather than embedding
+    /// its growing manifest in the header; subsequent per-file writes remain
+    /// constant-sized deltas.
+    fn begin_scan(&self, job: &mut JobSpec) -> Result<(), JobExecutionError> {
+        self.ensure_parent()?;
+        let journal = self.journal_path();
+        let marker = self.journal_required_path();
+        if marker.is_file() {
+            if journal.is_file() {
+                return Ok(());
+            }
+            return Err(JobExecutionError::CheckpointJournal(
+                "required journal is absent",
+            ));
+        }
+        // A journal without its marker was created before the marker became
+        // durable. The checkpoint is still self-contained, so discard the
+        // uncommitted sidecar and begin again.
+        Self::remove_if_present(&journal)?;
+        let mut compact_job = job.clone();
+        let outputs = compact_job.outputs.take().unwrap_or_default();
+        let partial_output_ids = compact_job
+            .checkpoint
+            .as_mut()
+            .and_then(|checkpoint| checkpoint.partial_output_ids.take())
+            .unwrap_or_default();
+        let completed_input_ids = compact_job
+            .checkpoint
+            .as_mut()
+            .and_then(|checkpoint| checkpoint.completed_input_ids.take())
+            .unwrap_or_default();
+        compact_job.outputs = Some(Vec::new());
+        if let Some(checkpoint) = compact_job.checkpoint.as_mut() {
+            checkpoint.partial_output_ids = Some(Vec::new());
+            checkpoint.completed_input_ids = Some(Vec::new());
+        }
+        let header = ScanJournalRecord::Header {
+            version: SCAN_JOURNAL_VERSION,
+            job: Box::new(compact_job),
+        };
+        let mut bytes = serde_json::to_vec(&header).map_err(JobExecutionError::Serialize)?;
+        bytes.push(b'\n');
+        for index in 0..outputs
+            .len()
+            .max(partial_output_ids.len())
+            .max(completed_input_ids.len())
+        {
+            let seed = ScanJournalRecord::Seed {
+                version: SCAN_JOURNAL_VERSION,
+                job_id: job.job_id.clone(),
+                output: outputs.get(index).cloned(),
+                partial_output_id: partial_output_ids.get(index).cloned(),
+                completed_input_id: completed_input_ids.get(index).cloned(),
+            };
+            bytes.extend(serde_json::to_vec(&seed).map_err(JobExecutionError::Serialize)?);
+            bytes.push(b'\n');
+        }
+        let temporary = self.sidecar(".scan-journal.tmp");
+        write_durable(&temporary, &bytes)?;
+        fs::rename(temporary, &journal).map_err(JobExecutionError::Checkpoint)?;
+        sync_parent_directory(&journal)?;
+        let marker_temporary = self.sidecar(".scan-journal-required.tmp");
+        write_durable(&marker_temporary, job.job_id.as_bytes())?;
+        fs::rename(marker_temporary, &marker).map_err(JobExecutionError::Checkpoint)?;
+        sync_parent_directory(&marker)?;
+        self.write_compact_progress(job)
+    }
+
+    /// Append one durable scan delta, then refresh the small progress snapshot.
+    fn save_scan_progress(
+        &self,
+        job: &mut JobSpec,
+        delta: ScanOutputDelta,
+    ) -> Result<(), JobExecutionError> {
+        let checkpoint = job
+            .checkpoint
+            .as_ref()
+            .ok_or(JobExecutionError::CheckpointJournal("checkpoint is absent"))?;
+        let sequence = progress_sequence(job)?;
+        self.append_journal(&ScanJournalRecord::Progress {
+            version: SCAN_JOURNAL_VERSION,
+            job_id: job.job_id.clone(),
+            sequence,
+            state: Box::new(job.state.clone()),
+            cursor: checkpoint.cursor.clone(),
+            checkpoint_updated_at: checkpoint.updated_at.clone(),
+            output: delta.output,
+            replaced_output_id: delta.replaced_output_id,
+            partial_output_id: delta.partial_output_id,
+            replaced_partial_output_id: delta.replaced_partial_output_id,
+        })?;
+        self.write_compact_progress(job)
+    }
+
+    /// Keep the contract-shaped checkpoint and live progress cheap to poll.
+    /// Moving the two growing vectors out avoids even an O(n) clone here.
+    fn write_compact_progress(&self, job: &mut JobSpec) -> Result<(), JobExecutionError> {
+        let outputs = job.outputs.take();
+        let partial_output_ids = job
+            .checkpoint
+            .as_mut()
+            .and_then(|checkpoint| checkpoint.partial_output_ids.take());
+        let completed_input_ids = job
+            .checkpoint
+            .as_mut()
+            .and_then(|checkpoint| checkpoint.completed_input_ids.take());
+        job.outputs = Some(Vec::new());
+        if let Some(checkpoint) = job.checkpoint.as_mut() {
+            checkpoint.partial_output_ids = Some(Vec::new());
+            checkpoint.completed_input_ids = Some(Vec::new());
+        }
+        let serialized = serde_json::to_vec_pretty(job);
+        job.outputs = outputs;
+        if let Some(checkpoint) = job.checkpoint.as_mut() {
+            checkpoint.partial_output_ids = partial_output_ids;
+            checkpoint.completed_input_ids = completed_input_ids;
+        }
+        let bytes = serialized.map_err(JobExecutionError::Serialize)?;
+        self.write_snapshot_bytes(&bytes)
+    }
+
+    /// Rebuild a full worker JobSpec from a compact snapshot plus its journal.
+    /// A truncated final record was never durable and is discarded; malformed
+    /// complete records fail closed.
+    pub fn recover(&self, requested: &mut JobSpec) -> Result<(), JobExecutionError> {
+        let marker = self.journal_required_path();
+        let journal_path = self.journal_path();
+        if !marker.is_file() {
+            Self::remove_if_present(&journal_path)?;
+            return Ok(());
+        }
+        if !journal_path.is_file() {
+            return Err(JobExecutionError::CheckpointJournal(
+                "required journal is absent",
+            ));
+        }
+
+        let snapshot_bytes = fs::read(&self.path).ok();
+        let journal_bytes = fs::read(&journal_path).map_err(JobExecutionError::Checkpoint)?;
+        let mut parsed = Vec::new();
+        let mut offset = 0_usize;
+        for chunk in journal_bytes.split_inclusive(|byte| *byte == b'\n') {
+            if !chunk.ends_with(b"\n") {
+                break;
+            }
+            let start = offset;
+            offset += chunk.len();
+            let record = serde_json::from_slice::<ScanJournalRecord>(&chunk[..chunk.len() - 1])
+                .map_err(|_| {
+                    JobExecutionError::CheckpointJournal("complete journal record is invalid")
+                })?;
+            parsed.push((start, record));
+        }
+        if offset < journal_bytes.len() {
+            truncate_durable(&journal_path, offset as u64)?;
+        }
+
+        let Some((_, ScanJournalRecord::Header { version, job })) = parsed.first() else {
+            return Err(JobExecutionError::CheckpointJournal(
+                "journal header is absent",
+            ));
+        };
+        if *version != SCAN_JOURNAL_VERSION || job.job_id != requested.job_id {
+            return Err(JobExecutionError::CheckpointJournal(
+                "journal identity or version disagrees",
+            ));
+        }
+
+        if let Some((
+            commit_index,
+            (
+                commit_start,
+                ScanJournalRecord::Commit {
+                    version,
+                    job_id,
+                    snapshot_blake3,
+                },
+            ),
+        )) = parsed
+            .iter()
+            .enumerate()
+            .find(|(_, (_, record))| matches!(record, ScanJournalRecord::Commit { .. }))
+        {
+            if commit_index + 1 != parsed.len()
+                || *version != SCAN_JOURNAL_VERSION
+                || job_id != &requested.job_id
+            {
+                return Err(JobExecutionError::CheckpointJournal(
+                    "journal commit is invalid",
+                ));
+            }
+            if snapshot_bytes
+                .as_ref()
+                .is_some_and(|bytes| blake3::hash(bytes).to_hex().as_str() == snapshot_blake3)
+            {
+                let snapshot: JobSpec = serde_json::from_slice(snapshot_bytes.as_ref().unwrap())
+                    .map_err(|_| {
+                        JobExecutionError::CheckpointJournal("committed snapshot is invalid")
+                    })?;
+                if snapshot.job_id != requested.job_id {
+                    return Err(JobExecutionError::CheckpointJournal(
+                        "committed snapshot identity disagrees",
+                    ));
+                }
+                validate_recovered_manifest(&snapshot)?;
+                *requested = snapshot;
+                Self::remove_if_present(&marker)?;
+                Self::remove_if_present(&journal_path)?;
+                return Ok(());
+            }
+            // The commit reached the journal but its snapshot rename did not.
+            // Remove the unmatched commit so new progress can append cleanly.
+            truncate_durable(&journal_path, *commit_start as u64)?;
+            parsed.truncate(commit_index);
+        }
+
+        let ScanJournalRecord::Header { job, .. } = &parsed[0].1 else {
+            unreachable!("header checked above")
+        };
+        let mut recovered = (**job).clone();
+        let mut record_index = 1;
+        while let Some((
+            _,
+            ScanJournalRecord::Seed {
+                version,
+                job_id,
+                output,
+                partial_output_id,
+                completed_input_id,
+            },
+        )) = parsed.get(record_index)
+        {
+            if *version != SCAN_JOURNAL_VERSION || job_id != &recovered.job_id {
+                return Err(JobExecutionError::CheckpointJournal(
+                    "journal seed identity or version disagrees",
+                ));
+            }
+            if let Some(output) = output {
+                let outputs = recovered.outputs.get_or_insert_with(Vec::new);
+                if outputs.iter().any(|existing| existing.id == output.id) {
+                    return Err(JobExecutionError::CheckpointJournal(
+                        "journal seed contains a duplicate output",
+                    ));
+                }
+                outputs.push(output.clone());
+            }
+            if let Some(media_id) = partial_output_id {
+                let ids = recovered
+                    .checkpoint
+                    .as_mut()
+                    .ok_or(JobExecutionError::CheckpointJournal("checkpoint is absent"))?
+                    .partial_output_ids
+                    .get_or_insert_with(Vec::new);
+                if ids.iter().any(|existing| existing == media_id) {
+                    return Err(JobExecutionError::CheckpointJournal(
+                        "journal seed contains a duplicate partial output",
+                    ));
+                }
+                ids.push(media_id.clone());
+            }
+            if let Some(input_id) = completed_input_id {
+                let ids = recovered
+                    .checkpoint
+                    .as_mut()
+                    .ok_or(JobExecutionError::CheckpointJournal("checkpoint is absent"))?
+                    .completed_input_ids
+                    .get_or_insert_with(Vec::new);
+                if ids.iter().any(|existing| existing == input_id) {
+                    return Err(JobExecutionError::CheckpointJournal(
+                        "journal seed contains a duplicate completed input",
+                    ));
+                }
+                ids.push(input_id.clone());
+            }
+            record_index += 1;
+        }
+        let mut expected = progress_sequence(&recovered)? + 1;
+        let mut previous_progress: Option<&ScanJournalRecord> = None;
+        for (_, record) in parsed.iter().skip(record_index) {
+            let ScanJournalRecord::Progress {
+                version,
+                job_id,
+                sequence,
+                state,
+                cursor,
+                checkpoint_updated_at,
+                output,
+                replaced_output_id,
+                partial_output_id,
+                replaced_partial_output_id,
+            } = record
+            else {
+                return Err(JobExecutionError::CheckpointJournal(
+                    "unexpected journal record",
+                ));
+            };
+            if *version != SCAN_JOURNAL_VERSION || job_id != &recovered.job_id {
+                return Err(JobExecutionError::CheckpointJournal(
+                    "journal progress identity or version disagrees",
+                ));
+            }
+            if sequence.checked_add(1) == Some(expected) {
+                if previous_progress == Some(record) {
+                    continue;
+                }
+                return Err(JobExecutionError::CheckpointJournal(
+                    "duplicate progress sequence conflicts with its prior delta",
+                ));
+            }
+            if *sequence != expected || progress_units(&state.progress)? != *sequence {
+                return Err(JobExecutionError::CheckpointJournal(
+                    "journal progress sequence has a gap",
+                ));
+            }
+            if replaced_output_id.is_some() && output.is_none() {
+                return Err(JobExecutionError::CheckpointJournal(
+                    "journal output replacement has no new artifact",
+                ));
+            }
+            if let Some(output) = output {
+                let outputs = recovered.outputs.get_or_insert_with(Vec::new);
+                if let Some(replaced_id) = replaced_output_id {
+                    if replaced_id == &output.id {
+                        return Err(JobExecutionError::CheckpointJournal(
+                            "journal output replacement repeats its artifact id",
+                        ));
+                    }
+                    let Some(index) = outputs.iter().position(|item| item.id == *replaced_id)
+                    else {
+                        return Err(JobExecutionError::CheckpointJournal(
+                            "journal output replacement target is absent",
+                        ));
+                    };
+                    if outputs[index].kind != output.kind || outputs[index].path != output.path {
+                        return Err(JobExecutionError::CheckpointJournal(
+                            "journal output replacement changes logical record",
+                        ));
+                    }
+                    outputs.remove(index);
+                    if outputs.iter().any(|item| item.id == output.id) {
+                        return Err(JobExecutionError::CheckpointJournal(
+                            "journal output replacement duplicates an artifact",
+                        ));
+                    }
+                    outputs.push(output.clone());
+                } else if let Some(existing) = outputs.iter().find(|item| item.id == output.id) {
+                    if existing != output {
+                        return Err(JobExecutionError::CheckpointJournal(
+                            "journal output conflicts with its manifest",
+                        ));
+                    }
+                } else {
+                    outputs.push(output.clone());
+                }
+            }
+            if replaced_partial_output_id.is_some() && partial_output_id.is_none() {
+                return Err(JobExecutionError::CheckpointJournal(
+                    "journal partial-output replacement has no new artifact id",
+                ));
+            }
+            if let Some(artifact_id) = partial_output_id {
+                let ids = recovered
+                    .checkpoint
+                    .as_mut()
+                    .ok_or(JobExecutionError::CheckpointJournal("checkpoint is absent"))?
+                    .partial_output_ids
+                    .get_or_insert_with(Vec::new);
+                if let Some(replaced_id) = replaced_partial_output_id {
+                    if replaced_output_id.as_deref() != Some(replaced_id.as_str()) {
+                        return Err(JobExecutionError::CheckpointJournal(
+                            "journal output and partial-output replacements disagree",
+                        ));
+                    }
+                    if output.as_ref().map(|item| item.id.as_str()) != Some(artifact_id.as_str()) {
+                        return Err(JobExecutionError::CheckpointJournal(
+                            "journal partial-output replacement disagrees with artifact",
+                        ));
+                    }
+                    let Some(index) = ids.iter().position(|id| id == replaced_id) else {
+                        return Err(JobExecutionError::CheckpointJournal(
+                            "journal partial-output replacement target is absent",
+                        ));
+                    };
+                    ids.remove(index);
+                    if ids.iter().any(|id| id == artifact_id) {
+                        return Err(JobExecutionError::CheckpointJournal(
+                            "journal partial-output replacement duplicates an artifact",
+                        ));
+                    }
+                    ids.push(artifact_id.clone());
+                } else if !ids.iter().any(|id| id == artifact_id) {
+                    ids.push(artifact_id.clone());
+                }
+            }
+            let checkpoint = recovered
+                .checkpoint
+                .as_mut()
+                .ok_or(JobExecutionError::CheckpointJournal("checkpoint is absent"))?;
+            checkpoint.cursor = cursor.clone();
+            checkpoint.checkpoint_version = Some(CHECKPOINT_VERSION);
+            checkpoint.updated_at = checkpoint_updated_at.clone();
+            recovered.state = (**state).clone();
+            expected += 1;
+            previous_progress = Some(record);
+        }
+        validate_recovered_manifest(&recovered)?;
+        *requested = recovered;
+        Ok(())
+    }
+}
+
+fn write_durable(path: &Path, bytes: &[u8]) -> Result<(), JobExecutionError> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+        .map_err(JobExecutionError::Checkpoint)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(JobExecutionError::Checkpoint)
+}
+
+fn truncate_durable(path: &Path, length: u64) -> Result<(), JobExecutionError> {
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(JobExecutionError::Checkpoint)?;
+    file.set_len(length)
+        .and_then(|()| file.sync_data())
+        .map_err(JobExecutionError::Checkpoint)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<(), JobExecutionError> {
+    let parent = path.parent().ok_or(JobExecutionError::CheckpointJournal(
+        "checkpoint parent is absent",
+    ))?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(JobExecutionError::Checkpoint)
+}
+
+// Rust cannot open a directory with `File::open` on Windows. The file itself
+// is still flushed before `rename`; Windows rename durability is delegated to
+// the platform filesystem until Rust exposes a portable directory flush.
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> Result<(), JobExecutionError> {
+    Ok(())
+}
+
+fn progress_units(progress: &Option<Progress>) -> Result<u64, JobExecutionError> {
+    let Some(units) = progress.as_ref().map(|progress| progress.units_done) else {
+        return Ok(0);
+    };
+    if !units.is_finite() || units < 0.0 || units.fract() != 0.0 || units > u64::MAX as f64 {
+        return Err(JobExecutionError::CheckpointJournal(
+            "scan progress is not an integral file count",
+        ));
+    }
+    Ok(units as u64)
+}
+
+fn progress_sequence(job: &JobSpec) -> Result<u64, JobExecutionError> {
+    progress_units(&job.state.progress)
+}
+
+fn validate_journal_output(output: &JobOutput) -> Result<String, JobExecutionError> {
+    if output.kind != JobOutputKind::MediaRecord {
+        return Err(JobExecutionError::CheckpointJournal(
+            "scan journal contains a non-media output",
+        ));
+    }
+    let path = output
+        .path
+        .as_deref()
+        .ok_or(JobExecutionError::PersistedRecordIntegrity)?;
+    let bytes = fs::read(path).map_err(|_| JobExecutionError::PersistedRecordUnreadable)?;
+    if output.byte_size != Some(bytes.len() as i64) {
+        return Err(JobExecutionError::PersistedRecordIntegrity);
+    }
+    let record: memory_engine_contracts::MediaRecord =
+        serde_json::from_slice(&bytes).map_err(|_| JobExecutionError::PersistedRecordUnreadable)?;
+    if blake3::hash(&bytes).to_hex().as_str() != output.id {
+        return Err(JobExecutionError::PersistedRecordIntegrity);
+    }
+    Ok(record.media_id)
+}
+
+fn validate_recovered_manifest(job: &JobSpec) -> Result<(), JobExecutionError> {
+    let mut output_ids = std::collections::BTreeSet::new();
+    let mut media_ids = std::collections::BTreeSet::new();
+    for output in job.outputs.as_deref().unwrap_or_default() {
+        let media_id = validate_journal_output(output)?;
+        if !output_ids.insert(output.id.as_str()) {
+            return Err(JobExecutionError::CheckpointJournal(
+                "recovered manifest contains a duplicate output",
+            ));
+        }
+        if !media_ids.insert(media_id) {
+            return Err(JobExecutionError::CheckpointJournal(
+                "recovered manifest contains duplicate source media",
+            ));
+        }
+    }
+    let mut partial_ids = std::collections::BTreeSet::new();
+    for media_id in job
+        .checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.partial_output_ids.as_deref())
+        .unwrap_or_default()
+    {
+        if !partial_ids.insert(media_id.as_str()) {
+            return Err(JobExecutionError::CheckpointJournal(
+                "recovered manifest contains a duplicate partial output",
+            ));
+        }
+        if !output_ids.contains(media_id.as_str()) {
+            return Err(JobExecutionError::CheckpointJournal(
+                "partial output is absent from the recovered manifest",
+            ));
+        }
+    }
+    let mut completed_ids = std::collections::BTreeSet::new();
+    for input_id in job
+        .checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.completed_input_ids.as_deref())
+        .unwrap_or_default()
+    {
+        if !completed_ids.insert(input_id.as_str()) {
+            return Err(JobExecutionError::CheckpointJournal(
+                "recovered manifest contains a duplicate completed input",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -185,11 +845,13 @@ pub fn execute_scan_batch(
     if job.state.started_at.is_none() {
         job.state.started_at = Some(now);
     }
+    checkpoint_store.begin_scan(job)?;
 
     for entry in entries.iter().skip(resumed_skips) {
         if max_files.is_some_and(|limit| report.processed >= limit) {
             break;
         }
+        let mut journal_delta = ScanOutputDelta::default();
         match ingest_file(&entry.path, output_dir) {
             Ok(ingested) => {
                 bytes_processed += ingested.record.byte_size;
@@ -201,14 +863,16 @@ pub fn execute_scan_batch(
                 }
                 let (record_path, artifact_bytes, artifact_id) =
                     persist_record(&ingested.record, output_dir)?;
-                upsert_output(
+                journal_delta = upsert_output(
                     job,
                     &ingested.record.media_id,
                     &record_path,
                     artifact_bytes,
                     &artifact_id,
                 );
-                update_partial_outputs(job, &artifact_id);
+                if update_partial_outputs(job, &artifact_id) {
+                    journal_delta.partial_output_id = Some(artifact_id);
+                }
             }
             Err(error) => report.issues.push(ScanIssue {
                 code: memory_engine_contracts::JobErrorCode::FileUnreadable,
@@ -219,7 +883,7 @@ pub fn execute_scan_batch(
         newly_processed += 1;
         update_progress(job, resumed_skips + newly_processed, total, bytes_processed);
         update_cursor(job, &entry.cursor);
-        checkpoint_store.save(job)?;
+        checkpoint_store.save_scan_progress(job, journal_delta)?;
     }
 
     // `newly_processed`, not `report.processed`: the latter also counts capability
@@ -398,7 +1062,9 @@ fn reconcile_gopro_outputs(
             persist_record(&assembly, output_dir)?
         };
         let output_changed =
-            upsert_output(job, &assembly.media_id, &path, artifact_bytes, &artifact_id);
+            upsert_output(job, &assembly.media_id, &path, artifact_bytes, &artifact_id)
+                .output
+                .is_some();
         if !existed {
             report.assemblies_created += 1;
         }
@@ -557,12 +1223,14 @@ fn update_cursor(job: &mut JobSpec, path: &str) {
     checkpoint.updated_at = Some(Utc::now().to_rfc3339());
 }
 
-fn update_partial_outputs(job: &mut JobSpec, media_id: &str) {
+fn update_partial_outputs(job: &mut JobSpec, media_id: &str) -> bool {
     let checkpoint = job.checkpoint.as_mut().expect("validated checkpoint");
     let ids = checkpoint.partial_output_ids.get_or_insert_with(Vec::new);
-    if !ids.iter().any(|id| id == media_id) {
-        ids.push(media_id.to_owned());
+    if ids.iter().any(|id| id == media_id) {
+        return false;
     }
+    ids.push(media_id.to_owned());
+    true
 }
 
 fn update_progress(job: &mut JobSpec, units_done: usize, total: usize, bytes_processed: i64) {
@@ -619,17 +1287,18 @@ fn record_path(output_dir: &Path, media_id: &str) -> PathBuf {
         .join(format!("{media_id}.json"))
 }
 
-/// Point the `media_record` output for `media_id` at `path`, returning whether anything
-/// actually changed. Both the capability-retry and the span-reconciliation pass go
-/// through here, so it has to be a no-op when the record is already recorded identically
-/// — that is what keeps a repeat reconciliation from churning `produced_at`.
+/// Point the `media_record` output for `media_id` at `path`, describing the exact
+/// manifest replacement for the journal. Both the capability-retry and the span-
+/// reconciliation pass go through here, so it has to be a no-op when the record is
+/// already recorded identically — that keeps a repeat reconciliation from churning
+/// `produced_at`.
 fn upsert_output(
     job: &mut JobSpec,
     media_id: &str,
     path: &Path,
     byte_size: i64,
     artifact_id: &str,
-) -> bool {
+) -> ScanOutputDelta {
     let path = path.to_string_lossy().into_owned();
     let outputs = job.outputs.get_or_insert_with(Vec::new);
     if let Some(index) = outputs.iter_mut().position(|output| {
@@ -641,42 +1310,59 @@ fn upsert_output(
             && outputs[index].path.as_deref() == Some(path.as_str())
             && outputs[index].byte_size == Some(byte_size)
         {
-            return false;
+            return ScanOutputDelta::default();
         }
         let output = &mut outputs[index];
         output.id = artifact_id.to_owned();
         output.path = Some(path);
         output.byte_size = Some(byte_size);
         output.produced_at = Some(Utc::now().to_rfc3339());
-        replace_partial_output_id(job, &old_id, artifact_id);
-        return true;
+        let output = output.clone();
+        let replaced_output_id = (old_id != artifact_id).then_some(old_id.clone());
+        let replaced_partial_output_id =
+            replace_partial_output_id(job, &old_id, artifact_id).then_some(old_id);
+        return ScanOutputDelta {
+            output: Some(output),
+            replaced_output_id,
+            partial_output_id: replaced_partial_output_id
+                .as_ref()
+                .map(|_| artifact_id.to_owned()),
+            replaced_partial_output_id,
+        };
     }
-    outputs.push(JobOutput {
+    let output = JobOutput {
         kind: JobOutputKind::MediaRecord,
         id: artifact_id.to_owned(),
         path: Some(path),
         byte_size: Some(byte_size),
         produced_at: Some(Utc::now().to_rfc3339()),
-    });
-    true
+    };
+    outputs.push(output.clone());
+    ScanOutputDelta {
+        output: Some(output),
+        ..ScanOutputDelta::default()
+    }
 }
 
-fn replace_partial_output_id(job: &mut JobSpec, old_id: &str, new_id: &str) {
+fn replace_partial_output_id(job: &mut JobSpec, old_id: &str, new_id: &str) -> bool {
     if old_id == new_id {
-        return;
+        return false;
     }
     let Some(ids) = job
         .checkpoint
         .as_mut()
         .and_then(|checkpoint| checkpoint.partial_output_ids.as_mut())
     else {
-        return;
+        return false;
     };
+    let mut replaced = false;
     for id in ids.iter_mut().filter(|id| id.as_str() == old_id) {
         *id = new_id.to_owned();
+        replaced = true;
     }
     ids.sort();
     ids.dedup();
+    replaced
 }
 
 #[cfg(test)]
@@ -853,6 +1539,168 @@ mod tests {
         assert!(matches!(error, JobExecutionError::PersistedRecordIntegrity));
         assert_eq!(job.outputs.as_ref().unwrap()[0].id, record.media_id);
         assert_ne!(job.outputs.as_ref().unwrap()[0].id, artifact_id);
+    }
+
+    #[test]
+    fn legacy_full_checkpoint_migrates_to_seed_deltas_and_recovers_exactly() {
+        let directory = tempdir().expect("tempdir");
+        let source = directory.path().join("source");
+        let output = directory.path().join("output");
+        fs::create_dir(&source).expect("source directory");
+        for (index, name) in ["a.jpg", "b.jpg"].into_iter().enumerate() {
+            ImageBuffer::from_pixel(8, 8, Rgb([index as u8, 34, 56]))
+                .save(source.join(name))
+                .expect("fixture image");
+        }
+        let locator = source_locator_digest(std::slice::from_ref(&source)).expect("locator digest");
+        let mut job: JobSpec = serde_json::from_value(json!({
+            "schema_version": "v0",
+            "job_id": "abababababababababababababababababababababababababababababababab",
+            "job_type": "scan_source",
+            "inputs": {
+                "media_ids": [],
+                "source_paths": [source],
+                "source_locator_digest": locator
+            },
+            "params": {"follow_symlinks": false, "include_hidden": false, "max_depth": 32},
+            "params_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "scope": "library:legacy-checkpoint-test",
+            "egress": {"requires_egress": false},
+            "state": {"status": "pending", "attempts": 0},
+            "checkpoint": {"resumable": true, "cursor": null, "checkpoint_version": 1}
+        }))
+        .expect("job contract");
+        let store = CheckpointStore::new(directory.path().join("checkpoint.json"));
+        execute_scan_batch(&mut job, &output, &store, Some(1)).expect("legacy first batch");
+        job.checkpoint.as_mut().unwrap().completed_input_ids = Some(vec![
+            "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_owned(),
+        ]);
+        let expected_outputs = job.outputs.clone();
+        let expected_partial_ids = job
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.partial_output_ids.clone());
+        let expected_completed_ids = job
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.completed_input_ids.clone());
+        assert_eq!(expected_outputs.as_ref().map(Vec::len), Some(1));
+
+        store
+            .begin_scan(&mut job)
+            .expect("migrate legacy checkpoint");
+
+        let records = fs::read_to_string(store.journal_path())
+            .expect("journal")
+            .lines()
+            .map(|line| serde_json::from_str::<ScanJournalRecord>(line).expect("journal record"))
+            .collect::<Vec<_>>();
+        let ScanJournalRecord::Header { job: header, .. } = &records[0] else {
+            panic!("first record is not a header");
+        };
+        assert_eq!(header.outputs.as_ref().map(Vec::len), Some(0));
+        assert_eq!(
+            header
+                .checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.partial_output_ids.as_ref())
+                .map(Vec::len),
+            Some(0),
+            "the header never embeds a legacy manifest"
+        );
+        assert_eq!(
+            header
+                .checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.completed_input_ids.as_ref())
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, ScanJournalRecord::Seed { .. }))
+                .count(),
+            1,
+            "the old manifest migrates once as per-output seed deltas"
+        );
+        let compact: JobSpec = serde_json::from_slice(
+            &fs::read(&store.path).expect("compact contract-shaped checkpoint"),
+        )
+        .expect("compact JobSpec");
+        assert_eq!(compact.outputs.as_ref().map(Vec::len), Some(0));
+
+        let mut recovered = compact;
+        store.recover(&mut recovered).expect("recover migrated job");
+        assert_eq!(recovered.outputs, expected_outputs);
+        assert_eq!(
+            recovered
+                .checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.partial_output_ids.clone()),
+            expected_partial_ids
+        );
+        assert_eq!(
+            recovered
+                .checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.completed_input_ids.clone()),
+            expected_completed_ids
+        );
+    }
+
+    #[test]
+    fn journal_recovery_rejects_same_size_valid_json_artifact_corruption() {
+        let directory = tempdir().expect("tempdir");
+        let source = directory.path().join("source");
+        let output = directory.path().join("output");
+        fs::create_dir(&source).expect("source directory");
+        for (index, name) in ["a.jpg", "b.jpg"].into_iter().enumerate() {
+            ImageBuffer::from_pixel(8, 8, Rgb([index as u8, 34, 56]))
+                .save(source.join(name))
+                .expect("fixture image");
+        }
+        let locator = source_locator_digest(std::slice::from_ref(&source)).expect("locator digest");
+        let mut job: JobSpec = serde_json::from_value(json!({
+            "schema_version": "v0",
+            "job_id": "aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+            "job_type": "scan_source",
+            "inputs": {
+                "media_ids": [],
+                "source_paths": [source],
+                "source_locator_digest": locator
+            },
+            "params": {"follow_symlinks": false, "include_hidden": false, "max_depth": 32},
+            "params_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "scope": "library:journal-integrity-test",
+            "egress": {"requires_egress": false},
+            "state": {"status": "pending", "attempts": 0},
+            "checkpoint": {"resumable": true, "cursor": null, "checkpoint_version": 1}
+        }))
+        .expect("job contract");
+        let store = CheckpointStore::new(directory.path().join("checkpoint.json"));
+        execute_scan_batch(&mut job, &output, &store, Some(1)).expect("first batch");
+        store.begin_scan(&mut job).expect("begin journal");
+
+        let artifact = PathBuf::from(job.outputs.as_ref().unwrap()[0].path.as_ref().unwrap());
+        let original = fs::read(&artifact).expect("record artifact");
+        let changed = String::from_utf8(original.clone())
+            .expect("record UTF-8")
+            .replacen("a.jpg", "z.jpg", 1);
+        assert_eq!(changed.len(), original.len());
+        serde_json::from_str::<memory_engine_contracts::MediaRecord>(&changed)
+            .expect("still-valid MediaRecord JSON");
+        fs::write(&artifact, changed).expect("same-size artifact corruption");
+
+        let mut compact: JobSpec =
+            serde_json::from_slice(&fs::read(&store.path).expect("compact checkpoint"))
+                .expect("compact JobSpec");
+        let error = store
+            .recover(&mut compact)
+            .expect_err("journal recovery must authenticate record bytes");
+
+        assert!(matches!(error, JobExecutionError::PersistedRecordIntegrity));
+        assert_ne!(compact.state.status, JobStateStatus::Completed);
     }
 
     #[test]
