@@ -29,6 +29,7 @@ import os
 import struct
 import sys
 import unittest
+from collections.abc import Mapping
 from concurrent import futures
 from pathlib import Path
 from typing import Any
@@ -280,6 +281,7 @@ class FakeMlRuntime:
         face_boxes: Any = None,
         landmark_scheme: str = "insightface_5",
         emit_landmarks: bool = True,
+        infer_pin_overrides: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
         self._grpc, self._pb, self._pb_grpc = _load_stubs()
         self.serving = serving
@@ -301,6 +303,10 @@ class FakeMlRuntime:
         # the frame (`landmarks_out_of_range`), so "a face with no landmarks"
         # is a real state and not a broken fake.
         self.emit_landmarks = emit_landmarks
+        # ListModels continues to advertise the canonical pin. Only Infer uses
+        # these overrides, which reproduces a host/config skew across the real
+        # gRPC boundary rather than calling the client's parser directly.
+        self.infer_pin_overrides = dict(infer_pin_overrides or {})
         self.infer_calls: list[tuple[str, int]] = []
         self.infer_requests: list[Any] = []
         self.face_embedding_requests: list[Any] = []
@@ -523,14 +529,16 @@ class FakeMlRuntime:
                                 ),
                             )
                         )
+                pin = {
+                    "model_id": request.model_id,
+                    "version": "test",
+                    "weights_blake3": "00" * 32,
+                    "config_blake3": "11" * 32,
+                }
+                pin.update(host.infer_pin_overrides.get(request.model_id, {}))
                 return pb.InferResponse(
                     request_id=request.request_id,
-                    pin=pb.ModelPin(
-                        model_id=request.model_id,
-                        version="test",
-                        weights_blake3="00" * 32,
-                        config_blake3="11" * 32,
-                    ),
+                    pin=pb.ModelPin(**pin),
                     runtime_used=pb.RUNTIME_TARGET_ONNXRUNTIME_CPU,
                     results=results,
                     duration_ms=1,

@@ -389,7 +389,13 @@ def run(ctx: StageContext) -> StageResult:
 
     # 3. The model steps.
     try:
-        model_counts = _run_models(ctx, job, space=space, face_stack=face_stack)
+        model_counts = _run_models(
+            ctx,
+            job,
+            space=space,
+            face_stack=face_stack,
+            expected_pins=status.model_pins,
+        )
     except mlruntime.MlRuntimeError as error:
         ctx.jobs.fail(
             job,
@@ -704,6 +710,7 @@ def _run_models(
     *,
     space: tuple[str, int],
     face_stack: FaceStack,
+    expected_pins: Mapping[str, Mapping[str, str]],
 ) -> dict[str, Any]:
     settings = ctx.settings
     space_name, dimensions = space
@@ -723,7 +730,9 @@ def _run_models(
         "faces_without_landmarks": 0,
     }
 
-    with mlruntime.MlRuntimeClient(settings.ml_runtime_endpoint) as client:
+    with mlruntime.MlRuntimeClient(
+        settings.ml_runtime_endpoint, expected_pins=expected_pins
+    ) as client:
         # Warm every model this pass will use before any batch carries a
         # deadline. Loading SigLIP 2 from disk costs more than a whole batch of
         # inference does; letting the first Infer call pay for it made the
@@ -756,6 +765,11 @@ def _run_models(
                     items=proxies,
                     alignment="none",
                 )
+            except mlruntime.MlRuntimePinMismatch:
+                # A pin skew is not one batch's weather: every later answer
+                # would come from a model nobody vetted. It aborts the stage
+                # through the run-level handler, which names the skew.
+                raise
             except mlruntime.MlRuntimeError as error:
                 # One refused batch fails its own records, retryably, and the
                 # rest of the library continues. The stage's closing roll-up
@@ -863,6 +877,8 @@ def _run_models(
                     items=proxies,
                     alignment="none",
                 )
+            except mlruntime.MlRuntimePinMismatch:
+                raise
             except mlruntime.MlRuntimeError as error:
                 _fail_batch(
                     ctx, by_media, step=FACE_STEP, error=error,
@@ -1192,6 +1208,8 @@ def _run_face_embedding(
                 stored_by_face=stored_by_face,
                 face_stack=face_stack,
             )
+        except mlruntime.MlRuntimePinMismatch:
+            raise
         except mlruntime.MlRuntimeError as error:
             _fail_batch(
                 ctx, dict(batch), step=FACE_EMBEDDING_STEP, error=error,
