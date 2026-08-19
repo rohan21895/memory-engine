@@ -57,7 +57,11 @@ from .base import (
 
 STAGE = "album"
 PLANNER = "album-planner"
-PLANNER_VERSION = "0.1.0"
+#: 0.2.0: selection criteria v2 -- head-region blur gate, cut-face gate,
+#: zero-shot expression ranking (smile/awake/sleeping/composed), sleeping cap,
+#: crowd-bucket type diversity. Bumped so the same library re-plans as a
+#: different album rather than silently mutating an existing identity.
+PLANNER_VERSION = "0.2.0"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
@@ -191,6 +195,7 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
     from .analysis import EMBEDDING_SPACES  # noqa: PLC0415
 
     space = EMBEDDING_SPACES.get(ctx.settings.embedding_model, (None, 0))[0]
+    expression_head = _load_expression_head(ctx, space)
     candidates = []
     for media_id in event.media_ids:
         record = by_id.get(media_id)
@@ -206,6 +211,9 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
                 score,
                 embedding=embedding,
                 face_sharpness=_min_face_sharpness(ctx, media_id),
+                head_sharpness=_min_head_sharpness(ctx, media_id),
+                face_cut=_has_cut_face(ctx, media_id),
+                expression=_expression_scores(expression_head, embedding),
             )
         )
     if not candidates:
@@ -657,6 +665,99 @@ def _min_face_sharpness(ctx: StageContext, media_id: str) -> float | None:
         >= _FACE_SHARPNESS_MIN_AREA
     ]
     return min(values) if values else None
+
+
+def _min_head_sharpness(ctx: StageContext, media_id: str) -> float | None:
+    """Softest measured head region (face grown to hair and shoulders).
+
+    Same shape as `_min_face_sharpness`; this is the mid-movement detector --
+    a sharp face inside smeared hair is a subject in motion, and the face
+    floor cannot see it.
+    """
+    values = [
+        (face.get("attributes") or {}).get("head_sharpness")
+        for face in ctx.database.faces_for_media(media_id)
+        if (face.get("attributes") or {}).get("head_sharpness") is not None
+        and (face["detection"].get("face_area_ratio") or 0.0)
+        >= _FACE_SHARPNESS_MIN_AREA
+    ]
+    return min(values) if values else None
+
+
+#: A landmark closer to the frame edge than this is off or straddling it --
+#: float noise on genuinely-inside features stays well clear of 1%.
+_CUT_FACE_MARGIN = 0.01
+
+
+def _has_cut_face(ctx: StageContext, media_id: str) -> bool:
+    """True when a significant face's FEATURES are cropped by the frame edge.
+
+    Judged on the five landmarks (eyes, nose, mouth corners), not the box:
+    a deliberate close-up legitimately crops the forehead and its box touches
+    the edge, but eyes and mouth inside the frame make it a full face. A
+    landmark outside the margin means a feature is cut -- the "full faces
+    visible" album rule. Missing landmarks are not evidence of a cut.
+    """
+    for face in ctx.database.faces_for_media(media_id):
+        if (face["detection"].get("face_area_ratio") or 0.0) < _FACE_SHARPNESS_MIN_AREA:
+            continue
+        points = (face.get("landmarks") or {}).get("points") or []
+        for point in points:
+            x, y = float(point["x"]), float(point["y"])
+            if not (
+                _CUT_FACE_MARGIN <= x <= 1.0 - _CUT_FACE_MARGIN
+                and _CUT_FACE_MARGIN <= y <= 1.0 - _CUT_FACE_MARGIN
+            ):
+                return True
+    return False
+
+
+def _load_expression_head(ctx: StageContext, space: str | None) -> dict[str, Any] | None:
+    """The zero-shot expression axes, or None when unavailable.
+
+    Optional on purpose: the head is a built artifact (gitignored, rebuilt by
+    scripts/models/build_expression_head.py), and selection must still work
+    on a checkout without it -- every expression term simply stays neutral.
+    A head built for a DIFFERENT embedding space is refused the same way a
+    mixed-space cosine is: silently mixing spaces is a number, not a signal.
+    """
+    path = (
+        ctx.repo_root / "models" / "weights" / "expression-head"
+        / "expression-siglip-head.v1.json"
+    )
+    if not path.is_file():
+        return None
+    try:
+        head = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if space is None or head.get("space") != space:
+        return None
+    return head
+
+
+def _expression_scores(
+    head: dict[str, Any] | None, embedding: Any
+) -> dict[str, float] | None:
+    """cos(image, positive) - cos(image, negative) per axis, or None."""
+    if head is None or embedding is None:
+        return None
+    import math  # noqa: PLC0415
+
+    norm = math.sqrt(sum(float(x) * float(x) for x in embedding))
+    if norm == 0.0 or not math.isfinite(norm):
+        return None
+    unit = [float(x) / norm for x in embedding]
+    scores: dict[str, float] = {}
+    for axis in head.get("axes") or []:
+        positive, negative = axis["positive"], axis["negative"]
+        if len(positive) != len(unit) or len(negative) != len(unit):
+            return None
+        contrast = sum(u * p for u, p in zip(unit, positive)) - sum(
+            u * n for u, n in zip(unit, negative)
+        )
+        scores[axis["name"]] = round(contrast, 6)
+    return scores or None
 
 
 _FACE_BOX_SLACK = 1e-5

@@ -113,7 +113,7 @@ from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 from memory_engine_ranking.dedupe import cosine_distance
 from memory_engine_ranking.fusion import FusedScore, rank
@@ -185,6 +185,39 @@ class SelectionPolicy:
     # visibly-blurred cluster. A candidate with no measurement passes -- see
     # `_apply_quality_floor`.
     face_sharpness_floor: float = 0.12
+    # Floor on the HEAD-region sharpness (face box grown to take in hair and
+    # shoulders). Catches whole-subject smear -- camera shake, a moving
+    # subject against a soft surround. ponytail: a sharp patterned BACKGROUND
+    # inside the grown box masks a smeared subject (measured 0.97 on exactly
+    # such a frame), so mid-gesture awkwardness is primarily the job of the
+    # `composed`/mid-blink expression axes; this floor is the net under them.
+    head_sharpness_floor: float = 0.08
+    # A photo whose significant face has features cropped by the frame edge
+    # (any landmark outside the margin) is rejected: "full faces visible" is
+    # an album rule, not a preference. Scarce-person waiver applies.
+    reject_cut_faces: bool = True
+
+    # --- expression (zero-shot ranks, computed inside `select`) -----------
+    # Raw contrasts arrive on the candidates; `select` converts each axis to a
+    # percentile within THIS pool, because absolute zero-shot values are not
+    # calibrated (the modality gap) while the ordering over one library is
+    # exactly the signal. All weights are against a quality term spanning [0,1].
+    weight_smile: float = 0.35
+    weight_composed: float = 0.25
+    # Penalty for eyes that read closed on a photo that does NOT read as a
+    # sleeping shot: an adult mid-blink, a grimace. Large on purpose -- it
+    # must be able to undo a full smile bonus and most of a quality lead.
+    mid_blink_penalty: float = 0.60
+    # Sleeping-baby photos are a cherished TYPE, never rejected -- but a book
+    # that is one-third closed eyes reads as a nap log. Cap as an album
+    # fraction, enforced in the fill phase.
+    max_sleeping_fraction: float = 0.20
+    # Minimum raw sleeping contrast before a photo is TYPED as sleeping at
+    # all: an evidence dead-zone, not a calibration. Genuine sleeping shots
+    # measured 0.046-0.123 on a real library; contrasts from unrelated
+    # content sit within +/-0.035 of zero, and typing on that noise let the
+    # cap fire on photos that were never naps.
+    sleeping_min_contrast: float = 0.04
 
     # --- people -----------------------------------------------------------
     min_per_person: int = 1
@@ -241,7 +274,8 @@ class SelectionPolicy:
         for name in (
             "quality_floor", "max_per_person_fraction", "min_non_people_fraction",
             "redundancy_free_similarity", "hero_quality", "shot_similarity",
-            "face_sharpness_floor",
+            "face_sharpness_floor", "head_sharpness_floor",
+            "max_sleeping_fraction", "sleeping_min_contrast",
         ):
             value = getattr(self, name)
             # NaN is the reason this is `not (0 <= v <= 1)` and not `v < 0 or
@@ -253,6 +287,7 @@ class SelectionPolicy:
         for name in (
             "weight_quality", "weight_time", "weight_place", "weight_scene",
             "weight_person", "weight_redundancy",
+            "weight_smile", "weight_composed", "mid_blink_penalty",
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0.0:
@@ -314,6 +349,21 @@ class SelectionCandidate:
     # or None when no face was measured. Supplied by the caller (the face rows
     # live outside the MediaRecord); None never fails the face floor.
     face_sharpness: float | None = None
+    # Same measure over the grown head regions (hair, shoulders): the
+    # mid-movement detector. None never fails the head floor.
+    head_sharpness: float | None = None
+    # True when a significant face has features cropped by the frame edge
+    # (computed by the caller from the stored landmarks). None-like False:
+    # absence of face evidence is not a cut face.
+    face_cut: bool = False
+    # Raw zero-shot contrast scores, cos(image, positive) - cos(image,
+    # negative), per expression axis. Uncalibrated by design -- `select`
+    # ranks each axis within the pool. None = no embedding or no head file;
+    # every expression term then stays neutral for this candidate.
+    smile: float | None = None
+    awake: float | None = None
+    sleeping: float | None = None
+    composed: float | None = None
     embedding: tuple[float, ...] | None = None
     # `ContentAnalysis.embedding.space` -- WHICH model produced the floats.
     # Carried because cosine similarity between two different spaces is a number
@@ -467,6 +517,9 @@ def candidate_from_media_record(
     embedding: Sequence[float] | None = None,
     place_key: str | None = None,
     face_sharpness: float | None = None,
+    head_sharpness: float | None = None,
+    face_cut: bool = False,
+    expression: Mapping[str, float] | None = None,
 ) -> SelectionCandidate:
     """A contract MediaRecord + its FusedScore -> SelectionCandidate.
 
@@ -535,9 +588,22 @@ def candidate_from_media_record(
         user_favorite=bool(user.get("favorite", False)),
         long_edge_px=long_edge,
         face_sharpness=float(face_sharpness) if face_sharpness is not None else None,
+        head_sharpness=float(head_sharpness) if head_sharpness is not None else None,
+        face_cut=bool(face_cut),
+        smile=_expression_axis(expression, "smile"),
+        awake=_expression_axis(expression, "awake"),
+        sleeping=_expression_axis(expression, "sleeping"),
+        composed=_expression_axis(expression, "composed"),
         embedding=tuple(float(x) for x in embedding) if embedding is not None else None,
         embedding_space=embedding_space if embedding is not None else None,
     )
+
+
+def _expression_axis(expression: Mapping[str, float] | None, name: str) -> float | None:
+    if expression is None:
+        return None
+    value = expression.get(name)
+    return float(value) if value is not None else None
 
 
 def geo_cell(latitude: float, longitude: float, *, precision_deg: float = 0.05) -> str:
@@ -1002,6 +1068,17 @@ def _apply_quality_floor(
                 f"face sharpness {candidate.face_sharpness:.3f} < "
                 f"{policy.face_sharpness_floor:.3f}: the face is out of focus"
             )
+        if (
+            candidate.head_sharpness is not None
+            and candidate.head_sharpness < policy.head_sharpness_floor
+        ):
+            return (
+                f"head sharpness {candidate.head_sharpness:.3f} < "
+                f"{policy.head_sharpness_floor:.3f}: the subject was moving "
+                "(smeared hair or shoulders around a face)"
+            )
+        if policy.reject_cut_faces and candidate.face_cut:
+            return "a significant face is cropped by the frame edge"
         return None
 
     verdicts = {c.media_id: failure(c) for c in survivors}
@@ -1202,7 +1279,15 @@ def _greedy(
         for media_id, seconds in times.items()
     }
     place_key = {c.media_id: c.place_key or _UNKNOWN for c in survivors}
-    scene_key = {c.media_id: c.scene_type or _UNKNOWN for c in survivors}
+    # Scene composed with a crowd bucket (solo / duo / group / no-people):
+    # "different TYPES of photos" is part of what a varied album means, and on
+    # a library where scene_type is uniformly unknown the crowd bucket is the
+    # type signal that remains.
+    scene_key = {
+        c.media_id:
+            f"{c.scene_type or _UNKNOWN}|faces:{min(len(c.person_ids), 3)}"
+        for c in survivors
+    }
     # Sorted once here rather than inside `gain`, which runs O(n*k) times. The
     # sort is not cosmetic: the person term sums floats, float addition is not
     # associative, and summing in tuple order would make the gain depend on
@@ -1238,10 +1323,54 @@ def _greedy(
     shot_counts: dict[str, int] = {}
     redundancy_free, redundancy_denom = _calibrated_redundancy(survivors, policy)
 
+    # Expression axes as percentiles WITHIN this pool (the absolute zero-shot
+    # values are uncalibrated; the ordering over one library is the signal).
+    smile_pct = _axis_percentiles(survivors, lambda c: c.smile)
+    awake_pct = _axis_percentiles(survivors, lambda c: c.awake)
+    sleeping_pct = _axis_percentiles(survivors, lambda c: c.sleeping)
+    composed_pct = _axis_percentiles(survivors, lambda c: c.composed)
+    # Eyes read shut. A sleeping shot is the cherished kind (capped below);
+    # anything else with shut eyes -- a blink, a grimace -- is penalised hard.
+    # Typed by comparing the two contrasts on the SAME image, not by pool
+    # percentile: percentiles break when half the library is naps (someone is
+    # always top-quartile), while cross-axis comparison cancels the modality
+    # gap and asks only which direction this one image leans.
+    is_sleeping = {
+        c.media_id: (
+            c.sleeping is not None
+            and c.awake is not None
+            and c.sleeping > c.awake
+            # ...and the sleeping direction decisively beats ITS negatives: a
+            # mid-blink frame also drags `awake` under `sleeping` (both
+            # negative) and unrelated content wobbles within +/-0.035 of
+            # zero; neither positively resembles a sleeping shot.
+            and c.sleeping > policy.sleeping_min_contrast
+        )
+        for c in survivors
+    }
+    is_mid_blink = {
+        c.media_id: (
+            not is_sleeping[c.media_id]
+            # Directional evidence of shut eyes AND bottom-quartile standing on
+            # the axis: in an all-open-eyes library somebody is always bottom
+            # quartile, and in a genuinely mixed one a small positive contrast
+            # is still open eyes. Both conditions, or no penalty.
+            and c.awake is not None
+            and c.awake < 0.0
+            and awake_pct[c.media_id] < 0.25
+        )
+        for c in survivors
+    }
+    sleeping_cap = max(1, int(target_count * policy.max_sleeping_fraction))
+    sleeping_count = 0
+
     def commit(media_id: str) -> None:
+        nonlocal sleeping_count
         candidate = by_id[media_id]
         selected.append(media_id)
         remaining.remove(media_id)
+        if is_sleeping[media_id]:
+            sleeping_count += 1
         shot_counts[shot_of[media_id]] = shot_counts.get(shot_of[media_id], 0) + 1
         time_counts[time_key[media_id]] = time_counts.get(time_key[media_id], 0) + 1
         place_counts[place_key[media_id]] = place_counts.get(place_key[media_id], 0) + 1
@@ -1280,6 +1409,14 @@ def _greedy(
                 max(0.0, closest.get(media_id, 0.0) - redundancy_free)
                 / redundancy_denom,
             )
+
+        # Expression: a smile out-earns a cry, a composed frame out-earns a
+        # mid-gesture candid, and eyes shut outside a sleeping shot costs more
+        # than either bonus can pay.
+        value += policy.weight_smile * smile_pct[media_id]
+        value += policy.weight_composed * composed_pct[media_id]
+        if is_mid_blink[media_id]:
+            value -= policy.mid_blink_penalty
         return _quantise(value)
 
     # --- phase 1: people floor -------------------------------------------
@@ -1363,6 +1500,10 @@ def _greedy(
                 continue
             if at_cap:
                 continue
+            if is_sleeping[media_id] and sleeping_count >= sleeping_cap:
+                # A cap, not a rejection: sleeping-baby photos are a cherished
+                # type, but a book that is a third closed eyes is a nap log.
+                continue
             eligible.append(media_id)
 
         if not eligible:
@@ -1385,6 +1526,33 @@ def _greedy(
         commit(best_id)
 
     return selected, sorted(blocked)
+
+
+def _axis_percentiles(
+    survivors: Sequence[SelectionCandidate],
+    getter: "Callable[[SelectionCandidate], float | None]",
+) -> dict[str, float]:
+    """Each candidate's rank on one expression axis, as a fraction in [0,1].
+
+    Candidates without a value sit at a NEUTRAL 0.5 -- absence of the measure
+    must neither reward nor punish. Equal values share a percentile (the same
+    argument as value-based standing in `_rank_within_classes`: positional
+    ranks would order ties by media_id and let a hash decide the album).
+    """
+    measured = sorted(
+        value for c in survivors if (value := getter(c)) is not None
+    )
+    size = len(measured)
+    result: dict[str, float] = {}
+    for candidate in survivors:
+        value = getter(candidate)
+        if value is None or size == 0:
+            result[candidate.media_id] = 0.5
+            continue
+        below = bisect_left(measured, value)
+        equal = bisect_right(measured, value) - below
+        result[candidate.media_id] = _quantise((below + equal / 2.0) / size)
+    return result
 
 
 def _person_cap(

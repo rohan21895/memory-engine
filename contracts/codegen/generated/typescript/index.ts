@@ -2899,6 +2899,13 @@ export interface FaceAttributes {
 
   sharpness?: Unit | null;
 
+  /**
+   * The `sharpness` measure over the face box grown to take in hair and shoulders. A sharp
+   * face inside a smeared head region is a subject caught mid-movement, which the face-
+   * only measure cannot see.
+   */
+  head_sharpness?: Unit | null;
+
   /** How much of the face is hidden by a hand, hair, mask or another person. */
   occlusion?: Unit | null;
 

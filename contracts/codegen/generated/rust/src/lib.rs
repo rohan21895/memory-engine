@@ -3145,6 +3145,12 @@ pub struct FaceAttributes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sharpness: Option<Unit>,
 
+    /// The `sharpness` measure over the face box grown to take in hair and shoulders. A
+    /// sharp face inside a smeared head region is a subject caught mid-movement, which the
+    /// face-only measure cannot see.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sharpness: Option<Unit>,
+
     /// How much of the face is hidden by a hand, hair, mask or another person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occlusion: Option<Unit>,

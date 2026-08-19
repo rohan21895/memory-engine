@@ -340,7 +340,25 @@ def run(ctx: StageContext) -> StageResult:
 #: Fusion formula version for `attributes.quality`. Bumped when the formula
 #: changes so the backfill recomputes every face rather than a silent
 #: redefinition riding on old numbers. 1-1-0: sharpness x visibility.
-_FACE_QUALITY_RUN_ID = "face-quality-1-1-0"
+#: 1-2-0: adds `attributes.head_sharpness` (same fusion formula).
+_FACE_QUALITY_RUN_ID = "face-quality-1-2-0"
+
+#: The head region is the face box grown by this factor about its centre:
+#: wide enough to take in hair and shoulders, the parts that smear first when
+#: the subject is moving. A sharp face inside a motion-blurred head is a
+#: mid-gesture frame -- the face gate cannot see it, this one exists to.
+_HEAD_BOX_SCALE = 1.8
+
+
+def _head_box(box: dict[str, Any]) -> dict[str, float]:
+    """The face bbox grown `_HEAD_BOX_SCALE`x about its centre, clamped."""
+    cx = float(box["x"]) + float(box["w"]) / 2.0
+    cy = float(box["y"]) + float(box["h"]) / 2.0
+    w = min(1.0, float(box["w"]) * _HEAD_BOX_SCALE)
+    h = min(1.0, float(box["h"]) * _HEAD_BOX_SCALE)
+    x = min(max(cx - w / 2.0, 0.0), 1.0 - w)
+    y = min(max(cy - h / 2.0, 0.0), 1.0 - h)
+    return {"x": x, "y": y, "w": w, "h": h}
 
 #: A face below this fraction of the frame is background; it neither lifts a
 #: photo's face_quality nor should its blur condemn one. Mirrors the album
@@ -372,6 +390,7 @@ def _backfill_face_sharpness(ctx: StageContext, records: list[dict[str, Any]]) -
         quality = attributes.get("quality") or {}
         if (
             attributes.get("sharpness") is None
+            or attributes.get("head_sharpness") is None
             or quality.get("run_id") != _FACE_QUALITY_RUN_ID
         ):
             pending.setdefault(record["media_id"], []).append(record)
@@ -383,6 +402,7 @@ def _backfill_face_sharpness(ctx: StageContext, records: list[dict[str, Any]]) -
         needs_measure = [
             face for face in faces
             if (face.get("attributes") or {}).get("sharpness") is None
+            or (face.get("attributes") or {}).get("head_sharpness") is None
         ]
         if needs_measure:
             proxies = ctx.database.proxies_for_media(media_id, kind="thumbnail_512")
@@ -391,6 +411,9 @@ def _backfill_face_sharpness(ctx: StageContext, records: list[dict[str, Any]]) -
                 boxes = [face["detection"]["bbox"] for face in needs_measure]
                 try:
                     values = measure_face_sharpness(path, boxes)
+                    head_values = measure_face_sharpness(
+                        path, [_head_box(box) for box in boxes]
+                    )
                 except Exception as error:  # noqa: BLE001 - one bad proxy must
                     # not abort the stage; the face stays unmeasured and the
                     # album gate treats that as "no focus evidence", never as
@@ -400,11 +423,16 @@ def _backfill_face_sharpness(ctx: StageContext, records: list[dict[str, Any]]) -
                         f"face sharpness failed for {media_id[:12]}: {error}",
                     )
                     values = [None] * len(needs_measure)
-                for face, value in zip(needs_measure, values, strict=True):
+                    head_values = [None] * len(needs_measure)
+                for face, value, head in zip(
+                    needs_measure, values, head_values, strict=True
+                ):
+                    attributes = dict(face.get("attributes") or {})
                     if value is not None:
-                        attributes = dict(face.get("attributes") or {})
                         attributes["sharpness"] = value
-                        face["attributes"] = attributes
+                    if head is not None:
+                        attributes["head_sharpness"] = head
+                    face["attributes"] = attributes
 
         for face in faces:
             attributes = dict(face.get("attributes") or {})
