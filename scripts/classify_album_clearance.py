@@ -77,6 +77,12 @@ def main() -> int:
                         default=DEFAULT_HEAD_DIR / "nsfw-siglip-head.v1.calibration.json")
     parser.add_argument("--out", type=Path, default=None,
                         help="defaults to <workdir>/print-clearance.json")
+    parser.add_argument("--override-blocked-by", default=None, metavar="NAME",
+                        help="record a human override on every BLOCKED verdict in "
+                             "this run, attributed to NAME. This is the owner "
+                             "saying 'print these anyway' -- scope is this album "
+                             "and the print sink only, per the contract. Never a "
+                             "default; indeterminate verdicts are not overridable.")
     args = parser.parse_args()
 
     album_path = args.album
@@ -128,6 +134,22 @@ def main() -> int:
     )
 
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    overrides = None
+    if args.override_blocked_by:
+        overrides = {
+            verdict["media_id"]: {
+                "decided_at": now,
+                "decided_by": args.override_blocked_by,
+                "scope": "item_and_sink",
+            }
+            for verdict in classification.verdicts
+            if verdict["verdict"] == "blocked"
+        }
+        if overrides:
+            print(f"overriding {len(overrides)} blocked verdict(s), "
+                  f"decided by {args.override_blocked_by}")
+        else:
+            overrides = None
     manifest = build_manifest(
         classification,
         sink="print",
@@ -143,6 +165,7 @@ def main() -> int:
         thresholds=classifier.thresholds,
         load_mode="development",
         sink_detail=f"album {album['album_id'][:12]}",
+        overrides=overrides,
     )
 
     out = args.out or (args.workdir / "print-clearance.json")
