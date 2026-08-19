@@ -57,6 +57,7 @@ const EXEMPT = [
   [/^npm ci\b/, "installs dependencies; the local tree already has them"],
   [/^python3 -m pip install/, "installs dependencies"],
   [/^brew install ffmpeg@7$/, "installs the supported macOS pipeline runtime"],
+  [/^sudo apt-get install\b/, "installs the Linux runner's pipeline prerequisite"],
   [/^brew link --force ffmpeg@7$/, "places the keg-only CI runtime on PATH"],
   [/^cargo test .*apps\/desktop/, "Windows Desktop job; not platform-independent"],
   [/^cargo test .*workers\/ingest/, "run by run-workspace-check.mjs, which the script does call"],
@@ -73,9 +74,18 @@ const commands = [
   ...new Set(
     workflow
       .split("\n")
-      .map((line) => line.match(/^\s*-\s+run:\s+(.*)$/))
+      // Both spellings of a single-line command: a bare `- run: cmd` list item
+      // and the `run: cmd` of a NAMED step. The first version matched only the
+      // bare form, so moving a command into a named step (for an `if:` guard)
+      // made it invisible here -- and the deferred-pipeline check then reported
+      // the required suite missing while the workflow still ran it.
+      .map((line) => line.match(/^\s*(?:-\s+)?run:\s+(.*)$/))
       .filter(Boolean)
-      .map((m) => m[1].trim()),
+      .map((m) => m[1].trim())
+      // Multi-line blocks (`run: |`) carry no command on this line. They are
+      // deliberately out of scope: each is a named, workflow-specific script,
+      // not a command local-ci.sh could mirror verbatim.
+      .filter((command) => command !== "|" && command !== ">"),
   ),
 ];
 

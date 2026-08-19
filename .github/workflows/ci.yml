@@ -115,9 +115,13 @@ jobs:
       - run: npm run build --workspace @memory-engine/render-video
       # Capability tables are not proof: FFmpeg 7 and 8 both advertised this
       # complete chain on the hosted runner and the worker still failed at
-      # runtime. Exercise synthetic bytes here so stderr is safe to publish;
-      # production worker errors deliberately redact source details.
-      - name: Verify VideoToolbox runtime
+      # runtime (#106). So the chain is PROBED with real frames, and what runs
+      # next depends on what the probe proved -- never on what was advertised.
+      # Exercise synthetic bytes here so stderr is safe to publish; production
+      # worker errors deliberately redact source details.
+      - name: Probe the VideoToolbox production chain with real frames
+        id: videotoolbox
+        continue-on-error: true
         run: |
           pipeline_fixture_source="${RUNNER_TEMP}/memory-engine-vt-source.mp4"
           pipeline_fixture_proxy="${RUNNER_TEMP}/memory-engine-vt-proxy.mp4"
@@ -132,7 +136,42 @@ jobs:
             -fps_mode passthrough -c:v h264_videotoolbox -allow_sw 0 \
             -profile:v high -b:v 1060660 -c:a aac -b:a 96k \
             -movflags +faststart -y "${pipeline_fixture_proxy}"
-      - run: python3 services/pipeline/tests/run_required_suite.py
+      # The gate itself, wherever the probe proved the hardware real. On a
+      # future self-hosted or vendor Apple-silicon runner this turns the full
+      # required suite back on with no workflow change.
+      - name: Hardware pipeline suite (required wherever the chain works)
+        if: steps.videotoolbox.outcome == 'success'
+        run: python3 services/pipeline/tests/run_required_suite.py
+      # Owner decision on #106, option 3: hosted GitHub macOS advertises
+      # VideoToolbox but cannot initialise it, so on these runners the
+      # hardware gate is declared NOT RUN -- loudly, with the issue that
+      # documents why -- rather than skipped in a way that reads as a pass.
+      # Green on this job therefore means "software smoke passed", never
+      # "hardware gate passed"; #91 and the Phase 1 hardware gate remain open
+      # until the suite runs on real Apple silicon.
+      - name: 'Hardware gate NOT RUN here — see #106'
+        if: steps.videotoolbox.outcome != 'success'
+        run: |
+          echo "::notice title=Hardware gate NOT RUN::This hosted runner advertises VideoToolbox but cannot initialise it (#106). The 88-test hardware suite must run on real Apple silicon and is executed on the maintainer's machine; green here covers the software smoke only."
+      # What CAN honestly execute here: the same fixture build, container
+      # conventions and probe reporting through a software decode, so parsing,
+      # proxy shape and failure surfacing are still exercised on every PR.
+      - name: Software-decode smoke (runs where the hardware gate cannot)
+        if: steps.videotoolbox.outcome != 'success'
+        run: |
+          smoke_source="${RUNNER_TEMP}/memory-engine-sw-source.mp4"
+          smoke_proxy="${RUNNER_TEMP}/memory-engine-sw-proxy.mp4"
+          ffmpeg -hide_banner -nostdin -loglevel error \
+            -f lavfi -i "testsrc2=size=320x240:rate=30" -t 1 \
+            -c:v libx264 -pix_fmt yuv420p -y "${smoke_source}"
+          ffmpeg -hide_banner -nostdin -loglevel error \
+            -i "${smoke_source}" -map 0:v:0 -map '0:a?' -map_metadata -1 \
+            -vf "scale=w=ceil(iw*240/ih/2)*2:h=240,setsar=1" \
+            -fps_mode passthrough -c:v libx264 -pix_fmt yuv420p \
+            -movflags +faststart -y "${smoke_proxy}"
+          height=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=height -of csv=p=0 "${smoke_proxy}")
+          test "${height}" = "240" || { echo "proxy height ${height} != 240"; exit 1; }
 
   windows-ingest:
     name: Windows Ingest
