@@ -631,6 +631,60 @@ def _apply_exclusions(record: dict[str, Any], measured: classical.ClassicalQuali
     record["exclusion"] = exclusion
 
 
+def _request_id(job: Mapping[str, Any], step: str, work: Mapping[str, str]) -> str:
+    """A request id that IS the work, so the host's replay cache can only ever
+    answer with this exact batch's result.
+
+    The host caches one response per request_id and refuses a reused id whose
+    request bytes differ. The previous scheme -- job id, step, first media id
+    -- named a batch by its first element, so any rerun whose batch had the
+    same head but different membership or parameters (a changed deadline, a
+    shrunken retry batch) collided with the cached entry and every record in
+    it was refused as "reused with different work" (#134). Hashing the full
+    item->proxy mapping gives identical work an identical id (a true resume
+    still hits the cache) and different work a different id (never a
+    collision).
+    """
+    import hashlib  # noqa: PLC0415
+
+    digest = hashlib.blake2b(digest_size=16)
+    for item_id, proxy_id in sorted(work.items()):
+        digest.update(item_id.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(proxy_id.encode("utf-8"))
+        digest.update(b"\x00")
+    return f"{job['job_id']}:{step}:{digest.hexdigest()}"
+
+
+def _fail_batch(
+    ctx: StageContext,
+    by_media: Mapping[str, dict[str, Any]],
+    *,
+    step: str,
+    error: Exception,
+    counts: dict[str, Any],
+    counter: str,
+) -> None:
+    """One whole-batch transport failure, written onto each record it covers.
+
+    Retryable, because the causes are transient (a deadline, a dropped
+    connection, a host restart) and a rerun retries every non-done step. The
+    alternative -- letting the exception abort the stage -- turned one slow
+    batch into "the entire library is unanalysed" (#134).
+    """
+    for media_id, record in by_media.items():
+        _mark(record, step, "failed", last_error={
+            "code": "model-inference-failed",
+            "message": str(error),
+            "retryable": True,
+            "occurred_at": utc_now(),
+        })
+        counts[counter] += 1
+        record["updated_at"] = utc_now()
+        _roll_up(record, required=ALL_STEPS)
+        ctx.database.put_media(record)
+
+
 def _batches(
     items: Iterator[tuple[str, dict[str, Any]]], size: int
 ) -> Iterator[list[tuple[str, dict[str, Any]]]]:
@@ -670,6 +724,19 @@ def _run_models(
     }
 
     with mlruntime.MlRuntimeClient(settings.ml_runtime_endpoint) as client:
+        # Warm every model this pass will use before any batch carries a
+        # deadline. Loading SigLIP 2 from disk costs more than a whole batch of
+        # inference does; letting the first Infer call pay for it made the
+        # first batch of every cold run DEADLINE_EXCEEDED and aborted analysis
+        # for the entire library (#134). A warm-up failure is still fatal --
+        # a host that cannot load the model cannot analyse anything.
+        for model_id in (
+            settings.embedding_model,
+            settings.face_model,
+            settings.face_embedding_model,
+        ):
+            client.load_model(model_id)
+
         total = _count_pending(ctx, steps=[EMBEDDING_STEP])
         seen = 0
         for batch in _batches(_pending(ctx, steps=[EMBEDDING_STEP]), settings.infer_batch):
@@ -682,12 +749,24 @@ def _run_models(
                 media_id: _thumbnail(record)["proxy_id"]
                 for media_id, record in batch
             }
-            outcome = client.infer_proxies(
-                model_id=settings.embedding_model,
-                request_id=f"{job['job_id']}:{EMBEDDING_STEP}:{batch[0][0]}",
-                items=proxies,
-                alignment="none",
-            )
+            try:
+                outcome = client.infer_proxies(
+                    model_id=settings.embedding_model,
+                    request_id=_request_id(job, EMBEDDING_STEP, proxies),
+                    items=proxies,
+                    alignment="none",
+                )
+            except mlruntime.MlRuntimeError as error:
+                # One refused batch fails its own records, retryably, and the
+                # rest of the library continues. The stage's closing roll-up
+                # still reports every record this leaves unanalysed -- nothing
+                # here converts a failure into silence (#134).
+                _fail_batch(
+                    ctx, by_media, step=EMBEDDING_STEP, error=error,
+                    counts=counts, counter="embedding_failed",
+                )
+                seen += len(by_media)
+                continue
             failures = {failure.item_id: failure for failure in outcome.failures}
             for media_id, record in by_media.items():
                 proxy_id = proxies[media_id]
@@ -703,13 +782,28 @@ def _run_models(
                 else:
                     values = outcome.tensors.get(media_id)
                     if values is None or len(values) != dimensions:
-                        raise mlruntime.MlRuntimeError(
-                            f"{settings.embedding_model} returned "
-                            f"{0 if values is None else len(values)} dimensions for "
-                            f"space {space_name} which is defined as {dimensions}; "
-                            "storing it would corrupt every search and diversity "
-                            "decision that reads the space"
-                        )
+                        # A host answer of the wrong shape must not be stored
+                        # (it would corrupt every search that reads the space)
+                        # and must not sink the other records in the pass. It
+                        # is a per-record failure, not retryable: retrying the
+                        # same model yields the same shape.
+                        _mark(record, EMBEDDING_STEP, "failed", last_error={
+                            "code": "model-output-shape-mismatch",
+                            "message": (
+                                f"{settings.embedding_model} returned "
+                                f"{0 if values is None else len(values)} dimensions "
+                                f"for space {space_name} which is defined as "
+                                f"{dimensions}"
+                            ),
+                            "retryable": False,
+                            "occurred_at": utc_now(),
+                        })
+                        counts["embedding_failed"] += 1
+                        record["updated_at"] = utc_now()
+                        _roll_up(record, required=ALL_STEPS)
+                        ctx.database.put_media(record)
+                        seen += 1
+                        continue
                     # The vector write and the record write share one implicit
                     # transaction, committed by put_media, so a kill cannot
                     # leave a record claiming an embedding the index does not
@@ -762,12 +856,20 @@ def _run_models(
                 media_id: _thumbnail(record)["proxy_id"]
                 for media_id, record in batch
             }
-            outcome = client.infer_proxies(
-                model_id=settings.face_model,
-                request_id=f"{job['job_id']}:{FACE_STEP}:{batch[0][0]}",
-                items=proxies,
-                alignment="none",
-            )
+            try:
+                outcome = client.infer_proxies(
+                    model_id=settings.face_model,
+                    request_id=_request_id(job, FACE_STEP, proxies),
+                    items=proxies,
+                    alignment="none",
+                )
+            except mlruntime.MlRuntimeError as error:
+                _fail_batch(
+                    ctx, by_media, step=FACE_STEP, error=error,
+                    counts=counts, counter="faces_failed",
+                )
+                seen += len(by_media)
+                continue
             failures = {failure.item_id: failure for failure in outcome.failures}
             for media_id, record in by_media.items():
                 proxy_id = proxies[media_id]
@@ -1078,15 +1180,25 @@ def _run_face_embedding(
 
         # A transport or contract failure is the whole request's, not one
         # record's, and must not be recorded as "these photos have no faces".
-        # It propagates out of the stage, which marks nothing.
-        embedded, failures_by_media = _embed_crops(
-            ctx,
-            client=client,
-            job=job,
-            crops=crops,
-            stored_by_face=stored_by_face,
-            face_stack=face_stack,
-        )
+        # It fails every record in this batch retryably -- their step stays
+        # not-done and a rerun retries them -- while the rest of the library
+        # continues (#134).
+        try:
+            embedded, failures_by_media = _embed_crops(
+                ctx,
+                client=client,
+                job=job,
+                crops=crops,
+                stored_by_face=stored_by_face,
+                face_stack=face_stack,
+            )
+        except mlruntime.MlRuntimeError as error:
+            _fail_batch(
+                ctx, dict(batch), step=FACE_EMBEDDING_STEP, error=error,
+                counts=counts, counter="faces_embedding_failed",
+            )
+            seen += len(batch)
+            continue
         counts["faces_embedded"] += embedded
         failure_counts = counts["face_embedding_failures"]
         for failures in failures_by_media.values():
@@ -1192,7 +1304,11 @@ def _embed_crops(
         chunk = list(crops[start : start + ctx.settings.infer_batch])
         outcome = client.infer_faces(
             model_id=face_stack.embedder_id,
-            request_id=f"{job['job_id']}:{FACE_EMBEDDING_STEP}:{chunk[0].item_id}",
+            request_id=_request_id(
+                job,
+                FACE_EMBEDDING_STEP,
+                {crop.item_id: crop.proxy_id for crop in chunk},
+            ),
             crops=chunk,
             required_landmark_scheme=face_stack.landmark_scheme,
         )

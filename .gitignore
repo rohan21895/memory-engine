@@ -34,3 +34,6 @@ __pycache__/
 # Generated local artifacts
 tmp/
 artifacts/
+
+# Local product runs (scripts/run-photeo.sh)
+runs/

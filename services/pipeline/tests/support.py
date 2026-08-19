@@ -276,6 +276,7 @@ class FakeMlRuntime:
         embedding_dimensions: int = EMBEDDING_DIMENSIONS,
         face_embedding_dimensions: int = FACE_EMBEDDING_DIMENSIONS,
         fail_items: frozenset[str] = frozenset(),
+        refuse_whole: frozenset[str] = frozenset(),
         face_boxes: Any = None,
         landmark_scheme: str = "insightface_5",
         emit_landmarks: bool = True,
@@ -287,6 +288,11 @@ class FakeMlRuntime:
         self.embedding_dimensions = embedding_dimensions
         self.face_embedding_dimensions = face_embedding_dimensions
         self.fail_items = fail_items
+        # Models whose every Infer request is refused WHOLE with a top-level
+        # error -- the shape a deadline or a replay-cache refusal arrives in.
+        # Distinct from `fail_items`, which fails single items inside an
+        # otherwise successful response.
+        self.refuse_whole = frozenset(refuse_whole)
         # `face_boxes(proxy_id) -> sequence of (x, y, w, h)`, for tests that
         # need a face somewhere specific -- in the trim zone, in the gutter.
         self.face_boxes = face_boxes
@@ -360,6 +366,15 @@ class FakeMlRuntime:
                             code=pb.ERROR_CODE_MODEL_NOT_REGISTERED,
                             message="not registered",
                             retryable=False,
+                        ),
+                    )
+                if request.model_id in host.refuse_whole:
+                    return pb.InferResponse(
+                        request_id=request.request_id,
+                        error=pb.InferError(
+                            code=pb.ERROR_CODE_DEADLINE_EXCEEDED,
+                            message="refused whole by the test host",
+                            retryable=True,
                         ),
                     )
                 results = []

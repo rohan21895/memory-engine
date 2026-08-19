@@ -212,6 +212,73 @@ class MissingModelHost(unittest.TestCase):
             ):
                 yield media_id, json.loads(raw)
 
+    def test_a_refused_batch_fails_its_records_and_the_other_steps_continue(self):
+        """One refused request is that batch's failure, not the library's.
+
+        Before #134 a single whole-request refusal (a deadline, a replay-cache
+        conflict) raised out of the embedding loop and aborted the stage, so
+        face detection never ran for ANY record and the report said the entire
+        library was unanalysed. The honest accounting: the refused batch's
+        records carry a retryable failure on that one step, every other step
+        still runs, and the stage still refuses to call the library analysed.
+        """
+        with FakeMlRuntime(refuse_whole=frozenset({EMBEDDING_MODEL})) as host:
+            report = self._run(host.endpoint)
+
+        analysis = _stage(report, "analysis")
+        self.assertEqual(StageStatus.FAILED, analysis.status)
+        for media_id, record in self._records():
+            stages = record["processing"]["stages"]
+            embedding = stages["image_embedding"]
+            self.assertEqual(
+                "failed", embedding["status"],
+                f"{media_id[:8]}: a refused batch must fail its records",
+            )
+            self.assertTrue(
+                embedding["last_error"]["retryable"],
+                f"{media_id[:8]}: a whole-request refusal is transient",
+            )
+            self.assertEqual(
+                "done", stages["face_detection"]["status"],
+                f"{media_id[:8]}: the face step must run despite the "
+                "embedding refusal",
+            )
+            self.assertNotEqual("analyzed", record["processing"]["state"])
+
+    def test_request_ids_name_the_work_not_the_batch_head(self):
+        """Identical work shares a request id; different work never does.
+
+        The host's replay cache keys on request_id and refuses a reused id
+        whose request differs. An id built from the batch's FIRST media id
+        collided the moment a retry batch had the same head but different
+        membership, and the whole batch was refused as "reused with different
+        work" (#134).
+        """
+        from memory_engine_pipeline.stages.analysis import _request_id
+
+        job = {"job_id": "job-1"}
+        work = {"m1": "p1", "m2": "p2"}
+        self.assertEqual(
+            _request_id(job, "image_embedding", work),
+            _request_id(job, "image_embedding", dict(reversed(work.items()))),
+            "the same work must resume from the same id regardless of order",
+        )
+        self.assertNotEqual(
+            _request_id(job, "image_embedding", work),
+            _request_id(job, "image_embedding", {"m1": "p1"}),
+            "a shrunken retry batch with the same head is different work",
+        )
+        self.assertNotEqual(
+            _request_id(job, "image_embedding", work),
+            _request_id(job, "image_embedding", {"m1": "p1", "m2": "p9"}),
+            "the same ids over different proxies are different work",
+        )
+        self.assertNotEqual(
+            _request_id(job, "image_embedding", work),
+            _request_id(job, "face_detection", work),
+            "the same items through a different step are different work",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
