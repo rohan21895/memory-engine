@@ -158,6 +158,11 @@ class Settings:
     # Path to a ConsentRef JSON. None means `<workdir>/tier3-consent.json`.
     # Absence of the file blocks; it does not default to permission.
     tier3_consent_path: str | None = None
+    # Path to a safety-clearance manifest covering every photograph on the
+    # contact sheet. None means `<workdir>/tier3-clearance.json`. Absence
+    # blocks at the safety gate -- consent says a sheet MAY be sent, clearance
+    # says what is ON it, and neither implies the other.
+    tier3_clearance_path: str | None = None
     # Candidates shown per slot wanted. Below 2 there is nothing to reject and
     # the upload buys nothing; the sheet's own 64-cell ceiling caps the top.
     tier3_pool_multiplier: int = 3

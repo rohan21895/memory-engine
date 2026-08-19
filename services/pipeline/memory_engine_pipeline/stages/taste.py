@@ -191,6 +191,44 @@ def load_consent(path: Path) -> Any:
     return ConsentRef.from_mapping(raw)
 
 
+# --------------------------------------------------------------- clearance --
+
+
+DEFAULT_CLEARANCE_FILENAME = "tier3-clearance.json"
+
+
+def clearance_path(ctx: StageContext) -> Path:
+    configured = getattr(ctx.settings, "tier3_clearance_path", None)
+    if configured:
+        return Path(configured).expanduser()
+    return ctx.workdir / DEFAULT_CLEARANCE_FILENAME
+
+
+def load_clearance(path: Path) -> Mapping[str, Any] | None:
+    """The safety-clearance manifest for this send, or None.
+
+    None is NOT a pass: the transport's safety gate rejects it out loud, which
+    is the correct state of the world until the on-device safety classifier
+    exists and writes real manifests. This loader deliberately does not
+    validate the document -- `memory_engine_safety.verify` owns that, and it
+    runs inside the gate against the exact media ids on the sheet. A malformed
+    file is therefore handed through and refused THERE, with the gate's own
+    reason, rather than being silently downgraded to "no clearance" here --
+    the difference matters to an operator debugging why their manifest was
+    rejected.
+    """
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        # Not JSON at all. Handing the parser's ruin through as a mapping is
+        # impossible, and None ("there is no clearance") is the truthful
+        # description of a file nothing can read.
+        return None
+    return raw if isinstance(raw, Mapping) else None
+
+
 # --------------------------------------------------------------- the stage --
 
 
@@ -445,6 +483,7 @@ def run(ctx: StageContext) -> StageResult:
     job = ctx.jobs.begin(job)
 
     from memory_engine_prompt.transport import AnthropicSender  # noqa: PLC0415
+    from memory_engine_safety.verify import PublicationBlocked  # noqa: PLC0415
 
     try:
         decision = album_taste.run_album_taste(
@@ -452,6 +491,7 @@ def run(ctx: StageContext) -> StageResult:
             grant=grant,
             ledger=ledger,
             sender=AnthropicSender(),
+            clearance=load_clearance(clearance_path(ctx)),
             model=settings.tier3_model,
             config=config,
         )
@@ -461,6 +501,20 @@ def run(ctx: StageContext) -> StageResult:
         )
         return _failed(
             f"egress refused before anything was sent: {blocked.code} ({blocked.detail})",
+            job_id=job["job_id"],
+        )
+    except PublicationBlocked as blocked:
+        # Deliberately NOT folded into the EgressBlocked arm: consent covers
+        # whether a sheet may be sent, clearance covers what is on it. Until
+        # the on-device safety classifier writes real manifests, this is the
+        # expected terminal state of a Tier 3 run on real photographs.
+        ctx.jobs.fail(
+            job, code="permission_denied", message="safety_clearance", retryable=False
+        )
+        return _failed(
+            "the safety gate refused the send before any bytes moved: "
+            f"{blocked}. Provide a clearance manifest at "
+            f"{clearance_path(ctx)} covering every photograph on the sheet",
             job_id=job["job_id"],
         )
 

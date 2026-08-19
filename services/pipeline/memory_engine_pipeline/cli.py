@@ -84,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tier3-consent", default=None,
                         help="path to a ConsentRef JSON authorising the upload "
                              "(default <workdir>/tier3-consent.json). Absence blocks")
+    parser.add_argument("--tier3-clearance", default=None,
+                        help="path to a safety-clearance manifest covering every "
+                             "photograph on the sheet (default "
+                             "<workdir>/tier3-clearance.json). Absence blocks at "
+                             "the safety gate; consent does not imply clearance")
     parser.add_argument("--tier3-pool", type=int, default=_DEFAULTS.tier3_pool_multiplier,
                         help="candidates shown per album slot wanted")
     parser.add_argument("--no-render-print", action="store_true")
@@ -117,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         tier3_dry_run=args.tier3_dry_run,
         tier3_model=args.tier3_model,
         tier3_consent_path=args.tier3_consent,
+        tier3_clearance_path=args.tier3_clearance,
         tier3_pool_multiplier=args.tier3_pool,
     )
     stages = [name.strip() for name in args.stages.split(",") if name.strip()] or None

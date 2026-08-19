@@ -692,6 +692,7 @@ def run_album_taste(
     grant: transport.EgressGrant,
     ledger: transport.EgressLedger,
     sender: Any,
+    clearance: Mapping[str, Any] | None,
     model: str = MODEL_ID,
     config: transport.TransportConfig | None = None,
     clock: Any = transport.utc_now,
@@ -703,6 +704,14 @@ def run_album_taste(
     left the device" with "the model said no" would have a privacy bug wearing
     a reliability bug's clothes, so the two arrive by different mechanisms: one
     as an exception, one as a `TasteDecision` whose `ok` is False.
+
+    `clearance` is the safety manifest covering every photograph on the sheet,
+    and it is required-with-no-default for the same reason the transport makes
+    it so: no caller may reach the frontier model without confronting it. None
+    is a legal VALUE -- "there is no clearance" -- and the gate rejects it out
+    loud (`transport.PublicationBlocked`) before any bytes move. The tile
+    binding the gate verifies against is the plan's own `media_id_by_label`,
+    so the set that is checked is the set that is on the image.
     """
     if not isinstance(plan, TastePlan):
         raise TasteError("plan must be a TastePlan")
@@ -730,6 +739,8 @@ def run_album_taste(
         plan.request,
         instruction=plan.instruction,
         grant=grant,
+        clearance=clearance,
+        media_ids_by_tile=plan.media_id_by_label,
     )
 
     usage = dict(result.usage)

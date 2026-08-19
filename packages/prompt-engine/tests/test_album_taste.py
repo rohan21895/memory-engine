@@ -191,6 +191,79 @@ def grant(consent: transport.ConsentRef | None, *, requires: bool = True) -> tra
     )
 
 
+def clearance_for(plan: album_taste.TastePlan, *, verdict: str = "cleared") -> dict:
+    """A safety clearance covering exactly the photographs on this plan's sheet.
+
+    Built from the plan's OWN `media_id_by_label`, not a parallel list, so a
+    test can never pass by clearing a different set of photographs than the
+    sheet carries -- which is precisely the drift the gate exists to catch.
+    Mirrors `test_transport.make_clearance`, which owns the document shape.
+    """
+    import hashlib  # noqa: PLC0415
+
+    from memory_engine_safety.canonical import manifest_id as _manifest_id  # noqa: PLC0415
+
+    items = [
+        {
+            "media_id": media,
+            "evidence_id": hashlib.blake2b(
+                f"proxy:{media}".encode(), digest_size=32
+            ).hexdigest(),
+            "verdict": verdict,
+            "scores": {
+                "explicit": 0.01,
+                "suggestive": 0.02,
+                "medical_or_artistic": 0.01,
+            },
+        }
+        for media in plan.media_id_by_label.values()
+    ]
+    document = {
+        "schema_version": "v0",
+        "manifest_version": 1,
+        "created_at": "2026-03-16T20:29:00+05:30",
+        "sink": "frontier_egress",
+        "sink_detail": "tier3 contact sheet",
+        "classifier": {
+            "model": {
+                "model_id": "nsfw-siglip-head",
+                "version": "1.0.0",
+                "weights_blake3": "d" * 64,
+                "config_blake3": "c" * 64,
+                "runtime": "onnxruntime_coreml",
+                "precision": "fp32",
+            },
+            "ran_at": "2026-03-16T20:28:00+05:30",
+            "class_order": ["explicit", "suggestive", "medical_or_artistic"],
+            "load_mode": "release",
+        },
+        "thresholds": {
+            "explicit": 0.3,
+            "suggestive": 0.3,
+            "medical_or_artistic": 0.3,
+        },
+        "items": items,
+        "decision": {
+            "cleared_for_publication": all(
+                item["verdict"] == "cleared" for item in items
+            ),
+            "item_count": len(items),
+            "cleared_count": sum(
+                1 for item in items if item["verdict"] == "cleared"
+            ),
+            "blocked_count": sum(
+                1 for item in items if item["verdict"] == "blocked"
+            ),
+            "indeterminate_count": sum(
+                1 for item in items if item["verdict"] == "indeterminate"
+            ),
+            "denied_reason": None,
+        },
+    }
+    document["manifest_id"] = _manifest_id(document)
+    return document
+
+
 class CountingSender:
     """A sender that records every call and replays a script.
 
@@ -398,7 +471,11 @@ class ConsentGatesTheCall(unittest.TestCase):
         sender = CountingSender([reply_message("gate-0001", self.plan.labels[:2])])
         try:
             decision = album_taste.run_album_taste(
-                self.plan, grant=egress_grant, ledger=self.ledger, sender=sender
+                self.plan,
+                grant=egress_grant,
+                ledger=self.ledger,
+                sender=sender,
+                clearance=clearance_for(self.plan),
             )
         except transport.EgressBlocked as blocked:
             return blocked, sender
@@ -480,6 +557,7 @@ class ConsentGatesTheCall(unittest.TestCase):
                     grant=grant(fresh_consent(revoked_at=transport.utc_now().isoformat())),
                     ledger=self.ledger,
                     sender=sender,
+                    clearance=clearance_for(self.plan),
                 )
             self.assertEqual(caught.exception.code, transport.BLOCK_CONSENT_REVOKED)
             # And the SDK is still required to actually send.
@@ -509,7 +587,11 @@ class ConsentGatesTheCall(unittest.TestCase):
         recorder.plan_labels = self.plan.labels
         sender = transport.AnthropicSender(client=recorder)
         decision = album_taste.run_album_taste(
-            self.plan, grant=grant(fresh_consent()), ledger=self.ledger, sender=sender
+            self.plan,
+            grant=grant(fresh_consent()),
+            ledger=self.ledger,
+            sender=sender,
+            clearance=clearance_for(self.plan),
         )
         self.assertTrue(decision.ok, decision.detail)
         self.assertEqual(len(recorder.bodies), 1)
@@ -523,13 +605,64 @@ class ConsentGatesTheCall(unittest.TestCase):
         sender = CountingSender([reply_message("gate-0001", self.plan.labels[:2])])
         with self.assertRaises(transport.EgressBlocked) as caught:
             album_taste.run_album_taste(
-                self.plan, grant=grant(fresh_consent()), ledger=BrokenLedger(), sender=sender
+                self.plan,
+                grant=grant(fresh_consent()),
+                ledger=BrokenLedger(),
+                sender=sender,
+                clearance=clearance_for(self.plan),
             )
         self.assertEqual(caught.exception.code, transport.BLOCK_LEDGER_REFUSED)
         self.assertEqual(sender.calls, [], "sent despite an unwritable journal")
 
 
 # ------------------------------------------------------------------ replies --
+
+
+class ClearanceGatesTheCall(unittest.TestCase):
+    """No safety clearance, no send. Proved by counting calls, like consent.
+
+    Deliberately a DIFFERENT exception type than the consent tests catch:
+    consent covers whether a sheet may be sent, clearance covers what is on
+    it, and a caller must not be able to handle one and believe it handled
+    both. `PublicationBlocked` comes from the safety gate, not the transport.
+    """
+
+    def setUp(self):
+        self.plan = album_taste.plan_taste(candidates(6), target=2, request_id="gate-0001")
+        self.ledger = transport.InMemoryLedger()
+
+    def _run(self, clearance):
+        from memory_engine_safety.verify import PublicationBlocked  # noqa: PLC0415
+
+        sender = CountingSender([reply_message("gate-0001", self.plan.labels[:2])])
+        with self.assertRaises(PublicationBlocked) as caught:
+            album_taste.run_album_taste(
+                self.plan,
+                grant=grant(fresh_consent()),
+                ledger=self.ledger,
+                sender=sender,
+                clearance=clearance,
+            )
+        return caught.exception, sender
+
+    def test_no_clearance_blocks_and_nothing_is_sent(self):
+        blocked, sender = self._run(None)
+        self.assertEqual(sender.calls, [], "a request was sent with no clearance")
+        self.assertIn("clearance", str(blocked).lower())
+
+    def test_indeterminate_verdicts_block_and_nothing_is_sent(self):
+        # The exact state real photographs are in until the on-device safety
+        # classifier exists: nothing is cleared, nothing is blocked, and the
+        # honest answer is "do not send".
+        _, sender = self._run(clearance_for(self.plan, verdict="indeterminate"))
+        self.assertEqual(sender.calls, [], "sent despite indeterminate verdicts")
+
+    def test_a_clearance_for_different_photographs_blocks(self):
+        other = album_taste.plan_taste(
+            candidates(8, dirty=True)[6:], target=1, request_id="gate-0002"
+        )
+        _, sender = self._run(clearance_for(other))
+        self.assertEqual(sender.calls, [], "sent under another sheet's clearance")
 
 
 class RepliesAreValidatedAgainstTheSheet(unittest.TestCase):
@@ -543,6 +676,7 @@ class RepliesAreValidatedAgainstTheSheet(unittest.TestCase):
             grant=grant(fresh_consent()),
             ledger=self.ledger,
             sender=CountingSender([message]),
+            clearance=clearance_for(self.plan),
         )
 
     def test_an_id_that_was_not_on_the_sheet_is_refused_whole(self):
