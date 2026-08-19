@@ -145,5 +145,53 @@ class CrowdVariety(unittest.TestCase):
         self.assertIn(mid("duo"), result.selected)
 
 
+
+
+class PairDistinctness(unittest.TestCase):
+    """"No two photos should be similar": a hard cap on the similarity of any
+    selected pair, measured on a real maternity shoot where 0.95+ pairs sat
+    26 minutes apart (outside any burst window) and a 0.993 pair entered
+    through shot-cap relaxation."""
+
+    def _pool(self):
+        # Three near-identical frames of one pose (0.99+ mutual similarity,
+        # minutes apart -- same photograph re-shot), plus two distinct photos.
+        def unit(*c):
+            n = sum(x * x for x in c) ** 0.5
+            return tuple(x / n for x in c)
+
+        base = [1.0, 0.02, 0.0, 0.0]
+        pose = [
+            cand(
+                f"pose{i}", 0.9 - i * 0.01,
+                captured_utc=f"2026-03-01T12:{10 + i * 13}:00+00:00",
+                embedding=unit(*(base[:1] + [0.02 + 0.001 * i] + base[2:])),
+                embedding_space="test_space_4",
+            )
+            for i in range(3)
+        ]
+        distinct = [
+            cand("hills", 0.55, captured_utc="2026-03-01T15:00:00+00:00",
+                 embedding=unit(0.0, 1.0, 0.1, 0.0), embedding_space="test_space_4"),
+            cand("beach", 0.50, captured_utc="2026-03-01T16:00:00+00:00",
+                 embedding=unit(0.0, 0.1, 1.0, 0.0), embedding_space="test_space_4"),
+        ]
+        return pose, distinct
+
+    def test_a_second_frame_of_a_pose_loses_to_any_distinct_photo(self):
+        pose, distinct = self._pool()
+        result = select(pose + distinct, 3)
+        chosen = set(result.selected)
+        self.assertEqual(1, len(chosen & {c.media_id for c in pose}),
+                         "one frame of the pose, however good the others score")
+        self.assertTrue({c.media_id for c in distinct} <= chosen)
+
+    def test_the_cap_relaxes_rather_than_underfilling(self):
+        pose, _ = self._pool()
+        result = select(pose, 2)
+        self.assertEqual(2, len(result.selected),
+                         "with nothing distinct left, the book still fills")
+
+
 if __name__ == "__main__":
     unittest.main()

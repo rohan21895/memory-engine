@@ -264,7 +264,16 @@ class SelectionPolicy:
     # a great moment out-scores a single frame of an ordinary one on quality
     # alone, which is precisely the failure this knob exists to stop.
     shot_similarity: float = 0.93
-    burst_window_s: float = 180.0
+    # An hour, not three minutes: a studio session re-shoots the same pose
+    # across the whole sitting (measured 0.95+ pairs 26 minutes apart on a
+    # real maternity shoot), and at 0.93+ similarity the time gap carries no
+    # information -- the similarity bar is what discriminates.
+    burst_window_s: float = 3600.0
+    # The hard backstop the user actually asked for: "no two photos should
+    # be similar". A candidate this close to ANY already-selected photo is
+    # ineligible while anything more distinct remains -- relaxed only when
+    # the pool has nothing else, because a short book beats an empty one.
+    max_selected_similarity: float = 0.92
 
     # --- timeline ---------------------------------------------------------
     # 0 means "one bin per photo we intend to select, capped", which makes the
@@ -281,6 +290,7 @@ class SelectionPolicy:
             "redundancy_free_similarity", "hero_quality", "shot_similarity",
             "face_sharpness_floor", "head_sharpness_floor",
             "max_sleeping_fraction", "sleeping_min_contrast",
+            "max_selected_similarity",
         ):
             value = getattr(self, name)
             # NaN is the reason this is `not (0 <= v <= 1)` and not `v < 0 or
@@ -1531,7 +1541,28 @@ def _greedy(
             # rather than stopping short -- the user asked for N pages.
             allowed_per_shot += 1
             continue
-        best_id = min(fresh_shots, key=lambda m: (-gain(m), m))
+        # The distinctness backstop: `closest` already tracks each photo's
+        # similarity to the nearest selected one. Prefer photos below the
+        # cap; fall back to the full list only when nothing distinct is
+        # left, because a shorter, varied book was judged better than a
+        # padded one -- but an EMPTY round is worse than either.
+        distinct = [
+            m for m in fresh_shots
+            if closest.get(m, 0.0) < policy.max_selected_similarity
+        ]
+        if distinct:
+            best_id = min(distinct, key=lambda m: (-gain(m), m))
+        else:
+            # Nothing distinct remains -- a studio session's 279 frames can
+            # genuinely be 16 poses, and slots 17..25 must repeat one. Take
+            # the LEAST-similar repeat, not the highest-scoring one: gain
+            # favours the twin of the best pose (a 0.99 clone), which is
+            # exactly the pair the album must never show. Similarity is
+            # rounded so a 0.001 difference cannot outvote real quality.
+            best_id = min(
+                fresh_shots,
+                key=lambda m: (round(closest.get(m, 0.0), 2), -gain(m), m),
+            )
         commit(best_id)
 
     return selected, sorted(blocked)

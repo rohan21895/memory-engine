@@ -64,7 +64,9 @@ PLANNER = "album-planner"
 #: 0.3.0: aesthetic axis in selection; editorial pacing (day-grouped pages,
 #: full-bleed heroes, blur-backdrop solos, orientation-matched duos).
 #: 0.3.1: full-bleed requests step down to the bokeh hero, not a white inset.
-PLANNER_VERSION = "0.3.1"
+#: 0.4.0: hard pair-distinctness cap (max_selected_similarity) and the shot
+#: window widened to a full session -- no two near-identical frames in a book.
+PLANNER_VERSION = "0.4.0"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
@@ -787,6 +789,30 @@ def _page_requests(
                 duo(held, photo)
         for orientation in sorted(pending):
             solo(pending[orientation])
+
+    # A vendor minimum met with blank pages is not a book, it is a pamphlet
+    # with packing material. When pairing compresses below the minimum,
+    # split duos back into solo pages -- from the END, so the book opens at
+    # its designed rhythm and only the closing pages loosen. Chronology is
+    # untouched: a split duo becomes two solos in the same positions.
+    limits = profile.get("page_count") or {}
+    minimum = int(limits.get("minimum") or 0)
+    fixed = 2  # front cover + back cover, added by layout_album
+    while len(requests) + fixed < minimum:
+        for index in range(len(requests) - 1, -1, -1):
+            if len(requests[index].photos) == 2:
+                first, second = requests[index].photos
+                requests[index : index + 1] = []
+                solo_pair: list[Any] = []
+                full_bleed_left_before = full_bleed_left
+                for photo in (first, second):
+                    solo(photo)
+                    solo_pair.append(requests.pop())
+                del full_bleed_left_before
+                requests[index:index] = solo_pair
+                break
+        else:
+            break  # nothing left to split; layout pads the remainder
 
     return requests
 

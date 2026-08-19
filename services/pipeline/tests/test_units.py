@@ -664,6 +664,28 @@ class EditorialPacing(unittest.TestCase):
         self.assertEqual(FULL_BLEED, requests[0].template)
         self.assertEqual(BLUR_HERO, requests[1].template)
 
+    def test_duos_split_into_solos_rather_than_padding_with_blanks(self):
+        # 6 photos pair into 4 pages; an 8-page vendor minimum (6 interior
+        # after covers) must be met by loosening pairs, not by blank pages.
+        profile = dict(self.PROFILE)
+        profile["page_count"] = {"minimum": 8, "maximum": 20, "increment": 2}
+        from memory_engine_pipeline.stages.album import _page_requests
+
+        photos, by_id, scores = [], {}, {}
+        for i in range(6):
+            photo = self._photo(f"p{i}", 3000, 4000)
+            photos.append(photo)
+            by_id[photo.media_id] = {
+                "capture": {"captured_at": {"utc": "2026-03-01T10:00:00+05:30"}}
+            }
+            scores[photo.media_id] = self._Score(0.9 - i * 0.01)
+        requests = _page_requests(photos, by_id, scores, profile)
+        self.assertGreaterEqual(len(requests) + 2, 8)
+        self.assertTrue(all(len(r.photos) == 1 for r in requests),
+                        "every duo was split to reach the minimum")
+        flattened = [p.media_id for r in requests for p in r.photos]
+        self.assertEqual(sorted(p.media_id for p in photos), sorted(flattened))
+
     def test_chronology_survives_across_days(self):
         requests, photos = self._requests([
             ("2026-03-01", [("a", 3000, 4000, 0.5)]),
