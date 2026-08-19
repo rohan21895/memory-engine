@@ -345,7 +345,11 @@ fn same_size_valid_json_artifact_corruption_fails_journal_recovery() {
     // quote. Filenames here end alphanumeric, so the result is still valid
     // JSON of identical length.
     let last = replacement.len() - 2;
-    replacement[last] = if replacement[last] == b'x' { b'y' } else { b'x' };
+    replacement[last] = if replacement[last] == b'x' {
+        b'y'
+    } else {
+        b'x'
+    };
     let offset = original
         .windows(needle.len())
         .position(|window| window == needle)
