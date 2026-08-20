@@ -53,11 +53,24 @@ __all__ = [
     "ClassicalQuality",
     "HISTOGRAM_BINS",
     "SUPPORTED_PROXY_KINDS",
+    "album_background_tone",
     "face_visibility",
     "measure",
     "measure_face_exposure",
     "measure_face_sharpness",
 ]
+
+# The premium mat is a dark, near-neutral tone TINTED by the album's own
+# palette -- not white, and not a flat black either. These two knobs are the
+# whole taste of it: how dark the mat sits and how much of the album's colour
+# survives into it. Kept here so the treatment is tuned in one place.
+#: Target lightness of the page mat in [0,1] (HLS L). Low = a deep gallery mat.
+_BACKGROUND_MAT_LIGHTNESS = 0.12
+#: Ceiling on the mat's saturation. A faint tint reads premium; a saturated
+#: mat reads like a themed template.
+_BACKGROUND_MAT_MAX_SATURATION = 0.22
+#: Fallback when no proxy is readable -- still dark, never white.
+_BACKGROUND_MAT_FALLBACK = "#141414"
 
 EXECUTOR_ID = "classical-quality"
 EXECUTOR_VERSION = "1.0.0"
@@ -409,3 +422,61 @@ def measure_face_exposure(
         numpy.count_nonzero((crop >= HIGHLIGHT_LEVEL) | (crop <= SHADOW_LEVEL))
     ) / crop.size
     return round(float(numpy.mean(crop)), 6), round(clipped, 6)
+
+
+def album_background_tone(
+    paths: Sequence[str | Path],
+    *,
+    lightness: float = _BACKGROUND_MAT_LIGHTNESS,
+    max_saturation: float = _BACKGROUND_MAT_MAX_SATURATION,
+) -> str:
+    """A deterministic dark, muted page-mat colour drawn from the album itself.
+
+    Studio albums almost never sit photos on white -- the mat is a deep,
+    near-neutral tone, faintly tinted by the palette of the work it holds, so
+    the images read as prints on a gallery board rather than clip-art on a
+    slide. This computes that tone: the per-channel MEDIAN of each proxy's
+    average colour (median so a couple of blown-out seamless backdrops cannot
+    drag the mat toward white), pushed down to `lightness` and desaturated to at
+    most `max_saturation` in HLS. Hue survives, so a warm maternity set yields a
+    warm charcoal and a cool one a cool charcoal -- but both are dark.
+
+    Pure and transient, like the other plan-time measures here: any rendition
+    of the oriented image gives the same claim (each proxy is box-reduced to a
+    single mean), so the result is stable across proxy kinds and runs. Returns
+    `#rrggbb`. An empty or wholly-unreadable set yields the dark fallback --
+    the one thing it will never return is white.
+    """
+    import colorsys  # noqa: PLC0415
+
+    import numpy  # noqa: PLC0415
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
+    means: list[tuple[float, float, float]] = []
+    for path in paths:
+        file_path = Path(path)
+        if not file_path.is_file():
+            continue
+        try:
+            with Image.open(file_path) as handle:
+                # Box-reduce to a tiny thumbnail: its mean IS the average colour,
+                # cheaply and deterministically, with no dependence on proxy size.
+                small = ImageOps.exif_transpose(handle).convert("RGB").resize(
+                    (16, 16), Image.Resampling.BOX
+                )
+                pixels = numpy.asarray(small, dtype=numpy.float64) / 255.0
+        except Exception:  # noqa: BLE001 -- a bad proxy just abstains from the vote
+            continue
+        r, g, b = (float(pixels[:, :, c].mean()) for c in range(3))
+        means.append((r, g, b))
+
+    if not means:
+        return _BACKGROUND_MAT_FALLBACK
+
+    arr = numpy.asarray(means, dtype=numpy.float64)
+    r, g, b = (float(numpy.median(arr[:, c])) for c in range(3))
+    h, _l, s = colorsys.rgb_to_hls(r, g, b)
+    mat_r, mat_g, mat_b = colorsys.hls_to_rgb(h, lightness, min(s, max_saturation))
+    return "#{:02x}{:02x}{:02x}".format(
+        *(max(0, min(255, round(c * 255))) for c in (mat_r, mat_g, mat_b))
+    )

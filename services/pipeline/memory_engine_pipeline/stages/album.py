@@ -39,7 +39,7 @@ not re-plan, so the file on disk is not even rewritten -- which is what keeps
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -90,7 +90,12 @@ PLANNER = "album-planner"
 #: pose-clusters.json) rewards pose breadth. The SigLIP/moment axes could not
 #: see it: a measured album printed one couple pose on six pages across six
 #: outfits (six embeddings, six moments) while skipping thirteen other poses.
-PLANNER_VERSION = "0.6.0"
+#: 0.7.0: NON-WHITE MAT. Every page background was hardcoded white; the book
+#: sat prints on a slide instead of a gallery board. The mat is now a dark,
+#: muted tone drawn from the album's own palette (classical.album_background_tone),
+#: so grids, insets and the back cover read as photographs on a deep board.
+#: Full-bleed and blur-hero pages are unchanged (they own the page already).
+PLANNER_VERSION = "0.7.0"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
@@ -443,6 +448,7 @@ def run(ctx: StageContext) -> StageResult:
             PageRequest(photos=tuple(photos[start : start + per_page]))
             for start in range(0, len(photos), per_page)
         ]
+    background_hex = _album_background(ctx, photos)
     try:
         pages = layout_album(
             requests,
@@ -452,6 +458,7 @@ def run(ctx: StageContext) -> StageResult:
                 planned.scores,
                 first_page=requests[0].photos[0] if requests else None,
             ),
+            background_hex=background_hex,
         )
     except LayoutError as error:
         ctx.jobs.fail(job, code="validation_failed", message="layout failed",
@@ -1112,6 +1119,30 @@ def _per_face_aggregates(ctx: StageContext, media_id: str) -> Any:
             float(face["detection"]["face_area_ratio"]) for face in detected
         ),
     )
+
+
+def _album_background(ctx: StageContext, photos: Sequence[Any]) -> str:
+    """The page-mat colour for the whole book: a dark, muted tone drawn from
+    the selected photos, never white.
+
+    Studio albums sit prints on a deep, near-neutral board -- so the pages that
+    are not full-bleed (grids, the back cover, an inset) read as photographs on
+    a gallery mat, not clip-art on a slide. `classical.album_background_tone`
+    takes the median average colour of the selected proxies and pushes it dark
+    and desaturated; here we just gather the proxy paths and hand them over. One
+    tone for the album keeps the book cohesive, the way a flush-mount's single
+    black core does. Any failure falls back to the module's dark default inside
+    the helper -- a background can never fail a plan, and it can never be white.
+    """
+    from ..classical import album_background_tone  # noqa: PLC0415
+
+    paths: list[str] = []
+    for photo in photos:
+        proxies = ctx.database.proxies_for_media(photo.media_id, kind="thumbnail_512")
+        path = proxies[0].get("path") if proxies else None
+        if path:
+            paths.append(path)
+    return album_background_tone(paths)
 
 
 def _face_exposure_extremes(

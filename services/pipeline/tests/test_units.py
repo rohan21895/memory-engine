@@ -316,6 +316,63 @@ class Inventory(unittest.TestCase):
         self.assertEqual(1, len(walked.entries))
 
 
+class AlbumBackgroundTone(unittest.TestCase):
+    """The page mat must be dark and drawn from the album -- never white.
+
+    A white background is the single loudest tell of an auto-collage, so the
+    one behaviour that must not regress is this: whatever the photos look like,
+    including a set of blown-out white studio backdrops, the derived mat is a
+    dark, muted tone -- not white.
+    """
+
+    def _write(self, folder: Path, name: str, rgb: tuple[int, int, int]) -> str:
+        from PIL import Image  # noqa: PLC0415
+
+        path = folder / name
+        Image.new("RGB", (24, 24), rgb).save(path)
+        return str(path)
+
+    def _lightness(self, hex_color: str) -> float:
+        import colorsys  # noqa: PLC0415
+
+        r, g, b = (int(hex_color[i : i + 2], 16) / 255.0 for i in (1, 3, 5))
+        return colorsys.rgb_to_hls(r, g, b)[1]
+
+    def test_a_white_studio_set_still_yields_a_dark_mat_not_white(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            paths = [self._write(folder, f"w{i}.png", (255, 255, 255)) for i in range(4)]
+            tone = classical.album_background_tone(paths)
+        self.assertRegex(tone, r"^#[0-9a-f]{6}$")
+        self.assertNotIn(tone.lower(), {"#ffffff", "#fff"})
+        self.assertLessEqual(
+            self._lightness(tone), classical._BACKGROUND_MAT_LIGHTNESS + 0.02
+        )
+
+    def test_the_mat_keeps_the_albums_hue_but_goes_dark(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            # A warm set (reddish) must yield a warm-but-dark mat: R >= B.
+            paths = [self._write(folder, f"r{i}.png", (200, 90, 60)) for i in range(3)]
+            tone = classical.album_background_tone(paths)
+        r, g, b = (int(tone[i : i + 2], 16) for i in (1, 3, 5))
+        self.assertGreaterEqual(r, b, f"warm album should give a warm mat, got {tone}")
+        self.assertLessEqual(self._lightness(tone), 0.20)
+
+    def test_it_is_deterministic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            paths = [self._write(folder, f"p{i}.png", (120, 140, 180)) for i in range(3)]
+            first = classical.album_background_tone(paths)
+            second = classical.album_background_tone(paths)
+        self.assertEqual(first, second)
+
+    def test_no_readable_proxy_falls_back_to_the_dark_default_never_white(self):
+        tone = classical.album_background_tone(["/does/not/exist.png"])
+        self.assertEqual(tone, classical._BACKGROUND_MAT_FALLBACK)
+        self.assertNotEqual(tone.lower(), "#ffffff")
+
+
 class ClassicalStepRegistration(unittest.TestCase):
     """The registry entry has to describe the code, or it is decoration.
 
