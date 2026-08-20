@@ -484,4 +484,13 @@ def _unselected_entry(
         )
     else:
         detail = "survived every gate but never offered the best marginal gain"
-    return {"media_id": media_id, "reason": "lost_on_merit", "detail": detail}
+    # `quality` (the pool standing, higher is better) lets the review UI rank
+    # the omitted pool: a selected photo with no shot-group siblings still
+    # needs alternatives to offer, and the best of what was left out is the
+    # honest answer.
+    return {
+        "media_id": media_id,
+        "reason": "lost_on_merit",
+        "detail": detail,
+        "quality": float(standing) if standing is not None else None,
+    }
