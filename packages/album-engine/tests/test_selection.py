@@ -91,7 +91,7 @@ def score(
         coverage=coverage,
         rejected=rejected,
         rejection_reason=reason,
-        weights_id="default-v1",
+        weights_id="default-v2",
         weights_digest=digest,
         feature_set_id=feature_set,
         contributions=tuple((name, value, 1.0 / len(measured)) for name in sorted(measured)),
@@ -443,12 +443,17 @@ class TestScarcitySurvivesQualityFirstCut(unittest.TestCase):
         0.12 photo of a person with nothing better must survive; a 0.12 photo
         of nobody must not.
         """
+        # v3: `junk` sits 15 minutes from `gran_only` rather than a day away.
+        # A lone timed photo with nothing within rare_moment_isolation_s is now
+        # a RARE MOMENT and the quality floor is waived for it -- a deliberate
+        # v3 rule, tested in test_selection_criteria_v3. This test pins the
+        # SCARCITY semantics, so its junk photo must not be rare as well.
         pool = [
             cand(f"good{i}", value=0.9, person_ids=(PERSON["ava"],), captured_utc=at(1, i))
             for i in range(6)
         ] + [
             cand("gran_only", value=0.12, person_ids=(PERSON["gran"],), captured_utc=at(2)),
-            cand("junk", value=0.12, captured_utc=at(3)),
+            cand("junk", value=0.12, captured_utc=at(2, 12.25)),
         ]
         result = select(pool, 5)
 
@@ -461,9 +466,13 @@ class TestScarcitySurvivesQualityFirstCut(unittest.TestCase):
 
     def test_scarcity_rescues_one_photo_not_a_run_of_them(self):
         """A bad run of photos of a scarce person must not fill the book."""
+        # v3: the run is minutes apart, not hours. Hour-apart singletons are
+        # temporally isolated and the rare-moment waiver (a v3 rule with its
+        # own tests) would keep every one of them; this test pins the
+        # one-photo-per-scarce-person rule, which needs a run that is a run.
         pool = [
             cand(f"gran{i}", value=0.10 + i / 1000, person_ids=(PERSON["gran"],),
-                 captured_utc=at(1, i))
+                 captured_utc=at(1, 12 + i / 60))
             for i in range(8)
         ] + [
             cand(f"good{i}", value=0.9, person_ids=(PERSON["ava"],), captured_utc=at(2, i))
@@ -1113,24 +1122,45 @@ class TestObjectiveTermsAllCarryWeight(unittest.TestCase):
             len(places), 3, f"only {len(places)} distinct places: {sorted(places)}"
         )
 
-    def test_scene_coverage_decides_when_nothing_else_does(self):
-        """CATCHES: the scene term deleted, or its weight zeroed. Same
-        construction as the place test, one axis over."""
-        moment = at(1, 9)
-        pool = [
-            cand(f"aa{i}", value=0.9, captured_utc=moment, place_key="one",
-                 scene_type="portrait")
-            for i in range(6)
-        ] + [
-            cand(f"z{s}", value=0.9, captured_utc=moment, place_key="one", scene_type=s)
-            for s in ("food", "indoor", "night")
+    def test_moment_coverage_decides_when_nothing_else_does(self):
+        """CATCHES: the moment/novelty term deleted, or its weight zeroed.
+
+        v3 JUSTIFICATION: this used to be the scene test -- scene_type fed the
+        novelty axis. Real libraries carry scene_type=None uniformly, so that
+        term was inert in production; v3 keys the axis on MOMENTS (loose
+        embedding groups within moment_window_s) instead, and this test moved
+        with it. Same construction as the place test, one axis over.
+
+        The pool is a deliberately homogeneous library: every pair of photos
+        measures the SAME similarity (0.85 -- one baby, one home), so the
+        calibrated redundancy free zone rises to exactly that baseline and the
+        redundancy penalty cancels. Six frames within one hour form one
+        moment; three more, identical in every measured way but taken on
+        later days (outside moment_window_s), are three fresh moments.
+        `time_bins=1` levels the temporal term. Only the moment term can
+        prefer breadth -- without it the album is four frames of one moment.
+        """
+        def member(tag: str, index: int, day: int, hour: float):
+            # sqrt(0.85) on a shared axis + sqrt(0.15) on a private one:
+            # every pairwise cosine is exactly 0.85.
+            embedding = [0.0] * 10
+            embedding[9] = 0.85 ** 0.5
+            embedding[index] = 0.15 ** 0.5
+            return cand(
+                tag, value=0.9, captured_utc=at(day, hour), place_key="one",
+                embedding=tuple(embedding), embedding_space="moment_space",
+            )
+
+        pool = [member(f"aa{i}", i, 1, 9 + i / 6) for i in range(6)] + [
+            member(f"z{k}", 6 + k, 2 + k, 9) for k in range(3)
         ]
-        scene_of = {c.media_id: c.scene_type for c in pool}
-        result = select(pool, 4)
-        scenes = {scene_of[m] for m in result.selected}
-        self.assertGreaterEqual(
-            len(scenes), 3, f"only {len(scenes)} distinct scenes: {sorted(scenes)}"
+        result = select(pool, 4, policy=SelectionPolicy(time_bins=1))
+        chosen = set(result.selected)
+        self.assertEqual(
+            1, len(chosen & {mid(f"aa{i}") for i in range(6)}),
+            "one frame of the covered moment, then breadth",
         )
+        self.assertTrue({mid(f"z{k}") for k in range(3)} <= chosen)
 
     def test_person_saturation_eventually_lets_scenery_in(self):
         """CATCHES: `weight_person` zeroed, i.e. the people term in the FILL
@@ -1238,10 +1268,14 @@ class TestObjectiveTermsAllCarryWeight(unittest.TestCase):
         tiebreak that still picked the alphabetically-first id would otherwise be
         indistinguishable from a correct one.
         """
+        # v3: the three Gran photos sit minutes apart, not on separate days --
+        # day-apart singletons are rare moments (waiver tested in
+        # test_selection_criteria_v3) and all three would survive, which is
+        # not the tiebreak this test exists to pin.
         pool = [
-            cand("gran_a", value=0.10, person_ids=(PERSON["gran"],), captured_utc=at(1)),
-            cand("gran_b", value=0.20, person_ids=(PERSON["gran"],), captured_utc=at(2)),
-            cand("gran_c", value=0.30, person_ids=(PERSON["gran"],), captured_utc=at(3)),
+            cand("gran_a", value=0.10, person_ids=(PERSON["gran"],), captured_utc=at(1, 12.0)),
+            cand("gran_b", value=0.20, person_ids=(PERSON["gran"],), captured_utc=at(1, 12.25)),
+            cand("gran_c", value=0.30, person_ids=(PERSON["gran"],), captured_utc=at(1, 12.5)),
         ] + [
             cand(f"ava{i}", value=0.9, person_ids=(PERSON["ava"],), captured_utc=at(4, i))
             for i in range(4)

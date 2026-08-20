@@ -66,7 +66,13 @@ PLANNER = "album-planner"
 #: 0.3.1: full-bleed requests step down to the bokeh hero, not a white inset.
 #: 0.4.0: hard pair-distinctness cap (max_selected_similarity) and the shot
 #: window widened to a full session -- no two near-identical frames in a book.
-PLANNER_VERSION = "0.4.1"
+#: 0.5.0: selection criteria v3 inputs -- per-face aggregates (eyes/smile
+#: min/p10/mean, worst-face exposure), shot category from the significant-face
+#: count, and the stored clipped fraction, all populated on every candidate.
+#: 0.5.1: pacing keeps two frames of the same shot off one page -- a forced
+#: repeat beside its twin reads as a mistake; pages apart it reads as a
+#: reprise.
+PLANNER_VERSION = "0.5.1"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
@@ -134,6 +140,7 @@ class SelectionPlan:
     candidates: list[Any]
     selection: Any
     wanted: int
+    policy: Any
 
 
 def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | StageResult:
@@ -210,6 +217,7 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
         embedding = (
             ctx.database.vectors.get("media", media_id, space) if space else None
         )
+        per_face = _per_face_aggregates(ctx, media_id)
         candidates.append(
             candidate_from_media_record(
                 record,
@@ -219,6 +227,9 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
                 head_sharpness=_min_head_sharpness(ctx, media_id),
                 face_cut=_has_cut_face(ctx, media_id),
                 expression=_expression_scores(expression_head, embedding),
+                per_face=per_face,
+                category=_face_category(per_face.significant_count),
+                clipped_fraction=_clipped_fraction(record),
             )
         )
     if not candidates:
@@ -253,6 +264,7 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
         candidates=candidates,
         selection=selection,
         wanted=wanted,
+        policy=policy,
     )
 
 
@@ -385,7 +397,9 @@ def run(ctx: StageContext) -> StageResult:
     if per_page == 1:
         # The default: editorial pacing. An explicit --photos-per-page keeps
         # the plain chunking below -- the user asked for a specific density.
-        requests = _page_requests(photos, by_id, planned.scores, profile)
+        requests = _page_requests(
+            photos, by_id, planned.scores, profile, group_of=selection.groups
+        )
     else:
         requests = [
             PageRequest(photos=tuple(photos[start : start + per_page]))
@@ -481,6 +495,33 @@ def run(ctx: StageContext) -> StageResult:
 
     _validate_spec(spec)
     write_json_atomically(output_path, spec)
+
+    # The swap-UX sidecar: every candidate's fate, with the shot-group
+    # alternatives and human-readable reasons the contract-bound report in the
+    # spec deliberately omits. Internal artifact keyed by the same digest as
+    # the AlbumSpec -- see memory_engine_pipeline/selection_report.py.
+    from ..selection_report import build_selection_report  # noqa: PLC0415
+
+    write_json_atomically(
+        ctx.workdir / "outputs" / "selection" / f"{inputs_digest}.json",
+        build_selection_report(
+            selection=selection,
+            candidates=candidates,
+            pages=pages,
+            policy=planned.policy,
+            dpi_floor=float(profile.get("dpi_floor") or 300.0),
+            planner=PLANNER,
+            planner_version=PLANNER_VERSION,
+            inputs_digest=inputs_digest,
+            pixel_sizes={
+                media_id: (int(size["width"]), int(size["height"]))
+                for media_id, record in by_id.items()
+                if (size := (record.get("image") or {}).get("oriented_size"))
+                and size.get("width")
+                and size.get("height")
+            },
+        ),
+    )
     ctx.jobs.complete(
         job,
         outputs=[
@@ -688,7 +729,7 @@ _FULL_BLEED_ASPECT_TOLERANCE = 0.20
 
 def _page_requests(
     photos: list[Any], by_id: Mapping[str, Any], scores: Mapping[str, Any],
-    profile: Mapping[str, Any],
+    profile: Mapping[str, Any], group_of: Mapping[str, str] | None = None,
 ) -> "list[Any]":
     """Editorial pacing: heroes breathe alone, a day's other frames share.
 
@@ -699,6 +740,12 @@ def _page_requests(
     single photo is simply a solo page. Chronology is preserved across days
     and within a day's shared pages; only the day's opener jumps its queue,
     the way a chapter title does.
+
+    `group_of` (media_id -> shot-group id, from `Selection.groups`) keeps two
+    frames of the SAME shot off one page. When a 25-photo book comes from a
+    16-pose studio session, repeats are forced -- but a repeated pose beside
+    its twin reads as a mistake, while the same pose pages apart reads as a
+    reprise. Twins that cannot find another partner go solo instead.
     """
     from memory_engine_album.layout import (  # noqa: PLC0415
         BLUR_HERO,
@@ -764,13 +811,28 @@ def _page_requests(
         template = "fit_grid_2x1" if portrait(first) else "fit_grid_1x2"
         requests.append(PageRequest(photos=(first, second), template=template))
 
+    def same_shot(first: Any, second: Any) -> bool:
+        if group_of is None:
+            return False
+        a = group_of.get(first.media_id)
+        b = group_of.get(second.media_id)
+        return a is not None and a == b
+
+    def take_partner(held: list[Any], photo: Any) -> Any | None:
+        # The earliest held frame that is not the same shot -- chronology
+        # decides among the eligible, the shot rule decides eligibility.
+        for index, candidate in enumerate(held):
+            if not same_shot(candidate, photo):
+                return held.pop(index)
+        return None
+
     for group in groups:
         if len(group) == 1:
             solo(group[0])
             continue
         if len(group) == 2:
             first, second = group
-            if portrait(first) == portrait(second):
+            if portrait(first) == portrait(second) and not same_shot(first, second):
                 duo(first, second)
             else:
                 solo(first)
@@ -778,17 +840,24 @@ def _page_requests(
             continue
         best = max(group, key=lambda p: (value(p), p.media_id))
         solo(best)
-        pending: dict[bool, Any] = {}
+        pending: dict[bool, list[Any]] = {False: [], True: []}
         for photo in group:
             if photo is best:
                 continue
-            held = pending.pop(portrait(photo), None)
-            if held is None:
-                pending[portrait(photo)] = photo
+            partner = take_partner(pending[portrait(photo)], photo)
+            if partner is None:
+                pending[portrait(photo)].append(photo)
             else:
-                duo(held, photo)
-        for orientation in sorted(pending):
-            solo(pending[orientation])
+                duo(partner, photo)
+        for orientation in (False, True):
+            held = pending[orientation]
+            while held:
+                first = held.pop(0)
+                partner = take_partner(held, first)
+                if partner is None:
+                    solo(first)
+                else:
+                    duo(first, partner)
 
     # A vendor minimum met with blank pages is not a book, it is a pamphlet
     # with packing material. When pairing compresses below the minimum,
@@ -832,6 +901,143 @@ def _min_head_sharpness(ctx: StageContext, media_id: str) -> float | None:
         >= _FACE_SHARPNESS_MIN_AREA
     ]
     return min(values) if values else None
+
+
+def _face_category(significant_count: int) -> str:
+    """Shot category from the significant-face count, nothing cleverer.
+
+    0 -> detail, 1 -> portrait, 2 -> couple, >=3 -> group. "Significant" is
+    the same `_FACE_SHARPNESS_MIN_AREA` floor every other face gate here uses:
+    a background stranger does not turn a landscape into a portrait.
+    """
+    if significant_count <= 0:
+        return "detail"
+    if significant_count == 1:
+        return "portrait"
+    if significant_count == 2:
+        return "couple"
+    return "group"
+
+
+def _p10(values: list[float]) -> float:
+    """10th percentile, linear interpolation between order statistics.
+
+    The same convention as numpy.percentile's default, which is how develop.py
+    already measures its luma percentiles -- spelled out here because the
+    inputs are a handful of Python floats, not an array. With the few faces a
+    photo holds, position 0.10 * (n - 1) sits at or just above the minimum,
+    which is the point: one closed eye among four faces should still read as
+    nearly the worst face, not average away.
+    """
+    ordered = sorted(values)
+    position = 0.10 * (len(ordered) - 1)
+    lower = int(position)
+    fraction = position - lower
+    if fraction == 0.0 or lower + 1 >= len(ordered):
+        return ordered[lower]
+    return ordered[lower] + fraction * (ordered[lower + 1] - ordered[lower])
+
+
+def _per_face_aggregates(ctx: StageContext, media_id: str) -> Any:
+    """Selection's per-face signals aggregated over the significant faces.
+
+    Returns a `PerFaceAggregates`, always: the detection-derived fields
+    (count, largest area) come from face rows every analysed photo has, and a
+    photo with no significant faces is the well-formed zero value, which is
+    what `_face_category` classifies as "detail".
+
+    The expression fields come from FaceAttributes.eyes_open/.smile, which
+    pre-backfill libraries have not written. An aggregate over an attribute no
+    significant face carries is None -- so on such a library every new field
+    selection can score by is None and the plan behaves exactly as it did
+    before this planner version.
+    """
+    from memory_engine_album.selection import PerFaceAggregates  # noqa: PLC0415
+
+    significant = [
+        face
+        for face in ctx.database.faces_for_media(media_id)
+        if (face["detection"].get("face_area_ratio") or 0.0) >= _FACE_SHARPNESS_MIN_AREA
+    ]
+    if not significant:
+        return PerFaceAggregates()
+
+    def measured(name: str) -> list[float]:
+        return [
+            float(value)
+            for face in significant
+            if (value := (face.get("attributes") or {}).get(name)) is not None
+        ]
+
+    eyes = measured("eyes_open")
+    smiles = measured("smile")
+    exposure_min, exposure_clipped_max = _face_exposure_extremes(
+        ctx, media_id, significant
+    )
+    return PerFaceAggregates(
+        significant_count=len(significant),
+        largest_area=max(
+            float(face["detection"]["face_area_ratio"]) for face in significant
+        ),
+        eyes_min=min(eyes) if eyes else None,
+        eyes_p10=_p10(eyes) if eyes else None,
+        eyes_mean=sum(eyes) / len(eyes) if eyes else None,
+        smile_min=min(smiles) if smiles else None,
+        smile_mean=sum(smiles) / len(smiles) if smiles else None,
+        exposure_min=exposure_min,
+        exposure_clipped_max=exposure_clipped_max,
+    )
+
+
+def _face_exposure_extremes(
+    ctx: StageContext, media_id: str, significant: list[dict[str, Any]]
+) -> tuple[float | None, float | None]:
+    """(worst mean luma, worst clipped fraction) over significant faces.
+
+    Measured on the thumbnail proxy at plan time via
+    `classical.measure_face_exposure(path, bbox) -> (mean_luma, clipped)`.
+    The clipped side is what the selection clipping gate reads -- the
+    whole-frame figure is useless there, a studio backdrop clips by intent.
+    ANY failure -- no proxy, an unreadable file, the measurement raising --
+    yields (None, None) for the whole photo rather than extremes over the
+    faces that happened to measure: a partial min can exclude exactly the
+    backlit face this signal exists to catch, and a bonus signal must never
+    fail a plan.
+    """
+    if not significant:
+        return (None, None)
+    proxies = ctx.database.proxies_for_media(media_id, kind="thumbnail_512")
+    path = proxies[0].get("path") if proxies else None
+    if not path:
+        return (None, None)
+    try:
+        from ..classical import measure_face_exposure  # noqa: PLC0415
+
+        values = [
+            measure_face_exposure(path, face["detection"]["bbox"])
+            for face in significant
+        ]
+    except Exception:  # noqa: BLE001 -- bonus signal, never a crashed plan
+        return (None, None)
+    if not values:
+        return (None, None)
+    return (
+        min(float(luma) for luma, _ in values),
+        max(float(clipped) for _, clipped in values),
+    )
+
+
+def _clipped_fraction(record: Mapping[str, Any]) -> float | None:
+    """The stored combined highlight+shadow clipped fraction, or None.
+
+    `quality.exposure.raw_value` is where the classical step keeps the raw
+    clipped fraction behind the normalised exposure score. Carried as data
+    only: the first studio library proved a whole-frame clipping gate wrong
+    (a white seamless backdrop clips half the frame by intent), so the gate
+    reads the per-face clipped fraction instead.
+    """
+    value = ((record.get("quality") or {}).get("exposure") or {}).get("raw_value")
+    return float(value) if value is not None else None
 
 
 #: A landmark closer to the frame edge than this is off or straddling it --

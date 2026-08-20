@@ -604,11 +604,15 @@ class EditorialPacing(unittest.TestCase):
     def _photo(self, tag, w=3000, h=4000):
         return self._Photo((tag.encode().hex() + "0" * 64)[:64], w, h)
 
-    def _requests(self, day_specs):
-        """day_specs: list of (day, [(tag, w, h, score)...])."""
+    def _requests(self, day_specs, shots=None):
+        """day_specs: list of (day, [(tag, w, h, score)...]).
+
+        `shots` maps tag -> shot-group key; tags sharing a key are frames of
+        the same shot and must never share a page.
+        """
         from memory_engine_pipeline.stages.album import _page_requests
 
-        photos, by_id, scores = [], {}, {}
+        photos, by_id, scores, group_of = [], {}, {}, {}
         for day, entries in day_specs:
             for tag, w, h, value in entries:
                 photo = self._photo(tag, w, h)
@@ -617,7 +621,14 @@ class EditorialPacing(unittest.TestCase):
                     "capture": {"captured_at": {"utc": f"{day}T10:00:00+05:30"}}
                 }
                 scores[photo.media_id] = self._Score(value)
-        return _page_requests(photos, by_id, scores, self.PROFILE), photos
+                if shots and tag in shots:
+                    group_of[photo.media_id] = shots[tag]
+        return (
+            _page_requests(
+                photos, by_id, scores, self.PROFILE, group_of=group_of or None
+            ),
+            photos,
+        )
 
     def test_a_single_photo_day_is_a_solo_page(self):
         requests, _ = self._requests([("2026-03-01", [("a", 3000, 4000, 0.8)])])
@@ -694,6 +705,199 @@ class EditorialPacing(unittest.TestCase):
         ])
         flattened = [p.media_id for r in requests for p in r.photos]
         self.assertEqual([p.media_id for p in photos], flattened)
+
+    def test_two_frames_of_one_shot_never_share_a_page(self):
+        # A 25-from-16-poses book forces repeats; beside its twin a repeat
+        # reads as a mistake, pages apart it reads as a reprise. b1/b2 are the
+        # same shot -- each must pair with a different-shot frame instead.
+        requests, photos = self._requests(
+            [("2026-03-01", [
+                ("best", 3000, 4000, 0.9),
+                ("b1", 3000, 4000, 0.8), ("b2", 3000, 4000, 0.79),
+                ("c1", 3000, 4000, 0.7), ("d1", 3000, 4000, 0.6),
+            ])],
+            shots={"b1": "shot-b", "b2": "shot-b"},
+        )
+        ids = {photo.media_id: tag for tag, photo in zip(
+            ["best", "b1", "b2", "c1", "d1"], photos)}
+        for request in requests:
+            if len(request.photos) == 2:
+                tags = {ids[p.media_id] for p in request.photos}
+                self.assertNotEqual({"b1", "b2"}, tags,
+                                    "twins of one shot shared a page")
+        flattened = [p.media_id for r in requests for p in r.photos]
+        self.assertEqual(sorted(ids), sorted(flattened), "no photo lost")
+
+    def test_twins_with_no_other_partner_go_solo_not_together(self):
+        requests, photos = self._requests(
+            [("2026-03-01", [
+                ("best", 3000, 4000, 0.9),
+                ("t1", 3000, 4000, 0.8), ("t2", 3000, 4000, 0.7),
+            ])],
+            shots={"t1": "shot-t", "t2": "shot-t"},
+        )
+        self.assertTrue(all(len(r.photos) == 1 for r in requests),
+                        "twin frames must fall back to solo pages")
+
+    def test_a_two_photo_day_of_twins_splits_to_solos(self):
+        requests, _ = self._requests(
+            [("2026-03-01", [
+                ("t1", 3000, 4000, 0.8), ("t2", 3000, 4000, 0.7),
+            ])],
+            shots={"t1": "shot-t", "t2": "shot-t"},
+        )
+        self.assertEqual([1, 1], [len(r.photos) for r in requests])
+
+
+class AlbumPlanning(unittest.TestCase):
+    """Selection v3 candidate enrichment: per-face aggregates, shot category,
+    clipped fraction. Wrong values here do not raise -- they rank a book
+    plausibly and badly -- so each mapping is pinned."""
+
+    class _Db:
+        def __init__(self, faces, proxies=()):
+            self._faces, self._proxies = list(faces), list(proxies)
+
+        def faces_for_media(self, media_id, *, eligible_only=False):
+            return list(self._faces)
+
+        def proxies_for_media(self, media_id, kind=None):
+            return list(self._proxies)
+
+    class _Ctx:
+        def __init__(self, db):
+            self.database = db
+
+    @staticmethod
+    def _face(area, eyes=None, smile=None, bbox=None):
+        attributes = {}
+        if eyes is not None:
+            attributes["eyes_open"] = eyes
+        if smile is not None:
+            attributes["smile"] = smile
+        return {
+            "detection": {
+                "face_area_ratio": area,
+                "bbox": bbox or {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2},
+            },
+            "attributes": attributes or None,
+        }
+
+    def _aggregates(self, faces, proxies=()):
+        from memory_engine_pipeline.stages.album import _per_face_aggregates
+
+        return _per_face_aggregates(self._Ctx(self._Db(faces, proxies)), "ab" * 32)
+
+    def test_category_classification(self):
+        from memory_engine_pipeline.stages.album import _face_category
+
+        self.assertEqual("detail", _face_category(0))
+        self.assertEqual("portrait", _face_category(1))
+        self.assertEqual("couple", _face_category(2))
+        self.assertEqual("group", _face_category(3))
+        self.assertEqual("group", _face_category(7))
+
+    def test_aggregates_over_significant_faces_only(self):
+        # The 0.01-area face is background: it must move NO aggregate, even
+        # though it carries the worst eyes value in the photo.
+        aggregates = self._aggregates([
+            self._face(0.05, eyes=0.9, smile=0.2),
+            self._face(0.10, eyes=0.6, smile=0.8),
+            self._face(0.01, eyes=0.1, smile=0.1),
+        ])
+        self.assertEqual(2, aggregates.significant_count)
+        self.assertAlmostEqual(0.10, aggregates.largest_area)
+        self.assertAlmostEqual(0.6, aggregates.eyes_min)
+        self.assertAlmostEqual(0.75, aggregates.eyes_mean)
+        self.assertAlmostEqual(0.2, aggregates.smile_min)
+        self.assertAlmostEqual(0.5, aggregates.smile_mean)
+        # exposure_min: no thumbnail proxy in this fixture -> None.
+        self.assertIsNone(aggregates.exposure_min)
+
+    def test_p10_interpolates_linearly_and_hugs_the_minimum(self):
+        from memory_engine_pipeline.stages.album import _p10
+
+        # numpy.percentile default convention: position 0.10 * (n - 1).
+        self.assertAlmostEqual(0.32, _p10([0.9, 0.2, 0.8]))  # 0.2 + 0.2*(0.8-0.2)
+        self.assertAlmostEqual(0.5, _p10([0.5]))  # n=1: p10 == min
+        self.assertAlmostEqual(0.21, _p10([0.2, 0.3]))  # 0.2 + 0.1*(0.3-0.2)
+
+    def test_missing_attributes_on_some_faces_are_ignored_not_zero(self):
+        aggregates = self._aggregates([
+            self._face(0.05, eyes=0.9),  # no smile measured
+            self._face(0.10, smile=0.7),  # no eyes measured
+        ])
+        self.assertAlmostEqual(0.9, aggregates.eyes_min)
+        self.assertAlmostEqual(0.7, aggregates.smile_min)
+        self.assertAlmostEqual(0.7, aggregates.smile_mean)
+
+    def test_pre_backfill_library_yields_none_for_every_attribute_aggregate(self):
+        # Faces detected under an older run carry no eyes_open/smile at all.
+        # Every attribute aggregate must be None so selection's new terms stay
+        # neutral and the plan behaves exactly as planner 0.4.x did.
+        aggregates = self._aggregates([self._face(0.05), self._face(0.10)])
+        self.assertEqual(2, aggregates.significant_count)
+        self.assertAlmostEqual(0.10, aggregates.largest_area)
+        for name in ("eyes_min", "eyes_p10", "eyes_mean", "smile_min",
+                     "smile_mean", "exposure_min"):
+            self.assertIsNone(getattr(aggregates, name), name)
+
+    def test_no_faces_is_the_zero_aggregate_and_the_detail_category(self):
+        from memory_engine_pipeline.stages.album import _face_category
+
+        aggregates = self._aggregates([])
+        self.assertEqual(0, aggregates.significant_count)
+        self.assertIsNone(aggregates.largest_area)
+        self.assertIsNone(aggregates.eyes_min)
+        self.assertEqual("detail", _face_category(aggregates.significant_count))
+
+    def test_clipped_fraction_reads_quality_exposure_raw_value(self):
+        from memory_engine_pipeline.stages.album import _clipped_fraction
+
+        record = {"quality": {"exposure": {"value": 0.8, "raw_value": 0.03}}}
+        self.assertAlmostEqual(0.03, _clipped_fraction(record))
+        self.assertIsNone(_clipped_fraction({}))
+        self.assertIsNone(_clipped_fraction({"quality": None}))
+        self.assertIsNone(_clipped_fraction({"quality": {"exposure": {"value": 0.8}}}))
+
+    # `classical.measure_face_exposure(path, bbox) -> (mean_luma, clipped)` is
+    # W4's frozen signature; it may not have landed yet, so these tests stub it
+    # onto the module (create=True) rather than calling the real measurement.
+
+    def test_exposure_min_is_the_worst_measured_face(self):
+        from unittest import mock
+
+        from memory_engine_pipeline import classical as classical_module
+
+        def fake(path, bbox):
+            return ({0.1: 0.62, 0.5: 0.18}[bbox["x"]], 0.0)
+
+        faces = [
+            self._face(0.05, bbox={"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}),
+            self._face(0.10, bbox={"x": 0.5, "y": 0.1, "w": 0.2, "h": 0.2}),
+        ]
+        with mock.patch.object(
+            classical_module, "measure_face_exposure", fake, create=True
+        ):
+            aggregates = self._aggregates(faces, proxies=[{"path": "/thumb.jpg"}])
+        self.assertAlmostEqual(0.18, aggregates.exposure_min)
+
+    def test_exposure_measurement_failure_is_none_not_a_crashed_plan(self):
+        from unittest import mock
+
+        from memory_engine_pipeline import classical as classical_module
+
+        def boom(path, bbox):
+            raise classical_module.ClassicalQualityError("proxy file is missing")
+
+        with mock.patch.object(
+            classical_module, "measure_face_exposure", boom, create=True
+        ):
+            aggregates = self._aggregates(
+                [self._face(0.05)], proxies=[{"path": "/thumb.jpg"}]
+            )
+        self.assertAlmostEqual(0.05, aggregates.largest_area)  # rest still measured
+        self.assertIsNone(aggregates.exposure_min)
 
 
 class RuntimeClient(unittest.TestCase):

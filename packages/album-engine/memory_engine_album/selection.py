@@ -14,8 +14,11 @@ for cameras. Each of those failures produces a plausible album that the person
 who lived the trip recognises as wrong.
 
 So selection optimises a marginal-gain objective over four coverage axes --
-time, place, scene, people -- on top of quality, and puts a hard floor under
-people before quality gets a vote at all.
+time, place, moment, people -- on top of quality, and puts a hard floor under
+people before quality gets a vote at all. (The moment axis replaced scene_type
+in v3: real libraries carry scene_type=None uniformly, so the scene term never
+discriminated anything, while the loose embedding grouping above shots is
+measured on every embedded photo.)
 
 WHY GREEDY MARGINAL GAIN (AND WHERE IT STOPS BEING SUBMODULAR)
 
@@ -110,10 +113,10 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import lru_cache
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from memory_engine_ranking.dedupe import cosine_distance
 from memory_engine_ranking.fusion import FusedScore, rank
@@ -224,6 +227,75 @@ class SelectionPolicy:
     # cap fire on photos that were never naps.
     sleeping_min_contrast: float = 0.04
 
+    # --- per-face expression (selection criteria v3) -----------------------
+    # Kill-switch for every per-face term at once: 0.0 restores the pure
+    # whole-frame behaviour, 1.0 is full trust in the face aggregates. A
+    # multiplier rather than a bool so a cautious rollout can run at 0.5.
+    per_face_weight: float = 1.0
+    # Gain on the WORST significant face's open-eyes percentile. Judging the
+    # worst face is the point: one blinker in a group must not hide behind a
+    # smiling majority, which is exactly what the whole-frame axes let happen.
+    weight_face_eyes: float = 0.30
+    # The worst face's smile, folded in beside the whole-frame smile term.
+    # Smaller than weight_face_eyes because a neutral face in a group is
+    # normal; a blinking one is a defect.
+    weight_face_smile: float = 0.15
+    # A blink penalty is SUPPRESSED when the photo ranks at or above this
+    # pool percentile on the embrace/kiss axis (and its raw contrast is
+    # positive): a kissing couple with closed eyes is the photo, not a
+    # defect. Percentile, never an absolute threshold -- embrace_context
+    # straddles zero across real libraries, so only the within-pool rank
+    # carries meaning.
+    embrace_suppress_percentile: float = 0.85
+
+    # --- moments (loose grouping above shots) ------------------------------
+    # At or above this similarity within `moment_window_s`, two photos belong
+    # to the same MOMENT -- the same cake, the same beach hour -- even when
+    # they are distinct shots. The novelty term rewards the first selection
+    # from a moment, so the album spreads across moments instead of spending
+    # three pages on the best-photographed one.
+    moment_similarity: float = 0.80
+    moment_window_s: float = 21600.0  # 6h: a morning is one moment, a day is not
+    # Within a shot group, frames whose largest significant face differs in
+    # area by more than this ratio are DIFFERENT STORY ROLES -- a wide
+    # establishing frame and a close portrait of the same instant. They are
+    # split into separate shot groups before domination and distinctness run,
+    # because a close-up must never be "a worse version" of a wide.
+    story_role_area_ratio: float = 2.0
+    # A singleton shot with no other candidate within this many seconds is a
+    # RARE MOMENT: the one photo of the goodbye at the airport. The soft
+    # quality floors are waived for it -- an irreplaceable moment beats a
+    # technical rule; it can take a smaller page, never a rejection.
+    rare_moment_isolation_s: float = 1800.0
+
+    # --- content gates (selection criteria v3) ------------------------------
+    # Absolute, unlike the ranked axes: calibrated on two real libraries where
+    # every genuine photograph scored <= -0.043, so 0.0 has a safe margin.
+    # NO waiver of any kind -- a receipt is never an album page, even when it
+    # is the only photo of a person.
+    screenshot_min_contrast: float = 0.0
+    # Combined highlight+shadow clipped fraction above which the photo is
+    # rejected. Clipping is the UNREPAIRABLE exposure failure -- the data is
+    # gone -- which is why it gates here while mild exposure and white-balance
+    # problems must NOT reject: auto-develop repairs those at render time.
+    # That repairability taxonomy is the whole design of these gates.
+    max_clipped_fraction: float = 0.15
+    # Mean luma floor for the worst-exposed significant face: the backlit
+    # silhouette detector. Below this, auto-develop cannot rescue the face --
+    # there is no face data to lift, only noise.
+    face_exposure_floor: float = 0.06
+
+    # --- user pins and swaps ------------------------------------------------
+    # Selected unconditionally, before the greedy, exempt from every gate and
+    # cap -- user choice is sovereign. They count against the target and are
+    # never displaced. An unknown pinned id raises: a pin that silently
+    # no-ops is a lost user decision.
+    pinned_media_ids: frozenset[str] = frozenset()
+    # Rejected up front, never selectable, no waivers. Re-generation after a
+    # swap passes the swap as pin (the incoming photo) + exclude (the
+    # outgoing one).
+    excluded_media_ids: frozenset[str] = frozenset()
+
     # --- people -----------------------------------------------------------
     min_per_person: int = 1
     # Cap as a fraction of the album. Suspended when the event contains one
@@ -244,6 +316,10 @@ class SelectionPolicy:
     weight_quality: float = 1.0
     weight_time: float = 0.85
     weight_place: float = 0.50
+    # Since v3 this weights the MOMENT novelty axis (first selection from a
+    # moment; see moment_similarity above), which replaced the inert
+    # scene_type axis. The name stays: it is the "different kinds of pages"
+    # weight, and renaming a stored policy row's key breaks every saved style.
     weight_scene: float = 0.35
     weight_person: float = 0.60
     weight_redundancy: float = 0.80
@@ -299,6 +375,8 @@ class SelectionPolicy:
             "face_sharpness_floor", "head_sharpness_floor",
             "max_sleeping_fraction", "sleeping_min_contrast",
             "max_selected_similarity", "clean_frame_group_margin",
+            "embrace_suppress_percentile", "moment_similarity",
+            "max_clipped_fraction", "face_exposure_floor",
         ):
             value = getattr(self, name)
             # NaN is the reason this is `not (0 <= v <= 1)` and not `v < 0 or
@@ -311,6 +389,7 @@ class SelectionPolicy:
             "weight_quality", "weight_time", "weight_place", "weight_scene",
             "weight_person", "weight_redundancy",
             "weight_smile", "weight_composed", "weight_aesthetic", "mid_blink_penalty",
+            "per_face_weight", "weight_face_eyes", "weight_face_smile",
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0.0:
@@ -321,11 +400,91 @@ class SelectionPolicy:
             raise SelectionError("policy.time_bins must be >= 0 and max_time_bins >= 1")
         if self.min_long_edge_px is not None and self.min_long_edge_px <= 0:
             raise SelectionError("policy.min_long_edge_px must be positive when set")
-        if not math.isfinite(self.burst_window_s) or self.burst_window_s < 0.0:
-            raise SelectionError("policy.burst_window_s must be finite and non-negative")
+        for name in ("burst_window_s", "moment_window_s", "rare_moment_isolation_s"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0.0:
+                raise SelectionError(f"policy.{name}={value!r} must be finite and non-negative")
+        # Finite but any sign: the calibrated boundary is a raw zero-shot
+        # contrast and legitimately sits at or below zero.
+        if not math.isfinite(self.screenshot_min_contrast):
+            raise SelectionError("policy.screenshot_min_contrast must be finite")
+        # > 1.0, not >= : a ratio of exactly 1 makes the log-band width zero
+        # and "any area difference is a different role", which is a division
+        # by zero wearing a policy knob's name.
+        if not math.isfinite(self.story_role_area_ratio) or self.story_role_area_ratio <= 1.0:
+            raise SelectionError("policy.story_role_area_ratio must be finite and > 1.0")
+        contradicted = self.pinned_media_ids & self.excluded_media_ids
+        if contradicted:
+            # Pin says "must appear", exclude says "never selectable". Both
+            # cannot hold, and picking one silently loses a user decision.
+            raise SelectionError(
+                f"media ids both pinned and excluded: {sorted(contradicted)}"
+            )
 
 
 DEFAULT_POLICY = SelectionPolicy()
+
+
+#: Category-conditioned weight overrides, applied per candidate at gain time.
+#: A portrait is judged on the face, a detail shot on the light, a group shot
+#: on its worst blinker -- one flat weighting cannot be right for all four.
+#: STARTER VALUES pending PrefEvent learning: adapted from the owner's taste
+#: notes (build plan section 16), not fitted; the preference model is what
+#: should eventually write this table per user. The policy object itself
+#: stays one object -- see `_weights_for`.
+CATEGORY_PRESETS: dict[str, dict[str, float]] = {
+    # Face and expression carry a portrait; a technically perfect frame with
+    # a vacant expression is not the picture.
+    "portrait": {"weight_face_eyes": 0.40, "weight_smile": 0.45},
+    # The composition IS the subject of a couple shot -- the space between
+    # two people is what the photo is about.
+    "couple": {"weight_composed": 0.35},
+    # A group photo is only as good as its worst face: judge the blinker
+    # harder and reward the frame where everyone made it.
+    "group": {"weight_face_eyes": 0.50, "mid_blink_penalty": 0.75},
+    # No faces to judge: light, composition and clutter are everything.
+    "detail": {"weight_aesthetic": 0.70, "weight_composed": 0.35},
+}
+
+
+def _weights_for(candidate: "SelectionCandidate", policy: "SelectionPolicy") -> "SelectionPolicy":
+    """The policy with this candidate's category preset applied, or the policy
+    itself when the category is unknown -- `None` means the default weights,
+    and an unrecognised category is treated the same rather than erroring,
+    because the classifier's vocabulary may grow ahead of this table."""
+    overrides = CATEGORY_PRESETS.get(candidate.category) if candidate.category else None
+    if not overrides:
+        return policy
+    return replace(policy, **overrides)
+
+
+@dataclass(frozen=True)
+class PerFaceAggregates:
+    """Per-face expression signals aggregated over a photo's significant faces.
+
+    Selection criteria v3: the whole-frame axes cannot see one blinking person
+    behind three smiling ones, so the caller aggregates per-face values (from
+    FaceAttributes, backfilled by the faces stage) and selection judges the
+    WORST face, not the average. Values are the [0, 1]-mapped contrasts stored
+    on the face records (0.5 + contrast x 5, clamped); ranking within the pool
+    is what carries meaning, exactly like the whole-frame axes. None = the
+    signal was not measured for any significant face.
+    """
+
+    significant_count: int = 0
+    largest_area: float | None = None
+    eyes_min: float | None = None
+    eyes_p10: float | None = None
+    eyes_mean: float | None = None
+    smile_min: float | None = None
+    smile_mean: float | None = None
+    # Mean luma of the worst-exposed significant face, [0, 1]. The backlit
+    # detector: a face can read black while the global histogram looks fine.
+    exposure_min: float | None = None
+    # Largest clipped fraction across the significant FACE crops. The clipping
+    # gate reads this, not the whole-frame figure: a studio backdrop clips by
+    # intent, a clipped face has genuinely lost its data.
+    exposure_clipped_max: float | None = None
 
 
 @dataclass(frozen=True)
@@ -389,6 +548,23 @@ class SelectionCandidate:
     clean_frame: float | None = None
     sleeping: float | None = None
     composed: float | None = None
+    # Hard-gate axis: screenshots, memes, documents, receipts. Unlike the
+    # ranked axes this one is thresholded absolutely -- calibrated on two real
+    # libraries where every genuine photograph scored <= -0.043.
+    screenshot_document: float | None = None
+    # Context where closed eyes are CORRECT (kiss, prayer, embrace): consumed
+    # as a within-pool rank, suppresses the blink penalty when high.
+    embrace_context: float | None = None
+    # Per-face aggregates over significant faces; None = not measured.
+    per_face: PerFaceAggregates | None = None
+    # Shot category from the caller's classifier: "portrait" | "couple" |
+    # "group" | "detail". None = unclassified, the default weights apply.
+    category: str | None = None
+    # Combined highlight+shadow clipped fraction of the WHOLE frame, from the
+    # stored exposure measurement. Data only, never gated on: a high-key
+    # studio backdrop clips half the frame by intent. The gate reads
+    # per_face.exposure_clipped_max instead.
+    clipped_fraction: float | None = None
     embedding: tuple[float, ...] | None = None
     # `ContentAnalysis.embedding.space` -- WHICH model produced the floats.
     # Carried because cosine similarity between two different spaces is a number
@@ -461,6 +637,20 @@ class Selection:
     missing_person_ids: tuple[str, ...]
     rescued_media_ids: tuple[str, ...]
     classes: tuple[MeasurementClass, ...]
+
+    # --- additive exposure (selection sidecar) -----------------------------
+    # media_id -> shot-group id, for every survivor that reached the greedy.
+    # One group = one photograph taken repeatedly; the sidecar report uses it
+    # to offer "swap this photo for another frame of its shot". Recomputed
+    # from the same pure functions the greedy calls -- exposure only, the
+    # selection itself is untouched.
+    groups: Mapping[str, str] = field(default_factory=dict)
+    # media_id -> the per-candidate numbers the greedy scored with: the
+    # within-class standing, the raw fused value, the pool percentile of each
+    # expression axis, and whether a group-mate dominates this frame. Nothing
+    # in selection reads this back; it exists so a report can explain a pick
+    # with the numbers that actually decided it.
+    diagnostics: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     @property
     def selected_count(self) -> int:
@@ -545,6 +735,9 @@ def candidate_from_media_record(
     head_sharpness: float | None = None,
     face_cut: bool = False,
     expression: Mapping[str, float] | None = None,
+    per_face: PerFaceAggregates | None = None,
+    category: str | None = None,
+    clipped_fraction: float | None = None,
 ) -> SelectionCandidate:
     """A contract MediaRecord + its FusedScore -> SelectionCandidate.
 
@@ -621,6 +814,11 @@ def candidate_from_media_record(
         clean_frame=_expression_axis(expression, "clean_frame"),
         sleeping=_expression_axis(expression, "sleeping"),
         composed=_expression_axis(expression, "composed"),
+        screenshot_document=_expression_axis(expression, "screenshot_document"),
+        embrace_context=_expression_axis(expression, "embrace_context"),
+        per_face=per_face,
+        category=category,
+        clipped_fraction=float(clipped_fraction) if clipped_fraction is not None else None,
         embedding=tuple(float(x) for x in embedding) if embedding is not None else None,
         embedding_space=embedding_space if embedding is not None else None,
     )
@@ -845,6 +1043,14 @@ def select(
         raise SelectionError("duplicate media_id in candidates; media_id is a primary key")
     _validate_candidates(ordered)
 
+    unknown_pins = policy.pinned_media_ids - {c.media_id for c in ordered}
+    if unknown_pins:
+        # A pin that silently no-ops is a lost user decision: the user chose
+        # this photo and the album quietly shipped without it.
+        raise SelectionError(
+            f"pinned media ids not among the candidates: {sorted(unknown_pins)}"
+        )
+
     candidate_count = len(ordered)
     rejections: list[Rejection] = []
 
@@ -893,6 +1099,30 @@ def select(
         _person_cap(survivors, target_count, policy),
     )
 
+    # Sidecar exposure: shot groups and per-candidate signals, recomputed from
+    # the same pure functions `_greedy` uses on the same survivors -- identical
+    # inputs, identical outputs, zero effect on what was selected above. The
+    # groups here are the FINAL ones, story-role splits included, because a
+    # "swap within this shot" offer built on the unsplit groups would offer a
+    # wide as an alternate take of a close-up.
+    shot_of = _final_shot_groups(survivors, policy)
+    dominated = _dominated_within_shot(survivors, shot_of, policy)
+    axis_percentiles = {
+        "smile_pct": _axis_percentiles(survivors, lambda c: c.smile),
+        "awake_pct": _axis_percentiles(survivors, lambda c: c.awake),
+        "aesthetic_pct": _axis_percentiles(survivors, lambda c: c.aesthetic),
+        "composed_pct": _axis_percentiles(survivors, lambda c: c.composed),
+    }
+    diagnostics = {
+        c.media_id: {
+            "standing": standing[c.media_id],
+            "quality": c.score.value,
+            "worse_version_in_group": dominated[c.media_id],
+            **{name: pcts[c.media_id] for name, pcts in axis_percentiles.items()},
+        }
+        for c in survivors
+    }
+
     return Selection(
         selected=chronological,
         by_standing=tuple(sorted(selected, key=lambda m: (-standing[m], m))),
@@ -904,6 +1134,8 @@ def select(
         missing_person_ids=missing,
         rescued_media_ids=rescued,
         classes=classes,
+        groups=shot_of,
+        diagnostics=diagnostics,
     )
 
 
@@ -1004,6 +1236,20 @@ def _apply_hard_gates(
     for candidate in candidates:
         forced_in = candidate.user_override is True
 
+        if candidate.media_id in policy.excluded_media_ids:
+            # Before everything, including forced_in: a swap-exclude is the
+            # user's LATEST decision about this photo and an earlier override
+            # must not resurrect it. (A pin+exclude contradiction was already
+            # refused by validate().)
+            rejections.append(
+                Rejection(candidate.media_id, "user_hidden", "excluded by user (swap)")
+            )
+            continue
+        if candidate.media_id in policy.pinned_media_ids:
+            # Sovereign: exempt from every gate below AND the quality floors.
+            # The user looked at this exact photo and said "this one".
+            survivors.append(candidate)
+            continue
         if candidate.user_hidden and not forced_in:
             rejections.append(Rejection(candidate.media_id, "user_hidden"))
             continue
@@ -1069,55 +1315,139 @@ def _apply_quality_floor(
     policy: SelectionPolicy,
     rejections: list[Rejection],
 ) -> tuple[list[SelectionCandidate], tuple[str, ...]]:
-    """The absolute floors, waived for irreplaceable subjects.
+    """The absolute floors, waived for irreplaceable subjects and moments.
 
-    Two floors, one waiver. `quality_floor` is the fused-score floor;
-    `face_sharpness_floor` rejects a photo whose measured FACE is out of focus
-    -- measured on the face region precisely because global sharpness flags
-    shallow-depth-of-field portraits, the best photos in a library. A photo
-    with no face-sharpness measurement passes this floor: absence of the
-    measure is not evidence of blur (the gate that turns absence into a block
-    is the safety gate's job, not a quality heuristic's).
+    THE REPAIRABILITY TAXONOMY: a gate belongs here only when the defect
+    cannot be fixed at render time. Clipping (the data is gone), a face too
+    dark to hold any face data, an out-of-focus face -- unrepairable, gated.
+    Mild exposure and white-balance problems must NOT reject: auto-develop
+    repairs them, and rejecting a repairable photo throws away a memory to
+    save a slider move. A photo with no measurement passes every floor here:
+    absence of the measure is not evidence of the defect.
 
-    A person with no photo passing both floors is 'scarce', and their single
-    best photo survives the cut however poor it is. Only one photo per scarce
-    person is rescued: the point is that grandmother appears, not that a bad
-    run of photos of grandmother fills the book.
+    Each gate carries a waiver class:
+      * `never`  -- the screenshot/document gate. A receipt is never an album
+        page, even when it is the only photo of a person.
+      * `scarce` -- waived only for a scarce person's single best photo
+        (the cut-face rule: grandmother appearing beats the crop rule).
+      * `soft`   -- waived for a scarce person AND for a rare moment.
+
+    A person with no photo passing the floors is 'scarce', and their single
+    best non-severe photo survives the cut however poor it is. Only one photo
+    per scarce person is rescued: the point is that grandmother appears, not
+    that a bad run of photos of grandmother fills the book.
+
+    A RARE MOMENT -- a singleton shot with no other candidate within
+    `rare_moment_isolation_s` -- gets the soft floors waived too: an
+    irreplaceable moment beats a technical rule; it can take a smaller page,
+    never a rejection. The severe gates still apply (a screenshot is not a
+    moment, and a cut face is a composition fault the moment does not excuse).
+
+    Pinned photos bypass everything: the user looked at the exact pixels.
     """
-    def failure(candidate: SelectionCandidate) -> str | None:
+    _NEVER, _SCARCE, _SOFT = "never", "scarce", "soft"
+
+    def failure(candidate: SelectionCandidate) -> tuple[str, str, str] | None:
+        """(reason, detail, waiver class), or None when every floor passes."""
+        if (
+            candidate.screenshot_document is not None
+            and candidate.screenshot_document > policy.screenshot_min_contrast
+        ):
+            return (
+                "excluded_content",
+                f"screenshot/document contrast {candidate.screenshot_document:.3f} > "
+                f"{policy.screenshot_min_contrast:.3f}: a receipt is never an album page",
+                _NEVER,
+            )
         if candidate.score.value < policy.quality_floor:
-            return f"{candidate.score.value:.3f} < {policy.quality_floor:.3f}"
+            return (
+                "below_quality_floor",
+                f"{candidate.score.value:.3f} < {policy.quality_floor:.3f}",
+                _SOFT,
+            )
         if (
             candidate.face_sharpness is not None
             and candidate.face_sharpness < policy.face_sharpness_floor
         ):
             return (
+                "below_quality_floor",
                 f"face sharpness {candidate.face_sharpness:.3f} < "
-                f"{policy.face_sharpness_floor:.3f}: the face is out of focus"
+                f"{policy.face_sharpness_floor:.3f}: the face is out of focus",
+                _SOFT,
             )
         if (
             candidate.head_sharpness is not None
             and candidate.head_sharpness < policy.head_sharpness_floor
         ):
             return (
+                "below_quality_floor",
                 f"head sharpness {candidate.head_sharpness:.3f} < "
                 f"{policy.head_sharpness_floor:.3f}: the subject was moving "
-                "(smeared hair or shoulders around a face)"
+                "(smeared hair or shoulders around a face)",
+                _SOFT,
             )
         if policy.reject_cut_faces and candidate.face_cut:
-            return "a significant face is cropped by the frame edge"
+            return (
+                "below_quality_floor",
+                "a significant face is cropped by the frame edge",
+                _SCARCE,
+            )
+        # Clipping gates on the FACE region, never the whole frame. The first
+        # real studio library proved why: a white seamless backdrop is >= 0.98
+        # luma BY INTENT, so 47% of a high-key maternity shoot exceeded any
+        # sane whole-frame floor while every subject was perfectly exposed.
+        # `clipped_fraction` (whole frame) stays on the candidate as data;
+        # only a clipped face is "the data is gone".
+        if (
+            candidate.per_face is not None
+            and candidate.per_face.exposure_clipped_max is not None
+            and candidate.per_face.exposure_clipped_max > policy.max_clipped_fraction
+        ):
+            return (
+                "below_quality_floor",
+                f"face clipped fraction {candidate.per_face.exposure_clipped_max:.3f} > "
+                f"{policy.max_clipped_fraction:.3f}: unrepairable -- the face data is gone",
+                _SOFT,
+            )
+        if (
+            candidate.per_face is not None
+            and candidate.per_face.exposure_min is not None
+            and candidate.per_face.exposure_min < policy.face_exposure_floor
+        ):
+            return (
+                "below_quality_floor",
+                f"worst face luma {candidate.per_face.exposure_min:.3f} < "
+                f"{policy.face_exposure_floor:.3f}: auto-develop cannot rescue "
+                "a face that dark",
+                _SOFT,
+            )
         return None
 
     verdicts = {c.media_id: failure(c) for c in survivors}
+    rare = _rare_moment_ids(survivors, policy)
+    pinned = policy.pinned_media_ids
+
+    def survives_outright(candidate: SelectionCandidate) -> bool:
+        verdict = verdicts[candidate.media_id]
+        if candidate.media_id in pinned or verdict is None:
+            return True
+        # The rare-moment waiver: soft floors only.
+        return verdict[2] == _SOFT and candidate.media_id in rare
+
     covered = {
         person
         for candidate in survivors
-        if verdicts[candidate.media_id] is None
+        if survives_outright(candidate)
         for person in candidate.person_ids
     }
 
     best_for_person: dict[str, tuple[float, str]] = {}
     for candidate in survivors:  # already media_id-sorted
+        verdict = verdicts[candidate.media_id]
+        # A severe failure is not a rescue candidate: printing a screenshot
+        # is not a tribute, however scarce the person on it.
+        if verdict is not None and verdict[2] == _NEVER:
+            continue
         for person in sorted(candidate.person_ids):
             if person in covered:
                 continue
@@ -1128,15 +1458,30 @@ def _apply_quality_floor(
             if current is None or challenger < (-current[0], current[1]):
                 best_for_person[person] = (candidate.score.value, candidate.media_id)
 
-    rescued = {media_id for _, media_id in best_for_person.values()}
+    scarce_rescued = {media_id for _, media_id in best_for_person.values()}
+    # A rare-moment photo lands in `rescued_media_ids` too -- it survived on
+    # a waiver, and the report must say so, distinctly (the reason string a
+    # sidecar derives differs because the photo carries no scarce person).
+    rare_rescued = {
+        c.media_id
+        for c in survivors
+        if c.media_id not in pinned
+        and verdicts[c.media_id] is not None
+        and verdicts[c.media_id][2] == _SOFT
+        and c.media_id in rare
+    }
+    rescued = scarce_rescued | rare_rescued
 
     kept: list[SelectionCandidate] = []
     for candidate in survivors:
-        reason = verdicts[candidate.media_id]
-        if reason is not None and candidate.media_id not in rescued:
-            rejections.append(
-                Rejection(candidate.media_id, "below_quality_floor", reason)
-            )
+        verdict = verdicts[candidate.media_id]
+        if (
+            verdict is not None
+            and candidate.media_id not in pinned
+            and candidate.media_id not in rescued
+        ):
+            reason, detail, _waiver = verdict
+            rejections.append(Rejection(candidate.media_id, reason, detail))
             continue
         kept.append(candidate)
 
@@ -1190,7 +1535,11 @@ def _rank_within_classes(
 
 
 def _shot_groups(
-    survivors: Sequence[SelectionCandidate], policy: SelectionPolicy
+    survivors: Sequence[SelectionCandidate],
+    policy: SelectionPolicy,
+    *,
+    similarity: float | None = None,
+    window_s: float | None = None,
 ) -> dict[str, str]:
     """media_id -> shot-group id. One group = one photograph taken repeatedly.
 
@@ -1206,7 +1555,14 @@ def _shot_groups(
     Deterministic: candidates are walked in (time, media_id) order and each is
     compared against a bounded window of predecessors, so the grouping does
     not depend on dict order or float summation order.
+
+    `similarity`/`window_s` override the shot thresholds so the SAME machinery
+    also builds the looser MOMENT tier (moment_similarity over
+    moment_window_s) -- one union-find, two zoom levels, rather than a second
+    grouping function that drifts from this one.
     """
+    similarity = policy.shot_similarity if similarity is None else similarity
+    window_s = policy.burst_window_s if window_s is None else window_s
     parent: dict[str, str] = {c.media_id: c.media_id for c in survivors}
 
     def find(x: str) -> str:
@@ -1234,13 +1590,113 @@ def _shot_groups(
     # and the union is transitive, so a longer chain still merges.
     for index, (seconds, media_id, candidate) in enumerate(timed):
         for prev_seconds, prev_id, prev in reversed(timed[max(0, index - 16):index]):
-            if seconds - prev_seconds > policy.burst_window_s:
+            if seconds - prev_seconds > window_s:
                 break
             if find(prev_id) == find(media_id):
                 continue
-            if _similarity(candidate.embedding, prev.embedding) >= policy.shot_similarity:
+            if _similarity(candidate.embedding, prev.embedding) >= similarity:
                 union(media_id, prev_id)
     return {media_id: find(media_id) for media_id in parent}
+
+
+def _split_story_roles(
+    survivors: Sequence[SelectionCandidate],
+    shot_of: Mapping[str, str],
+    policy: SelectionPolicy,
+) -> dict[str, str]:
+    """Split each shot group by STORY ROLE before domination and distinctness.
+
+    A wide establishing frame and a close portrait shot seconds apart can sit
+    at 0.95 embedding similarity -- the same scene -- yet they are different
+    pages: one sets the place, the other shows the person. Left in one group,
+    the close-up becomes "a worse version" of the wide (or vice versa) and
+    domination deletes a story role the layout needed. So frames whose largest
+    significant face differs in area by more than `story_role_area_ratio` are
+    split into separate groups.
+
+    Deterministic banding rather than pairwise ratios: each frame lands in a
+    log2(largest_area) band of width log2(ratio) measured DOWN from the
+    group's largest face, so the split is a pure function of the group's
+    members and never depends on comparison order. A frame with no
+    `largest_area` stays with the group-max band -- absence of the measure
+    must not split anything.
+    """
+    grouped: dict[str, list[SelectionCandidate]] = {}
+    for candidate in survivors:
+        grouped.setdefault(shot_of[candidate.media_id], []).append(candidate)
+
+    result = dict(shot_of)
+    band_width = math.log2(policy.story_role_area_ratio)  # validate(): ratio > 1
+    for group_id, members in grouped.items():
+        if len(members) < 2:
+            continue
+        areas = [
+            c.per_face.largest_area
+            for c in members
+            if c.per_face is not None
+            and c.per_face.largest_area is not None
+            and c.per_face.largest_area > 0.0
+        ]
+        if not areas:
+            continue
+        max_area = max(areas)
+        for candidate in members:
+            area = (
+                candidate.per_face.largest_area
+                if candidate.per_face is not None
+                else None
+            )
+            if area is None or area <= 0.0:
+                continue  # stays with the group max band
+            band = int(math.floor(math.log2(max_area / area) / band_width))
+            if band > 0:
+                result[candidate.media_id] = f"{group_id}#role{band}"
+    return result
+
+
+def _final_shot_groups(
+    survivors: Sequence[SelectionCandidate], policy: SelectionPolicy
+) -> dict[str, str]:
+    """The shot groups the greedy, domination and the sidecar all agree on:
+    burst grouping, then the story-role split. One function so the three can
+    never be computed from different groupings."""
+    return _split_story_roles(survivors, _shot_groups(survivors, policy), policy)
+
+
+def _rare_moment_ids(
+    candidates: Sequence[SelectionCandidate], policy: SelectionPolicy
+) -> set[str]:
+    """Candidates that are the only record of their moment.
+
+    A singleton shot group (nobody re-took this picture) with no other
+    candidate within `rare_moment_isolation_s` either side: the one photo of
+    the goodbye at the airport, the single frame from the hospital corridor.
+    Computed on the UNSPLIT shot groups -- a story-role split makes artificial
+    singletons whose group-mates are seconds away, and the isolation test
+    would then be done against the wrong question.
+
+    A photo with no capture time can never establish isolation, so it is
+    never rare: absence of evidence is not rarity.
+    """
+    shot_of = _shot_groups(candidates, policy)
+    group_sizes: dict[str, int] = {}
+    for group_id in shot_of.values():
+        group_sizes[group_id] = group_sizes.get(group_id, 0) + 1
+
+    timed = sorted(
+        (seconds, c.media_id)
+        for c in candidates
+        if (seconds := _epoch_seconds(c)) is not None
+    )
+    rare: set[str] = set()
+    for index, (seconds, media_id) in enumerate(timed):
+        if group_sizes[shot_of[media_id]] > 1:
+            continue
+        before = seconds - timed[index - 1][0] if index > 0 else math.inf
+        after = timed[index + 1][0] - seconds if index + 1 < len(timed) else math.inf
+        if min(before, after) > policy.rare_moment_isolation_s:
+            rare.add(media_id)
+    return rare
 
 
 def _calibrated_redundancy(
@@ -1306,13 +1762,21 @@ def _greedy(
         for media_id, seconds in times.items()
     }
     place_key = {c.media_id: c.place_key or _UNKNOWN for c in survivors}
-    # Scene composed with a crowd bucket (solo / duo / group / no-people):
-    # "different TYPES of photos" is part of what a varied album means, and on
-    # a library where scene_type is uniformly unknown the crowd bucket is the
-    # type signal that remains.
-    scene_key = {
+    # The novelty axis is the MOMENT (v3), no longer scene_type -- which was
+    # inert in practice: real libraries carry scene_type=None uniformly, so
+    # the term never discriminated anything. Moments -- the loose visual
+    # grouping above shots -- are measured on every embedded photo, and
+    # "first photo from a moment the album has not seen" is the actual claim
+    # a varied album makes. The crowd bucket (solo / duo / group / no-people)
+    # stays as the secondary axis: two crops of one moment that show
+    # different casts are different pages.
+    moment_of = _shot_groups(
+        survivors, policy,
+        similarity=policy.moment_similarity, window_s=policy.moment_window_s,
+    )
+    moment_key = {
         c.media_id:
-            f"{c.scene_type or _UNKNOWN}|faces:{min(len(c.person_ids), 3)}"
+            f"{moment_of[c.media_id]}|faces:{min(len(c.person_ids), 3)}"
         for c in survivors
     }
     # Sorted once here rather than inside `gain`, which runs O(n*k) times. The
@@ -1325,7 +1789,7 @@ def _greedy(
 
     time_counts: dict[str, int] = {}
     place_counts: dict[str, int] = {}
-    scene_counts: dict[str, int] = {}
+    moment_counts: dict[str, int] = {}
     person_counts: dict[str, int] = {}
 
     selected: list[str] = []
@@ -1346,11 +1810,19 @@ def _greedy(
     closest: dict[str, float] = {}
 
     cap = _person_cap(survivors, target_count, policy)
-    shot_of = _shot_groups(survivors, policy)
+    shot_of = _final_shot_groups(survivors, policy)
     shot_counts: dict[str, int] = {}
 
     worse_version = _dominated_within_shot(survivors, shot_of, policy)
     redundancy_free, redundancy_denom = _calibrated_redundancy(survivors, policy)
+
+    # Category presets change WEIGHTS per candidate, never the policy object:
+    # one policy in, one frozen variant per category, looked up at gain time.
+    preset_of: dict[str | None, SelectionPolicy] = {}
+    weights_of = {
+        c.media_id: preset_of.setdefault(c.category, _weights_for(c, policy))
+        for c in survivors
+    }
 
     # Expression axes as percentiles WITHIN this pool (the absolute zero-shot
     # values are uncalibrated; the ordering over one library is the signal).
@@ -1359,6 +1831,17 @@ def _greedy(
     awake_pct = _axis_percentiles(survivors, lambda c: c.awake)
     sleeping_pct = _axis_percentiles(survivors, lambda c: c.sleeping)
     composed_pct = _axis_percentiles(survivors, lambda c: c.composed)
+    # Per-face aggregates, same treatment: the stored values are [0,1]-mapped
+    # contrasts (0.5 + contrast x 5) whose absolute scale means nothing --
+    # the rank within the pool is the signal, exactly like the axes above.
+    per_face_on = policy.per_face_weight > 0.0  # the kill-switch
+    eyes_min_pct = _axis_percentiles(
+        survivors, lambda c: c.per_face.eyes_min if c.per_face is not None else None
+    )
+    smile_min_pct = _axis_percentiles(
+        survivors, lambda c: c.per_face.smile_min if c.per_face is not None else None
+    )
+    embrace_pct = _axis_percentiles(survivors, lambda c: c.embrace_context)
     # Eyes read shut. A sleeping shot is the cherished kind (capped below);
     # anything else with shut eyes -- a blink, a grimace -- is penalised hard.
     # Typed by comparing the two contrasts on the SAME image, not by pool
@@ -1378,19 +1861,41 @@ def _greedy(
         )
         for c in survivors
     }
-    is_mid_blink = {
-        c.media_id: (
-            not is_sleeping[c.media_id]
-            # Directional evidence of shut eyes AND bottom-quartile standing on
-            # the axis: in an all-open-eyes library somebody is always bottom
-            # quartile, and in a genuinely mixed one a small positive contrast
-            # is still open eyes. Both conditions, or no penalty.
-            and c.awake is not None
+    def _blinks(c: SelectionCandidate) -> bool:
+        if is_sleeping[c.media_id]:
+            return False
+        # Context suppression: closed eyes inside an embrace/kiss are CORRECT
+        # -- a kissing couple with closed eyes is the photo, not a defect.
+        # Rank-triggered (embrace_context straddles zero across libraries, so
+        # only the within-pool percentile means anything), with the raw
+        # contrast required positive so a library of NO embraces cannot
+        # promote its least-un-embracing photo into a blink amnesty.
+        if (
+            c.embrace_context is not None
+            and c.embrace_context > 0.0
+            and embrace_pct[c.media_id] >= policy.embrace_suppress_percentile
+        ):
+            return False
+        # The per-face eyes of the WORST significant face take precedence
+        # over the whole-frame awake axis when both exist: one blinker in a
+        # group must not hide behind a smiling majority, and the whole-frame
+        # contrast IS that majority. Evidence is negative when the stored
+        # [0,1] value sits under 0.5 (0.5 + contrast x 5), and the pool
+        # percentile must agree -- mirroring the whole-frame rule below.
+        per_face = c.per_face
+        if per_face_on and per_face is not None and per_face.eyes_min is not None:
+            return per_face.eyes_min < 0.5 and eyes_min_pct[c.media_id] < 0.25
+        # Directional evidence of shut eyes AND bottom-quartile standing on
+        # the axis: in an all-open-eyes library somebody is always bottom
+        # quartile, and in a genuinely mixed one a small positive contrast
+        # is still open eyes. Both conditions, or no penalty.
+        return (
+            c.awake is not None
             and c.awake < 0.0
             and awake_pct[c.media_id] < 0.25
         )
-        for c in survivors
-    }
+
+    is_mid_blink = {c.media_id: _blinks(c) for c in survivors}
     sleeping_cap = max(1, int(target_count * policy.max_sleeping_fraction))
     sleeping_count = 0
 
@@ -1404,7 +1909,7 @@ def _greedy(
         shot_counts[shot_of[media_id]] = shot_counts.get(shot_of[media_id], 0) + 1
         time_counts[time_key[media_id]] = time_counts.get(time_key[media_id], 0) + 1
         place_counts[place_key[media_id]] = place_counts.get(place_key[media_id], 0) + 1
-        scene_counts[scene_key[media_id]] = scene_counts.get(scene_key[media_id], 0) + 1
+        moment_counts[moment_key[media_id]] = moment_counts.get(moment_key[media_id], 0) + 1
         for person in candidate.person_ids or (_NO_PEOPLE,):
             person_counts[person] = person_counts.get(person, 0) + 1
         if candidate.embedding is not None:
@@ -1417,16 +1922,19 @@ def _greedy(
 
     def gain(media_id: str) -> float:
         candidate = by_id[media_id]
-        value = policy.weight_quality * standing[media_id]
-        value += policy.weight_time * _bucket_gain(time_counts.get(time_key[media_id], 0))
-        value += policy.weight_place * _bucket_gain(place_counts.get(place_key[media_id], 0))
-        value += policy.weight_scene * _bucket_gain(scene_counts.get(scene_key[media_id], 0))
+        # `w` carries the candidate's category preset; everything the presets
+        # do not touch reads the same numbers as the plain policy.
+        w = weights_of[media_id]
+        value = w.weight_quality * standing[media_id]
+        value += w.weight_time * _bucket_gain(time_counts.get(time_key[media_id], 0))
+        value += w.weight_place * _bucket_gain(place_counts.get(place_key[media_id], 0))
+        value += w.weight_scene * _bucket_gain(moment_counts.get(moment_key[media_id], 0))
 
         people = people_key[media_id]
         # Mean, not sum: a group shot of five already-covered people must not
         # out-earn a portrait of an uncovered one simply by containing more
         # faces. Coverage of NEW people is the floor phase's job.
-        value += policy.weight_person * (
+        value += w.weight_person * (
             sum(_bucket_gain(person_counts.get(p, 0)) for p in people) / len(people)
         )
 
@@ -1434,7 +1942,7 @@ def _greedy(
             # Linear from 0 at the calibrated free zone to the full weight at
             # the shot boundary. Clamped: beyond the shot boundary the hard
             # per-shot cap is the enforcement, not a larger number here.
-            value -= policy.weight_redundancy * min(
+            value -= w.weight_redundancy * min(
                 1.0,
                 max(0.0, closest.get(media_id, 0.0) - redundancy_free)
                 / redundancy_denom,
@@ -1443,12 +1951,31 @@ def _greedy(
         # Expression: a smile out-earns a cry, a composed frame out-earns a
         # mid-gesture candid, and eyes shut outside a sleeping shot costs more
         # than either bonus can pay.
-        value += policy.weight_smile * smile_pct[media_id]
-        value += policy.weight_composed * composed_pct[media_id]
-        value += policy.weight_aesthetic * aesthetic_pct[media_id]
+        value += w.weight_smile * smile_pct[media_id]
+        value += w.weight_composed * composed_pct[media_id]
+        value += w.weight_aesthetic * aesthetic_pct[media_id]
+        if per_face_on:
+            # The weighted-min people terms: the WORST face's eyes and smile.
+            # A frame where everyone made it out-earns one where somebody did
+            # not, however good the average looks. `per_face_weight` scales
+            # both, so 0.0 restores pure whole-frame behaviour exactly.
+            value += (
+                w.weight_face_eyes * eyes_min_pct[media_id] * policy.per_face_weight
+            )
+            value += (
+                w.weight_face_smile * smile_min_pct[media_id] * policy.per_face_weight
+            )
         if is_mid_blink[media_id]:
-            value -= policy.mid_blink_penalty
+            value -= w.mid_blink_penalty
         return _quantise(value)
+
+    # --- phase 0: pins ------------------------------------------------------
+    # User choice is sovereign: committed before any objective runs, exempt
+    # from every cap the phases below enforce, counted against the target,
+    # and never displaced. In media_id order so two hosts commit them the
+    # same way (commit order feeds the running similarity map).
+    for media_id in [m for m in remaining if m in policy.pinned_media_ids]:
+        commit(media_id)
 
     # --- phase 1: people floor -------------------------------------------
     # Greedy maximum coverage. Runs before quality has a vote because omitting
