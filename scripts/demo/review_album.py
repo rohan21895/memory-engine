@@ -100,6 +100,16 @@ def newest_pdf(workdir: Path) -> Path | None:
     return pdfs[-1] if pdfs else None
 
 
+def pdf_for(workdir: Path, album_id: str) -> Path | None:
+    """The rendered PDF for one album digest, or None if not rendered yet.
+    Variation-aware: the review screen offers the PDF that matches the active
+    spec, never merely the newest render."""
+    if not album_id:
+        return None
+    pdf = workdir / "outputs" / "pdf" / f"{album_id}.pdf"
+    return pdf if pdf.is_file() else None
+
+
 def thumbnail_paths(workdir: Path) -> dict[str, Path]:
     """media_id -> thumbnail path, from the library's proxy table."""
     import sqlite3  # noqa: PLC0415
@@ -137,9 +147,58 @@ def load_review_state(workdir: Path) -> bool:
         FLOW.workdir = workdir
         FLOW.sidecar = json.loads(sidecar.read_text(encoding="utf-8"))
         FLOW.thumbs = thumbnail_paths(workdir)
-        # A finished run already has a PDF on disk; point at the newest so the
-        # review screen can offer it without waiting for a fresh render.
-        FLOW.pdf = newest_pdf(workdir)
+        # A finished run already has a PDF on disk; offer the one that matches
+        # the active spec's digest (variation-aware), not merely the newest.
+        FLOW.pdf = pdf_for(workdir, FLOW.sidecar.get("album_id", ""))
+        FLOW.state = "review"
+    return True
+
+
+_STYLE_ORDER = {"gallery": 0, "cinematic": 1, "editorial": 2}
+
+
+def list_variations(workdir: Path) -> list[dict]:
+    """The album's design variations, one per style, newest sidecar wins.
+
+    Globs the `<digest>.style.json` sidecars the album stage writes; older
+    digests from previous planner runs are dropped, keeping the newest sidecar
+    per style. Ordered gallery, cinematic, editorial (unknown styles sort
+    alphabetically after)."""
+    by_style: dict[str, tuple[float, dict]] = {}
+    for path in (workdir / "outputs" / "album").glob("*.style.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        style = data.get("style")
+        if not style:
+            continue
+        mtime = path.stat().st_mtime
+        if style not in by_style or mtime > by_style[style][0]:
+            by_style[style] = (mtime, {
+                "album_id": data.get("album_id", ""),
+                "style": style,
+                "label": data.get("label") or style.title(),
+                "description": data.get("description") or "",
+                "pages": data.get("pages"),
+            })
+    return sorted(
+        (entry for _, entry in by_style.values()),
+        key=lambda v: (_STYLE_ORDER.get(v["style"], len(_STYLE_ORDER)), v["style"]),
+    )
+
+
+def activate_variation(workdir: Path, album_id: str) -> bool:
+    """Point the flow at one variation's spec WITHOUT re-rendering: load its
+    selection plan (paired with the album spec by the same digest) and the PDF
+    that matches its digest. True when that variation's plan exists on disk."""
+    sidecar = workdir / "outputs" / "selection" / f"{album_id}.json"
+    if not sidecar.is_file():
+        return False
+    with FLOW.lock:
+        FLOW.workdir = workdir
+        FLOW.sidecar = json.loads(sidecar.read_text(encoding="utf-8"))
+        FLOW.pdf = pdf_for(workdir, album_id)
         FLOW.state = "review"
     return True
 
@@ -343,6 +402,34 @@ def run_finalize_flow(review: dict, approved_flagged: bool = False) -> None:
     FLOW.say(f"Album ready: {pdf.name}")
 
 
+def run_generate_flow(source: Path | None, workdir: Path, style: str) -> None:
+    """Plan (only) one style variation, then return to review with it active.
+
+    Planning is cheap -- no render here. The album stage writes the style and
+    selection sidecars for the new digest; activation swaps the review onto it.
+    """
+    try:
+        FLOW.say(f"Planning the {style} variation ...")
+        code = _stream(
+            [PYTHON, "-m", "memory_engine_pipeline",
+             str(source or workdir), "--workdir", str(workdir),
+             "--stages", "album", "--album-style", style],
+            cwd=REPO_ROOT / "services" / "pipeline",
+        )
+        if code != 0:
+            FLOW.fail("Planning the variation failed -- see the log above.")
+            return
+        variation = next(
+            (v for v in list_variations(workdir) if v["style"] == style), None
+        )
+        if variation is None or not activate_variation(workdir, variation["album_id"]):
+            FLOW.fail("Planned the variation but could not load its plan.")
+            return
+        FLOW.say(f"{style.title()} variation ready for review.")
+    except Exception as error:  # a failed flow must say so, never hang
+        FLOW.fail(f"Unexpected error: {error}")
+
+
 # --------------------------------------------------------------------- page --
 _PAGE = """<!doctype html>
 <meta charset="utf-8">
@@ -361,6 +448,19 @@ _PAGE = """<!doctype html>
   .hactions a { font:13px 'SF Mono', Menlo, monospace; color:#c8a24a; text-decoration:none;
                 border-bottom:1px solid transparent; cursor:pointer; }
   .hactions a:hover { border-bottom-color:#c8a24a; }
+  .variations { flex-basis:100%; display:flex; align-items:baseline; gap:8px;
+                flex-wrap:wrap; padding-top:14px; }
+  .variations .vlabel { font:11px 'SF Mono', Menlo, monospace; color:#9a927f;
+                        letter-spacing:0.08em; margin-right:2px; }
+  .chip { font:12px 'SF Mono', Menlo, monospace; background:none; border:1px solid #3a372f;
+          color:#c6bfb0; padding:6px 12px; cursor:pointer; display:inline-flex; gap:7px;
+          align-items:baseline; }
+  .chip:hover { border-color:#c8a24a; color:#c8a24a; }
+  .chip.active { border-color:#c8a24a; color:#c8a24a; background:#221f18; cursor:default; }
+  .chip .cpages { font-size:10.5px; color:#9a927f; }
+  .chip:hover .cpages, .chip.active .cpages { color:#c8a24a; }
+  .chip.togen { color:#8f8873; border-style:dashed; }
+  .chip.togen .cpages { color:#8f8873; }
   main { padding:24px 32px 120px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:18px; }
   figure.card { background:#1c1a17; border:1px solid #2c2a25; padding:10px; cursor:pointer; }
@@ -469,6 +569,7 @@ _PAGE = """<!doctype html>
     <a id="viewpdf" class="hidden" href="/album.pdf" target="_blank">View current PDF</a>
     <a onclick="show('intake')">&#65291; New album</a>
   </div>
+  <div class="variations hidden" id="variations"></div>
 </header>
 <main><div class="grid" id="grid"></div></main>
 <div id="panel"><div class="inner">
@@ -602,7 +703,58 @@ function poll() {
 async function loadReview() {
   DATA = await (await fetch("/data")).json();
   document.getElementById("album").textContent = DATA.album_id.slice(0, 12);
+  document.getElementById("viewpdf").classList.toggle("hidden", !DATA.pdf);
+  renderVariations();
   render();
+}
+// The three design registers the planner can produce, in fixed order. A style
+// present in DATA.variations is generated and switchable; one that is not gets
+// a "Generate" chip that plans it (no render) and switches to it.
+const STYLES = [["gallery","Gallery"],["cinematic","Cinematic"],["editorial","Editorial"]];
+function renderVariations() {
+  const wrap = document.getElementById("variations");
+  wrap.innerHTML = "";
+  const vars = DATA.variations || [];
+  if (!vars.length) { wrap.classList.add("hidden"); return; }
+  wrap.classList.remove("hidden");
+  const label = document.createElement("span");
+  label.className = "vlabel"; label.textContent = "VARIATIONS";
+  wrap.appendChild(label);
+  const byStyle = Object.fromEntries(vars.map(v => [v.style, v]));
+  const known = new Set(STYLES.map(s => s[0]));
+  const chip = (v, active, gen, style, deflabel) => {
+    const b = document.createElement("button");
+    if (gen) {
+      b.className = "chip togen";
+      b.title = "Not generated yet — plan this style (fast, no render)";
+      b.innerHTML = `${deflabel} <span class="cpages">generate</span>`;
+      b.onclick = () => generateVariation(style);
+    } else {
+      b.className = "chip" + (active ? " active" : "");
+      b.title = v.description || "";
+      b.innerHTML = `${v.label} <span class="cpages">${v.pages ?? "—"}p</span>`;
+      if (!active) b.onclick = () => switchVariation(v.album_id);
+    }
+    wrap.appendChild(b);
+  };
+  for (const [style, deflabel] of STYLES) {
+    const v = byStyle[style];
+    if (v) chip(v, v.album_id === DATA.album_id, false, style, deflabel);
+    else chip(null, false, true, style, deflabel);
+  }
+  for (const v of vars)  // any generated style outside the canonical three
+    if (!known.has(v.style)) chip(v, v.album_id === DATA.album_id, false, v.style, v.label);
+}
+async function switchVariation(album_id) {
+  const res = await fetch("/variation", {method:"POST", body: JSON.stringify({album_id})});
+  if (!res.ok) return;
+  closePanel();
+  for (const k in swaps) delete swaps[k];  // a different album, pending swaps don't carry
+  await loadReview();
+}
+async function generateVariation(style) {
+  const res = await fetch("/generate", {method:"POST", body: JSON.stringify({style})});
+  if (res.ok) { show("progress"); poll(); }
 }
 function render() {
   const grid = document.getElementById("grid");
@@ -888,6 +1040,11 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 )
             ],
             "pool": pool,
+            # The design variations to offer in the header, and the PDF (if any)
+            # rendered for the ACTIVE variation's digest -- both drive the
+            # header controls without a re-render.
+            "variations": list_variations(FLOW.workdir) if FLOW.workdir else [],
+            "pdf": FLOW.pdf.name if FLOW.pdf else None,
         }
         self._json(200, data)
 
@@ -900,8 +1057,52 @@ class ReviewHandler(BaseHTTPRequestHandler):
             self._finalize(body)
         elif self.path == "/approve":
             self._approve()
+        elif self.path == "/variation":
+            self._variation(body)
+        elif self.path == "/generate":
+            self._generate(body)
         else:
             self._send(404, b"not found", "text/plain")
+
+    def _variation(self, body: dict) -> None:
+        """Switch the review onto an already-generated variation -- no render.
+        Only the vetted style-sidecar digests are switchable, so the id can
+        never point the loader at an arbitrary file."""
+        workdir = FLOW.workdir
+        if workdir is None:
+            self._json(409, {"error": "no run loaded"})
+            return
+        album_id = str(body.get("album_id") or "")
+        if album_id not in {v["album_id"] for v in list_variations(workdir)}:
+            self._json(400, {"error": "unknown variation"})
+            return
+        if not activate_variation(workdir, album_id):
+            self._json(409, {"error": "variation has no selection plan"})
+            return
+        self._json(200, {"active": album_id})
+
+    def _generate(self, body: dict) -> None:
+        """Plan a not-yet-generated style (fast, no render), streaming to the
+        progress screen; the flow returns to review with it active."""
+        workdir = FLOW.workdir
+        if workdir is None:
+            self._json(409, {"error": "no run loaded"})
+            return
+        style = str(body.get("style") or "")
+        if style not in _STYLE_ORDER:
+            self._json(400, {"error": "unknown style"})
+            return
+        with FLOW.lock:
+            if FLOW.state in ("running", "rendering"):
+                self._json(409, {"error": "a run is already in progress"})
+                return
+            FLOW.state = "running"
+        threading.Thread(
+            target=run_generate_flow,
+            args=(FLOW.source, workdir, style),
+            daemon=True,
+        ).start()
+        self._json(200, {"generating": True})
 
     def _approve(self) -> None:
         """The user's explicit yes to the flagged photos: re-enter the
