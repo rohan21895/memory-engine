@@ -41,3 +41,6 @@ runs/
 # Local-only gate tooling pointed at real-library runs; committed gates carry
 # synthetic data only (packages/eval-harness/gates/README.md)
 packages/eval-harness/gates/local/
+
+# per-project npm cache (npm cache workaround; never commit)
+**/.npm-cache/

@@ -1,0 +1,88 @@
+{
+  "config_version": "v0",
+  "model_id": "rtmo-m-body7",
+  "version": "1.0.0",
+  "task": "body_pose",
+  "description": "RTMO-m, one-stage multi-person body pose (17 COCO keypoints). Runs on the 512px thumbnail to give the album a body-pose axis the image embedding cannot see through a change of backdrop -- sit/stand/lie and limb configuration -- so selection can reward pose variety. One-stage matters: we have face detectors, not a person detector, and RTMO needs neither.",
+  "weights": {
+    "filename": "rtmo-m_body7_640x640.onnx",
+    "format": "onnx",
+    "source_url": "https://download.openmmlab.com/mmpose/v1/projects/rtmo/onnx_sdk/rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.zip",
+    "archive_member": "end2end.onnx",
+    "blake3": null,
+    "byte_size": null,
+    "quantization": "fp32"
+  },
+  "runtime_targets": [
+    "onnxruntime_coreml",
+    "onnxruntime_cuda",
+    "onnxruntime_directml",
+    "onnxruntime_cpu"
+  ],
+  "preprocessing": {
+    "kind": "image",
+    "input_name": "input",
+    "input_size": {
+      "width": 640,
+      "height": 640
+    },
+    "resize": "letterbox",
+    "interpolation": "bilinear",
+    "color_order": "rgb",
+    "layout": "nchw",
+    "scale": 1.0,
+    "mean": [],
+    "std": [],
+    "face_alignment": null,
+    "audio": null,
+    "sequence_length": null,
+    "pad_value": {
+      "space": "pixel",
+      "values": [
+        114
+      ],
+      "source": "rtmlib/tools/pose_estimation/rtmo.py::RTMO.preprocess -- padded_img = np.ones((*model_input_size, 3), dtype=np.uint8) * 114 fills the letterbox band with 114 gray, then no mean/std is applied (the stage constructs RTMO with mean=None/std=None, so BaseTool leaves the padded uint8 raw). Matches the mmpose projects/rtmo body7 export's TopdownAffine + Pad(pad_val=114) convention. Because scale is 1 with empty mean and std, pixel 114 and tensor 114.0 coincide."
+    }
+  },
+  "postprocessing": null,
+  "outputs": [
+    {
+      "name": "dets",
+      "meaning": "bboxes",
+      "dimensions": null,
+      "vector_space": null,
+      "stride": null
+    },
+    {
+      "name": "keypoints",
+      "meaning": "keypoints",
+      "dimensions": null,
+      "vector_space": null,
+      "stride": null
+    }
+  ],
+  "batching": {
+    "supported": false,
+    "max_batch": 1,
+    "dynamic_axes": false,
+    "verified_against": null
+  },
+  "license": {
+    "code_license": "Apache-2.0",
+    "weights_license": "Apache-2.0",
+    "commercial_use": "permitted",
+    "verified": false,
+    "verified_at": null,
+    "license_url": "https://github.com/open-mmlab/mmpose/blob/main/LICENSE",
+    "training_data": "body7 mix: COCO (CC-BY-4.0, commercial-friendly), plus AI Challenger, CrowdPose, MPII, sub-JHMDB, Halpe, PoseTrack18. Only COCO's terms are confirmed. BLOCKING TODO before commercial ship: audit the AI Challenger and Halpe dataset terms, or repin a COCO-only checkpoint. See docs/pose-model-proposal.md.",
+    "blocks_commercial_release": false,
+    "note": "DEVELOPMENT USE, UNVERIFIED. MMPose states Apache-2.0 for code AND weights and its maintainers confirm commercial permission (issues #2106/#2393), so this does not block release the way the InsightFace stack does -- but verified is false until a human confirms the live licence text, and the body7 training-data audit above is a separate, still-open gate. THIS ENTRY IS NOT LOADED BY workers/ml-runtime: the pose stage runs RTMO through rtmlib, which fetches and caches the ONNX under ~/.cache/rtmlib. The config is the audit-and-provenance record, not a host binding, so its preprocessing/output fields describe rtmlib's documented SDK pipeline and are NOT verified against the real graph -- rtmlib performs resize/normalisation and output decode internally, which is why postprocessing is null and mean/std are identity here. blake3/byte_size stay null for the same reason: no fetch_weights download owns this artifact yet."
+  },
+  "rollout": {
+    "state": "candidate",
+    "replaces": null,
+    "promoted_at": null
+  },
+  "eval": null,
+  "notes": "Body-pose signatures are pure geometry in packages/album-engine/memory_engine_album/pose.py: 17 COCO keypoints -> scale/translation-free joint angles -> mirror-invariant RMS distance -> conservative greedy clustering, bucketed by face count first because RTMO merges tight embraces into one body. The stage is services/pipeline/memory_engine_pipeline/stages/pose.py and writes <workdir>/pose-clusters.json. FALLBACK on record if RTMO ever misses in dense group shots: RTMPose-m + a person detector (also Apache-2.0), see docs/pose-model-proposal.md. DETRPose-M is the eval-harness challenger before any promotion here."
+}

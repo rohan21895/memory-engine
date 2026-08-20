@@ -52,7 +52,8 @@
         "segmentation",
         "saliency",
         "ocr",
-        "safety_classifier"
+        "safety_classifier",
+        "body_pose"
       ]
     },
     "description": {

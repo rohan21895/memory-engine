@@ -565,7 +565,7 @@ class TestPaddingValueIsPinned(SchemaRejectionTestCase):
         """If a third config starts letterboxing, this test is where someone
         finds out that it needs a pad value too."""
         self.assertEqual(
-            ["scrfd-10g-bnkps.json", "yunet-2023mar.json"],
+            ["rtmo-m-body7.json", "scrfd-10g-bnkps.json", "yunet-2023mar.json"],
             sorted(name for name, _ in self.letterboxing),
         )
 

@@ -192,6 +192,15 @@
         "document_exclusion"
       ],
       "config_blake3": "bda24c3795845b7079e9e02b510b4f345185be71e95b6b710f5ba7cf1afe3ba2"
+    },
+    {
+      "model_id": "rtmo-m-body7",
+      "config": "configs/rtmo-m-body7.json",
+      "task": "body_pose",
+      "required_for": [
+        "album_pose_diversity"
+      ],
+      "config_blake3": "de36a5217e84335ef285ab66b4f4ade926738c6db12c0d96565e13108c289aaa"
     }
   ]
 }

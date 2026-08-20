@@ -51,7 +51,7 @@ from typing import Any, Callable
 from .events import ProgressReporter, utc_now
 from .ids import digest_of, source_locator_digest
 from .jobstore import JobStore
-from .stages import album, analysis, faces, ingest, ranking, render, story, taste
+from .stages import album, analysis, faces, ingest, pose, ranking, render, story, taste
 from .stages.base import (
     Settings,
     StageContext,
@@ -78,6 +78,11 @@ STAGE_ORDER: tuple[Stage, ...] = (
     # SKIPS rather than blocks when it is not wanted -- a pipeline whose album
     # depended on a cloud call would be a pipeline that stops working offline.
     (taste.STAGE, taste.run),
+    # Pose after faces (it buckets by the face count faces stores) and before
+    # album (which reads pose-clusters.json for its pose-diversity term). It runs
+    # the local RTMO body model, so like the other perception stages it is on the
+    # analysed library, never on originals.
+    (pose.STAGE, pose.run),
     (album.STAGE, album.run),
     (render.STAGE, render.run),
     (story.STAGE, story.run),
