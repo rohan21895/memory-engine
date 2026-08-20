@@ -78,7 +78,10 @@ PLANNER = "album-planner"
 #: frame), not the 2% measurement floor -- full-body studio shots read as
 #: "nobody here" and a wide editorial frame could never split from its
 #: close-up, so tight crops won structurally.
-PLANNER_VERSION = "0.5.3"
+#: 0.5.4: the cover-vs-page-one duplication guard checks the photo pacing
+#: actually placed first (the first day's best), not the chronologically
+#: first photo -- the original bug returned the day pacing changed openers.
+PLANNER_VERSION = "0.5.4"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
@@ -413,7 +416,13 @@ def run(ctx: StageContext) -> StageResult:
         ]
     try:
         pages = layout_album(
-            requests, profile, cover=_cover_photo(photos, planned.scores)
+            requests,
+            profile,
+            cover=_cover_photo(
+                photos,
+                planned.scores,
+                first_page=requests[0].photos[0] if requests else None,
+            ),
         )
     except LayoutError as error:
         ctx.jobs.fail(job, code="validation_failed", message="layout failed",
@@ -678,15 +687,18 @@ def _photo(ctx: StageContext, record: Mapping[str, Any]) -> Any:
     )
 
 
-def _cover_photo(photos: list[Any], scores: Mapping[str, Any]) -> Any:
+def _cover_photo(
+    photos: list[Any], scores: Mapping[str, Any], first_page: Any = None
+) -> Any:
     """The cover is the HERO -- the best photo in the book -- not page one.
 
     The cover page and the first interior page sit back to back in the
-    rendered PDF, and `cover=photos[0]` put the identical photo on both
-    (`photos` is chronological, so the cover was just whichever moment came
-    first). A photo book's cover repeats a highlight from inside; when the
-    highlight IS chronologically first, the runner-up takes the cover so the
-    same image never faces itself.
+    rendered PDF. A photo book's cover repeats a highlight from inside; when
+    the highlight IS what opens page one, the runner-up takes the cover so
+    the same image never faces itself. `first_page` is the photo the pacing
+    actually placed first -- checking `photos[0]` (chronology) was the
+    original bug's shape, and it came back the day pacing started opening
+    with the first DAY'S BEST instead of the first photo.
     """
     if len(photos) < 2:
         return photos[0]
@@ -695,10 +707,14 @@ def _cover_photo(photos: list[Any], scores: Mapping[str, Any]) -> Any:
         score = scores.get(photo.media_id)
         return float(score.value) if score is not None else 0.0
 
+    facing = first_page.media_id if first_page is not None else photos[0].media_id
     hero = min(photos, key=lambda p: (-value(p), p.media_id))
-    if hero.media_id != photos[0].media_id:
+    if hero.media_id != facing:
         return hero
-    return min(photos[1:], key=lambda p: (-value(p), p.media_id))
+    return min(
+        (p for p in photos if p.media_id != facing),
+        key=lambda p: (-value(p), p.media_id),
+    )
 
 
 #: A face smaller than this fraction of the frame is background, and its focus
