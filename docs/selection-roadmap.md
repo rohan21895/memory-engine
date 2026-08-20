@@ -6,6 +6,50 @@ right north star — it is the architecture the professional culling tools
 most of what selection v2 already does. This doc maps every block to a
 status so the gaps are explicit and ordered.
 
+## Update: selection v3 shipped (Aug 2026)
+
+The v3 build closed the top of the build order. Now LIVE (statuses below are
+kept as the v2-era record; this list supersedes them):
+
+- **Per-face expression + weighted-min aggregation** (§2 build): faces stage
+  backfills `FaceAttributes.eyes_open/smile` from SigLIP-scored face crops
+  (originals, ×1.3 bbox, tensor transport with a 0.9997 round-trip proof);
+  selection judges the WORST significant face; `quality.face_quality` is the
+  min-anchored group aggregate (`fusion.aggregate_face_quality`). Signal
+  validated on a real library: closed-eyes poses 0.27–0.30 vs open 0.59–0.62,
+  rendition noise ~3× below population spread.
+- **Context-sensitive eye closure**: `embrace_context` axis suppresses the
+  blink penalty on kisses/embraces (rank-based, top-15% trigger).
+- **Cheap gates**: `screenshot_document` hard gate (absolute threshold 0.0,
+  calibrated: every real photo across two libraries ≤ −0.043, never waived);
+  face-region exposure floor; clipping gate on the FACE crop only — the
+  whole-frame version was built first and rejected 47% of a high-key studio
+  shoot (white seamless clips by intent) before E2E caught it. Whole-frame
+  clipping is data, never a gate.
+- **Category weight vectors**: portrait/couple/group/detail presets from
+  face count + area, starter values pending PrefEvent learning.
+- **Moment tier** (Event → Moment → Take): loose grouping (0.80 / 6 h) now
+  drives the diversity term; the inert scene_key axis is gone.
+- **Story-role split**: >2× face-area gap splits a shot group (wide vs close
+  are different roles, never "worse versions" of each other).
+- **Rare-moment protection**: isolated singletons waive the moderate floors
+  (never the screenshot/cut gates).
+- **Explainability + swap support**: sidecar report per album
+  (`outputs/selection/<digest>.json`) — every candidate accounted for exactly
+  once; picks carry `chosen_because`, group alternatives carry
+  `not_chosen_because` + slot-fit; `pinned_media_ids`/`excluded_media_ids`
+  make re-generation respect user swaps; each swap is a future PrefEvent.
+- **Eval**: first selection gate (`gates/selection-critical-errors.gate.json`)
+  pins seven critical-error rates at 0 (blink-when-clean-exists, twin pairs,
+  screenshot selected, rare-moment false rejection, worse-version selected,
+  pin/exclude violations), each bite-tested.
+
+Still deferred, unchanged owners: behavioural signals + EXIF burst
+(Codex/ingest), Bradley-Terry preference head (needs PrefEvents), gaze /
+naturalness / flattering judgment (Tier-3 taste pass), EAR blink (needs
+106-point landmarks), CMYK gamut + print brightness (needs vendor ICC),
+key-person importance weighting (needs review UI), swap UI (Codex/apps).
+
 Statuses: **LIVE** (shipped, tested) · **PARTIAL** · **MISSING-CHEAP**
 (days, no new models) · **MISSING-BIG** (architecture or new model) ·
 **TIER-3** (frontier taste pass, needs API key) · **CODEX** (ingest/app
