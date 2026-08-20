@@ -485,6 +485,16 @@ class PerFaceAggregates:
     # gate reads this, not the whole-frame figure: a studio backdrop clips by
     # intent, a clipped face has genuinely lost its data.
     exposure_clipped_max: float | None = None
+    # EXISTENCE evidence, separate from the measurement floor above: every
+    # detected face however small, because a full-body studio shot puts the
+    # face under 2% of the frame and the significant-only fields then claim
+    # "nobody here". That blindness cost a real album twice in one day -- the
+    # solo/couple split never fired on full-body frames, and a wide editorial
+    # shot could not be split from its close-up as a different story role.
+    # Quality measurements (sharpness, eyes, smile) keep the 2% floor where
+    # they are trustworthy; counting and scale do not need it.
+    detected_count: int = 0
+    detected_largest_area: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1621,6 +1631,17 @@ def _split_story_roles(
     `largest_area` stays with the group-max band -- absence of the measure
     must not split anything.
     """
+    def scale_of(candidate: SelectionCandidate) -> float | None:
+        # Detected-any-size first: a wide shot's face is real evidence of
+        # scale even at 1% of the frame. Significant-only as the fallback for
+        # candidates built before the detected fields existed.
+        if candidate.per_face is None:
+            return None
+        area = candidate.per_face.detected_largest_area
+        if area is None:
+            area = candidate.per_face.largest_area
+        return area if area is not None and area > 0.0 else None
+
     grouped: dict[str, list[SelectionCandidate]] = {}
     for candidate in survivors:
         grouped.setdefault(shot_of[candidate.media_id], []).append(candidate)
@@ -1630,23 +1651,13 @@ def _split_story_roles(
     for group_id, members in grouped.items():
         if len(members) < 2:
             continue
-        areas = [
-            c.per_face.largest_area
-            for c in members
-            if c.per_face is not None
-            and c.per_face.largest_area is not None
-            and c.per_face.largest_area > 0.0
-        ]
+        areas = [area for c in members if (area := scale_of(c)) is not None]
         if not areas:
             continue
         max_area = max(areas)
         for candidate in members:
-            area = (
-                candidate.per_face.largest_area
-                if candidate.per_face is not None
-                else None
-            )
-            if area is None or area <= 0.0:
+            area = scale_of(candidate)
+            if area is None:
                 continue  # stays with the group max band
             band = int(math.floor(math.log2(max_area / area) / band_width))
             if band > 0:
@@ -1659,24 +1670,30 @@ def _split_story_roles(
     # split existed). Buckets 1 / 2 / 3+, matching the diversity axis; a
     # frame with no measured faces stays with its group -- absence of the
     # measure must not split anything.
+    def people_of(candidate: SelectionCandidate) -> int:
+        # Detected-any-size, for the same reason as scale_of: on a full-body
+        # frame every face is under the significance floor and the
+        # significant-only count claims an empty room.
+        if candidate.per_face is None:
+            return 0
+        if candidate.per_face.detected_count > 0:
+            return candidate.per_face.detected_count
+        return candidate.per_face.significant_count
+
     regrouped: dict[str, list[SelectionCandidate]] = {}
     for candidate in survivors:
         regrouped.setdefault(result[candidate.media_id], []).append(candidate)
     for group_id, members in regrouped.items():
         if len(members) < 2:
             continue
-        counts = {
-            min(c.per_face.significant_count, 3)
-            for c in members
-            if c.per_face is not None and c.per_face.significant_count > 0
-        }
+        counts = {min(n, 3) for c in members if (n := people_of(c)) > 0}
         if len(counts) < 2:
             continue
         for candidate in members:
-            if candidate.per_face is None or candidate.per_face.significant_count <= 0:
+            people = people_of(candidate)
+            if people <= 0:
                 continue
-            bucket = min(candidate.per_face.significant_count, 3)
-            result[candidate.media_id] = f"{group_id}#p{bucket}"
+            result[candidate.media_id] = f"{group_id}#p{min(people, 3)}"
     return result
 
 

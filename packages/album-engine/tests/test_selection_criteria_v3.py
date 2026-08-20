@@ -49,6 +49,8 @@ def faces(
     exposure_clipped_max: float | None = None,
     largest_area: float | None = None,
     count: int = 2,
+    detected_count: int = 0,
+    detected_largest_area: float | None = None,
 ) -> PerFaceAggregates:
     return PerFaceAggregates(
         significant_count=count,
@@ -57,6 +59,10 @@ def faces(
         smile_min=smile_min,
         exposure_min=exposure_min,
         exposure_clipped_max=exposure_clipped_max,
+        detected_count=detected_count or count,
+        detected_largest_area=(
+            detected_largest_area if detected_largest_area is not None else largest_area
+        ),
     )
 
 
@@ -253,6 +259,32 @@ class ACloseUpIsNeverAWorseVersionOfAWide(unittest.TestCase):
         self.assertNotEqual(
             result.groups[mid("solo")], result.groups[mid("couple")],
             "people count must split the shot group",
+        )
+
+    def test_full_body_frames_still_split_by_scale_and_people(self):
+        # The maternity sitting group: a tight crop (face 5% of frame) and a
+        # wide editorial frame (face 1% -- under the 2% measurement floor, so
+        # significant fields read empty). Detected evidence must still split
+        # them; before it did, the tight crop structurally dominated and the
+        # visibly better wide frames were unreachable.
+        close = cand(
+            "close", 0.80, captured_utc=at(1, 12),
+            embedding=unit(1.0, 0.0, 0.0), embedding_space="s",
+            per_face=faces(largest_area=0.05, count=1,
+                           detected_count=1, detected_largest_area=0.05),
+        )
+        wide = cand(
+            "wide", 0.70, captured_utc=at(1, 12.004),
+            embedding=unit(0.95, 0.3122, 0.0), embedding_space="s",
+            per_face=faces(largest_area=None, count=0,
+                           detected_count=1, detected_largest_area=0.01),
+        )
+        result = select([close, wide], 2)
+        self.assertEqual({mid("close"), mid("wide")}, set(result.selected))
+        self.assertNotEqual(
+            result.groups[mid("close")], result.groups[mid("wide")],
+            "a 5x scale gap is two story roles even when the wide face is "
+            "below the measurement floor",
         )
 
     def test_unmeasured_faces_do_not_split_a_group(self):

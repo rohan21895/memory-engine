@@ -74,7 +74,11 @@ PLANNER = "album-planner"
 #: reprise.
 #: 0.5.2: people count splits shot groups -- mom solo and mom-with-dad on the
 #: same set are different photographs, not retakes of one pose.
-PLANNER_VERSION = "0.5.2"
+#: 0.5.3: people count and shot scale come from DETECTED faces (>= 0.2% of
+#: frame), not the 2% measurement floor -- full-body studio shots read as
+#: "nobody here" and a wide editorial frame could never split from its
+#: close-up, so tight crops won structurally.
+PLANNER_VERSION = "0.5.3"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
@@ -230,7 +234,7 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
                 face_cut=_has_cut_face(ctx, media_id),
                 expression=_expression_scores(expression_head, embedding),
                 per_face=per_face,
-                category=_face_category(per_face.significant_count),
+                category=_face_category(per_face.detected_count),
                 clipped_fraction=_clipped_fraction(record),
             )
         )
@@ -701,6 +705,12 @@ def _cover_photo(photos: list[Any], scores: Mapping[str, Any]) -> Any:
 #: is a statement about the lens, not the photograph. Gate on faces people
 #: will actually look at in print.
 _FACE_SHARPNESS_MIN_AREA = 0.02
+#: Existence floor for counting people and judging shot scale -- far below
+#: the 2% measurement floor, because a full-body studio portrait puts the
+#: face near 1% of the frame and "nobody here" was the wrong answer twice on
+#: one real album. High enough that a distant background stranger still does
+#: not count.
+_DETECTED_FACE_MIN_AREA = 0.002
 
 
 def _min_face_sharpness(ctx: StageContext, media_id: str) -> float | None:
@@ -905,18 +915,21 @@ def _min_head_sharpness(ctx: StageContext, media_id: str) -> float | None:
     return min(values) if values else None
 
 
-def _face_category(significant_count: int) -> str:
-    """Shot category from the significant-face count, nothing cleverer.
+def _face_category(people_count: int) -> str:
+    """Shot category from the people count, nothing cleverer.
 
-    0 -> detail, 1 -> portrait, 2 -> couple, >=3 -> group. "Significant" is
-    the same `_FACE_SHARPNESS_MIN_AREA` floor every other face gate here uses:
-    a background stranger does not turn a landscape into a portrait.
+    0 -> detail, 1 -> portrait, 2 -> couple, >=3 -> group. Counted from
+    DETECTED faces above `_DETECTED_FACE_MIN_AREA` rather than the 2%
+    measurement floor: a full-body studio portrait puts the face near 1% of
+    the frame, and classifying it "detail" hands a photograph of a person the
+    no-people weights. The tiny-area floor still keeps a background stranger
+    from turning a landscape into a portrait.
     """
-    if significant_count <= 0:
+    if people_count <= 0:
         return "detail"
-    if significant_count == 1:
+    if people_count == 1:
         return "portrait"
-    if significant_count == 2:
+    if people_count == 2:
         return "couple"
     return "group"
 
@@ -956,12 +969,18 @@ def _per_face_aggregates(ctx: StageContext, media_id: str) -> Any:
     """
     from memory_engine_album.selection import PerFaceAggregates  # noqa: PLC0415
 
+    faces = ctx.database.faces_for_media(media_id)
+    detected = [
+        face
+        for face in faces
+        if (face["detection"].get("face_area_ratio") or 0.0) >= _DETECTED_FACE_MIN_AREA
+    ]
     significant = [
         face
-        for face in ctx.database.faces_for_media(media_id)
+        for face in detected
         if (face["detection"].get("face_area_ratio") or 0.0) >= _FACE_SHARPNESS_MIN_AREA
     ]
-    if not significant:
+    if not detected:
         return PerFaceAggregates()
 
     def measured(name: str) -> list[float]:
@@ -979,7 +998,8 @@ def _per_face_aggregates(ctx: StageContext, media_id: str) -> Any:
     return PerFaceAggregates(
         significant_count=len(significant),
         largest_area=max(
-            float(face["detection"]["face_area_ratio"]) for face in significant
+            (float(face["detection"]["face_area_ratio"]) for face in significant),
+            default=None,
         ),
         eyes_min=min(eyes) if eyes else None,
         eyes_p10=_p10(eyes) if eyes else None,
@@ -988,6 +1008,10 @@ def _per_face_aggregates(ctx: StageContext, media_id: str) -> Any:
         smile_mean=sum(smiles) / len(smiles) if smiles else None,
         exposure_min=exposure_min,
         exposure_clipped_max=exposure_clipped_max,
+        detected_count=len(detected),
+        detected_largest_area=max(
+            float(face["detection"]["face_area_ratio"]) for face in detected
+        ),
     )
 
 
