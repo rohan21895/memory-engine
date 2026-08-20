@@ -114,6 +114,20 @@ def thumbnail_paths(workdir: Path) -> dict[str, Path]:
     return {media_id: Path(path) for media_id, path in rows}
 
 
+def _load_pose_map(workdir: Path) -> dict[str, str]:
+    """media_id -> body-pose cluster, from the pose stage's workdir file.
+    Empty when pose was not run: the UI then falls back to same-shot
+    similarity alone."""
+    path = workdir / "pose-clusters.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def load_review_state(workdir: Path) -> bool:
     """Point the flow at an existing run's newest plan. True when one exists."""
     sidecar = newest_sidecar(workdir)
@@ -449,8 +463,8 @@ _PAGE = """<!doctype html>
 <div id="panel"><div class="inner">
   <h2 id="ptitle">Alternatives</h2>
   <div class="sub" id="pwhy"></div>
-  <div id="galts-wrap"><h3>From the same shot</h3><div class="alts" id="galts"></div></div>
-  <div id="palts-wrap"><h3>Best of what we left out</h3><div class="alts" id="palts"></div></div>
+  <div id="galts-wrap"><h3>Similar photos &mdash; same shot or pose</h3><div class="alts" id="galts"></div></div>
+  <div id="palts-wrap"><h3>Other best photos we didn&rsquo;t use</h3><div class="alts" id="palts"></div></div>
   <div class="actions"><button onclick="closePanel()">Keep current &amp; close</button></div>
 </div></div>
 <footer>
@@ -603,6 +617,9 @@ function render() {
       ? `${Object.keys(swaps).length} swap(s) pending — finalize when you're happy.`
       : "No swaps yet — tap any photo to see its alternatives.";
 }
+let PANEL_SLOT = null;   // the selected entry whose alternatives are open
+const N_OTHER_BEST = 10;
+
 function altCard(s, o, current) {
   const div = document.createElement("div");
   div.className = "alt";
@@ -614,41 +631,80 @@ function altCard(s, o, current) {
   div.querySelector("button").onclick = () => {
     if (o.media_id === s.media_id) delete swaps[s.media_id];
     else swaps[s.media_id] = o.media_id;
-    closePanel(); render();
+    // Live update: the album just changed, so the grid AND this panel's two
+    // suggestion sections must recompute -- the photo we swapped out is now
+    // available again, the one we swapped in must vanish from every other
+    // list. The panel stays open, re-rendered against the new album.
+    render();
+    openPanel(s);
   };
   return div;
 }
 function openPanel(s) {
+  PANEL_SLOT = s;
   document.getElementById("pwhy").textContent =
     "Engine chose " + s.media_id.slice(0,8) + ": " + s.chosen_because.join("; ");
   const current = swaps[s.media_id] || s.media_id;
-  const taken = new Set(Object.values(swaps));
-  taken.delete(current);
+  // Everything the LIVE album currently holds (originals minus swaps-out,
+  // plus swaps-in). A suggestion may never be something already in the book.
   const inAlbum = new Set(DATA.selected.map(x => swaps[x.media_id] || x.media_id));
+  const currentPose = poseOf(current);
+  const shotIds = new Set(s.alternatives.map(a => a.media_id));
 
-  const galts = document.getElementById("galts");
-  galts.innerHTML = "";
-  galts.appendChild(altCard(s, {media_id: s.media_id,
+  // The live candidate pool: the omitted photos, PLUS any original album
+  // photo you have since swapped out -- removing a photo puts it back on the
+  // table as a suggestion for other slots.
+  const swappedOut = DATA.selected
+    .filter(x => swaps[x.media_id] && !inAlbum.has(x.media_id))
+    .map(x => ({media_id: x.media_id, pose: x.pose,
+                reasons: ["you removed this from the album"]}));
+  const available = swappedOut.concat(DATA.pool);
+
+  // Section 1 -- SIMILAR: the same shot (the engine's own alternatives) plus
+  // any available photo of the same body pose. Like-for-like swaps.
+  const similar = document.getElementById("galts");
+  similar.innerHTML = "";
+  similar.appendChild(altCard(s, {media_id: s.media_id,
     reasons: ["the engine's pick"], fits: true}, current));
   for (const a of s.alternatives) {
-    if (taken.has(a.media_id) || (inAlbum.has(a.media_id) && a.media_id !== current)) continue;
-    galts.appendChild(altCard(s, {media_id: a.media_id,
+    if (a.media_id === current || inAlbum.has(a.media_id)) continue;
+    similar.appendChild(altCard(s, {media_id: a.media_id,
       reasons: a.not_chosen_because, fits: a.fits_slot !== false}, current));
   }
+  for (const p of available) {
+    if (p.media_id === current || inAlbum.has(p.media_id) || shotIds.has(p.media_id)) continue;
+    if (currentPose && p.pose === currentPose) {
+      similar.appendChild(altCard(s, {media_id: p.media_id,
+        reasons: p.reasons || ["same body pose, different frame"]}, current));
+    }
+  }
 
-  const palts = document.getElementById("palts");
-  palts.innerHTML = "";
+  // Section 2 -- OTHER BEST: the ten highest-quality available photos that are
+  // NEITHER in the album NOR already offered as a similar one. Different
+  // looks, not near-duplicates.
+  const other = document.getElementById("palts");
+  other.innerHTML = "";
   let offered = 0;
-  for (const p of DATA.pool) {
-    if (p.media_id === current || taken.has(p.media_id) || inAlbum.has(p.media_id)) continue;
-    if (s.alternatives.some(a => a.media_id === p.media_id)) continue;
-    palts.appendChild(altCard(s, {media_id: p.media_id, reasons: p.reasons}, current));
-    if (++offered >= 8) break;
+  for (const p of available) {
+    if (p.media_id === current || inAlbum.has(p.media_id) || shotIds.has(p.media_id)) continue;
+    if (currentPose && p.pose === currentPose) continue;  // that one is a "similar"
+    other.appendChild(altCard(s, {media_id: p.media_id, reasons: p.reasons}, current));
+    if (++offered >= N_OTHER_BEST) break;
   }
   document.getElementById("palts-wrap").classList.toggle("hidden", offered === 0);
   document.getElementById("panel").className = "open";
 }
-function closePanel() { document.getElementById("panel").className = ""; }
+function poseOf(mediaId) {
+  const hit = DATA.selected.find(x => x.media_id === mediaId);
+  if (hit && hit.pose) return hit.pose;
+  const inPool = DATA.pool.find(p => p.media_id === mediaId);
+  if (inPool && inPool.pose) return inPool.pose;
+  for (const s of DATA.selected)
+    for (const a of s.alternatives)
+      if (a.media_id === mediaId && a.pose) return a.pose;
+  return null;
+}
+function closePanel() { PANEL_SLOT = null; document.getElementById("panel").className = ""; }
 async function finalize() {
   const pinned = DATA.selected.map(s => swaps[s.media_id] || s.media_id);
   const excluded = Object.keys(swaps).filter(k => !pinned.includes(k));
@@ -751,6 +807,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
         if sidecar is None:
             self._json(409, {"error": "no plan loaded"})
             return
+        poses = _load_pose_map(FLOW.workdir) if FLOW.workdir else {}
         selected_entries = sidecar["selected"]
         selected_ids = {e["media_id"] for e in selected_entries}
         offered = {
@@ -758,12 +815,16 @@ class ReviewHandler(BaseHTTPRequestHandler):
             for e in selected_entries
             for a in e.get("alternatives") or []
         }
-        # The omitted pool: merit-losers ranked by their recorded standing
-        # (sidecars from planner <0.5.5 carry no quality; they sort last).
+        # The omitted pool: every photo NOT in the album and not already a
+        # same-shot alternative, ranked by recorded quality standing. The
+        # whole pool ships (the client draws the "10 other best" from it after
+        # excluding whatever the live album now holds), so a run of swaps can
+        # never exhaust the suggestions.
         pool = [
             {
                 "media_id": u["media_id"],
                 "quality": u.get("quality"),
+                "pose": poses.get(u["media_id"]),
                 "reasons": [u.get("detail") or "left out on the album objective"],
             }
             for u in sidecar.get("unselected") or []
@@ -776,10 +837,12 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 {
                     "media_id": e["media_id"],
                     "page": (e.get("placement") or {}).get("page_index"),
+                    "pose": poses.get(e["media_id"]),
                     "chosen_because": e.get("chosen_because") or [],
                     "alternatives": [
                         {
                             "media_id": a["media_id"],
+                            "pose": poses.get(a["media_id"]),
                             "not_chosen_because": a.get("not_chosen_because") or [],
                             "fits_slot": a.get("fits_slot"),
                         }
@@ -794,7 +857,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
                     ),
                 )
             ],
-            "pool": pool[:_POOL_LIMIT * 4],
+            "pool": pool,
         }
         self._json(200, data)
 
