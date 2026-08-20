@@ -60,6 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--photos-per-page", type=int, default=_DEFAULTS.album_photos_per_page)
     parser.add_argument("--album-style", default=_DEFAULTS.album_style,
                         help="design register: gallery (default), cinematic, editorial")
+    parser.add_argument("--no-develop", dest="develop_photos", action="store_false",
+                        help="keep photos original: no exposure/WB/sharpen edits, only the layout crop")
     parser.add_argument("--icc-profile", default=None,
                         help="path to the vendor's ICC profile; without it the print "
                              "renderer embeds a built-in CMYK profile under the "
@@ -126,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         album_target_count=args.album_photos,
         album_photos_per_page=args.photos_per_page,
         album_style=args.album_style,
+        develop_photos=args.develop_photos,
         icc_profile_path=args.icc_profile,
         reel_seconds=args.reel_seconds,
         render_print=not args.no_render_print,

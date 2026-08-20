@@ -134,6 +134,10 @@ class Settings:
     # gallery / cinematic / editorial). Part of album identity, so each style is
     # its own content-addressed spec. None means the default (gallery).
     album_style: str | None = None
+    # Apply the classical auto-develop pass (exposure / white-balance / sharpen)
+    # to the selected photos at render. Off means the photos ship exactly as
+    # shot -- only the layout crop is applied. Part of album identity.
+    develop_photos: bool = True
 
     # What the reel planner is ASKED for. Landing on a cut point matters more
     # than hitting the number, so the realised length is usually shorter and the

@@ -362,8 +362,16 @@ def run(ctx: StageContext) -> StageResult:
     # must re-plan as a different album, never mutate an existing one.
     from ..develop import DEVELOP_VERSION, plan_develop_ops  # noqa: PLC0415
 
+    # With develop disabled the photos ship exactly as shot -- no exposure, white
+    # balance or sharpen corrections, only the layout crop. An empty op list per
+    # photo is a real album-identity value (it goes into the digest below), so an
+    # original-photo book is a distinct spec from a developed one, never a silent
+    # overwrite.
     develop_ops: dict[str, list[dict[str, Any]]] = {}
     for media_id in selection.selected:
+        if not ctx.settings.develop_photos:
+            develop_ops[media_id] = []
+            continue
         proxies = ctx.database.proxies_for_media(media_id, kind="thumbnail_512")
         path = proxies[0].get("path") if proxies else None
         if not path or not Path(path).is_file():
