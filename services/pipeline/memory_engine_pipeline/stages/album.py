@@ -72,7 +72,9 @@ PLANNER = "album-planner"
 #: 0.5.1: pacing keeps two frames of the same shot off one page -- a forced
 #: repeat beside its twin reads as a mistake; pages apart it reads as a
 #: reprise.
-PLANNER_VERSION = "0.5.1"
+#: 0.5.2: people count splits shot groups -- mom solo and mom-with-dad on the
+#: same set are different photographs, not retakes of one pose.
+PLANNER_VERSION = "0.5.2"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")

@@ -1651,6 +1651,32 @@ def _split_story_roles(
             band = int(math.floor(math.log2(max_area / area) / band_width))
             if band > 0:
                 result[candidate.media_id] = f"{group_id}#role{band}"
+
+    # Second split: WHO IS IN THE FRAME. Mom solo and mom-with-dad on the
+    # same set sit at 0.95+ embedding similarity -- same backdrop, same
+    # dress -- but one person versus two is a different photograph, not a
+    # retake (a real album paired exactly such a "twin" pair before this
+    # split existed). Buckets 1 / 2 / 3+, matching the diversity axis; a
+    # frame with no measured faces stays with its group -- absence of the
+    # measure must not split anything.
+    regrouped: dict[str, list[SelectionCandidate]] = {}
+    for candidate in survivors:
+        regrouped.setdefault(result[candidate.media_id], []).append(candidate)
+    for group_id, members in regrouped.items():
+        if len(members) < 2:
+            continue
+        counts = {
+            min(c.per_face.significant_count, 3)
+            for c in members
+            if c.per_face is not None and c.per_face.significant_count > 0
+        }
+        if len(counts) < 2:
+            continue
+        for candidate in members:
+            if candidate.per_face is None or candidate.per_face.significant_count <= 0:
+                continue
+            bucket = min(candidate.per_face.significant_count, 3)
+            result[candidate.media_id] = f"{group_id}#p{bucket}"
     return result
 
 

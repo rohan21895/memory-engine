@@ -28,6 +28,7 @@ aunt. v3 adds exactly those senses:
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 # test_selection sets sys.path up for the plain source trees; import it first.
 from test_selection import PERSON, at, cand, mid
@@ -231,6 +232,40 @@ class ACloseUpIsNeverAWorseVersionOfAWide(unittest.TestCase):
         result = select([wide, close], 2)
         self.assertIn(mid("wide"), result.selected)
         self.assertNotIn(mid("close"), result.selected)
+
+    def test_solo_and_couple_on_the_same_set_are_different_pictures(self):
+        # The real failure this pins: mom solo and mom-with-dad on the same
+        # backdrop in the same dress measured 0.95+ similar and were treated
+        # as one pose. One person versus two is a different photograph.
+        solo = cand(
+            "solo", 0.80, captured_utc=at(1, 12),
+            embedding=unit(1.0, 0.0, 0.0), embedding_space="s",
+            aesthetic=0.06, per_face=faces(largest_area=0.03, count=1),
+        )
+        couple = cand(
+            "couple", 0.80, captured_utc=at(1, 12.003),
+            embedding=unit(0.95, 0.3122, 0.0), embedding_space="s",
+            aesthetic=0.02,  # would be dominated if they shared a group
+            per_face=faces(largest_area=0.03, count=2),
+        )
+        result = select([solo, couple], 2)
+        self.assertEqual({mid("solo"), mid("couple")}, set(result.selected))
+        self.assertNotEqual(
+            result.groups[mid("solo")], result.groups[mid("couple")],
+            "people count must split the shot group",
+        )
+
+    def test_unmeasured_faces_do_not_split_a_group(self):
+        # Absence of the measure must not split: the control pair from above
+        # with no per_face stays one group and dominates as before.
+        wide, close = self._frames(close_area=0.02)
+        wide = replace(wide, per_face=None)
+        close = replace(close, per_face=None)
+        result = select([wide, close], 2)
+        self.assertEqual(
+            result.groups[mid("wide")], result.groups[mid("close")],
+            "no face evidence, no split",
+        )
 
 
 class AnIrreplaceableMomentBeatsATechnicalRule(unittest.TestCase):
