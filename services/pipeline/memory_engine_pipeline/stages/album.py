@@ -250,6 +250,15 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
 
     wanted = min(ctx.settings.album_target_count, len(candidates))
     policy = SelectionPolicy()
+    review = _load_album_review(ctx)
+    if review is not None:
+        import dataclasses  # noqa: PLC0415
+
+        policy = dataclasses.replace(
+            policy,
+            pinned_media_ids=frozenset(review.get("pinned") or ()),
+            excluded_media_ids=frozenset(review.get("excluded") or ()),
+        )
     selection = select(candidates, wanted, policy=policy)
     if not selection.selected:
         return StageResult(
@@ -361,6 +370,10 @@ def run(ctx: StageContext) -> StageResult:
             "target_count": wanted,
             "develop_version": DEVELOP_VERSION,
             "develop": develop_ops,
+            # The user's review decisions are album identity: the same
+            # library with different swaps is a different book, never a
+            # silent mutation of the old one.
+            "review": review,
         }
     )
     job = build_job(
@@ -929,6 +942,33 @@ def _min_head_sharpness(ctx: StageContext, media_id: str) -> float | None:
         >= _FACE_SHARPNESS_MIN_AREA
     ]
     return min(values) if values else None
+
+
+ALBUM_REVIEW_FILENAME = "album-review.json"
+
+
+def _load_album_review(ctx: StageContext) -> dict[str, Any] | None:
+    """The user's finalized swap decisions, or None when no review happened.
+
+    `<workdir>/album-review.json` is written by the review UI (today the
+    scripts/demo/review_album.py prototype, later the desktop app): the flow
+    is plan -> user reviews selected photos against their group alternatives
+    -> swaps -> FINALIZE -> this file -> re-plan honours it via
+    pinned/excluded policy ids -> render. A malformed file fails the stage
+    loudly -- a swallowed review would print the exact book the user just
+    corrected.
+    """
+    path = Path(ctx.workdir) / ALBUM_REVIEW_FILENAME
+    if not path.is_file():
+        return None
+    review = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(review, dict):
+        raise ValueError(f"{path} must hold a JSON object")
+    for key in ("pinned", "excluded"):
+        ids = review.get(key) or []
+        if not isinstance(ids, list) or not all(isinstance(m, str) for m in ids):
+            raise ValueError(f"{path}: {key!r} must be a list of media ids")
+    return review
 
 
 def _face_category(people_count: int) -> str:
