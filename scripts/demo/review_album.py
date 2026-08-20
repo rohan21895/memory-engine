@@ -39,6 +39,10 @@ from urllib.parse import unquote
 
 REVIEW_FILENAME = "album-review.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# The pipeline and classifier need the repo venv's packages; the server
+# itself is stdlib-only and runs on whatever python launched it.
+_VENV = REPO_ROOT / ".venv" / "bin" / "python"
+PYTHON = str(_VENV) if _VENV.exists() else sys.executable
 _MEDIA_SUFFIXES = {
     ".jpg", ".jpeg", ".png", ".heic", ".heif", ".tif", ".tiff", ".webp",
     ".dng", ".cr2", ".cr3", ".nef", ".arw", ".mp4", ".mov",
@@ -129,10 +133,27 @@ def _free_port() -> int:
         return probe.getsockname()[1]
 
 
-def _stream(cmd: list[str], cwd: Path) -> int:
+def _env(pythonpath: str) -> dict[str, str]:
+    """The environment run-photeo.sh gives every engine process: model loads
+    allowed in development mode, imports resolved by explicit PYTHONPATH so
+    the working directory stops mattering."""
+    import os  # noqa: PLC0415
+
+    env = dict(os.environ)
+    env["MEMORY_ENGINE_ALLOW_UNVERIFIED_MODELS"] = "1"
+    env["PYTHONPATH"] = pythonpath
+    return env
+
+
+_PIPELINE_ENV = str(REPO_ROOT / "services" / "pipeline")
+_HOST_ENV = f"{REPO_ROOT}:{REPO_ROOT / 'workers' / 'ml-runtime'}"
+
+
+def _stream(cmd: list[str], cwd: Path, pythonpath: str = _PIPELINE_ENV) -> int:
     """Run a command, echoing each output line into the flow log."""
     process = subprocess.Popen(
-        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        cmd, cwd=cwd, env=_env(pythonpath),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     assert process.stdout is not None
     for line in process.stdout:
@@ -149,7 +170,7 @@ def run_pipeline_flow(source: Path, workdir: Path, photos: int) -> None:
     database does not exist until ingest has run -- hence ingest first, host
     second, everything else third.
     """
-    python = sys.executable
+    python = PYTHON
     host = None
     try:
         FLOW.say(f"Importing {source} ...")
@@ -167,15 +188,27 @@ def run_pipeline_flow(source: Path, workdir: Path, photos: int) -> None:
         host = subprocess.Popen(
             [python, "-m", "memory_engine_ml_runtime", "--port", str(port),
              "--database", str(workdir / "library.db")],
-            cwd=REPO_ROOT / "workers" / "ml-runtime",
+            cwd=REPO_ROOT / "workers" / "ml-runtime", env=_env(_HOST_ENV),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         assert host.stdout is not None
-        banner = host.stdout.readline().strip()  # blocks until it serves
-        if host.poll() is not None:
-            FLOW.fail(f"The model host refused to start: {banner}")
+        # Read until the serving banner, echoing everything: a crash prints a
+        # traceback, and its FIRST line is not the story.
+        started = False
+        for line in host.stdout:
+            FLOW.say("  " + line.rstrip())
+            if "serving" in line:
+                started = True
+                break
+        if not started:
+            host.wait()
+            FLOW.fail("The model host refused to start -- see the log above.")
             return
-        FLOW.say("  " + banner)
+        # Keep draining the host's output for the rest of its life, or the
+        # pipe buffer fills and BLOCKS the host mid-inference.
+        threading.Thread(
+            target=lambda: [None for _ in host.stdout], daemon=True
+        ).start()
 
         # No render here: the first PDF nobody has reviewed is minutes of
         # work and hundreds of megabytes thrown away. Render happens once,
@@ -222,13 +255,19 @@ def _classify_clearance(workdir: Path, album: Path, override: bool) -> dict | No
     user. With it, the user's approval is recorded on the manifest
     (decided_by, per item, on disk) -- never applied silently.
     """
-    cmd = [sys.executable, str(REPO_ROOT / "scripts" / "classify_album_clearance.py"),
+    manifest = workdir / "print-clearance.json"
+    before = manifest.stat().st_mtime if manifest.exists() else None
+    cmd = [PYTHON, str(REPO_ROOT / "scripts" / "classify_album_clearance.py"),
            "--workdir", str(workdir), "--album", str(album)]
     if override:
         cmd += ["--override-blocked-by", "rohan"]
-    if _stream(cmd, cwd=REPO_ROOT) != 0:
+    # The classifier exits non-zero when publication is DENIED -- that is a
+    # verdict, not a crash. The failure signal is a manifest that never got
+    # written (or rewritten).
+    _stream(cmd, cwd=REPO_ROOT)
+    if not manifest.exists() or manifest.stat().st_mtime == before:
         return None
-    return json.loads((workdir / "print-clearance.json").read_text(encoding="utf-8"))
+    return json.loads(manifest.read_text(encoding="utf-8"))
 
 
 def run_finalize_flow(review: dict, approved_flagged: bool = False) -> None:
@@ -241,7 +280,7 @@ def run_finalize_flow(review: dict, approved_flagged: bool = False) -> None:
 
     FLOW.say("Re-planning the album with your choices ...")
     code = _stream(
-        [sys.executable, "-m", "memory_engine_pipeline",
+        [PYTHON, "-m", "memory_engine_pipeline",
          str(source or workdir), "--workdir", str(workdir),
          "--stages", "album"],
         cwd=REPO_ROOT / "services" / "pipeline",
@@ -272,7 +311,7 @@ def run_finalize_flow(review: dict, approved_flagged: bool = False) -> None:
 
     FLOW.say("Rendering your final album (this takes a few minutes) ...")
     code = _stream(
-        [sys.executable, "-m", "memory_engine_pipeline",
+        [PYTHON, "-m", "memory_engine_pipeline",
          str(source or workdir), "--workdir", str(workdir),
          "--stages", "album,render-print", "--allow-development-clearance"],
         cwd=REPO_ROOT / "services" / "pipeline",
@@ -365,13 +404,35 @@ _PAGE = """<!doctype html>
   <p>Point Photeo at a folder of photos. Everything runs on this machine —
      the photos never leave it.</p>
   <label>FOLDER OF PHOTOS</label>
-  <input id="folder" placeholder="/Users/you/Pictures/our-trip" spellcheck="false">
+  <div style="display:flex; gap:10px">
+    <input id="folder" placeholder="no folder chosen yet" readonly
+           style="cursor:pointer" onclick="openBrowser()">
+    <button onclick="openBrowser()" style="margin:0; font:13px 'SF Mono', Menlo, monospace;
+      background:none; border:1px solid #6e6754; color:#e8e4dc; padding:0 18px;
+      cursor:pointer; white-space:nowrap">Choose&hellip;</button>
+  </div>
   <label>ALBUM NAME</label>
   <input id="name" placeholder="our-trip" spellcheck="false">
   <label>PHOTOS IN THE ALBUM</label>
   <input id="count" value="25" inputmode="numeric">
   <button onclick="start()">Build my album</button>
   <div class="err" id="err"></div>
+</div>
+
+<div id="browser" class="hidden" style="position:fixed; inset:0; background:rgba(10,9,8,0.92); overflow-y:auto; z-index:10">
+  <div style="max-width:640px; margin:60px auto; background:#1c1a17; border:1px solid #2c2a25; padding:24px 28px">
+    <h2 style="font-size:17px; font-weight:normal; padding-bottom:4px">Choose a folder</h2>
+    <div id="bpath" style="font:12px 'SF Mono', Menlo, monospace; color:#9a927f; padding-bottom:14px; word-break:break-all"></div>
+    <div id="bmedia" style="font:12px 'SF Mono', Menlo, monospace; color:#c8a24a; padding-bottom:10px"></div>
+    <div id="bdirs" style="max-height:45vh; overflow-y:auto; border-top:1px solid #2c2a25"></div>
+    <div style="display:flex; gap:12px; padding-top:20px">
+      <button onclick="useFolder()" style="font:13px 'SF Mono', Menlo, monospace; background:#c8a24a;
+        color:#141311; border:none; padding:11px 22px; cursor:pointer">Use this folder</button>
+      <button onclick="document.getElementById('browser').classList.add('hidden')"
+        style="font:13px 'SF Mono', Menlo, monospace; background:none; border:1px solid #6e6754;
+        color:#e8e4dc; padding:11px 22px; cursor:pointer">Cancel</button>
+    </div>
+  </div>
 </div>
 
 <div id="progress" class="hidden">
@@ -453,6 +514,37 @@ function route(st) {
 async function approveFlagged() {
   const res = await fetch("/approve", {method: "POST", body: "{}"});
   if (res.ok) { show("progress"); poll(); }
+}
+let browsePath = null;
+async function browse(path) {
+  const res = await fetch("/browse" + (path ? "?path=" + encodeURIComponent(path) : ""));
+  if (!res.ok) return;
+  const d = await res.json();
+  browsePath = d.path;
+  document.getElementById("bpath").textContent = d.path;
+  document.getElementById("bmedia").textContent =
+    d.media_count ? d.media_count + " photo(s)/video(s) here" : "no photos directly in this folder";
+  const list = document.getElementById("bdirs");
+  list.innerHTML = "";
+  const row = (label, target) => {
+    const div = document.createElement("div");
+    div.textContent = label;
+    div.style.cssText = "padding:9px 6px; border-bottom:1px solid #2c2a25; cursor:pointer; font:13px 'SF Mono', Menlo, monospace";
+    div.onmouseenter = () => div.style.color = "#c8a24a";
+    div.onmouseleave = () => div.style.color = "";
+    div.onclick = () => browse(target);
+    list.appendChild(div);
+  };
+  if (d.parent) row("← up one level", d.parent);
+  for (const dir of d.dirs) row(dir.name + "/", dir.path);
+  document.getElementById("browser").classList.remove("hidden");
+}
+function openBrowser() { browse(browsePath); }
+function useFolder() {
+  document.getElementById("folder").value = browsePath || "";
+  const name = document.getElementById("name");
+  if (!name.value && browsePath) name.value = browsePath.split("/").filter(Boolean).pop();
+  document.getElementById("browser").classList.add("hidden");
 }
 async function start() {
   const folder = document.getElementById("folder").value.trim();
@@ -600,6 +692,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 })
         elif self.path == "/data":
             self._data()
+        elif self.path.startswith("/browse"):
+            self._browse()
         elif self.path == "/album.pdf":
             pdf = FLOW.pdf
             if pdf is None or not pdf.is_file():
@@ -621,6 +715,36 @@ class ReviewHandler(BaseHTTPRequestHandler):
             self._send(200, path.read_bytes(), "image/jpeg")
         else:
             self._send(404, b"not found", "text/plain")
+
+    def _browse(self) -> None:
+        """The folder picker's eyes: list one directory's subfolders and how
+        many photos sit directly in it. Localhost prototype of the desktop
+        app's native folder dialog -- the server IS the user's machine."""
+        from urllib.parse import parse_qs, urlparse  # noqa: PLC0415
+
+        query = parse_qs(urlparse(self.path).query)
+        raw = (query.get("path") or [str(Path.home())])[0]
+        path = Path(raw).expanduser().resolve()
+        if not path.is_dir():
+            path = Path.home()
+        dirs = []
+        media_count = 0
+        try:
+            for entry in sorted(path.iterdir(), key=lambda p: p.name.lower()):
+                if entry.name.startswith("."):
+                    continue
+                if entry.is_dir():
+                    dirs.append({"name": entry.name, "path": str(entry)})
+                elif entry.suffix.lower() in _MEDIA_SUFFIXES:
+                    media_count += 1
+        except PermissionError:
+            pass
+        self._json(200, {
+            "path": str(path),
+            "parent": str(path.parent) if path != path.parent else None,
+            "dirs": dirs,
+            "media_count": media_count,
+        })
 
     def _data(self) -> None:
         sidecar = FLOW.sidecar

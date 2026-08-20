@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "album-review",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["scripts/demo/review_album.py", "--port", "4189"],
+      "port": 4189
+    }
+  ]
+}
