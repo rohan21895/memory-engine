@@ -55,6 +55,7 @@ __all__ = [
     "SUPPORTED_PROXY_KINDS",
     "face_visibility",
     "measure",
+    "measure_face_exposure",
     "measure_face_sharpness",
 ]
 
@@ -370,3 +371,41 @@ def measure_face_sharpness(
                 )
             )
     return results
+
+
+def measure_face_exposure(
+    path: str | Path, bbox: Mapping[str, float]
+) -> tuple[float, float]:
+    """(mean luma in [0,1], clipped fraction) of one face crop.
+
+    `bbox` is normalised {x, y, w, h} against the ORIENTED image, the same
+    convention `measure_face_sharpness` reads, so EXIF orientation is applied
+    before any pixel coordinate is computed. The clipped fraction counts
+    pixels at or past the image-wide HIGHLIGHT_LEVEL / SHADOW_LEVEL constants:
+    a face is judged blown or crushed by the same levels a frame is.
+
+    Unlike sharpness this measure is scale-free (a mean and a fraction), so
+    there is no proxy-kind calibration to enforce and no resize -- any
+    rendition of the oriented image gives the same claim. Pure and transient:
+    album planning calls it on demand, nothing stores the result.
+    """
+    import numpy  # noqa: PLC0415
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
+    file_path = Path(path)
+    if not file_path.is_file():
+        raise ClassicalQualityError("image file is missing")
+    with Image.open(file_path) as handle:
+        grey = ImageOps.exif_transpose(handle).convert("L")
+        width, height = grey.size
+        x0 = max(0, int(float(bbox["x"]) * width))
+        y0 = max(0, int(float(bbox["y"]) * height))
+        x1 = min(width, int((float(bbox["x"]) + float(bbox["w"])) * width))
+        y1 = min(height, int((float(bbox["y"]) + float(bbox["h"])) * height))
+        if x1 <= x0 or y1 <= y0:
+            raise ClassicalQualityError("face box does not cover a single pixel")
+        crop = numpy.asarray(grey.crop((x0, y0, x1, y1)), dtype=numpy.float64) / 255.0
+    clipped = float(
+        numpy.count_nonzero((crop >= HIGHLIGHT_LEVEL) | (crop <= SHADOW_LEVEL))
+    ) / crop.size
+    return round(float(numpy.mean(crop)), 6), round(clipped, 6)

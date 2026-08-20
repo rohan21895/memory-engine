@@ -79,7 +79,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping
+from typing import Mapping, Sequence
 
 # Bump when a signal is added, removed or redefined. Matches
 # PrefEvent.FeatureContext.feature_set_id: a stored feature map is meaningless
@@ -359,21 +359,20 @@ class Weights:
       * `face_quality` is heavy when faces are present, because in a family
         library a clear face beats a marginally sharper frame without one.
 
-        BUT NOTE WHAT IT ACTUALLY MEASURES. The contract defines it as the BEST
-        face in the frame, not the worst and not the average. Codex pointed out
-        that this file previously justified the weight with "everyone's eyes are
-        open", which best-in-frame cannot express: in a group photo one
-        excellent face masks four blinking ones while collecting the full 0.18.
-
-        That is a real limitation of the signal, not of the weighting, and it is
-        recorded here rather than papered over. The fix is a worst-face or
-        face-count-weighted aggregate in FaceRecord, which is a contract change
-        and belongs with the album engine's group-photo work -- see the note in
-        docs/. Until then the weight is justified by "a clear subject", which is
-        what the signal supports.
+        WHAT IT MEASURES, SINCE default-v2. The group-photo blind spot recorded
+        here in v1 -- face_quality was a MAX over significant faces, so one
+        excellent face masked four blinking ones while collecting the full
+        0.18 -- is now closed. The faces stage computes the summary with
+        `aggregate_face_quality` (this module), a min-anchored blend over ALL
+        significant faces (weighted min + p10 + mean + eyes-open ratio), so
+        "everyone is visible, in focus, and awake" is once again the claim the
+        weight is justified by. The weight values themselves are unchanged from
+        v1; the id bumped because the SEMANTICS of the signal it weighs changed,
+        and a score attributed to "default-v2" must not be compared against one
+        whose face_quality still means best-in-frame.
     """
 
-    weights_id: str = "default-v1"
+    weights_id: str = "default-v2"
 
     sharpness: float = 0.22
     exposure: float = 0.18
@@ -570,6 +569,116 @@ def signals_from_media_record(
         is_black_frame=bool(quality.get("is_black_frame", False)),
         is_lens_obstructed=bool(quality.get("is_lens_obstructed", False)),
     )
+
+
+# Weights of the group-photo face-quality aggregate, in one place so the
+# renormalised no-eyes-data variant is COMPUTED from these rather than being a
+# second set of magic decimals that drifts from the first.
+_FACE_AGG_W_MIN = 0.45
+_FACE_AGG_W_P10 = 0.20
+_FACE_AGG_W_MEAN = 0.20
+_FACE_AGG_W_EYES = 0.15
+
+
+def _p10(sorted_values: Sequence[float]) -> float:
+    """Deterministic 10th percentile: lower-value convention, no interpolation.
+
+    The value at index ceil(0.10 * n) - 1 of the ascending sort (floored at 0).
+    With n <= 10 that index is 0, so p10 == min -- acceptable and deliberate:
+    for the small face counts of a family photo the term simply reinforces the
+    min, and it only starts to soften (second-worst, third-worst...) once the
+    crowd is large enough that a single worst face should not carry 0.65 of the
+    score alone. No interpolation, because interpolated quantiles differ
+    between conventions and libraries, and this number feeds a digest-attributed
+    score that must be bit-identical across machines.
+    """
+    index = max(0, math.ceil(0.10 * len(sorted_values)) - 1)
+    return sorted_values[index]
+
+
+def aggregate_face_quality(
+    qualities: Sequence[float], eyes_open: Sequence[float | None]
+) -> float:
+    """One face_quality claim for a photo, from ALL its significant faces.
+
+    Closes the group-photo blind spot: the summary used to be max() over
+    significant faces, and a MAX is the wrong shape for the claim a family
+    album makes. Nine perfect faces and one blinking key person is not an
+    excellent group photo -- so the aggregate is anchored on the WEIGHTED MIN,
+    not the mean (owner's framework §6: aggregate per-person with weighted
+    min; one blinking person must not hide behind a smiling majority).
+
+        0.45 * min(q)  -- the worst face dominates, by design
+      + 0.20 * p10(q)  -- with n <= 10 this equals min (see _p10); in a crowd
+                          it is the near-worst, so one stranger's face in the
+                          background cannot single-handedly floor a wedding
+      + 0.20 * mean(q) -- the majority still counts for something
+      + 0.15 * eyes-open ratio, the fraction of faces whose stored eyes_open
+        Confidence is >= 0.5. 0.5 is neutral in the stored mapping, so >= is
+        "no negative evidence": an unremarkable eye state must not read as a
+        blink. Faces with eyes_open None are unmeasured and excluded from the
+        ratio -- a missing measurement never defaults to open OR closed. When
+        EVERY face is unmeasured (a pre-backfill library) the term is dropped
+        and the remaining three weights renormalise to sum to 1, computed from
+        the constants above rather than hardcoded, per this module's rule:
+        missing signals renormalise, they do not default.
+
+    DEFERRED, DELIBERATELY:
+      * A synchrony term (everyone looking at the camera at once) -- needs a
+        per-face gaze signal that does not exist yet.
+      * The importance-weighted min (the album owner's family outranks a
+        photobombing guest) -- needs key-people data from face clusters and
+        the review queue; until it exists every significant face weighs the
+        same, which over-punishes strangers but never hides a family blink.
+
+    `qualities[i]` and `eyes_open[i]` describe the same significant face:
+    qualities are the per-face sharpness x visibility values on [0,1] the
+    faces stage fuses, eyes_open the stored [0,1] Confidence or None when
+    unmeasured. Empty `qualities` raises SignalError: the faces stage skips
+    the summary write entirely when a photo has zero significant faces
+    (absence of faces is not a face-quality claim), so an empty call here is
+    a caller bug, not a photo state.
+
+    Result quantised to six decimals like every score in this module.
+    """
+    if len(qualities) == 0:
+        raise SignalError(
+            "aggregate_face_quality over zero faces. A photo with no "
+            "significant faces has NO face_quality -- the faces stage skips "
+            "the summary write, it does not write an aggregate of nothing."
+        )
+    if len(qualities) != len(eyes_open):
+        raise SignalError(
+            f"{len(qualities)} qualities but {len(eyes_open)} eyes_open values; "
+            "index i of both must describe the same face"
+        )
+    for name, values in (("qualities", qualities), ("eyes_open", eyes_open)):
+        for value in values:
+            if value is None and name == "eyes_open":
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise SignalError(f"{name} contains {value!r}, not a number")
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise SignalError(
+                    f"{name} contains {value!r}, outside the [0,1] Unit the "
+                    "contract declares; an upstream normalisation is missing"
+                )
+
+    ordered = sorted(float(q) for q in qualities)
+    quality_terms = (
+        (_FACE_AGG_W_MIN, ordered[0]),
+        (_FACE_AGG_W_P10, _p10(ordered)),
+        (_FACE_AGG_W_MEAN, sum(ordered) / len(ordered)),
+    )
+
+    measured_eyes = [e for e in eyes_open if e is not None]
+    if measured_eyes:
+        ratio = sum(1 for e in measured_eyes if e >= 0.5) / len(measured_eyes)
+        total = sum(w * v for w, v in quality_terms) + _FACE_AGG_W_EYES * ratio
+    else:
+        live = sum(w for w, _ in quality_terms)
+        total = sum((w / live) * v for w, v in quality_terms)
+    return _quantise(min(max(total, 0.0), 1.0))
 
 
 # Elimination reasons, in the order they are checked. Order is fixed so two

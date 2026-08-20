@@ -46,7 +46,9 @@ is still protected from the guillotine.
 from __future__ import annotations
 
 import json
+import math
 import struct
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -85,7 +87,7 @@ def run(ctx: StageContext) -> StageResult:
     backfilled = _backfill_face_sharpness(ctx, records)
     if backfilled:
         ctx.reporter.event(
-            STAGE, "note", f"measured face sharpness for {backfilled} face(s)"
+            STAGE, "note", f"measured face quality for {backfilled} face(s)"
         )
 
     from memory_engine_face.clustering import FaceObservation  # noqa: PLC0415
@@ -341,7 +343,10 @@ def run(ctx: StageContext) -> StageResult:
 #: changes so the backfill recomputes every face rather than a silent
 #: redefinition riding on old numbers. 1-1-0: sharpness x visibility.
 #: 1-2-0: adds `attributes.head_sharpness` (same fusion formula).
-_FACE_QUALITY_RUN_ID = "face-quality-1-2-0"
+#: 1-3-0: adds per-face expression (`attributes.eyes_open`, `attributes.smile`)
+#: for significant faces, and replaces the MAX face-quality rollup with
+#: `memory_engine_ranking.fusion.aggregate_face_quality`.
+_FACE_QUALITY_RUN_ID = "face-quality-1-3-0"
 
 #: The head region is the face box grown by this factor about its centre:
 #: wide enough to take in hair and shoulders, the parts that smear first when
@@ -349,21 +354,294 @@ _FACE_QUALITY_RUN_ID = "face-quality-1-2-0"
 #: mid-gesture frame -- the face gate cannot see it, this one exists to.
 _HEAD_BOX_SCALE = 1.8
 
+#: The expression crop is the face box grown by this factor about its centre:
+#: a TIGHT face crop with just enough margin that eyes near the box edge are
+#: not sliced -- the expression-head axes were written for tight face crops,
+#: not for head-and-shoulders regions.
+_EXPRESSION_BOX_SCALE = 1.3
 
-def _head_box(box: dict[str, Any]) -> dict[str, float]:
-    """The face bbox grown `_HEAD_BOX_SCALE`x about its centre, clamped."""
+#: FROZEN contrast -> Confidence mapping for `attributes.eyes_open` and
+#: `attributes.smile`: round(min(1.0, max(0.0, 0.5 + contrast * 5.0)), 6).
+#: Any monotone map works -- selection ranks percentiles -- but this one is
+#: fixed so stored values stay comparable across runs.
+PER_FACE_CONTRAST_SCALE = 5.0
+
+#: The expression-head axes scored per face, and the FaceAttributes slot each
+#: one is stored into. The `face_*` axes are the ones written for tight face
+#: crops; the unprefixed `smile`/`awake` axes are whole-photo axes.
+_EXPRESSION_AXES = (("eyes_open", "face_eyes_open"), ("smile", "face_smile"))
+
+#: Where the built expression head lives, relative to the repo root. Mirrors
+#: `stages.album._load_expression_head` -- replicated rather than imported so
+#: this stage does not couple to a module another agent is editing.
+_EXPRESSION_HEAD_PATH = (
+    "models", "weights", "expression-head", "expression-siglip-head.v1.json"
+)
+
+#: Below this many pixels on either edge, a crop carries no expression
+#: evidence worth embedding; the face keeps null expression attributes.
+_EXPRESSION_MIN_EDGE_PX = 8
+
+
+def _grown_box(box: dict[str, Any], scale: float) -> dict[str, float]:
+    """The face bbox grown `scale`x about its centre, clamped to the frame."""
     cx = float(box["x"]) + float(box["w"]) / 2.0
     cy = float(box["y"]) + float(box["h"]) / 2.0
-    w = min(1.0, float(box["w"]) * _HEAD_BOX_SCALE)
-    h = min(1.0, float(box["h"]) * _HEAD_BOX_SCALE)
+    w = min(1.0, float(box["w"]) * scale)
+    h = min(1.0, float(box["h"]) * scale)
     x = min(max(cx - w / 2.0, 0.0), 1.0 - w)
     y = min(max(cy - h / 2.0, 0.0), 1.0 - h)
     return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _head_box(box: dict[str, Any]) -> dict[str, float]:
+    """The face bbox grown `_HEAD_BOX_SCALE`x about its centre, clamped."""
+    return _grown_box(box, _HEAD_BOX_SCALE)
+
+
+def _expression_confidence(contrast: float) -> float:
+    """The frozen contrast -> Confidence mapping. See PER_FACE_CONTRAST_SCALE."""
+    return round(
+        min(1.0, max(0.0, 0.5 + float(contrast) * PER_FACE_CONTRAST_SCALE)), 6
+    )
 
 #: A face below this fraction of the frame is background; it neither lifts a
 #: photo's face_quality nor should its blur condemn one. Mirrors the album
 #: stage's significance floor.
 _FACE_SUMMARY_MIN_AREA = 0.02
+
+
+def _expression_crops(
+    path: Path, boxes: Sequence[Mapping[str, float]]
+) -> list[Any]:
+    """RGB face crops from one image, in box order. None = too small to crop.
+
+    `boxes` are normalised {x, y, w, h} against the ORIENTED frame -- exactly
+    the convention `classical.measure_face_sharpness` reads -- so the stored
+    image is EXIF-transposed before any pixel coordinate is computed. Each box
+    is grown `_EXPRESSION_BOX_SCALE`x about its centre and clamped: a tight
+    face crop with margin enough that eyes at the box edge survive.
+    """
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
+    with Image.open(path) as handle:
+        oriented = ImageOps.exif_transpose(handle).convert("RGB")
+    width, height = oriented.size
+    crops: list[Any] = []
+    for box in boxes:
+        grown = _grown_box(box, _EXPRESSION_BOX_SCALE)
+        x0 = max(0, int(grown["x"] * width))
+        y0 = max(0, int(grown["y"] * height))
+        x1 = min(width, int((grown["x"] + grown["w"]) * width))
+        y1 = min(height, int((grown["y"] + grown["h"]) * height))
+        if x1 - x0 < _EXPRESSION_MIN_EDGE_PX or y1 - y0 < _EXPRESSION_MIN_EDGE_PX:
+            crops.append(None)
+            continue
+        crops.append(oriented.crop((x0, y0, x1, y1)))
+    return crops
+
+
+def _expression_source_path(ctx: StageContext, media_id: str) -> Path | None:
+    """The image the expression crop is cut from: the ORIGINAL when it can be
+    resolved, else the thumbnail proxy.
+
+    The original is preferred because the median significant face is small: on
+    a 4000px+ original its crop is still hundreds of pixels, while the same
+    crop from a 512px thumbnail is a few dozen -- measurably noisier evidence.
+    This is a read of the source file for local measurement only; nothing is
+    copied and nothing leaves the device.
+    """
+    record = ctx.database.get_media(media_id)
+    for source in (record or {}).get("sources") or []:
+        path = source.get("path")
+        if path and Path(path).is_file():
+            return Path(path)
+    proxies = ctx.database.proxies_for_media(media_id, kind="thumbnail_512")
+    path = proxies[0].get("path") if proxies else None
+    if path and Path(path).is_file():
+        return Path(path)
+    return None
+
+
+def _needs_expression(face: dict[str, Any]) -> bool:
+    """True for a significant face whose expression is not yet stored.
+
+    Insignificant faces (< `_FACE_SUMMARY_MIN_AREA`) keep null expression
+    attributes on purpose: their crops are noise, not evidence, and the
+    rollup never reads them.
+    """
+    if (face["detection"].get("face_area_ratio") or 0.0) < _FACE_SUMMARY_MIN_AREA:
+        return False
+    attributes = face.get("attributes") or {}
+    return attributes.get("eyes_open") is None or attributes.get("smile") is None
+
+
+class _ExpressionScorer:
+    """SigLIP embeddings for tight face crops, scored on the head's face axes.
+
+    Unavailability is a STATE here, not an exception: the ml host being down,
+    the head artifact missing, or the head lacking the face axes each produce
+    one WARNING and a scorer that answers nothing -- the backfill still writes
+    sharpness and every face keeps null eyes_open/smile. That is deliberate
+    degradation, not silence: the warning names the reason every time.
+    """
+
+    def __init__(self, ctx: StageContext) -> None:
+        self._ctx = ctx
+        self._client: Any = None
+        self._axes: dict[str, Any] | None = None
+        self._prepared = False
+        self._disabled = False
+
+    def _disable(self, reason: str) -> None:
+        self._disabled = True
+        self._ctx.reporter.event(
+            STAGE,
+            "warning",
+            f"face expression scoring is unavailable ({reason}); "
+            "eyes_open/smile stay null and sharpness is still written",
+        )
+
+    def available(self) -> bool:
+        if not self._prepared:
+            self._prepared = True
+            self._prepare()
+        return not self._disabled
+
+    def _prepare(self) -> None:
+        from .. import mlruntime  # noqa: PLC0415
+        from .analysis import EMBEDDING_SPACES  # noqa: PLC0415
+
+        settings = self._ctx.settings
+        space = EMBEDDING_SPACES.get(settings.embedding_model, (None, 0))[0]
+        if space is None:
+            self._disable(f"no vector space for {settings.embedding_model!r}")
+            return
+
+        # Mirrors stages.album._load_expression_head: a built, gitignored
+        # artifact; absence is a working configuration, not an error.
+        path = self._ctx.repo_root.joinpath(*_EXPRESSION_HEAD_PATH)
+        try:
+            head = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self._disable(f"no readable expression head at {path.name}")
+            return
+        if head.get("space") != space:
+            self._disable(
+                f"the expression head was built for space {head.get('space')!r}, "
+                f"not {space!r}"
+            )
+            return
+        axes = {
+            axis.get("name"): axis
+            for axis in head.get("axes") or []
+            if axis.get("name")
+        }
+        missing = [name for _, name in _EXPRESSION_AXES if name not in axes]
+        if missing:
+            self._disable(f"the expression head lacks axes {missing}")
+            return
+
+        try:
+            status = mlruntime.probe(
+                endpoint=settings.ml_runtime_endpoint,
+                required_models=[settings.embedding_model],
+                timeout_s=settings.ml_runtime_timeout_s,
+            )
+        except Exception as error:  # noqa: BLE001 - degradation, never a crash
+            self._disable(f"probing the ml host failed: {error}")
+            return
+        if not status.available:
+            self._disable(status.detail)
+            return
+        try:
+            self._client = mlruntime.MlRuntimeClient(
+                settings.ml_runtime_endpoint, expected_pins=status.model_pins
+            )
+        except Exception as error:  # noqa: BLE001 - degradation, never a crash
+            self._disable(f"the ml client could not be built: {error}")
+            return
+        self._axes = {name: axes[name] for _, name in _EXPRESSION_AXES}
+
+    def score(self, crops: Mapping[str, Any]) -> dict[str, dict[str, float]]:
+        """face_id -> {"eyes_open": Confidence, "smile": Confidence}.
+
+        A face missing from the answer stays null; a transport failure
+        disables the scorer for the rest of the run (the host caches request
+        ids, so a blind retry of the same payload is not an option, and a
+        host that dropped one batch mid-backfill is most likely gone).
+        """
+        if not crops or not self.available():
+            return {}
+        from uuid import uuid4  # noqa: PLC0415
+
+        from .. import mlruntime  # noqa: PLC0415
+
+        items: dict[str, Any] = {}
+        for face_id, crop in crops.items():
+            try:
+                items[face_id] = mlruntime.siglip2_preprocess(crop)
+            except mlruntime.MlRuntimeError as error:
+                self._ctx.reporter.event(
+                    STAGE, "note", f"{face_id[:12]}: expression crop refused: {error}"
+                )
+        if not items:
+            return {}
+        try:
+            outcome = self._client.infer_tensors(
+                model_id=self._ctx.settings.embedding_model,
+                # Unique per call: the host caches request ids and refuses a
+                # reused id with a different payload.
+                request_id=f"face-expression-{uuid4().hex}",
+                items=items,
+                input_name=mlruntime.SIGLIP2_INPUT_NAME,
+            )
+        except mlruntime.MlRuntimeError as error:
+            self._disable(f"inference failed: {error}")
+            return {}
+        for failure in outcome.failures:
+            self._ctx.reporter.event(
+                STAGE,
+                "note",
+                f"{failure.item_id[:12]}: expression embedding failed: "
+                f"{failure.message or failure.code}",
+            )
+        results: dict[str, dict[str, float]] = {}
+        for face_id, values in outcome.tensors.items():
+            scores = self._score_axes(values)
+            if scores is not None:
+                results[face_id] = scores
+        return results
+
+    def _score_axes(self, values: Sequence[float]) -> dict[str, float] | None:
+        """Unit-normalise, then contrast = cos(emb, positive) - cos(emb, negative)."""
+        norm = math.sqrt(sum(float(v) * float(v) for v in values))
+        if norm == 0.0 or not math.isfinite(norm):
+            return None
+        unit = [float(v) / norm for v in values]
+        out: dict[str, float] = {}
+        for slot, axis_name in _EXPRESSION_AXES:
+            axis = (self._axes or {}).get(axis_name) or {}
+            positive, negative = axis.get("positive"), axis.get("negative")
+            if (
+                not positive
+                or not negative
+                or len(positive) != len(unit)
+                or len(negative) != len(unit)
+            ):
+                self._disable(
+                    f"axis {axis_name!r} does not match the embedding dimensions"
+                )
+                return None
+            contrast = sum(u * p for u, p in zip(unit, positive)) - sum(
+                u * n for u, n in zip(unit, negative)
+            )
+            out[slot] = _expression_confidence(contrast)
+        return out
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
 
 
 def _backfill_face_sharpness(ctx: StageContext, records: list[dict[str, Any]]) -> int:
@@ -374,13 +652,18 @@ def _backfill_face_sharpness(ctx: StageContext, records: list[dict[str, Any]]) -
     under an older fusion formula. A face whose proxy has gone missing is left
     unmeasured (None) -- absence of the proxy must not fabricate a claim.
 
-    Writes, per face, `attributes.sharpness` (the focus measurement) and
+    Writes, per face, `attributes.sharpness` (the focus measurement),
     `attributes.quality` = sharpness x visibility (the fused score album
     selection sorts on; visibility is the detector-confidence proxy from
-    `classical.face_visibility`). Then, per touched photo,
-    `MediaRecord.quality.face_quality` = the MAX fused quality over its
-    significant faces -- max, not mean, because "at least one face is clearly
-    visible and in focus" is the claim a family album cares about.
+    `classical.face_visibility`), and -- for significant faces, when the ml
+    host and the expression head are available -- `attributes.eyes_open` and
+    `attributes.smile` from SigLIP contrast against the head's face axes.
+    Expression degrades gracefully: host down, artifact missing, or axes
+    absent means ONE warning, sharpness still written, expression left null.
+    Then, per touched photo, `MediaRecord.quality.face_quality` =
+    `memory_engine_ranking.fusion.aggregate_face_quality` over its significant
+    faces (min-anchored, eyes-open aware -- the group-photo fix; the rollup
+    renormalises when no face has a measured eye state).
     """
     from ..classical import face_visibility, measure_face_sharpness  # noqa: PLC0415
 
@@ -392,62 +675,117 @@ def _backfill_face_sharpness(ctx: StageContext, records: list[dict[str, Any]]) -
             attributes.get("sharpness") is None
             or attributes.get("head_sharpness") is None
             or quality.get("run_id") != _FACE_QUALITY_RUN_ID
+            # A significant face without a stored expression re-pends, so a
+            # backfill run while the host was down is repaired by the next
+            # run with the host up rather than frozen forever.
+            or _needs_expression(record)
         ):
             pending.setdefault(record["media_id"], []).append(record)
     if not pending:
         return 0
 
     updated = 0
-    for media_id, faces in sorted(pending.items()):
-        needs_measure = [
-            face for face in faces
-            if (face.get("attributes") or {}).get("sharpness") is None
-            or (face.get("attributes") or {}).get("head_sharpness") is None
-        ]
-        if needs_measure:
-            proxies = ctx.database.proxies_for_media(media_id, kind="thumbnail_512")
-            path = proxies[0].get("path") if proxies else None
-            if path and Path(path).is_file():
-                boxes = [face["detection"]["bbox"] for face in needs_measure]
-                try:
-                    values = measure_face_sharpness(path, boxes)
-                    head_values = measure_face_sharpness(
-                        path, [_head_box(box) for box in boxes]
-                    )
-                except Exception as error:  # noqa: BLE001 - one bad proxy must
-                    # not abort the stage; the face stays unmeasured and the
-                    # album gate treats that as "no focus evidence", never as
-                    # sharp.
-                    ctx.reporter.event(
-                        STAGE, "note",
-                        f"face sharpness failed for {media_id[:12]}: {error}",
-                    )
-                    values = [None] * len(needs_measure)
-                    head_values = [None] * len(needs_measure)
-                for face, value, head in zip(
-                    needs_measure, values, head_values, strict=True
-                ):
+    scorer = _ExpressionScorer(ctx)
+    try:
+        for media_id, faces in sorted(pending.items()):
+            changed: set[str] = set()
+            needs_measure = [
+                face for face in faces
+                if (face.get("attributes") or {}).get("sharpness") is None
+                or (face.get("attributes") or {}).get("head_sharpness") is None
+            ]
+            if needs_measure:
+                proxies = ctx.database.proxies_for_media(media_id, kind="thumbnail_512")
+                path = proxies[0].get("path") if proxies else None
+                if path and Path(path).is_file():
+                    boxes = [face["detection"]["bbox"] for face in needs_measure]
+                    try:
+                        values = measure_face_sharpness(path, boxes)
+                        head_values = measure_face_sharpness(
+                            path, [_head_box(box) for box in boxes]
+                        )
+                    except Exception as error:  # noqa: BLE001 - one bad proxy must
+                        # not abort the stage; the face stays unmeasured and the
+                        # album gate treats that as "no focus evidence", never as
+                        # sharp.
+                        ctx.reporter.event(
+                            STAGE, "note",
+                            f"face sharpness failed for {media_id[:12]}: {error}",
+                        )
+                        values = [None] * len(needs_measure)
+                        head_values = [None] * len(needs_measure)
+                    for face, value, head in zip(
+                        needs_measure, values, head_values, strict=True
+                    ):
+                        attributes = dict(face.get("attributes") or {})
+                        # Changed means CHANGED: a face whose crop is too
+                        # small to measure re-measures its (deterministic)
+                        # head value every run, and rewriting the identical
+                        # record each time is churn, not repair.
+                        if value is not None and attributes.get("sharpness") != value:
+                            attributes["sharpness"] = value
+                            changed.add(face["face_id"])
+                        if head is not None and attributes.get("head_sharpness") != head:
+                            attributes["head_sharpness"] = head
+                            changed.add(face["face_id"])
+                        face["attributes"] = attributes
+
+            needs_expression = [face for face in faces if _needs_expression(face)]
+            if needs_expression and scorer.available():
+                source = _expression_source_path(ctx, media_id)
+                crops: list[Any] = [None] * len(needs_expression)
+                if source is not None:
+                    try:
+                        crops = _expression_crops(
+                            source,
+                            [face["detection"]["bbox"] for face in needs_expression],
+                        )
+                    except Exception as error:  # noqa: BLE001 - one unreadable
+                        # image must not abort the backfill; its faces keep
+                        # null expression and the note says why.
+                        ctx.reporter.event(
+                            STAGE, "note",
+                            f"expression crop failed for {media_id[:12]}: {error}",
+                        )
+                # Batched: one inference call carries every significant face
+                # of this photo.
+                scores = scorer.score({
+                    face["face_id"]: crop
+                    for face, crop in zip(needs_expression, crops, strict=True)
+                    if crop is not None
+                })
+                for face in needs_expression:
+                    result = scores.get(face["face_id"])
+                    if result is None:
+                        continue
                     attributes = dict(face.get("attributes") or {})
-                    if value is not None:
-                        attributes["sharpness"] = value
-                    if head is not None:
-                        attributes["head_sharpness"] = head
+                    attributes["eyes_open"] = result["eyes_open"]
+                    attributes["smile"] = result["smile"]
                     face["attributes"] = attributes
+                    changed.add(face["face_id"])
 
-        for face in faces:
-            attributes = dict(face.get("attributes") or {})
-            sharpness = attributes.get("sharpness")
-            if sharpness is None:
-                continue
-            fused = round(
-                sharpness * face_visibility(face["detection"]["detection_score"]), 6
-            )
-            attributes["quality"] = {"value": fused, "run_id": _FACE_QUALITY_RUN_ID}
-            face["attributes"] = attributes
-            ctx.database.put_face(face)
-            updated += 1
+            for face in faces:
+                attributes = dict(face.get("attributes") or {})
+                sharpness = attributes.get("sharpness")
+                if sharpness is not None:
+                    fused = round(
+                        sharpness
+                        * face_visibility(face["detection"]["detection_score"]),
+                        6,
+                    )
+                    quality = {"value": fused, "run_id": _FACE_QUALITY_RUN_ID}
+                    if attributes.get("quality") != quality:
+                        attributes["quality"] = quality
+                        changed.add(face["face_id"])
+                if face["face_id"] not in changed:
+                    continue
+                face["attributes"] = attributes
+                ctx.database.put_face(face)
+                updated += 1
 
-        _refresh_face_quality_summary(ctx, media_id)
+            _refresh_face_quality_summary(ctx, media_id)
+    finally:
+        scorer.close()
     return updated
 
 
@@ -456,23 +794,36 @@ def _refresh_face_quality_summary(ctx: StageContext, media_id: str) -> None:
 
     This is the number photo-quality fusion already knows how to weigh (0.18
     in the default profile) -- the plug was in the contract and the ranking
-    engine all along; this writes the value into it.
+    engine all along; this writes the value into it. The aggregate is
+    `memory_engine_ranking.fusion.aggregate_face_quality`, NOT max(): a max
+    let one excellent face mask four blinking ones in a group photo (the
+    blind spot fusion.py names), while the aggregate anchors on the worst
+    significant face and the eyes-open ratio, renormalising when no face has
+    a measured eye state.
     """
-    fused = [
-        ((face.get("attributes") or {}).get("quality") or {}).get("value")
-        for face in ctx.database.faces_for_media(media_id)
-        if ((face.get("attributes") or {}).get("quality") or {}).get("value")
-        is not None
-        and (face["detection"].get("face_area_ratio") or 0.0)
-        >= _FACE_SUMMARY_MIN_AREA
-    ]
-    if not fused:
+    from memory_engine_ranking.fusion import aggregate_face_quality  # noqa: PLC0415
+
+    qualities: list[float] = []
+    eyes_open: list[float | None] = []
+    for face in ctx.database.faces_for_media(media_id):
+        if (face["detection"].get("face_area_ratio") or 0.0) < _FACE_SUMMARY_MIN_AREA:
+            continue
+        attributes = face.get("attributes") or {}
+        value = (attributes.get("quality") or {}).get("value")
+        if value is None:
+            continue
+        qualities.append(value)
+        eyes_open.append(attributes.get("eyes_open"))
+    if not qualities:
         return
     record = ctx.database.get_media(media_id)
     if record is None:
         return
     quality = dict(record.get("quality") or {})
-    score = {"value": max(fused), "run_id": _FACE_QUALITY_RUN_ID}
+    score = {
+        "value": aggregate_face_quality(qualities, eyes_open),
+        "run_id": _FACE_QUALITY_RUN_ID,
+    }
     if quality.get("face_quality") == score:
         return
     quality["face_quality"] = score

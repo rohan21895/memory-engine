@@ -32,6 +32,7 @@ from memory_engine_ranking.fusion import (  # noqa: E402
     FusedScore,
     Signals,
     Weights,
+    aggregate_face_quality,
     eliminate,
     explain,
     fuse,
@@ -329,15 +330,138 @@ class TestWeighting(unittest.TestCase):
         self.assertEqual("user-42", fuse(signals, strict).weights_id)
 
 
+class TestAggregateFaceQuality(unittest.TestCase):
+    """The group-photo aggregate the faces stage writes into
+    MediaRecord.quality.face_quality since default-v2.
+
+    The blind spot this closes: the summary was max() over significant faces,
+    so one excellent face masked four blinking ones. The aggregate is anchored
+    on the min because nine perfect faces and one blinking key person is not
+    an excellent group photo.
+    """
+
+    def test_the_formula_on_a_known_vector(self):
+        # min=0.4, p10=0.4 (n=2 -> p10 == min), mean=0.6, eyes ratio=1.0
+        # 0.45*0.4 + 0.20*0.4 + 0.20*0.6 + 0.15*1.0 = 0.53
+        self.assertEqual(0.53, aggregate_face_quality([0.4, 0.8], [0.9, 0.9]))
+
+    def test_p10_is_the_second_smallest_once_the_crowd_is_large_enough(self):
+        """Lower-value convention, no interpolation: index ceil(0.1*n)-1.
+        At n=20 that is index 1, so the near-worst face starts to soften the
+        pure min without erasing it."""
+        qualities = [0.1, 0.2] + [0.9] * 18
+        eyes = [0.9] * 20
+        # 0.45*0.1 + 0.20*0.2 + 0.20*0.825 + 0.15*1.0 = 0.4
+        self.assertEqual(0.4, aggregate_face_quality(qualities, eyes))
+
+    def test_one_weak_face_among_nine_strong_scores_clearly_below_all_strong(self):
+        """The claim a max() could never make. Under the old summary both
+        photos reported 0.9; under the min-anchored aggregate the group shot
+        with one bad face drops far below the clean one."""
+        clean = aggregate_face_quality([0.9] * 10, [0.9] * 10)
+        one_bad = aggregate_face_quality([0.3] + [0.9] * 9, [0.9] * 10)
+        self.assertGreater(clean - one_bad, 0.3)
+
+    def test_one_blinker_among_nine_open_scores_below_all_eyes_open(self):
+        nine_open = aggregate_face_quality([0.9] * 10, [0.9] * 10)
+        one_blinker = aggregate_face_quality([0.9] * 10, [0.1] + [0.9] * 9)
+        self.assertLess(one_blinker, nine_open)
+        self.assertGreaterEqual(nine_open - one_blinker, 0.01)
+
+    def test_a_neutral_eye_confidence_is_not_a_blink(self):
+        """0.5 is neutral in the stored mapping; >= 0.5 counts as open,
+        because an unremarkable eye state is not negative evidence."""
+        neutral = aggregate_face_quality([0.8, 0.8], [0.5, 0.5])
+        open_ = aggregate_face_quality([0.8, 0.8], [0.9, 0.9])
+        self.assertEqual(neutral, open_)
+
+    def test_all_eyes_unmeasured_renormalises_rather_than_defaulting(self):
+        """A pre-backfill library drops the eyes term and the remaining three
+        weights renormalise to sum 1 -- so uniform face quality passes through
+        unchanged instead of being taxed 0.15 for a measurement nobody made."""
+        self.assertEqual(0.7, aggregate_face_quality([0.7, 0.7, 0.7], [None] * 3))
+        # And the renormalised weights are the computed 0.45/0.85 etc., not a
+        # second set of hardcoded decimals:
+        expected = round((0.45 * 0.4 + 0.20 * 0.4 + 0.20 * 0.6) / 0.85, 6)
+        self.assertEqual(expected, aggregate_face_quality([0.4, 0.8], [None, None]))
+
+    def test_a_partially_measured_photo_ignores_only_the_unmeasured_faces(self):
+        """None is unmeasured, never closed: the ratio is over measured faces
+        only, so a half-backfilled photo is not penalised for the backlog."""
+        self.assertEqual(
+            aggregate_face_quality([0.8, 0.8], [None, 0.9]),
+            aggregate_face_quality([0.8, 0.8], [0.9, 0.9]),
+        )
+
+    def test_a_single_face_degenerates_to_that_face(self):
+        # min == p10 == mean == 0.6; eyes open ratio 1.0
+        self.assertEqual(round(0.85 * 0.6 + 0.15, 6), aggregate_face_quality([0.6], [0.8]))
+        self.assertEqual(0.6, aggregate_face_quality([0.6], [None]))
+
+    def test_zero_faces_is_a_caller_bug_not_a_score(self):
+        """The faces stage skips the summary write when a photo has no
+        significant faces; an empty aggregate call must fail loudly rather
+        than fabricate a claim about faces that are not there."""
+        with self.assertRaises(SignalError):
+            aggregate_face_quality([], [])
+
+    def test_mismatched_lengths_are_refused(self):
+        """Index i of both sequences must describe the same face."""
+        with self.assertRaises(SignalError):
+            aggregate_face_quality([0.8, 0.9], [0.9])
+
+    def test_values_outside_the_unit_interval_are_refused(self):
+        for qualities, eyes in (
+            ([1.2], [0.9]),
+            ([0.8], [-0.1]),
+            ([float("nan")], [0.9]),
+            ([0.8], [float("inf")]),
+        ):
+            with self.subTest(qualities=qualities, eyes=eyes):
+                with self.assertRaises(SignalError):
+                    aggregate_face_quality(qualities, eyes)
+
+    def test_deterministic_and_quantised_to_six_decimals(self):
+        pairs = [(0.31, 0.7), (0.87, None), (0.44, 0.5), (0.91, 0.2), (0.66, 0.9)]
+        qualities = [q for q, _ in pairs]
+        eyes = [e for _, e in pairs]
+        value = aggregate_face_quality(qualities, eyes)
+        self.assertEqual(value, aggregate_face_quality(qualities, eyes))
+        self.assertEqual(value, round(value, 6))
+        # Face order is a detection artefact, not a property of the photo:
+        # permuting the (quality, eyes) pairs together must not move the score.
+        shuffled = sorted(pairs, key=lambda pair: (pair[0] * 7919) % 1.0)
+        self.assertEqual(
+            value,
+            aggregate_face_quality(
+                [q for q, _ in shuffled], [e for _, e in shuffled]
+            ),
+        )
+
+    def test_the_result_stays_inside_the_unit_interval(self):
+        self.assertEqual(1.0, aggregate_face_quality([1.0, 1.0], [1.0, 1.0]))
+        self.assertEqual(0.0, aggregate_face_quality([0.0, 0.0], [0.0, 0.0]))
+
+
 class TestProvenance(unittest.TestCase):
     """A score you cannot attribute is not reproducible -- the same argument
     that put a config digest in ModelPin."""
 
     def test_the_score_records_which_weights_produced_it(self):
         score = fuse(measured())
-        self.assertEqual("default-v1", score.weights_id)
+        self.assertEqual("default-v2", score.weights_id)
         self.assertEqual(Weights().digest(), score.weights_digest)
         self.assertEqual(FEATURE_SET_ID, score.feature_set_id)
+
+    def test_default_v2_kept_the_v1_weight_values_so_the_digest_is_unchanged(self):
+        """The v1->v2 bump is semantic -- face_quality became a min-anchored
+        group aggregate instead of a max -- not numeric. The digest covers
+        weight VALUES only (by design: renames are not refusions), so it must
+        be identical to a v1-named profile with the same numbers. Anything
+        else here means someone edited a weight alongside the rename."""
+        self.assertEqual(
+            Weights(weights_id="default-v1").digest(), Weights().digest()
+        )
 
     def test_weights_differing_only_by_name_are_the_same_fusion(self):
         self.assertEqual(Weights().digest(), Weights(weights_id="renamed").digest())
