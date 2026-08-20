@@ -730,6 +730,61 @@ class TestLayoutPage(unittest.TestCase):
             L.layout_page(photos, LAYFLAT, page_index=1, side="left")
 
 
+class TestHeroLayout(unittest.TestCase):
+    """Composed hero + companion pages: one dominant cell, one smaller, both
+    filling the page so almost no mat shows."""
+
+    def test_hero_frames_tile_the_box_with_a_dominant_cell(self):
+        geom = L.page_geometry(PERFECT, "left")
+        for template in (L.HERO_LEFT, L.HERO_TOP):
+            frames = L.hero_frames(geom, template, 6.0)
+            self.assertEqual(2, len(frames), template)
+            hero, companion = frames
+            for frame in frames:
+                self.assertTrue(geom.content_box.contains(frame), template)
+            self.assertFalse(hero.intersects(companion), template)
+            # The hero is unambiguously the larger cell.
+            self.assertGreater(hero.area_mm2, companion.area_mm2, template)
+
+    def test_hero_left_places_the_first_photo_as_the_dominant_cell(self):
+        photos = (photo(1, 6000, 4000), photo(2, 6000, 4000))
+        page = L.layout_page(
+            photos, PERFECT, page_index=1, side="left", template=L.HERO_LEFT
+        )
+        self.assertEqual(L.HERO_LEFT, page["layout"]["template_id"])
+        hero, companion = page["placements"]
+        hero_area = hero["frame"]["width_mm"] * hero["frame"]["height_mm"]
+        comp_area = companion["frame"]["width_mm"] * companion["frame"]["height_mm"]
+        self.assertGreater(hero_area, comp_area)
+        for placement in page["placements"]:
+            self.assertTrue(
+                L.placement_is_print_safe(placement, PERFECT["dpi_floor"])
+            )
+
+    def test_a_hero_page_needs_exactly_two_photos(self):
+        for n in (1, 3):
+            photos = tuple(photo(k, 6000, 4000) for k in range(1, n + 1))
+            with self.assertRaises(L.LayoutError):
+                L.layout_page(
+                    photos, PERFECT, page_index=1, side="left", template=L.HERO_TOP
+                )
+
+    def test_the_hero_ladder_carries_an_even_grid_fallback_after_it(self):
+        # The composed hero cover-crops to fill; if that would drop a face in
+        # the trim/gutter the placer refuses it and the page must revert to the
+        # even, never-cropped fit-grid rather than fail. So the ladder offers the
+        # hero FIRST and a fit-grid fallback right behind it.
+        geom = L.page_geometry(PERFECT, "left")
+        photos = (photo(1, 4000, 6000), photo(2, 4000, 6000))
+        options = L._arrangements(photos, geom, L.HERO_LEFT, 6.0)
+        self.assertEqual(L.HERO_LEFT, options[0].template_id)
+        self.assertTrue(
+            any(opt.template_id.startswith("fit_grid_") for opt in options[1:]),
+            "a composed hero page with no even-grid fallback would fail instead "
+            "of degrading when a companion crop is unsafe",
+        )
+
+
 # ---------------------------------------------------------------------------
 # album planning
 # ---------------------------------------------------------------------------

@@ -130,6 +130,10 @@ class Settings:
     icc_profile_path: str | None = None
     album_target_count: int = 24
     album_photos_per_page: int = 1
+    # Which design register to plan the album in (see album stage ALBUM_STYLES:
+    # gallery / cinematic / editorial). Part of album identity, so each style is
+    # its own content-addressed spec. None means the default (gallery).
+    album_style: str | None = None
 
     # What the reel planner is ASKED for. Landing on a cut point matters more
     # than hitting the number, so the realised length is usually shorter and the

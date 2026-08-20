@@ -150,6 +150,24 @@ SINGLE_INSET: Final = "single_inset"
 #: instead of white bands.
 BLUR_HERO: Final = "blur_hero"
 
+#: Composed "hero + supporting" pages -- one dominant image and a smaller
+#: companion, the asymmetric editorial pairing studios reach for instead of an
+#: even 50/50 grid. Both cells are cover-cropped (face-aligned) so they fill
+#: edge to edge and the page carries almost no mat: a clear dominant image with
+#: no wasted board. `_left`/`_top` is where the hero sits. Requested by name
+#: from the pacing layer, each with a gentle fit-grid fallback so a companion
+#: crop that would cut a face reverts to the even, never-cropped duo rather
+#: than failing the page. (A three-up variant waits on spread support -- three
+#: composed cells cannot survive the vendor page-minimum split-back on a book
+#: this size, so it would only be undone.)
+HERO_LEFT: Final = "hero_left"
+HERO_TOP: Final = "hero_top"
+_HERO_TEMPLATES: Final = frozenset({HERO_LEFT, HERO_TOP})
+#: The dominant cell's share of the long axis. 0.62 gives the hero clear
+#: primacy while leaving the companions large enough to read as photographs,
+#: not thumbnails.
+_HERO_FRACTION: Final = 0.62
+
 _SPINE_BY_SIDE: Final[Mapping[str, str | None]] = {
     # A left-hand page binds on its RIGHT edge and a right-hand page on its LEFT.
     # This mapping is the whole gutter story; everything else derives from it.
@@ -665,6 +683,44 @@ def grid_frames(geom: PageGeometry, spec: GridSpec) -> list[RectMm]:
 
 def grid_template_id(spec: GridSpec) -> str:
     return f"grid_{spec.columns}x{spec.rows}"
+
+
+def hero_frames(geom: PageGeometry, template: str, gutter_mm: float) -> list[RectMm]:
+    """Asymmetric hero + supporting cells tiling the content box.
+
+    One dominant cell takes `_HERO_FRACTION` of the split axis; the companions
+    fill the rest, separated from the hero and each other by one gutter. The
+    cells are returned in placement order -- hero first -- so the pacing layer
+    puts its best photo in slot 0. Every cell is a full RectMm the placer
+    cover-crops a photo into, so the page fills edge to edge.
+    """
+    box = geom.content_box
+    g = _non_negative(gutter_mm, "gutter_mm")
+    frac = _HERO_FRACTION
+
+    if template == HERO_LEFT:  # big left, one tall companion right
+        hero_w = (box.width_mm - g) * frac
+        comp_w = box.width_mm - g - hero_w
+        frames = [
+            RectMm(box.x_mm, box.y_mm, hero_w, box.height_mm),
+            RectMm(box.x_mm + hero_w + g, box.y_mm, comp_w, box.height_mm),
+        ]
+    elif template == HERO_TOP:  # big top, one wide companion below
+        hero_h = (box.height_mm - g) * frac
+        comp_h = box.height_mm - g - hero_h
+        frames = [
+            RectMm(box.x_mm, box.y_mm, box.width_mm, hero_h),
+            RectMm(box.x_mm, box.y_mm + hero_h + g, box.width_mm, comp_h),
+        ]
+    else:
+        raise LayoutError(f"unknown hero template {template!r}")
+
+    if any(f.width_mm <= 0.0 or f.height_mm <= 0.0 for f in frames):
+        raise LayoutError(
+            f"{template} with {gutter_mm}mm gutters does not fit the "
+            f"{box.width_mm}x{box.height_mm}mm content box"
+        )
+    return [f.rounded() for f in frames]
 
 
 def fit_cell(cell: RectMm, aspect: float) -> RectMm:
@@ -1309,6 +1365,26 @@ def _arrangements(
         options.append(
             _Arrangement(grid_template_id(spec), tuple(grid_frames(geom, spec)[:n]), spec)
         )
+    elif template in _HERO_TEMPLATES:
+        if n != 2:
+            raise LayoutError(f"{template} takes exactly 2 photos, got {n}")
+        options.append(
+            _Arrangement(template, tuple(hero_frames(geom, template, gutter_mm)), None)
+        )
+        # Gentle fallback: the even, never-cropped fit-grid. The composed hero
+        # cells cover-crop to fill the page; if a companion crop would put a
+        # face in the trim zone the placer rejects that arrangement, and the
+        # page falls back to fitting each photo whole in a plain grid rather
+        # than failing outright.
+        for spec in _grid_options(photos, gutter_mm):
+            cells = grid_frames(geom, spec)[:n]
+            options.append(
+                _Arrangement(
+                    f"fit_{grid_template_id(spec)}",
+                    tuple(fit_cell(cell, photo.aspect) for cell, photo in zip(cells, photos)),
+                    spec,
+                )
+            )
     else:
         raise LayoutError(f"unknown template {template!r}")
 

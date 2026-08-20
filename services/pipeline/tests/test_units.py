@@ -373,6 +373,50 @@ class AlbumBackgroundTone(unittest.TestCase):
         self.assertNotEqual(tone.lower(), "#ffffff")
 
 
+class AlbumStyles(unittest.TestCase):
+    """The variation register set: the same photos, genuinely different books.
+
+    Each style must be a real design difference, not a relabel -- so the three
+    shipped registers must differ on the axes that make a book look different
+    (density and mat darkness), and an unknown style must raise rather than
+    silently render the wrong one.
+    """
+
+    def _album(self):
+        from memory_engine_pipeline.stages import album  # noqa: PLC0415
+
+        return album
+
+    def test_the_default_style_resolves_and_is_gallery(self):
+        album = self._album()
+        self.assertEqual("gallery", album.resolve_style(None).name)
+        self.assertEqual(album.DEFAULT_ALBUM_STYLE, album.resolve_style(None).name)
+
+    def test_every_named_style_resolves_to_itself(self):
+        album = self._album()
+        for name, style in album.ALBUM_STYLES.items():
+            with self.subTest(style=name):
+                self.assertIs(album.resolve_style(name), style)
+
+    def test_an_unknown_style_raises_rather_than_defaulting(self):
+        album = self._album()
+        with self.assertRaises(album.LayoutStyleError):
+            album.resolve_style("chartreuse")
+
+    def test_the_registers_are_actually_different_designs(self):
+        album = self._album()
+        densities = {s.density for s in album.ALBUM_STYLES.values()}
+        lightnesses = {s.mat_lightness for s in album.ALBUM_STYLES.values()}
+        # Three distinct densities and three distinct mats: if two styles shared
+        # both they would render the same book under two names.
+        self.assertEqual(3, len(densities))
+        self.assertEqual(len(album.ALBUM_STYLES), len(lightnesses))
+        for style in album.ALBUM_STYLES.values():
+            self.assertIn(style.density, {"airy", "editorial", "dense"})
+            self.assertGreater(style.mat_lightness, 0.0)
+            self.assertLess(style.mat_lightness, 0.5)  # a mat, never white
+
+
 class ClassicalStepRegistration(unittest.TestCase):
     """The registry entry has to describe the code, or it is decoration.
 

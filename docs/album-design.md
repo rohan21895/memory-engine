@@ -100,12 +100,33 @@ shape (no contract change unless we add page metadata — flagged for Codex if s
   `#251e18` (a warm near-black); full-bleed and blur-hero pages already own the
   page and are unchanged. Two knobs (`BACKGROUND_MAT_LIGHTNESS`,
   `BACKGROUND_MAT_MAX_SATURATION`) tune the treatment in one place.
-- **Phase B — family grammar + layout score.** Replace the fixed ladder with
-  scored candidate arrangements from metadata-tagged families. Biggest step from
-  "auto-collage" to "designed". No contract change (same page shape).
-- **Phase C — pacing + variations.** Rhythm sequencer over family metadata;
-  N seeded variations ranked by the layout score, top-3 distinct emitted as
-  separate AlbumSpecs; review UI gains a variation picker.
+- **Phase B — composed hero families. ✅ SHIPPED (planner 0.8.0).** The layout
+  engine gained asymmetric "hero + companion" pages (`HERO_LEFT` / `HERO_TOP` in
+  `layout.py`): one dominant cell at 62% of the split axis and one smaller
+  companion, both cover-cropped and face-aligned so they fill the page edge to
+  edge — the studio "one dominant image" rule, with almost no mat showing.
+  Requested by name from the pacing layer, each with a gentle fit-grid fallback
+  so a companion crop that would drop a face in the trim reverts to the even,
+  never-cropped duo rather than failing the page. The families are additive: the
+  existing ladder and golden fixtures are untouched. (A three-up composed family
+  is deferred — three composed cells cannot survive the vendor page-count
+  split-back on a 20–26pp book, so it waits on spread support / larger targets.
+  A full candidate-scoring pass to replace the first-print-safe ladder is the
+  remaining Phase B item, deferred as higher-risk for marginal gain today.)
+- **Phase C — album styles + variations. ✅ SHIPPED (planner 0.8.0).** An
+  `AlbumStyle` register (`album.py`) makes the same selection three genuinely
+  different books, each a distinct content-addressed spec:
+  **Gallery** (balanced editorial pacing, warm-charcoal mat — the shipped look),
+  **Cinematic** (one image per page, aggressive full-bleed, deepest near-black
+  mat), and **Editorial** (dense pacing with composed hero+companion pages, a
+  warmer stone mat). A style varies pacing density, the full-bleed budget and the
+  mat darkness; it is part of album identity (folded into the inputs digest), so
+  `--album-style` yields three coexisting specs, each with a tiny
+  `<digest>.style.json` sidecar the review UI reads to offer a variation picker.
+  Measured on the maternity set: Gallery 20pp / Cinematic 26pp / Editorial 20pp,
+  with distinct mats and distinct page structure. (A layout-score-ranked "top-3
+  most-distinct of N" generator sits on top of this once the scoring pass lands;
+  the three hand-tuned registers ship the visible value now.)
 
 ## Rejected / deferred (with the reason, so we don't relitigate)
 

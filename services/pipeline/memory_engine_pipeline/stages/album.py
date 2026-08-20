@@ -95,7 +95,12 @@ PLANNER = "album-planner"
 #: muted tone drawn from the album's own palette (classical.album_background_tone),
 #: so grids, insets and the back cover read as photographs on a deep board.
 #: Full-bleed and blur-hero pages are unchanged (they own the page already).
-PLANNER_VERSION = "0.7.0"
+#: 0.8.0: ALBUM STYLES + composed hero pages. Three design registers (gallery /
+#: cinematic / editorial) vary pacing density, the full-bleed budget and the mat
+#: darkness, each a distinct content-addressed spec so the owner picks between
+#: variations. The dense (editorial) register lays paired photos as a composed
+#: hero + companion (asymmetric, cover-cropped to fill) instead of an even grid.
+PLANNER_VERSION = "0.8.0"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
@@ -373,11 +378,17 @@ def run(ctx: StageContext) -> StageResult:
             )
         develop_ops[media_id] = plan_develop_ops(path, media_id)
 
+    # The style is album identity: the same photos in the "cinematic" register
+    # are a different book from the "editorial" one, so each is its own
+    # content-addressed spec rather than a silent overwrite of the other.
+    style = resolve_style(ctx.settings.album_style)
+
     inputs_digest = digest_of(
         {
             "planner": PLANNER,
             "planner_version": PLANNER_VERSION,
             "seed": SEED,
+            "album_style": style.name,
             "selected": list(selection.selected),
             "faces": {
                 photo.media_id: [
@@ -441,14 +452,15 @@ def run(ctx: StageContext) -> StageResult:
         # The default: editorial pacing. An explicit --photos-per-page keeps
         # the plain chunking below -- the user asked for a specific density.
         requests = _page_requests(
-            photos, by_id, planned.scores, profile, group_of=selection.groups
+            photos, by_id, planned.scores, profile,
+            group_of=selection.groups, style=style,
         )
     else:
         requests = [
             PageRequest(photos=tuple(photos[start : start + per_page]))
             for start in range(0, len(photos), per_page)
         ]
-    background_hex = _album_background(ctx, photos)
+    background_hex = _album_background(ctx, photos, lightness=style.mat_lightness)
     try:
         pages = layout_album(
             requests,
@@ -546,6 +558,21 @@ def run(ctx: StageContext) -> StageResult:
 
     _validate_spec(spec)
     write_json_atomically(output_path, spec)
+
+    # A tiny style sidecar so the review UI can list and label the variations
+    # of a library without re-parsing every AlbumSpec. Not a contract artifact
+    # -- it carries the design register, not album content -- and keyed by the
+    # same digest as the spec it describes.
+    write_json_atomically(
+        ctx.workdir / "outputs" / "album" / f"{inputs_digest}.style.json",
+        {
+            "album_id": inputs_digest,
+            "style": style.name,
+            "label": style.label,
+            "description": style.description,
+            "pages": len(pages),
+        },
+    )
 
     # The swap-UX sidecar: every candidate's fate, with the shot-group
     # alternatives and human-readable reasons the contract-bound report in the
@@ -791,9 +818,92 @@ _MAX_FULL_BLEED_PAGES = 6
 _FULL_BLEED_ASPECT_TOLERANCE = 0.20
 
 
+@dataclass(frozen=True)
+class AlbumStyle:
+    """One album *register* -- the same photos, a different book.
+
+    A style is the small set of taste choices that make two albums of the same
+    shoot read as genuinely different designs rather than a reshuffle: how the
+    pages are PACED (one image per page vs. paired vs. dense), how loud the
+    heroes are (the full-bleed budget), and how deep the page mat sits. Fixed,
+    it makes the whole plan reproducible, so `{style} + {selection}` is an
+    album's identity and each style is its own content-addressed spec.
+
+    density:
+      "airy"      -- one image per page, big; the most breathing room.
+      "editorial" -- the balanced default: day openers breathe, the rest pair.
+      "dense"     -- pair and group aggressively across the whole book.
+    """
+
+    name: str
+    label: str
+    description: str
+    density: str
+    full_bleed_budget: int
+    mat_lightness: float
+
+
+#: The variation set the owner picks from. `gallery` is the default and matches
+#: the pacing the book shipped with; the other two pull the same photos toward
+#: the two ends of the density/drama axis. Ordered: this is the order the
+#: review UI offers them in.
+ALBUM_STYLES: dict[str, AlbumStyle] = {
+    "gallery": AlbumStyle(
+        name="gallery",
+        label="Gallery",
+        description="Balanced editorial pacing on a warm charcoal mat — heroes "
+        "breathe alone, the day's other frames pair.",
+        density="editorial",
+        full_bleed_budget=_MAX_FULL_BLEED_PAGES,
+        mat_lightness=0.12,
+    ),
+    "cinematic": AlbumStyle(
+        name="cinematic",
+        label="Cinematic",
+        description="One image per page, large and full-bleed where the pixels "
+        "allow, on a deep near-black mat.",
+        density="airy",
+        full_bleed_budget=_MAX_FULL_BLEED_PAGES * 3,
+        mat_lightness=0.08,
+    ),
+    "editorial": AlbumStyle(
+        name="editorial",
+        label="Editorial",
+        description="Denser spreads with more images to a page, on a warmer "
+        "stone mat — a magazine-style rhythm.",
+        density="dense",
+        full_bleed_budget=max(1, _MAX_FULL_BLEED_PAGES // 2),
+        mat_lightness=0.16,
+    ),
+}
+#: The style used when none is asked for -- the book's existing look.
+DEFAULT_ALBUM_STYLE = "gallery"
+
+
+def resolve_style(name: str | None) -> AlbumStyle:
+    """The AlbumStyle for a name, defaulting to the shipped look.
+
+    Unknown names raise rather than silently defaulting: a typo in a variation
+    request must not quietly render the wrong book.
+    """
+    if not name:
+        return ALBUM_STYLES[DEFAULT_ALBUM_STYLE]
+    try:
+        return ALBUM_STYLES[name]
+    except KeyError:
+        raise LayoutStyleError(
+            f"unknown album style {name!r}; known: {', '.join(ALBUM_STYLES)}"
+        ) from None
+
+
+class LayoutStyleError(ValueError):
+    """An album style was requested that does not exist."""
+
+
 def _page_requests(
     photos: list[Any], by_id: Mapping[str, Any], scores: Mapping[str, Any],
     profile: Mapping[str, Any], group_of: Mapping[str, str] | None = None,
+    style: AlbumStyle | None = None,
 ) -> "list[Any]":
     """Editorial pacing: heroes breathe alone, a day's other frames share.
 
@@ -814,9 +924,12 @@ def _page_requests(
     from memory_engine_album.layout import (  # noqa: PLC0415
         BLUR_HERO,
         FULL_BLEED,
+        HERO_LEFT,
+        HERO_TOP,
         PageRequest,
     )
 
+    style = style or ALBUM_STYLES[DEFAULT_ALBUM_STYLE]
     trim = profile.get("trim_size_mm") or {}
     bleed = float(profile.get("bleed_mm") or 0.0)
     page_w_mm = float(trim.get("width_mm") or 1.0) + 2.0 * bleed
@@ -847,17 +960,27 @@ def _page_requests(
             and photo.pixel_height >= dpi_floor * 1.05 * page_h_mm / 25.4
         )
 
-    groups: list[list[Any]] = []
-    current_day: str | None = None
-    for photo in photos:  # already chronological
-        day = day_of(photo)
-        if not groups or day != current_day:
-            groups.append([])
-            current_day = day
-        groups[-1].append(photo)
+    # Density is a grouping decision: the same solo/duo machinery below runs
+    # over whatever groups it is handed. "airy" hands it singletons, so every
+    # photo takes a page; "dense" hands it the whole book as one group, so the
+    # pairing reaches across days; "editorial" keeps the day boundaries, which
+    # is the shipped rhythm -- a chapter per capture day.
+    if style.density == "airy":
+        groups: list[list[Any]] = [[photo] for photo in photos]
+    elif style.density == "dense":
+        groups = [list(photos)] if photos else []
+    else:
+        groups = []
+        current_day: str | None = None
+        for photo in photos:  # already chronological
+            day = day_of(photo)
+            if not groups or day != current_day:
+                groups.append([])
+                current_day = day
+            groups[-1].append(photo)
 
     requests: list[Any] = []
-    full_bleed_left = _MAX_FULL_BLEED_PAGES
+    full_bleed_left = style.full_bleed_budget
 
     def solo(photo: Any) -> None:
         nonlocal full_bleed_left
@@ -868,11 +991,20 @@ def _page_requests(
             requests.append(PageRequest(photos=(photo,), template=BLUR_HERO))
 
     def duo(first: Any, second: Any) -> None:
-        # Two portraits stand side by side; two landscapes stack. fit_grid,
-        # not grid: each photo keeps its own aspect centred in its cell.
-        # Mixed orientations never share -- even aspect-fitted, a page of one
-        # tall and one wide frame reads as a mistake, not a pairing.
-        template = "fit_grid_2x1" if portrait(first) else "fit_grid_1x2"
+        # Two photos to a page. Same orientation only -- a tall and a wide frame
+        # side by side reads as a mistake. The DENSITY of the style decides the
+        # composition: the editorial register lays them as a composed hero +
+        # companion (one dominant, cover-cropped to fill), the others as an even
+        # fit-grid pair (each photo whole in its cell). `first` is the hero, so
+        # callers pass the stronger photo first.
+        if style.density == "dense":
+            # The stronger frame takes the dominant cell. Same orientation
+            # either way, so this cannot turn a valid pair into a mixed one.
+            if value(second) > value(first):
+                first, second = second, first
+            template = HERO_LEFT if portrait(first) else HERO_TOP
+        else:
+            template = "fit_grid_2x1" if portrait(first) else "fit_grid_1x2"
         requests.append(PageRequest(photos=(first, second), template=template))
 
     def same_shot(first: Any, second: Any) -> bool:
@@ -1121,7 +1253,9 @@ def _per_face_aggregates(ctx: StageContext, media_id: str) -> Any:
     )
 
 
-def _album_background(ctx: StageContext, photos: Sequence[Any]) -> str:
+def _album_background(
+    ctx: StageContext, photos: Sequence[Any], lightness: float | None = None
+) -> str:
     """The page-mat colour for the whole book: a dark, muted tone drawn from
     the selected photos, never white.
 
@@ -1142,7 +1276,9 @@ def _album_background(ctx: StageContext, photos: Sequence[Any]) -> str:
         path = proxies[0].get("path") if proxies else None
         if path:
             paths.append(path)
-    return album_background_tone(paths)
+    if lightness is None:
+        return album_background_tone(paths)
+    return album_background_tone(paths, lightness=lightness)
 
 
 def _face_exposure_extremes(
