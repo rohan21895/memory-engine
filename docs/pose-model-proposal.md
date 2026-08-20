@@ -1,6 +1,7 @@
 # Body-Pose Model Proposal
 
-Status: PROPOSAL — no registry entry, no config, no weights added. Research only (2026-08-20).
+Status: PROPOSAL — no registry entry, no config, no weights added. Research only (2026-08-20;
+candidate sweep refreshed same day, see "Research update" below).
 Need: per-person body keypoints on studio/family photos so selection can (a) cluster frames into
 true poses ("100s of different poses the code is not able to detect"), (b) add a pose-variety axis
 to album diversity, (c) flag awkward mid-transition poses. Local, commercial, ONNX Runtime on
@@ -41,6 +42,53 @@ are NOT all verified. Audit rule for the config: pin a **COCO(-family)-trained c
 training-set list is enumerated in the model card**, and record the dataset-terms check per
 dataset — same discipline as yunet-2023mar's `training_data` field. If the body7 checkpoint's
 accuracy is wanted, the AI Challenger / Halpe terms check is a blocking TODO, not a footnote.
+
+## Research update (2026-08-20 sweep of newer candidates)
+
+A second pass over the 2025–2026 releases. Verdict up front: **RTMO-m stays primary**, and
+**DETRPose-M/L becomes the head-to-head challenger** — the eval harness should score both on our
+libraries before a registry entry is written for either.
+
+| Candidate | Year | License (code/weights) | Multi-person | Verdict |
+|---|---|---|---|---|
+| **DETRPose** (N/S/M/L/X) | 2025 | Apache-2.0 both | end-to-end, one graph | **CHALLENGER** — bench against RTMO |
+| RF-DETR Keypoint (Roboflow) | 2026-06 | Apache-2.0 both | end-to-end (DINOv2 backbone) | WATCH — preview only |
+| Sapiens2 (Meta) | 2026-04 | custom "Sapiens2 License" | top-down (needs detector) | still disqualified (see below) |
+| YOLO26-pose (Ultralytics) | 2026 | AGPL-3.0 | one-stage | still blocked, same as YOLOv8/11 |
+
+- **DETRPose** ([repo](https://github.com/SebastianJanampa/DETRPose),
+  [paper](https://arxiv.org/abs/2506.13027)): first real-time end-to-end transformer for
+  multi-person pose. Apache-2.0 code AND weights. COCO val2017: M = 69.4 AP @ 20.8M params,
+  L = 72.5 AP @ 32.8M — bracketing RTMO-m from both sides. Two structural advantages for us:
+  (a) **NMS-free** DETR head, so the postprocessing block in the model config is nearly empty —
+  no grid-decode/NMS host step to pin and re-verify per export (the RTMO open question);
+  (b) checkpoints are **COCO-only** (CrowdPose variants published separately), so the
+  training-data audit is one dataset, not the body7 five. Open risk: published latencies are
+  GPU/TensorRT; transformer decoders are historically worse than CNN heads on CPU — **measure
+  ORT-CPU on M-series before believing it fits the host budget**. ONNX export script ships in
+  `tools/deployment`.
+- **RF-DETR Keypoint** ([docs](https://rfdetr.roboflow.com/latest/learn/run/keypoints/),
+  [launch](https://blog.roboflow.com/launch-rf-detr-keypoint-in-roboflow/)): Apache-2.0 weights,
+  claims to beat YOLO26-pose (71.8 AP, 40.7M params, 576x576, DINOv2 backbone). Disqualified
+  *today* on process, not merit: it is an explicit early-access **preview** — "checkpoint weights
+  may change before the stable release", distribution is via the `rfdetr` package only, and no
+  documented ONNX path. A checkpoint that may change under its own URL cannot be pinned by
+  blake3 the way the registry requires. Re-evaluate at stable release.
+- **Sapiens2** ([repo](https://github.com/facebookresearch/sapiens2/blob/main/LICENSE.md)): the
+  NC blocker is GONE — the new custom license permits commercial use. Still disqualified for
+  this slot: (a) prohibits "identifying/re-identifying individuals", which sits one contract
+  clause away from a pipeline whose whole point is naming the people in the album — a lawyer
+  question, not an engineer one; (b) audit rights + share-alike redistribution friction;
+  (c) 0.3B–2B params, top-down, wrong size class for an always-on local analysis step. Worth
+  remembering if a future "hero-shot body segmentation/matting" feature wants a heavyweight
+  offline pass.
+- Also seen, not shortlisted: SMPLest-X (3D body-shape recovery — wrong task), GroupPose
+  (DETRPose supersedes it), EdgeCrafter-style distilled ViTs (no published pose checkpoints
+  with clean weights terms).
+
+Sources: [Roboflow pose-model survey](https://blog.roboflow.com/best-pose-estimation-models/),
+[RF-DETR Apache-2.0 statement](https://blog.roboflow.com/rf-detr-is-free-to-use-commercially/),
+[Sapiens2 announcement](https://www.marktechpost.com/2026/04/27/meta-ai-releases-sapiens2-a-high-resolution-human-centric-vision-model-for-pose-segmentation-normals-pointmap-and-albedo/).
 
 ## Integration sketch
 
@@ -87,8 +135,10 @@ accuracy is wanted, the AI Challenger / Halpe terms check is a blocking TODO, no
 1. Apple Vision's `VNDetectHumanBodyPoseRequest` would be zero-weights and zero-audit — but the
    model silently changes with macOS updates, which collides with hard rule 7 (no silent model
    swap) and determinism. Proposal treats it as disqualified; owner may overrule.
-2. RTMO-m vs RTMO-l vs fallback-to-RTMPose: decide after the eval harness runs on real studio
-   sets — dense group shots are where one-stage recall is the open question.
+2. RTMO-m vs RTMO-l vs DETRPose-M/L vs fallback-to-RTMPose: decide after the eval harness runs
+   on real studio sets — dense group-shot recall AND M-series ORT-CPU latency are the open
+   questions (DETRPose's transformer decoder is unproven on CPU; RTMO's CPU numbers are
+   published).
 3. COCO-only vs body7 checkpoint (blocked on the dataset-terms audit above) — accuracy delta
    should be measured on our libraries before anyone bothers auditing five datasets.
 4. Does pose need to be whole-body (DWPose/RTMW, 133 kpts, also Apache-2.0 via MMPose) for
