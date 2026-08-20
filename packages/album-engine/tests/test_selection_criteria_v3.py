@@ -300,6 +300,112 @@ class ACloseUpIsNeverAWorseVersionOfAWide(unittest.TestCase):
         )
 
 
+class OnePoseCannotFillTheAlbumThroughItsRoleBands(unittest.TestCase):
+    """The role/people splits exist so a wide and its close-up can BOTH
+    compete -- but the day they landed, one pose took five of twenty-five
+    pages through five role bands. The pose-family cap bounds what one pose
+    can take, however many split groups it fans into."""
+
+    def _family(self):
+        # One burst, three story roles: chained embeddings keep every
+        # adjacent pair above the shot threshold (one burst group) while the
+        # far pair sits below the selected-similarity cap (so the pair
+        # distinctness backstop is NOT what keeps the third frame out).
+        a1 = cand(
+            "fam1", 0.85, captured_utc=at(1, 12),
+            embedding=unit(1.0, 0.0, 0.0), embedding_space="s",
+            per_face=faces(largest_area=0.02, count=1),
+        )
+        a2 = cand(
+            "fam2", 0.84, captured_utc=at(1, 12.002),
+            embedding=unit(0.95, 0.3122, 0.0), embedding_space="s",
+            per_face=faces(largest_area=0.05, count=1),
+        )
+        a3 = cand(
+            "fam3", 0.83, captured_utc=at(1, 12.004),
+            embedding=unit(0.85, 0.5268, 0.0), embedding_space="s",
+            per_face=faces(largest_area=0.13, count=1),
+        )
+        return [a1, a2, a3]
+
+    def test_the_cap_holds_against_a_weaker_distinct_pose(self):
+        family = self._family()
+        other = cand(
+            "other", 0.60, captured_utc=at(1, 15),
+            embedding=unit(0.0, 0.0, 1.0), embedding_space="s",
+            per_face=faces(largest_area=0.03, count=1),
+        )
+        result = select(
+            family + [other], 2, policy=SelectionPolicy(max_per_pose_family=1)
+        )
+        groups = result.groups
+        self.assertEqual(
+            3, len({groups[c.media_id] for c in family}),
+            "the story-role split must fan the burst into three groups",
+        )
+        self.assertEqual(
+            1, len({groups[c.media_id].split("#", 1)[0] for c in family}),
+            "three roles, one pose family",
+        )
+        from_family = [m for m in result.selected if m != mid("other")]
+        self.assertIn(mid("other"), result.selected)
+        self.assertEqual(
+            1, len(from_family),
+            "the family cap must hold while a distinct pose is available",
+        )
+
+    def test_the_cap_relaxes_rather_than_short_change_the_album(self):
+        # Only one pose exists and the user asked for three pages: the cap
+        # relaxes a round at a time instead of returning a two-page album.
+        family = self._family()
+        result = select(family, 3, policy=SelectionPolicy(max_per_pose_family=1))
+        self.assertEqual(3, len(result.selected))
+
+
+class ABystanderInTheFrameCostsEverywhere(unittest.TestCase):
+    """clean_frame used to matter only WITHIN a shot group -- the day the
+    role split shrank the groups, a crew-in-frame take stopped meeting its
+    clean twin in any comparison and walked onto the cover on fused quality
+    alone. The pool-wide gain term makes contamination cost wherever the
+    frame sits."""
+
+    def _pool(self):
+        # Six distinct poses so percentile gaps are meaningful: the
+        # contaminated frame tops fused quality by one rank, the clean one
+        # tops clean_frame by five.
+        contaminated = cand(
+            "dirty", 0.85, captured_utc=at(1, 8),
+            embedding=unit(1.0, 0, 0, 0, 0, 0), embedding_space="s",
+            clean_frame=0.005,
+        )
+        clean = cand(
+            "clean", 0.84, captured_utc=at(1, 9),
+            embedding=unit(0, 1.0, 0, 0, 0, 0), embedding_space="s",
+            clean_frame=0.030,
+        )
+        axes = [(0, 0, 1.0, 0, 0, 0), (0, 0, 0, 1.0, 0, 0),
+                (0, 0, 0, 0, 1.0, 0), (0, 0, 0, 0, 0, 1.0)]
+        fillers = [
+            cand(
+                f"fill{i}", 0.70 - i * 0.02, captured_utc=at(1, 10 + i),
+                embedding=unit(*axis), embedding_space="s",
+                clean_frame=0.010 + i * 0.002,
+            )
+            for i, axis in enumerate(axes)
+        ]
+        return [contaminated, clean] + fillers
+
+    def test_the_clean_frame_wins_the_slot(self):
+        result = select(self._pool(), 1)
+        self.assertEqual((mid("clean"),), result.selected)
+
+    def test_zero_weight_restores_fused_quality_order(self):
+        result = select(
+            self._pool(), 1, policy=SelectionPolicy(weight_clean_frame=0.0)
+        )
+        self.assertEqual((mid("dirty"),), result.selected)
+
+
 class AnIrreplaceableMomentBeatsATechnicalRule(unittest.TestCase):
     """A singleton shot with nothing else within rare_moment_isolation_s is
     the only record of its moment: the soft floors are waived. It can take a

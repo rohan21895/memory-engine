@@ -81,7 +81,11 @@ PLANNER = "album-planner"
 #: 0.5.4: the cover-vs-page-one duplication guard checks the photo pacing
 #: actually placed first (the first day's best), not the chronologically
 #: first photo -- the original bug returned the day pacing changed openers.
-PLANNER_VERSION = "0.5.4"
+#: 0.5.5: clean_frame scored pool-wide (the role split removed the
+#: within-group comparison and a crew-in-frame take reached the cover); a
+#: max-per-pose-family cap (one pose took 5/25 slots through role bands); and
+#: pacing compares pose FAMILIES, so role-split siblings stay off one page.
+PLANNER_VERSION = "0.5.5"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
@@ -150,6 +154,10 @@ class SelectionPlan:
     selection: Any
     wanted: int
     policy: Any
+    #: The user's finalized review decisions (album-review.json contents), or
+    #: None when no review happened. Carried on the plan because it is album
+    #: IDENTITY: run() folds it into the inputs digest.
+    review: dict[str, Any] | None
 
 
 def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | StageResult:
@@ -283,6 +291,7 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
         selection=selection,
         wanted=wanted,
         policy=policy,
+        review=review,
     )
 
 
@@ -373,7 +382,7 @@ def run(ctx: StageContext) -> StageResult:
             # The user's review decisions are album identity: the same
             # library with different swaps is a different book, never a
             # silent mutation of the old one.
-            "review": review,
+            "review": planned.review,
         }
     )
     job = build_job(
@@ -853,11 +862,17 @@ def _page_requests(
         requests.append(PageRequest(photos=(first, second), template=template))
 
     def same_shot(first: Any, second: Any) -> bool:
+        # Compared at the POSE-FAMILY level (the group id before its
+        # `#roleN`/`#pM` split suffix): a wide and its close-up are different
+        # story roles but the same pose, and the same pose twice on one page
+        # reads as a mistake regardless of crop.
         if group_of is None:
             return False
         a = group_of.get(first.media_id)
         b = group_of.get(second.media_id)
-        return a is not None and a == b
+        return a is not None and b is not None and (
+            a.split("#", 1)[0] == b.split("#", 1)[0]
+        )
 
     def take_partner(held: list[Any], photo: Any) -> Any | None:
         # The earliest held frame that is not the same shot -- chronology

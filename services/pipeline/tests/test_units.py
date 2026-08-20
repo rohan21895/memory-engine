@@ -728,6 +728,29 @@ class EditorialPacing(unittest.TestCase):
         flattened = [p.media_id for r in requests for p in r.photos]
         self.assertEqual(sorted(ids), sorted(flattened), "no photo lost")
 
+    def test_role_split_siblings_of_one_pose_never_share_a_page(self):
+        # The v9 album paged a wide and its close-up together: role splits
+        # gave them different group ids (`#role0` / `#role1`) and the twin
+        # rule stopped seeing them as one shot. Pose FAMILY (the id before
+        # the `#` suffix) is what must not share a page.
+        requests, photos = self._requests(
+            [("2026-03-01", [
+                ("best", 3000, 4000, 0.9),
+                ("b1", 3000, 4000, 0.8), ("b2", 3000, 4000, 0.79),
+                ("c1", 3000, 4000, 0.7), ("d1", 3000, 4000, 0.6),
+            ])],
+            shots={"b1": "shot-b#role0", "b2": "shot-b#p2"},
+        )
+        ids = {photo.media_id: tag for tag, photo in zip(
+            ["best", "b1", "b2", "c1", "d1"], photos)}
+        for request in requests:
+            if len(request.photos) == 2:
+                tags = {ids[p.media_id] for p in request.photos}
+                self.assertNotEqual({"b1", "b2"}, tags,
+                                    "role-split siblings shared a page")
+        flattened = [p.media_id for r in requests for p in r.photos]
+        self.assertEqual(sorted(ids), sorted(flattened), "no photo lost")
+
     def test_twins_with_no_other_partner_go_solo_not_together(self):
         requests, photos = self._requests(
             [("2026-03-01", [

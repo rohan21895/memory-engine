@@ -206,6 +206,15 @@ class SelectionPolicy:
     # calibrated (the modality gap) while the ordering over one library is
     # exactly the signal. All weights are against a quality term spanning [0,1].
     weight_smile: float = 0.35
+    # Contamination scored pool-wide (see the gain): calibrated against
+    # weight_aesthetic so a bottom-decile clean_frame costs about what a
+    # top-decile aesthetic pays -- a beautiful frame with a bystander in it
+    # should lose to a beautiful frame without one.
+    weight_clean_frame: float = 0.35
+    # Cap per POSE FAMILY (the burst group before role/people splits): the
+    # splits let a wide and a close-up both compete; without this cap one
+    # pose took five of twenty-five pages through five role bands.
+    max_per_pose_family: int = 2
     weight_composed: float = 0.25
     # The strongest expression weight: "bring the best photos". Percentile of
     # the zero-shot aesthetic contrast (light, composition, clutter). At 0.55
@@ -390,12 +399,17 @@ class SelectionPolicy:
             "weight_person", "weight_redundancy",
             "weight_smile", "weight_composed", "weight_aesthetic", "mid_blink_penalty",
             "per_face_weight", "weight_face_eyes", "weight_face_smile",
+            "weight_clean_frame",
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0.0:
                 raise SelectionError(f"policy.{name}={value!r} must be finite and non-negative")
         if self.min_per_person < 0:
             raise SelectionError("policy.min_per_person must be >= 0")
+        # >= 1, not >= 0: a cap of zero forbids every pose family and the
+        # greedy loop would relax it back to one anyway, one page at a time.
+        if self.max_per_pose_family < 1:
+            raise SelectionError("policy.max_per_pose_family must be >= 1")
         if self.time_bins < 0 or self.max_time_bins < 1:
             raise SelectionError("policy.time_bins must be >= 0 and max_time_bins >= 1")
         if self.min_long_edge_px is not None and self.min_long_edge_px <= 0:
@@ -1706,6 +1720,18 @@ def _final_shot_groups(
     return _split_story_roles(survivors, _shot_groups(survivors, policy), policy)
 
 
+def _pose_family(group_id: str) -> str:
+    """The shot group BEFORE role/people splitting -- the pose itself.
+
+    Split ids are `<base>#roleN` / `<base>#pM` suffixes on the burst group's
+    id; the family is everything before the first `#`. The pacing rule ("no
+    two frames of one pose on a page") and the family cap both live at this
+    level: a wide and its close-up are different STORY ROLES but the same
+    pose, and treating them as unrelated is how one pose took five pages.
+    """
+    return group_id.split("#", 1)[0]
+
+
 def _rare_moment_ids(
     candidates: Sequence[SelectionCandidate], policy: SelectionPolicy
 ) -> set[str]:
@@ -1855,6 +1881,10 @@ def _greedy(
     cap = _person_cap(survivors, target_count, policy)
     shot_of = _final_shot_groups(survivors, policy)
     shot_counts: dict[str, int] = {}
+    # Pose-family tallies live beside the shot tallies because commit() feeds
+    # both, and commit() runs for pins and the people floor before the
+    # marginal-gain loop where the family cap is enforced.
+    family_counts: dict[str, int] = {}
 
     worse_version = _dominated_within_shot(survivors, shot_of, policy)
     redundancy_free, redundancy_denom = _calibrated_redundancy(survivors, policy)
@@ -1871,6 +1901,7 @@ def _greedy(
     # values are uncalibrated; the ordering over one library is the signal).
     smile_pct = _axis_percentiles(survivors, lambda c: c.smile)
     aesthetic_pct = _axis_percentiles(survivors, lambda c: c.aesthetic)
+    clean_frame_pct = _axis_percentiles(survivors, lambda c: c.clean_frame)
     awake_pct = _axis_percentiles(survivors, lambda c: c.awake)
     sleeping_pct = _axis_percentiles(survivors, lambda c: c.sleeping)
     composed_pct = _axis_percentiles(survivors, lambda c: c.composed)
@@ -1950,6 +1981,8 @@ def _greedy(
         if is_sleeping[media_id]:
             sleeping_count += 1
         shot_counts[shot_of[media_id]] = shot_counts.get(shot_of[media_id], 0) + 1
+        family = _pose_family(shot_of[media_id])
+        family_counts[family] = family_counts.get(family, 0) + 1
         time_counts[time_key[media_id]] = time_counts.get(time_key[media_id], 0) + 1
         place_counts[place_key[media_id]] = place_counts.get(place_key[media_id], 0) + 1
         moment_counts[moment_key[media_id]] = moment_counts.get(moment_key[media_id], 0) + 1
@@ -1997,6 +2030,12 @@ def _greedy(
         value += w.weight_smile * smile_pct[media_id]
         value += w.weight_composed * composed_pct[media_id]
         value += w.weight_aesthetic * aesthetic_pct[media_id]
+        # Contamination is scored pool-wide, not only compared within a shot
+        # group: the day the role split shrank the groups, a crew-in-frame
+        # take stopped meeting its clean twin in ANY comparison and walked
+        # onto the cover on fused quality alone. A bystander in the frame
+        # hurts wherever the frame sits.
+        value += w.weight_clean_frame * clean_frame_pct[media_id]
         if per_face_on:
             # The weighted-min people terms: the WORST face's eyes and smile.
             # A frame where everyone made it out-earns one where somebody did
@@ -2068,6 +2107,12 @@ def _greedy(
     # A relaxation round, not a weight: 24 slots against 4 shot groups must
     # come back 4-then-deepen, never 24 frames of the best burst.
     allowed_per_shot = 1
+    # And a cap on the POSE FAMILY (the shot group before role/people
+    # splitting): the splits exist so a wide and its close-up can both
+    # compete, not so one pose can take five pages through five role bands --
+    # a real album did exactly that the day the splits landed. Relaxed the
+    # same way as the shot cap, family first (it is the looser notion).
+    allowed_per_family = policy.max_per_pose_family
 
     while len(selected) < target_count and remaining:
         slots_left = target_count - len(selected)
@@ -2118,12 +2163,21 @@ def _greedy(
         fresh_shots = [
             m for m in eligible
             if shot_counts.get(shot_of[m], 0) < allowed_per_shot
+            and family_counts.get(_pose_family(shot_of[m]), 0) < allowed_per_family
         ]
         if not fresh_shots:
-            # Every eligible photo is another frame of a shot the album
-            # already has. Deepen the whole album by one frame per shot
-            # rather than stopping short -- the user asked for N pages.
-            allowed_per_shot += 1
+            # Every eligible photo is blocked by a cap. Relax the family cap
+            # first when it is the binding one (more angles of a pose the
+            # album already loves), the shot cap only when even families are
+            # spent -- the user asked for N pages, never for an empty round.
+            family_bound = [
+                m for m in eligible
+                if shot_counts.get(shot_of[m], 0) < allowed_per_shot
+            ]
+            if family_bound:
+                allowed_per_family += 1
+            else:
+                allowed_per_shot += 1
             continue
         # The distinctness backstop: `closest` already tracks each photo's
         # similarity to the nearest selected one. Prefer photos below the
