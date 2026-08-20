@@ -215,6 +215,14 @@ class SelectionPolicy:
     # splits let a wide and a close-up both compete; without this cap one
     # pose took five of twenty-five pages through five role bands.
     max_per_pose_family: int = 2
+    # And a cap on the BODY POSE (RTMO joint-angle cluster), the axis the
+    # SigLIP family cannot supply: one couple pose reached SIX pages across
+    # six outfits -- six different families, so max_per_pose_family saw no
+    # repeat -- while thirteen other poses were skipped. This cap is relaxed
+    # LAST, only when every distinct pose is already at it, so the album
+    # exhausts its pose variety before printing any pose a third time. Inert
+    # when no pose is measured (each candidate is then its own singleton).
+    max_per_body_pose: int = 2
     weight_composed: float = 0.25
     # The strongest expression weight: "bring the best photos". Percentile of
     # the zero-shot aesthetic contrast (light, composition, clutter). At 0.55
@@ -330,6 +338,15 @@ class SelectionPolicy:
     # scene_type axis. The name stays: it is the "different kinds of pages"
     # weight, and renaming a stored policy row's key breaks every saved style.
     weight_scene: float = 0.35
+    # Body-pose novelty: rewards the first frame of a pose cluster and decays
+    # with each repeat, exactly like the moment axis, but keyed on the pose
+    # signature instead of the SigLIP embedding. Sized ABOVE weight_scene
+    # because pose redundancy is the failure the whole signal targets -- a
+    # measured album put one couple pose on six pages while skipping thirteen
+    # other poses, and the moment axis could not see it because the outfits
+    # (and so the embeddings) differed. Candidates with no pose_cluster sit in
+    # their own singleton key and neither earn nor lose the bonus.
+    weight_pose: float = 0.55
     weight_person: float = 0.60
     weight_redundancy: float = 0.80
     # Cosine similarity below which two photos are simply different pictures
@@ -396,7 +413,7 @@ class SelectionPolicy:
                 raise SelectionError(f"policy.{name}={value!r} must be a finite value in [0,1]")
         for name in (
             "weight_quality", "weight_time", "weight_place", "weight_scene",
-            "weight_person", "weight_redundancy",
+            "weight_pose", "weight_person", "weight_redundancy",
             "weight_smile", "weight_composed", "weight_aesthetic", "mid_blink_penalty",
             "per_face_weight", "weight_face_eyes", "weight_face_smile",
             "weight_clean_frame",
@@ -410,6 +427,8 @@ class SelectionPolicy:
         # greedy loop would relax it back to one anyway, one page at a time.
         if self.max_per_pose_family < 1:
             raise SelectionError("policy.max_per_pose_family must be >= 1")
+        if self.max_per_body_pose < 1:
+            raise SelectionError("policy.max_per_body_pose must be >= 1")
         if self.time_bins < 0 or self.max_time_bins < 1:
             raise SelectionError("policy.time_bins must be >= 0 and max_time_bins >= 1")
         if self.min_long_edge_px is not None and self.min_long_edge_px <= 0:
@@ -584,6 +603,14 @@ class SelectionCandidate:
     # Shot category from the caller's classifier: "portrait" | "couple" |
     # "group" | "detail". None = unclassified, the default weights apply.
     category: str | None = None
+    # Body-pose cluster id from the pose stage (RTMO keypoints -> joint-angle
+    # signature -> people-count-bucketed clustering). The album's diversity
+    # depends on it in a way the SigLIP embedding cannot supply: the same body
+    # pose in two outfits is two embeddings but ONE pose, and a book that
+    # prints one pose six times over six outfits while skipping a dozen others
+    # is what this signal exists to stop. None = no pose measured; the pose
+    # diversity term then stays neutral for this candidate.
+    pose_cluster: str | None = None
     # Combined highlight+shadow clipped fraction of the WHOLE frame, from the
     # stored exposure measurement. Data only, never gated on: a high-key
     # studio backdrop clips half the frame by intent. The gate reads
@@ -762,6 +789,7 @@ def candidate_from_media_record(
     per_face: PerFaceAggregates | None = None,
     category: str | None = None,
     clipped_fraction: float | None = None,
+    pose_cluster: str | None = None,
 ) -> SelectionCandidate:
     """A contract MediaRecord + its FusedScore -> SelectionCandidate.
 
@@ -843,6 +871,7 @@ def candidate_from_media_record(
         per_face=per_face,
         category=category,
         clipped_fraction=float(clipped_fraction) if clipped_fraction is not None else None,
+        pose_cluster=str(pose_cluster) if pose_cluster is not None else None,
         embedding=tuple(float(x) for x in embedding) if embedding is not None else None,
         embedding_space=embedding_space if embedding is not None else None,
     )
@@ -1855,10 +1884,19 @@ def _greedy(
     people_key = {
         c.media_id: tuple(sorted(c.person_ids)) or (_NO_PEOPLE,) for c in survivors
     }
+    # Body-pose novelty key. A candidate with no measured pose sits in a
+    # singleton keyed by its own id, so it shares a pose-bonus with nobody:
+    # absence of the measure neither rewards nor punishes, the same rule the
+    # expression axes follow.
+    pose_key = {
+        c.media_id: f"pose:{c.pose_cluster}" if c.pose_cluster else f"_nopose:{c.media_id}"
+        for c in survivors
+    }
 
     time_counts: dict[str, int] = {}
     place_counts: dict[str, int] = {}
     moment_counts: dict[str, int] = {}
+    pose_counts: dict[str, int] = {}
     person_counts: dict[str, int] = {}
 
     selected: list[str] = []
@@ -1986,6 +2024,7 @@ def _greedy(
         time_counts[time_key[media_id]] = time_counts.get(time_key[media_id], 0) + 1
         place_counts[place_key[media_id]] = place_counts.get(place_key[media_id], 0) + 1
         moment_counts[moment_key[media_id]] = moment_counts.get(moment_key[media_id], 0) + 1
+        pose_counts[pose_key[media_id]] = pose_counts.get(pose_key[media_id], 0) + 1
         for person in candidate.person_ids or (_NO_PEOPLE,):
             person_counts[person] = person_counts.get(person, 0) + 1
         if candidate.embedding is not None:
@@ -2005,6 +2044,12 @@ def _greedy(
         value += w.weight_time * _bucket_gain(time_counts.get(time_key[media_id], 0))
         value += w.weight_place * _bucket_gain(place_counts.get(place_key[media_id], 0))
         value += w.weight_scene * _bucket_gain(moment_counts.get(moment_key[media_id], 0))
+        # Body-pose novelty, decaying with each repeat of the pose. This is
+        # what pulls the thirteenth distinct pose into the book ahead of the
+        # sixth frame of a pose already shown -- the moment axis above cannot,
+        # because the repeated pose came in a different outfit and so a
+        # different embedding and moment.
+        value += w.weight_pose * _bucket_gain(pose_counts.get(pose_key[media_id], 0))
 
         people = people_key[media_id]
         # Mean, not sum: a group shot of five already-covered people must not
@@ -2113,6 +2158,10 @@ def _greedy(
     # a real album did exactly that the day the splits landed. Relaxed the
     # same way as the shot cap, family first (it is the looser notion).
     allowed_per_family = policy.max_per_pose_family
+    # The body-pose cap, relaxed LAST of the three: a pose repeats only once
+    # every OTHER pose has been shown as often. This is what turns "six of one
+    # couple pose, thirteen poses skipped" into "every pose once or twice".
+    allowed_per_pose = policy.max_per_body_pose
 
     while len(selected) < target_count and remaining:
         slots_left = target_count - len(selected)
@@ -2164,20 +2213,30 @@ def _greedy(
             m for m in eligible
             if shot_counts.get(shot_of[m], 0) < allowed_per_shot
             and family_counts.get(_pose_family(shot_of[m]), 0) < allowed_per_family
+            and pose_counts.get(pose_key[m], 0) < allowed_per_pose
         ]
         if not fresh_shots:
-            # Every eligible photo is blocked by a cap. Relax the family cap
-            # first when it is the binding one (more angles of a pose the
-            # album already loves), the shot cap only when even families are
-            # spent -- the user asked for N pages, never for an empty round.
-            family_bound = [
+            # Every eligible photo is blocked by a cap. The body-pose cap is
+            # relaxed LAST: while any candidate belongs to a pose not yet at
+            # its cap, loosen only the shot/family caps (which introduce new
+            # angles of a reachable pose). Open the pose cap itself only when
+            # every eligible photo repeats a pose already shown to its limit --
+            # the user asked for N pages, never for an empty round.
+            pose_reachable = [
                 m for m in eligible
-                if shot_counts.get(shot_of[m], 0) < allowed_per_shot
+                if pose_counts.get(pose_key[m], 0) < allowed_per_pose
             ]
-            if family_bound:
-                allowed_per_family += 1
+            if pose_reachable:
+                family_bound = [
+                    m for m in pose_reachable
+                    if shot_counts.get(shot_of[m], 0) < allowed_per_shot
+                ]
+                if family_bound:
+                    allowed_per_family += 1
+                else:
+                    allowed_per_shot += 1
             else:
-                allowed_per_shot += 1
+                allowed_per_pose += 1
             continue
         # The distinctness backstop: `closest` already tracks each photo's
         # similarity to the nearest selected one. Prefer photos below the

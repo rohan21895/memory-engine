@@ -85,7 +85,12 @@ PLANNER = "album-planner"
 #: within-group comparison and a crew-in-frame take reached the cover); a
 #: max-per-pose-family cap (one pose took 5/25 slots through role bands); and
 #: pacing compares pose FAMILIES, so role-split siblings stay off one page.
-PLANNER_VERSION = "0.5.5"
+#: 0.6.0: BODY-POSE diversity. A pose-cluster axis (RTMO keypoints ->
+#: joint-angle signature -> people-count-bucketed clustering, loaded from
+#: pose-clusters.json) rewards pose breadth. The SigLIP/moment axes could not
+#: see it: a measured album printed one couple pose on six pages across six
+#: outfits (six embeddings, six moments) while skipping thirteen other poses.
+PLANNER_VERSION = "0.6.0"
 SEED = 0
 
 _VENDOR_PROFILE_DIR = Path("packages/album-engine/vendor_profiles")
@@ -225,6 +230,7 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
 
     space = EMBEDDING_SPACES.get(ctx.settings.embedding_model, (None, 0))[0]
     expression_head = _load_expression_head(ctx, space)
+    pose_clusters = _load_pose_clusters(ctx)
     candidates = []
     for media_id in event.media_ids:
         record = by_id.get(media_id)
@@ -247,6 +253,7 @@ def plan_selection(ctx: StageContext, stage: str = STAGE) -> SelectionPlan | Sta
                 per_face=per_face,
                 category=_face_category(per_face.detected_count),
                 clipped_fraction=_clipped_fraction(record),
+                pose_cluster=pose_clusters.get(media_id),
             )
         )
     if not candidates:
@@ -960,6 +967,27 @@ def _min_head_sharpness(ctx: StageContext, media_id: str) -> float | None:
 
 
 ALBUM_REVIEW_FILENAME = "album-review.json"
+POSE_CLUSTERS_FILENAME = "pose-clusters.json"
+
+
+def _load_pose_clusters(ctx: StageContext) -> dict[str, str]:
+    """media_id -> body-pose cluster id, from `<workdir>/pose-clusters.json`.
+
+    This is the slot the pose stage fills: RTMO keypoints -> joint-angle
+    signature -> people-count-bucketed clustering, written once per library.
+    Absent = no pose signal, and selection's pose-diversity term stays inert
+    (every candidate keyed to its own singleton). A malformed file fails
+    loudly rather than silently reverting the album to pose-blind selection.
+    """
+    path = Path(ctx.workdir) / POSE_CLUSTERS_FILENAME
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in data.items()
+    ):
+        raise ValueError(f"{path} must map media-id strings to cluster strings")
+    return data
 
 
 def _load_album_review(ctx: StageContext) -> dict[str, Any] | None:

@@ -198,6 +198,98 @@ class MomentBreadthBeatsASecondTake(unittest.TestCase):
                          "breadth across moments beats a better second take")
 
 
+class BodyPoseBreadthBeatsARepeatInAnotherOutfit(unittest.TestCase):
+    """The failure this pins, straight from a real album: one body pose was
+    printed SIX times across six outfits while thirteen other poses were
+    skipped. The moment/embedding axes could not see it -- a different outfit
+    is a different embedding and a different moment -- so only a pose-cluster
+    axis can prefer the distinct pose.
+
+    The pool: two frames of pose A in DIFFERENT outfits (so their embeddings
+    are far apart, moment novelty rewards BOTH), and one frame of pose B. With
+    pose diversity off, quality takes the two A frames; with it on, the album
+    takes one A and the distinct pose B."""
+
+    def _frame(self, tag, axis, value, pose, hour):
+        emb = [0.0] * 4
+        emb[axis] = 1.0  # every pair orthogonal: no redundancy or moment tie
+        return cand(
+            tag, value, captured_utc=at(1, hour),
+            embedding=tuple(emb), embedding_space="s", pose_cluster=pose,
+        )
+
+    def _pool(self):
+        # Two pose-A frames, far apart in embedding (different outfits) and in
+        # time (different moments), both higher quality than the pose-B frame.
+        a1 = self._frame("a1", 0, 0.90, "poseA", 9.0)
+        a2 = self._frame("a2", 1, 0.85, "poseA", 15.0)
+        b = self._frame("b", 2, 0.80, "poseB", 12.0)
+        return [a1, a2, b]
+
+    def test_pose_breadth_beats_a_better_repeat(self):
+        result = select(self._pool(), 2, policy=SelectionPolicy(time_bins=1))
+        self.assertEqual(
+            {mid("a1"), mid("b")}, set(result.selected),
+            "a distinct body pose beats a higher-quality repeat of one already shown",
+        )
+
+    def test_zero_weight_restores_quality_order(self):
+        result = select(
+            self._pool(), 2, policy=SelectionPolicy(time_bins=1, weight_pose=0.0)
+        )
+        self.assertEqual(
+            {mid("a1"), mid("a2")}, set(result.selected),
+            "with pose diversity off, the two highest-quality frames win",
+        )
+
+    def test_unmeasured_poses_do_not_share_a_bonus(self):
+        # Three frames, no pose measured: each sits in its own singleton key,
+        # so the pose term is inert and quality decides -- absence of the
+        # measure must not silently cluster everything into one pose.
+        pool = [replace(c, pose_cluster=None) for c in self._pool()]
+        result = select(pool, 2, policy=SelectionPolicy(time_bins=1))
+        self.assertEqual({mid("a1"), mid("a2")}, set(result.selected))
+
+
+class TheBodyPoseCapStopsOnePoseTakingTheBook(unittest.TestCase):
+    """The measured failure: one pose on six pages while thirteen others were
+    skipped. The cap prints a pose at most `max_per_body_pose` times until
+    every other pose has been shown as often -- and relaxes only when the pool
+    holds nothing else."""
+
+    def _pool(self, n_a, n_b):
+        # n_a frames of pose A (highest quality) and n_b of pose B. Orthogonal
+        # embeddings so nothing but the pose axis decides breadth.
+        out = []
+        for i in range(n_a):
+            e = [0.0] * (n_a + n_b); e[i] = 1.0
+            out.append(cand(f"a{i}", 0.90 - i * 0.01, captured_utc=at(1, 8 + i),
+                             embedding=tuple(e), embedding_space="s", pose_cluster="A"))
+        for j in range(n_b):
+            e = [0.0] * (n_a + n_b); e[n_a + j] = 1.0
+            out.append(cand(f"b{j}", 0.70 - j * 0.01, captured_utc=at(2, 8 + j),
+                             embedding=tuple(e), embedding_space="s", pose_cluster="B"))
+        return out
+
+    def test_the_cap_forces_the_second_pose_in(self):
+        # Five great pose-A frames, two worse pose-B frames, four slots. Blind
+        # to pose, quality takes four A's. Capped at 2, the book is 2 A + 2 B.
+        pool = self._pool(5, 2)
+        capped = select(pool, 4, policy=SelectionPolicy(
+            time_bins=1, max_per_body_pose=2, min_non_people_fraction=0.0))
+        poses = [c.pose_cluster for c in pool if c.media_id in capped.selected]
+        self.assertEqual(sorted(poses), ["A", "A", "B", "B"],
+                         "the cap caps A at 2 and pulls the distinct pose B in")
+
+    def test_the_cap_relaxes_when_nothing_else_remains(self):
+        # Only pose A exists and four slots are asked for: the cap relaxes
+        # rather than return a two-photo album.
+        pool = self._pool(5, 0)
+        result = select(pool, 4, policy=SelectionPolicy(
+            time_bins=1, max_per_body_pose=2, min_non_people_fraction=0.0))
+        self.assertEqual(4, len(result.selected))
+
+
 class ACloseUpIsNeverAWorseVersionOfAWide(unittest.TestCase):
     """Same instant, same scene, 0.95 embedding similarity -- but the wide
     establishes the place and the close-up shows the person. The story-role
