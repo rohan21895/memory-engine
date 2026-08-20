@@ -1,0 +1,498 @@
+{
+  "as_of": "2026-08-20",
+  "baseline": [
+    {
+      "case_id": "selection_blink_when_clean_exists",
+      "inputs_digest": "18742ab81aac32a4e71eea6cb3b1276d7ad30779c7930d23c15b10a43e2a62cc",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_category_presets_change_winner",
+      "inputs_digest": "67f7842d73ad8a302934ad9f8572a50813bff5a4b70100917d8aa8f2fb6ad14f",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "selection_clean_take_selected",
+      "inputs_digest": "0e9be1a34db3f5e0553fd1d3c7519215f3a20f2514364d09c763b817e88ada26",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "selection_exclude_violated",
+      "inputs_digest": "42cfb50a4225d5dc20ba5395bae701a4bfb7a94bccb1fbf5ea324f08f2af2eca",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_pin_violated",
+      "inputs_digest": "2fdb612884ca4376e269ea4d6069442935fdd0b239ca28a12e550b577cf1be48",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_rare_moment_falsely_rejected",
+      "inputs_digest": "94c283a805d026f42091748e491be39b378ad572c849cd005715c99f46247129",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_screenshot_selected",
+      "inputs_digest": "876f5baf62d902980ee6d9afbba77beb0d2f289c6afc30520405941a97253bcf",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_twin_pair_rate",
+      "inputs_digest": "d110cdb324b099854dc68491ec0ad4ae89b9ca77ef44f2d6978ab0dd2903958e",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_worse_version_selected",
+      "inputs_digest": "bc5005e4258a88b368efb3eebccda1639fd08b6c029630f87c39b09e51896140",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  ],
+  "candidate": [
+    {
+      "case_id": "selection_blink_when_clean_exists",
+      "inputs_digest": "18742ab81aac32a4e71eea6cb3b1276d7ad30779c7930d23c15b10a43e2a62cc",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_category_presets_change_winner",
+      "inputs_digest": "67f7842d73ad8a302934ad9f8572a50813bff5a4b70100917d8aa8f2fb6ad14f",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "selection_clean_take_selected",
+      "inputs_digest": "0e9be1a34db3f5e0553fd1d3c7519215f3a20f2514364d09c763b817e88ada26",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "selection_exclude_violated",
+      "inputs_digest": "42cfb50a4225d5dc20ba5395bae701a4bfb7a94bccb1fbf5ea324f08f2af2eca",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_pin_violated",
+      "inputs_digest": "2fdb612884ca4376e269ea4d6069442935fdd0b239ca28a12e550b577cf1be48",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_rare_moment_falsely_rejected",
+      "inputs_digest": "94c283a805d026f42091748e491be39b378ad572c849cd005715c99f46247129",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_screenshot_selected",
+      "inputs_digest": "876f5baf62d902980ee6d9afbba77beb0d2f289c6afc30520405941a97253bcf",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_twin_pair_rate",
+      "inputs_digest": "d110cdb324b099854dc68491ec0ad4ae89b9ca77ef44f2d6978ab0dd2903958e",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "case_id": "selection_worse_version_selected",
+      "inputs_digest": "bc5005e4258a88b368efb3eebccda1639fd08b6c029630f87c39b09e51896140",
+      "models": [
+        {
+          "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+          "model_id": "album-selection-greedy",
+          "version": "3.0.0",
+          "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+        }
+      ],
+      "samples": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  ],
+  "description": "Selection v3 critical-error gate. Measures packages/album-engine selection on synthetic pools with known ground truth: every error case is a rate expected to be exactly 0, enforced absolutely. Regenerate with `python3 -m memory_engine_eval.selection_bench --as-of <date> --write gates/selection-critical-errors.gate.json`.",
+  "policy": {
+    "categories": [
+      "selection_critical",
+      "selection_retention"
+    ],
+    "enforce_expected": true,
+    "min_cases_per_category": 2,
+    "min_repeats": 3
+  },
+  "suite": {
+    "cases": [
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+            "model_id": "album-selection-greedy",
+            "version": "3.0.0",
+            "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+          }
+        ],
+        "case_id": "selection_blink_when_clean_exists",
+        "category": "selection_critical",
+        "description": "synthetic selection pool; a critical error committed at any rate fails the gate",
+        "expected": 0.0,
+        "inputs_digest": "18742ab81aac32a4e71eea6cb3b1276d7ad30779c7930d23c15b10a43e2a62cc",
+        "metric": {
+          "direction": "lower_is_better",
+          "name": "error_rate"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+            "model_id": "album-selection-greedy",
+            "version": "3.0.0",
+            "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+          }
+        ],
+        "case_id": "selection_category_presets_change_winner",
+        "category": "selection_retention",
+        "description": "synthetic selection pool; the selector must keep doing this",
+        "expected": 1.0,
+        "inputs_digest": "67f7842d73ad8a302934ad9f8572a50813bff5a4b70100917d8aa8f2fb6ad14f",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "success_rate"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+            "model_id": "album-selection-greedy",
+            "version": "3.0.0",
+            "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+          }
+        ],
+        "case_id": "selection_clean_take_selected",
+        "category": "selection_retention",
+        "description": "synthetic selection pool; the selector must keep doing this",
+        "expected": 1.0,
+        "inputs_digest": "0e9be1a34db3f5e0553fd1d3c7519215f3a20f2514364d09c763b817e88ada26",
+        "metric": {
+          "direction": "higher_is_better",
+          "name": "success_rate"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+            "model_id": "album-selection-greedy",
+            "version": "3.0.0",
+            "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+          }
+        ],
+        "case_id": "selection_exclude_violated",
+        "category": "selection_critical",
+        "description": "synthetic selection pool; a critical error committed at any rate fails the gate",
+        "expected": 0.0,
+        "inputs_digest": "42cfb50a4225d5dc20ba5395bae701a4bfb7a94bccb1fbf5ea324f08f2af2eca",
+        "metric": {
+          "direction": "lower_is_better",
+          "name": "error_rate"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+            "model_id": "album-selection-greedy",
+            "version": "3.0.0",
+            "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+          }
+        ],
+        "case_id": "selection_pin_violated",
+        "category": "selection_critical",
+        "description": "synthetic selection pool; a critical error committed at any rate fails the gate",
+        "expected": 0.0,
+        "inputs_digest": "2fdb612884ca4376e269ea4d6069442935fdd0b239ca28a12e550b577cf1be48",
+        "metric": {
+          "direction": "lower_is_better",
+          "name": "error_rate"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+            "model_id": "album-selection-greedy",
+            "version": "3.0.0",
+            "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+          }
+        ],
+        "case_id": "selection_rare_moment_falsely_rejected",
+        "category": "selection_critical",
+        "description": "synthetic selection pool; a critical error committed at any rate fails the gate",
+        "expected": 0.0,
+        "inputs_digest": "94c283a805d026f42091748e491be39b378ad572c849cd005715c99f46247129",
+        "metric": {
+          "direction": "lower_is_better",
+          "name": "error_rate"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+            "model_id": "album-selection-greedy",
+            "version": "3.0.0",
+            "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+          }
+        ],
+        "case_id": "selection_screenshot_selected",
+        "category": "selection_critical",
+        "description": "synthetic selection pool; a critical error committed at any rate fails the gate",
+        "expected": 0.0,
+        "inputs_digest": "876f5baf62d902980ee6d9afbba77beb0d2f289c6afc30520405941a97253bcf",
+        "metric": {
+          "direction": "lower_is_better",
+          "name": "error_rate"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+            "model_id": "album-selection-greedy",
+            "version": "3.0.0",
+            "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+          }
+        ],
+        "case_id": "selection_twin_pair_rate",
+        "category": "selection_critical",
+        "description": "synthetic selection pool; a critical error committed at any rate fails the gate",
+        "expected": 0.0,
+        "inputs_digest": "d110cdb324b099854dc68491ec0ad4ae89b9ca77ef44f2d6978ab0dd2903958e",
+        "metric": {
+          "direction": "lower_is_better",
+          "name": "error_rate"
+        }
+      },
+      {
+        "baseline_models": [
+          {
+            "config_blake3": "2e949316348b0ef80d8910dc89af370262f3c30959ed5bfcedeafd14ea53409c",
+            "model_id": "album-selection-greedy",
+            "version": "3.0.0",
+            "weights_blake3": "ac0e9e5b085df6e350f9b380d9fdc41d3d5ef43bb2373986d92f2af9f48f96ef"
+          }
+        ],
+        "case_id": "selection_worse_version_selected",
+        "category": "selection_critical",
+        "description": "synthetic selection pool; a critical error committed at any rate fails the gate",
+        "expected": 0.0,
+        "inputs_digest": "bc5005e4258a88b368efb3eebccda1639fd08b6c029630f87c39b09e51896140",
+        "metric": {
+          "direction": "lower_is_better",
+          "name": "error_rate"
+        }
+      }
+    ]
+  }
+}

@@ -37,3 +37,7 @@ artifacts/
 
 # Local product runs (scripts/run-photeo.sh)
 runs/
+
+# Local-only gate tooling pointed at real-library runs; committed gates carry
+# synthetic data only (packages/eval-harness/gates/README.md)
+packages/eval-harness/gates/local/

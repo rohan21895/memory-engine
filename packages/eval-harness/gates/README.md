@@ -47,6 +47,31 @@ Unknown fields are refused at every level, on purpose: a misspelled knob would
 take its default silently, and the policy in the repository would not be the
 policy that ran.
 
+## `selection-critical-errors.gate.json`
+
+The first selection-quality gate. `memory_engine_eval/selection_bench.py`
+constructs synthetic candidate pools (BLAKE3-style hex ids, one-hot
+embeddings -- nothing from any real library), runs album-engine's selection
+v3 on them, and measures each CRITICAL ERROR as a rate: a blink frame chosen
+over its clean group-mate, a selected pair above 0.92 cosine, a screenshot
+selected, an isolated rare moment falsely rejected on a soft floor, a
+Pareto-dominated frame chosen over its dominator, a pin absent, an exclude
+present. Every error case is `expected: 0` with `enforce_expected`, so ANY
+nonzero rate is exit 1 with no baseline movement involved. Two retention
+cases (`expected: 1`) guard the positive direction. Baseline and candidate
+are identical by construction; the teeth are the expected values plus
+`tests/test_selection_gate.py`, which re-runs the builder and refuses a
+committed file the code has moved from (and proves each metric bites).
+Regenerate after a deliberate behaviour change:
+
+```
+python3 -m memory_engine_eval.selection_bench --as-of <date> \
+    --write gates/selection-critical-errors.gate.json
+```
+
+`gates/local/` (gitignored) holds the real-library sidecar checker; committed
+gates carry synthetic data only.
+
 ## `no-op-selfcheck.gate.json`
 
 Not a model measurement. Its digests are synthetic and its samples are fixed
