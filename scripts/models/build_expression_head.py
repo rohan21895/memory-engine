@@ -128,6 +128,86 @@ AXES: dict[str, dict[str, list[str]]] = {
             "motion blurred arms mid gesture in a snapshot",
         ],
     },
+    # ------------------------------------------------------------------
+    # v2 axes below. The six banks above are FROZEN verbatim from v1 so
+    # existing selection behaviour does not shift under them.
+    # ------------------------------------------------------------------
+    # HARD-GATE axis: screenshots, memes, scans and app captures must never
+    # reach an album page. Unlike every other axis this one IS thresholded --
+    # the gate fires only above `screenshot_min_contrast`, validated against
+    # real-photo libraries so genuine photographs sit clearly below it.
+    "screenshot_document": {
+        "positive": [
+            "a screenshot of a phone app user interface",
+            "a meme image with bold caption text overlaid",
+            "a scanned document page with printed text",
+            "a photo of a paper receipt with itemized prices",
+            "a forwarded chat message image with text bubbles",
+            "a computer screen capture showing a website",
+        ],
+        "negative": [
+            "a genuine photograph taken with a camera",
+            "a real photo of people in a natural scene",
+            "a candid family photograph of a real moment",
+            "an outdoor photograph of people and scenery",
+        ],
+    },
+    # The three face_* axes are written for TIGHT FACE CROPS: the input is a
+    # cropped face fed through the image tower, not a whole scene, so every
+    # prompt describes a close-up face. Phase 2 applies these to per-face
+    # embeddings; they are meaningless on whole-image embeddings.
+    "face_eyes_open": {
+        "positive": [
+            "a close-up of a face with both eyes wide open and alert",
+            "a cropped portrait of a face with bright open eyes",
+            "a close-up face looking ahead with clear open eyes",
+        ],
+        "negative": [
+            "a close-up of a face with both eyes closed",
+            "a cropped face caught mid-blink with eyelids shut",
+            "a close-up of a face with drooping half-closed eyes",
+        ],
+    },
+    "face_smile": {
+        "positive": [
+            "a close-up of a smiling happy face",
+            "a cropped portrait of a laughing face with a big grin",
+            "a close-up face beaming with joy",
+        ],
+        "negative": [
+            "a close-up of a neutral expressionless face",
+            "a cropped portrait of a frowning unhappy face",
+            "a close-up of a crying tearful face",
+        ],
+    },
+    "face_natural": {
+        "positive": [
+            "a close-up of a face with a relaxed natural expression",
+            "a cropped portrait of a calm comfortable face",
+            "a close-up face looking at ease and unforced",
+        ],
+        "negative": [
+            "a close-up of a face contorted in an awkward grimace",
+            "a cropped face with mouth distorted mid-speech",
+            "a close-up of a face caught off guard with a strained expression",
+        ],
+    },
+    # Whole-image context detector for when closed eyes are CORRECT: a kiss,
+    # a tender embrace, prayer. Selection suppresses the blink penalty when
+    # this ranks high, so a kissing couple isn't punished for shut eyes.
+    "embrace_context": {
+        "positive": [
+            "a couple kissing tenderly with their eyes closed",
+            "two people in a warm emotional embrace",
+            "a person praying peacefully with closed eyes",
+            "a mother tenderly hugging her baby close",
+        ],
+        "negative": [
+            "a posed portrait of a person looking at the camera",
+            "a person standing and smiling directly at the camera",
+            "a formal group photo with everyone facing the camera",
+        ],
+    },
 }
 
 
