@@ -40,7 +40,10 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # numpy is a declared dependency, but deferred like grpc:
+    import numpy as np  # a run that never reaches analysis should not pay for it
 
 __all__ = [
     "DEFAULT_ENDPOINT",
@@ -51,7 +54,10 @@ __all__ = [
     "MlRuntimePinMismatch",
     "MlRuntimeUnavailable",
     "RuntimeStatus",
+    "SIGLIP2_INPUT_NAME",
+    "SIGLIP2_INPUT_SIZE",
     "probe",
+    "siglip2_preprocess",
 ]
 
 DEFAULT_ENDPOINT = "127.0.0.1:50151"
@@ -650,6 +656,101 @@ class MlRuntimeClient:
             response, model_id=model_id, expected=[crop.item_id for crop in crops]
         )
 
+    def infer_tensors(
+        self,
+        *,
+        model_id: str,
+        request_id: str,
+        items: Mapping[str, np.ndarray],
+        input_name: str = "",
+        priority: int = 100,
+        timeout_s: float | None = None,
+    ) -> InferOutcome:
+        """One batch of ALREADY-PREPROCESSED tensors. `items` maps item_id to one
+        model-ready array per item.
+
+        This is the path for inputs no proxy id can name -- a face crop cut out
+        of a photo, a tile lifted from a contact sheet. The host feeds an inline
+        TensorSet STRAIGHT to the model: `workers/ml-runtime` applies no resize,
+        no colour conversion and no normalisation on the tensors path, so the
+        caller owns the model's exact preprocessing. For SigLIP 2 image crops
+        that is `siglip2_preprocess`, which replicates the host's own proxy
+        pipeline constant for constant; hand-rolling it instead produces the
+        classic confident-wrong embedding, because any float32 block of the
+        right shape is a valid tensor.
+
+        Alignment is structurally NONE: the host rejects NEEDS_ALIGNMENT on an
+        inline tensor (it has no image to warp), and a caller with a face to
+        align should be sending landmarks through `infer_faces` instead.
+
+        `input_name` may stay empty for single-input models -- the host binds an
+        unnamed lone tensor to the model's configured input -- and must name the
+        input for multi-input models, where positional binding is refused.
+        """
+        pb = self._pb
+        import numpy  # noqa: PLC0415
+
+        proto_dtypes: dict[str, int] = {
+            "float32": pb.DTYPE_FLOAT32,
+            "float16": pb.DTYPE_FLOAT16,
+            "int64": pb.DTYPE_INT64,
+            "int32": pb.DTYPE_INT32,
+            "uint8": pb.DTYPE_UINT8,
+        }
+        proto_items = []
+        for item_id, array in items.items():
+            value = numpy.asarray(array)
+            dtype = proto_dtypes.get(value.dtype.name)
+            if dtype is None:
+                raise MlRuntimeError(
+                    f"{item_id}: dtype {value.dtype.name} has no wire encoding; "
+                    f"the contract carries {sorted(proto_dtypes)}. Convert "
+                    "explicitly -- an implicit cast here would silently change "
+                    "what the model sees"
+                )
+            if value.ndim == 0 or any(size <= 0 for size in value.shape):
+                raise MlRuntimeError(
+                    f"{item_id}: tensor shape {list(value.shape)} is not a "
+                    "positive n-dimensional shape"
+                )
+            # Row-major, little-endian, packed -- the Tensor message's words.
+            data = numpy.ascontiguousarray(
+                value, dtype=value.dtype.newbyteorder("<")
+            ).tobytes()
+            proto_items.append(
+                pb.InferItem(
+                    item_id=item_id,
+                    tensors=pb.TensorSet(
+                        tensors=[
+                            pb.Tensor(
+                                name=input_name,
+                                dtype=dtype,
+                                shape=list(value.shape),
+                                data=data,
+                            )
+                        ]
+                    ),
+                    alignment=pb.ALIGNMENT_NONE,
+                )
+            )
+        deadline = self.deadline_for(len(items)) if timeout_s is None else timeout_s
+        request = pb.InferRequest(
+            request_id=request_id,
+            model_id=model_id,
+            items=proto_items,
+            deadline_ms=int(deadline * 1000),
+            priority=priority,
+        )
+        try:
+            response = self._stub.Infer(request, timeout=deadline)
+        except self._grpc.RpcError as error:
+            code = getattr(error, "code", lambda: None)()
+            raise MlRuntimeError(
+                f"Infer({model_id}) failed at the transport: "
+                f"{getattr(code, 'name', 'RPC_ERROR')}"
+            ) from error
+        return self._read(response, model_id=model_id, expected=list(items))
+
     def _read(
         self, response: Any, *, model_id: str, expected: Sequence[str]
     ) -> InferOutcome:
@@ -768,6 +869,118 @@ def _decode_vector(pb: Any, tensor_set: Any) -> tuple[float, ...]:
             f"payload holds {count}"
         )
     return struct.unpack(f"<{count}f", tensor.data)
+
+
+# ------------------------------------------------- SigLIP 2 preprocessing --
+#
+# Constants copied from models/configs/siglip2-so400m-384.json `preprocessing`,
+# because the tensors path has no config to read: the host feeds an inline
+# TensorSet straight through (`workers/ml-runtime` preprocess applies resize
+# and normalisation only when IT decodes a proxy), so a caller sending tensors
+# must reproduce the proxy path exactly or land measurably elsewhere in the
+# embedding space. The full proxy path being reproduced:
+#
+#   decode -> stretch-resize to 384x384 with cv2.INTER_LINEAR, uint8 in and
+#             uint8 OUT -> RGB -> float32 * (1/255) -> (x - 0.5) / 0.5
+#          -> NCHW -> batch axis
+#
+# The resize is the part worth being paranoid about, in two ways:
+#
+#   * cv2.INTER_LINEAR samples at half-pixel centres WITHOUT antialiasing;
+#     PIL's BILINEAR antialiases on downscale, and the model card measured
+#     that gap at cosine 0.9698 on a 1600px source -- inside the range
+#     near-duplicate decisions are made in. `_bilinear_resize` below
+#     replicates cv2's mapping in numpy rather than importing either
+#     library's opinion.
+#   * the host's resize returns UINT8, so every pixel reaching normalisation
+#     is an integer. Even that quantisation is audible in the embedding:
+#     feeding the un-rounded float resample instead measured as low as cosine
+#     0.9963 against the proxy path on real thumbnails, and rounding to
+#     integers first brought the worst case to 0.9997. Hence the rint below.
+
+SIGLIP2_INPUT_NAME = "pixel_values"
+SIGLIP2_INPUT_SIZE = 384
+_SIGLIP2_SCALE = 1.0 / 255.0
+_SIGLIP2_MEAN = 0.5
+_SIGLIP2_STD = 0.5
+
+
+def _resample_axis(n_source: int, n_target: int) -> tuple[Any, Any, Any]:
+    """Index pairs and blend weights for one axis of a cv2.INTER_LINEAR resize.
+
+    cv2 maps target pixel i to source coordinate (i + 0.5) * scale - 0.5 and
+    clamps the SAMPLE at the borders (a coordinate left of the first pixel
+    reads the first pixel outright, not a blend), which is why the fraction is
+    zeroed there and not merely the index clipped.
+    """
+    import numpy  # noqa: PLC0415
+
+    scale = n_source / n_target
+    coords = (numpy.arange(n_target, dtype=numpy.float64) + 0.5) * scale - 0.5
+    lower = numpy.floor(coords)
+    fraction = (coords - lower).astype(numpy.float32)
+    fraction[coords < 0] = 0.0
+    index_0 = numpy.clip(lower, 0, n_source - 1).astype(numpy.int64)
+    index_1 = numpy.minimum(index_0 + 1, n_source - 1)
+    return index_0, index_1, fraction
+
+
+def _bilinear_resize(image: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Resize HxWxC float32 to `height`x`width`, matching cv2.INTER_LINEAR.
+
+    Matching means: identical coordinate mapping and border handling, no
+    antialias on downscale. The only residual difference from cv2 itself is
+    cv2's 11-bit fixed-point blend weights against exact float32 arithmetic
+    here -- bounded well under 1/255 per pixel once the result is rounded
+    back to integers, which `siglip2_preprocess` does.
+    """
+    import numpy  # noqa: PLC0415
+
+    x0, x1, fx = _resample_axis(image.shape[1], width)
+    y0, y1, fy = _resample_axis(image.shape[0], height)
+    fx = fx[None, :, None]
+    fy = fy[:, None, None]
+    top = image[y0][:, x0] * (1.0 - fx) + image[y0][:, x1] * fx
+    bottom = image[y1][:, x0] * (1.0 - fx) + image[y1][:, x1] * fx
+    return top * (1.0 - fy) + bottom * fy
+
+
+def siglip2_preprocess(image: Any) -> np.ndarray:
+    """A model-ready (1, 3, 384, 384) float32 tensor from an image or crop.
+
+    `image` is a PIL image (any mode; converted to RGB) or an HxWx3 uint8
+    numpy array that is ALREADY RGB -- the one thing this function cannot
+    check. Feed it a cv2-decoded BGR array and the embedding is confidently
+    wrong, which is why the PIL form is the recommended one.
+
+    The result goes to `infer_tensors` for `siglip2-so400m-384`; the tensor
+    may stay unnamed because the model has a single input.
+    """
+    import numpy  # noqa: PLC0415
+
+    if hasattr(image, "convert"):
+        image = image.convert("RGB")
+    array = numpy.asarray(image)
+    if array.ndim != 3 or array.shape[2] != 3:
+        raise MlRuntimeError(
+            f"siglip2_preprocess needs an HxWx3 RGB image, got shape "
+            f"{list(array.shape)}"
+        )
+    if array.dtype != numpy.uint8:
+        raise MlRuntimeError(
+            "siglip2_preprocess needs 8-bit pixels; got dtype "
+            f"{array.dtype.name}. Rescaling other depths is a normalisation "
+            "decision this function refuses to guess"
+        )
+    values = _bilinear_resize(
+        array.astype(numpy.float32), SIGLIP2_INPUT_SIZE, SIGLIP2_INPUT_SIZE
+    )
+    # The host's resize emits uint8; integer pixels are part of the recipe
+    # (see the section comment above for the measured cost of skipping this).
+    values = numpy.rint(numpy.clip(values, 0.0, 255.0))
+    values = (values * _SIGLIP2_SCALE - _SIGLIP2_MEAN) / _SIGLIP2_STD
+    values = numpy.transpose(values, (2, 0, 1))
+    return numpy.expand_dims(numpy.ascontiguousarray(values, dtype=numpy.float32), 0)
 
 
 def _decode_detections(pb: Any, detection_set: Any) -> tuple[Detection, ...]:
