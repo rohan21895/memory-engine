@@ -175,6 +175,10 @@ class Settings:
     # Candidates shown per slot wanted. Below 2 there is nothing to reject and
     # the upload buys nothing; the sheet's own 64-cell ceiling caps the top.
     tier3_pool_multiplier: int = 3
+    # Accept a load_mode=development clearance at the frontier gate --
+    # mirrors the print path's allow_development_clearance. Only the CLI
+    # flag sets it; the overridden verdicts live in the clearance manifest.
+    tier3_allow_development_clearance: bool = False
 
 
 @dataclass(slots=True)

@@ -351,7 +351,12 @@ def run(ctx: StageContext) -> StageResult:
         TransportConfig,
     )
 
-    config = TransportConfig(model=settings.tier3_model)
+    config = TransportConfig(
+        model=settings.tier3_model,
+        allow_development_clearance=bool(
+            getattr(settings, "tier3_allow_development_clearance", False)
+        ),
+    )
 
     consent_file = consent_path(ctx)
     consent = None

@@ -28,10 +28,15 @@ be the kind of check people learn to disable.
 
 ON `allow_development_load_mode`
 
-Present, off by default, and never set by any of the three wrappers. It exists
-so `packages/eval-harness` can verify manifests produced by a development host
-without the verifier growing a special case for tests -- a special case being a
-thing that eventually gets used in production.
+Present, off by default. `guard_print` and `guard_share` never set it.
+`guard_frontier_egress` exposes it as an explicit keyword (still default
+False) because the frontier path needs the same operator-flag escape hatch
+the print renderer already has -- until a release-audited safety head exists,
+a gate with no logged override is not a gate, it is an off switch for the
+feature. It also exists so `packages/eval-harness` can verify manifests
+produced by a development host without the verifier growing a special case
+for tests -- a special case being a thing that eventually gets used in
+production.
 """
 
 from __future__ import annotations
@@ -57,6 +62,7 @@ def _guard(
     evidence_ids: Mapping[str, str] | None,
     expected_model: Mapping[str, Any] | None,
     expected_thresholds: Thresholds | None,
+    allow_development_load_mode: bool = False,
 ) -> Clearance:
     return verify_clearance(
         manifest,
@@ -65,7 +71,7 @@ def _guard(
         evidence_ids=evidence_ids,
         expected_model=expected_model,
         expected_thresholds=expected_thresholds,
-        allow_development_load_mode=False,
+        allow_development_load_mode=allow_development_load_mode,
     )
 
 
@@ -104,6 +110,7 @@ def guard_frontier_egress(
     evidence_ids: Mapping[str, str] | None = None,
     expected_model: Mapping[str, Any] | None = None,
     expected_thresholds: Thresholds | None = None,
+    allow_development_load_mode: bool = False,
 ) -> Clearance:
     """Refuse to open the outbound request without one.
 
@@ -113,6 +120,12 @@ def guard_frontier_egress(
     before the journal entry, because the journal entry is written before the
     network call and a journalled send that was never permitted is a record of
     something that should not have been about to happen.
+
+    `allow_development_load_mode` is the one wrapper that takes the switch:
+    the print path already has its --allow-development-clearance operator
+    flag, and until a release-audited safety head exists the frontier path
+    needs the same explicit, logged decision or it is simply unreachable.
+    Off by default, set only from an operator flag, never inferred.
     """
     return _guard(
         "frontier_egress",
@@ -121,4 +134,5 @@ def guard_frontier_egress(
         evidence_ids,
         expected_model,
         expected_thresholds,
+        allow_development_load_mode=allow_development_load_mode,
     )

@@ -91,6 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "the safety gate; consent does not imply clearance")
     parser.add_argument("--tier3-pool", type=int, default=_DEFAULTS.tier3_pool_multiplier,
                         help="candidates shown per album slot wanted")
+    parser.add_argument("--tier3-allow-development-clearance", action="store_true",
+                        help="accept a load_mode=development clearance at the "
+                             "frontier gate -- the tier3 mirror of "
+                             "--allow-development-clearance. Never a default; the "
+                             "overridden verdicts stay recorded in the manifest")
     parser.add_argument("--print-clearance", default=None,
                         help="path to the print SafetyClearance manifest (default "
                              "<workdir>/print-clearance.json). Absence blocks at "
@@ -133,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         tier3_consent_path=args.tier3_consent,
         tier3_clearance_path=args.tier3_clearance,
         tier3_pool_multiplier=args.tier3_pool,
+        tier3_allow_development_clearance=args.tier3_allow_development_clearance,
     )
     stages = [name.strip() for name in args.stages.split(",") if name.strip()] or None
 

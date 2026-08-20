@@ -42,6 +42,10 @@ _LIBRARY_PATHS = (
     _REPO_ROOT / "packages" / "face-identity",
     _REPO_ROOT / "packages" / "story-engine",
     _REPO_ROOT / "packages" / "prompt-engine",
+    # The live tier-3 path imports memory_engine_safety to catch
+    # PublicationBlocked; without this entry the taste stage crashes on
+    # ModuleNotFoundError before the gate can even refuse.
+    _REPO_ROOT / "packages" / "safety-gate",
     # `workers/video-analysis` is on this list even though it is a worker rather
     # than a package: it runs IN PROCESS (pure Python plus an FFmpeg
     # subprocess), it is the only producer of a `FeatureStream`, and the story

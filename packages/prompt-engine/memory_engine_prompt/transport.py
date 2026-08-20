@@ -841,6 +841,13 @@ class TransportConfig:
     max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES
     max_instruction_chars: int = DEFAULT_MAX_INSTRUCTION_CHARS
     retry: RetryPolicy = field(default_factory=RetryPolicy)
+    # Accept a load_mode=development clearance at the frontier gate. NEVER a
+    # default: set only from an explicit operator flag, mirroring the print
+    # path's --allow-development-clearance. Exists because the only safety
+    # head shipped so far is dev-grade, and the owner can decide to send a
+    # sheet their own eyes have inspected; the flag and the overridden
+    # verdicts are both recorded on disk.
+    allow_development_clearance: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.model, str) or not self.model:
@@ -1574,7 +1581,11 @@ class FrontierTransport:
         )
         media_ids = self._media_ids_on(sheet, media_ids_by_tile)
         gate = _safety_gate()
-        gate.guard_frontier_egress(clearance, media_ids=media_ids)
+        gate.guard_frontier_egress(
+            clearance,
+            media_ids=media_ids,
+            allow_development_load_mode=self._config.allow_development_clearance,
+        )
 
         policy = self._config.retry
         attempts: list[Attempt] = []
@@ -1592,7 +1603,11 @@ class FrontierTransport:
             # is one BLAKE3 over a few kilobytes; what it buys is that no
             # mutation of the manifest between the consent check and the send
             # can widen what leaves.
-            gate.guard_frontier_egress(clearance, media_ids=media_ids)
+            gate.guard_frontier_egress(
+            clearance,
+            media_ids=media_ids,
+            allow_development_load_mode=self._config.allow_development_clearance,
+        )
 
             try:
                 message = self._sender(prepared)
