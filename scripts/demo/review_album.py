@@ -137,6 +137,9 @@ def load_review_state(workdir: Path) -> bool:
         FLOW.workdir = workdir
         FLOW.sidecar = json.loads(sidecar.read_text(encoding="utf-8"))
         FLOW.thumbs = thumbnail_paths(workdir)
+        # A finished run already has a PDF on disk; point at the newest so the
+        # review screen can offer it without waiting for a fresh render.
+        FLOW.pdf = newest_pdf(workdir)
         FLOW.state = "review"
     return True
 
@@ -354,11 +357,15 @@ _PAGE = """<!doctype html>
   h1 { font-size:22px; font-weight:normal; letter-spacing:0.01em; }
   h1 small { color:#9a927f; font-size:13px; margin-left:12px; }
   .counts { font:13px 'SF Mono', Menlo, monospace; color:#9a927f; }
+  .hactions { display:flex; gap:18px; align-items:baseline; }
+  .hactions a { font:13px 'SF Mono', Menlo, monospace; color:#c8a24a; text-decoration:none;
+                border-bottom:1px solid transparent; cursor:pointer; }
+  .hactions a:hover { border-bottom-color:#c8a24a; }
   main { padding:24px 32px 120px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:18px; }
   figure.card { background:#1c1a17; border:1px solid #2c2a25; padding:10px; cursor:pointer; }
   figure.card.swapped { border-color:#c8a24a; }
-  figure.card img { width:100%; aspect-ratio:3/4; object-fit:contain; background:#000; display:block; }
+  figure.card img { width:100%; aspect-ratio:4/3; object-fit:cover; background:#000; display:block; }
   figcaption { padding-top:8px; }
   .slot { font:11px 'SF Mono', Menlo, monospace; color:#9a927f; }
   .why { font-size:12.5px; color:#c6bfb0; padding-top:4px; }
@@ -373,7 +380,7 @@ _PAGE = """<!doctype html>
   #panel .sub { color:#9a927f; font-size:13px; padding-bottom:20px; }
   .alts { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:16px; }
   .alt { background:#1c1a17; border:1px solid #2c2a25; padding:10px; }
-  .alt img { width:100%; aspect-ratio:3/4; object-fit:contain; background:#000; display:block; }
+  .alt img { width:100%; aspect-ratio:4/3; object-fit:cover; background:#000; display:block; }
   .alt .reason { font-size:12.5px; color:#c6bfb0; padding:8px 0; }
   .alt button, .actions button {
     font:13px 'SF Mono', Menlo, monospace; background:none; border:1px solid #6e6754;
@@ -458,6 +465,10 @@ _PAGE = """<!doctype html>
 <header>
   <h1>Review your album <small id="album"></small></h1>
   <div class="counts" id="counts"></div>
+  <div class="hactions">
+    <a id="viewpdf" class="hidden" href="/album.pdf" target="_blank">View current PDF</a>
+    <a onclick="show('intake')">&#65291; New album</a>
+  </div>
 </header>
 <main><div class="grid" id="grid"></div></main>
 <div id="panel"><div class="inner">
@@ -515,7 +526,9 @@ function route(st) {
   } else if (st.state === "running" || st.state === "rendering") {
     show("progress"); poll();
   } else if (st.state === "review") {
-    show("review"); loadReview();
+    show("review");
+    document.getElementById("viewpdf").classList.toggle("hidden", !st.pdf);
+    loadReview();
   } else if (st.state === "flagged") {
     show("flaggedbox");
     document.getElementById("flaggedmsg").textContent =
@@ -712,7 +725,17 @@ function poseOf(mediaId) {
   return null;
 }
 function closePanel() { PANEL_SLOT = null; document.getElementById("panel").className = ""; }
+// Escape closes the open panel; a click on the backdrop (not its inner card) too.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && document.getElementById("panel").classList.contains("open"))
+    closePanel();
+});
+document.getElementById("panel").addEventListener("click", (e) => {
+  if (e.target === document.getElementById("panel")) closePanel();
+});
 async function finalize() {
+  if (!confirm("This renders the full print PDF and takes a few minutes. Continue?"))
+    return;
   const pinned = DATA.selected.map(s => swaps[s.media_id] || s.media_id);
   const excluded = Object.keys(swaps).filter(k => !pinned.includes(k));
   const body = {pinned, excluded, swaps,
