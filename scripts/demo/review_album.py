@@ -650,6 +650,13 @@ function openPanel(s) {
   const inAlbum = new Set(DATA.selected.map(x => swaps[x.media_id] || x.media_id));
   const currentPose = poseOf(current);
   const shotIds = new Set(s.alternatives.map(a => a.media_id));
+  // Every body pose the album ALREADY shows. The "other best" section offers
+  // genuinely different looks, so it hides not just photos in the album but
+  // any photo of a pose already in it -- a near-duplicate of something you
+  // already have is not a fresh option.
+  const albumPoses = new Set(
+    [...inAlbum].map(m => poseOf(m)).filter(Boolean)
+  );
 
   // The live candidate pool: the omitted photos, PLUS any original album
   // photo you have since swapped out -- removing a photo puts it back on the
@@ -687,7 +694,7 @@ function openPanel(s) {
   let offered = 0;
   for (const p of available) {
     if (p.media_id === current || inAlbum.has(p.media_id) || shotIds.has(p.media_id)) continue;
-    if (currentPose && p.pose === currentPose) continue;  // that one is a "similar"
+    if (p.pose && albumPoses.has(p.pose)) continue;  // a pose already in the book
     other.appendChild(altCard(s, {media_id: p.media_id, reasons: p.reasons}, current));
     if (++offered >= N_OTHER_BEST) break;
   }
