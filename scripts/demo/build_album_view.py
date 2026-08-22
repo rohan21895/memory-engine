@@ -119,7 +119,8 @@ def embed(path: str, longest: int = 1680, quality: int = 84) -> tuple[str, int, 
 
 # --- scene assembly ------------------------------------------------------
 
-def build(workdir: Path, style: str) -> list[dict]:
+def build(workdir: Path, style: str, dense: int | None = None,
+          pages: int | None = None) -> list[dict]:
     con = sqlite3.connect(f"file:{workdir / 'library.db'}?mode=ro", uri=True)
     src = {m: p for m, p in con.execute("SELECT media_id, path FROM media_source").fetchall()}
     # Local downscaled proxies, used when the original has been archived off the
@@ -162,53 +163,57 @@ def build(workdir: Path, style: str) -> list[dict]:
                            "portrait": h > w}
         return cache[media_id]
 
-    # flatten to a clean, de-duplicated photo stream in album order
-    seen, stream = set(), []
-    for i, page in enumerate(spec["pages"]):
-        pl = sorted(page.get("placements", []), key=lambda p: (not p.get("is_hero", False),))
+    # DENSE demo: ignore the (sparse) spec and pack N library photos into P
+    # pages, so a high photo:page ratio (e.g. 90 -> 30) can be seen laid out.
+    if dense:
+        ids = [m for m in proxies if m in proxies][:dense] or list(src)[:dense]
+        photos = [ph for ph in (photo(m) for m in ids) if ph]
+        return _pack(photos, pages or max(1, len(photos) // 3))
+
+    # One spread per planner page, carrying that page's own photos. The album
+    # engine already decided density (how many photos share a page); the viewer
+    # renders it faithfully instead of re-grouping, so a dense 3-4/page book
+    # stays dense and a sparse one stays sparse. No blank-filling chrome: a page
+    # is its photos, shown whole on their own colour, and nothing else.
+    scenes: list[dict] = []
+    for page in spec["pages"]:
+        pl = sorted(page.get("placements", []),
+                    key=lambda p: (not p.get("is_hero", False),))
+        seen, photos = set(), []
         for p in pl:
             mid = p["media_id"]
             if mid in seen:
                 continue
             ph = photo(mid)
             if ph:
-                seen.add(mid); stream.append(ph)
-    if not stream:
+                seen.add(mid); photos.append(ph)
+        if photos:
+            scenes.append({"kind": "page", "photos": photos, "n": len(photos)})
+    if not scenes:
         return []
+    scenes[0]["kind"] = "cover"
+    return scenes
 
-    scenes = [{"kind": "cover", "photos": [stream[0]]}]
-    rest = stream[1:]
 
-    # Compose spreads from the stream. Pairing/tripling is by orientation so a
-    # layered duo never fights a portrait against a landscape, and the rhythm
-    # alternates feature / duo / trio so the book breathes. Every photo is shown
-    # whole; the composition fills the page with colour, not blank.
-    feat_cycle = 0
-    i = 0
-    n = len(rest)
-    while i < n:
-        p = rest[i]
-        # try a same-orientation trio, then a duo, else a feature
-        same = [j for j in range(i + 1, min(i + 4, n)) if rest[j]["portrait"] == p["portrait"]]
-        slot = len(scenes)
-        if len(same) >= 2 and slot % 4 == 3:
-            trio = [p, rest[same[0]], rest[same[1]]]
-            scenes.append({"kind": "mosaic", "photos": trio})
-            for j in sorted([i, same[0], same[1]], reverse=True):
-                rest.pop(j); n -= 1
-            continue
-        if len(same) >= 1 and slot % 2 == 0:
-            duo = [p, rest[same[0]]]
-            scenes.append({"kind": "duo", "photos": duo})
-            for j in sorted([i, same[0]], reverse=True):
-                rest.pop(j); n -= 1
-            continue
-        kind = "feature-l" if p["portrait"] else "feature-t"
-        if feat_cycle % 2 == 1:
-            kind = "feature-r" if p["portrait"] else "full"
-        feat_cycle += 1
-        scenes.append({"kind": kind, "photos": [p]})
-        i += 1
+def _pack(photos: list[dict], pages: int) -> list[dict]:
+    """Distribute photos across `pages` spreads: a single-photo cover, then an
+    even split with a gentle rhythm so dense pages don't march in lockstep."""
+    if not photos:
+        return []
+    scenes = [{"kind": "cover", "photos": [photos[0]], "n": 1}]
+    body, slots = photos[1:], max(1, pages - 1)
+    base, extra = divmod(len(body), slots)
+    # rhythm: nudge counts up/down around the mean so spreads breathe (…3,4,2,3…)
+    rhythm, i = (1, 0, -1, 0), 0
+    for k in range(slots):
+        if i >= len(body):
+            break
+        cnt = max(1, base + (1 if k < extra else 0) + (rhythm[k % 4] if base >= 3 else 0))
+        chunk = body[i:i + cnt]; i += cnt
+        scenes.append({"kind": "page", "photos": chunk, "n": len(chunk)})
+    if i < len(body):  # never drop the tail
+        scenes[-1]["photos"].extend(body[i:])
+        scenes[-1]["n"] = len(scenes[-1]["photos"])
     return scenes
 
 
@@ -278,49 +283,28 @@ figure img{ display:block; width:100%; height:100%; object-fit:contain; }
 .cover .rule{ width:66px; height:2px; margin:1.5rem auto 1.05rem; background:var(--accent); }
 .cover .dates{ font-family:var(--disp); font-size:clamp(.9rem,2.4vw,1.12rem); letter-spacing:.22em; color:#f1eadf; opacity:.92; }
 
-/* FEATURE — one photo + a colour panel carrying quiet type (no blank space) */
-.feature{ grid-template-columns:1fr; }
-.feat-grid{ display:grid; gap:clamp(16px,2.4vw,34px); width:100%; height:100%; align-items:stretch; }
-.feature[data-var="l"] .feat-grid{ grid-template-columns:1.35fr .85fr; }
-.feature[data-var="r"] .feat-grid{ grid-template-columns:.85fr 1.35fr; }
-.feature[data-var="t"] .feat-grid{ grid-template-rows:1.55fr .75fr; }
-.feature figure{ min-height:0; min-width:0; }
-.panel{ position:relative; display:flex; flex-direction:column; justify-content:center;
-  padding:clamp(16px,2.2vw,34px); overflow:hidden; }
-.panel .big{ font-family:var(--disp); line-height:.8; letter-spacing:-.02em; }
-.panel .word{ margin-top:.5rem; letter-spacing:.32em; text-transform:uppercase; font-size:.7rem;
-  font-family:'Avenir Next',system-ui,sans-serif; }
-.panel .prule{ width:44px; height:2px; margin:1rem 0; }
-.chips{ display:flex; gap:9px; margin-top:.2rem; }
-.chips i{ width:24px; height:24px; border-radius:50%; display:block; }
-.feature[data-var="r"] .panel{ order:-1; text-align:right; align-items:flex-end; }
-.feature[data-var="r"] .chips{ justify-content:flex-end; }
+/* PAGE — the photos of one page, shown whole on their own colour. The layout
+   adapts to the count: 1 hero, 2 side by side, 3 hero+stack, 4 quad, 5 hero+4,
+   6 grid, 7+ a gallery wall. Every cell letterboxes onto the photo's own field,
+   so the frame is never dead white and the composition stays edge to edge. */
+.page{ place-items:center; }
+.grid{ display:grid; gap:clamp(9px,1.4vw,22px); width:min(94%,1240px); height:min(86svh,860px); }
+.grid figure{ min-width:0; min-height:0; width:100%; height:100%; }
 
-/* FULL — an immersive single frame */
-.full{ place-items:center; }
-.full figure{ width:100%; height:100%; }
-.full .no{ position:absolute; right:clamp(24px,4vw,60px); top:clamp(20px,4vw,54px); z-index:2;
-  font-size:.74rem; letter-spacing:.3em; color:var(--ink); opacity:.55; }
-
-/* DUO — layered & offset, never a 50/50 split with a rule */
-.duo{ place-items:center; }
-.duo .stage{ position:relative; width:min(96%,1180px); height:min(84svh,780px); }
-.duo .a,.duo .b{ position:absolute; }
-.duo .b{ z-index:2; }
-.duo[data-o="0"] .a{ left:0; top:6%; width:62%; height:82%; }
-.duo[data-o="0"] .b{ right:0; bottom:0; width:44%; height:60%; }
-.duo[data-o="1"] .a{ right:0; top:0; width:60%; height:80%; }
-.duo[data-o="1"] .b{ left:0; bottom:4%; width:46%; height:62%; }
-@media (max-width:760px){ .duo .stage{ height:auto; } .duo .a,.duo .b{ position:relative;
-  width:100%!important; height:52svh!important; inset:auto!important; margin-bottom:16px; } }
-
-/* MOSAIC — an asymmetric gallery wall */
-.mosaic{ place-items:center; }
-.mosaic .wall{ display:grid; gap:clamp(10px,1.4vw,18px); width:min(96%,1180px);
-  height:min(84svh,780px); grid-template-columns:1.4fr 1fr; grid-template-rows:1fr 1fr; }
-.mosaic .wall figure:nth-child(1){ grid-row:1 / span 2; }
-@media (max-width:760px){ .mosaic .wall{ grid-template-columns:1fr; grid-template-rows:none;
-  height:auto; } .mosaic .wall figure{ height:44svh; } .mosaic .wall figure:nth-child(1){ grid-row:auto; } }
+.p1 .grid{ width:min(80%,900px); grid-template-columns:1fr; }
+.p2 .grid{ grid-template-columns:1fr 1fr; }
+.p2.rows .grid{ width:min(72%,860px); grid-template-columns:1fr; grid-template-rows:1fr 1fr; }
+.p3 .grid{ grid-template-columns:1.55fr 1fr; grid-template-rows:1fr 1fr; }
+.p3 .grid figure:first-child{ grid-row:1 / 3; }
+.p4 .grid{ grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; }
+.p5 .grid{ grid-template-columns:repeat(3,1fr); grid-template-rows:1fr 1fr; }
+.p5 .grid figure:first-child{ grid-column:1 / 2; grid-row:1 / 3; }
+.p6 .grid{ grid-template-columns:repeat(3,1fr); grid-template-rows:1fr 1fr; }
+.pN .grid{ grid-auto-flow:dense; grid-auto-rows:1fr;
+  grid-template-columns:repeat(auto-fill,minmax(clamp(140px,14vw,210px),1fr)); }
+@media (max-width:760px){ .grid{ height:auto!important; width:92%!important;
+  grid-template-columns:1fr!important; grid-auto-rows:44svh; }
+  .p3 .grid figure:first-child,.p5 .grid figure:first-child{ grid-row:auto; grid-column:auto; } }
 
 #progress{ position:fixed; left:0; top:0; height:3px; width:100%; z-index:9; }
 #bar{ display:block; height:100%; width:0;
@@ -422,7 +406,6 @@ SCENES.forEach((sc,idx)=>{
   spreadVars(s,lead,sc.photos[1]);
   s.style.setProperty('--ax',(20+(idx*41)%64)+'%'); s.style.setProperty('--ay',(14+(idx*29)%60)+'%');
   const grain=document.createElement('div'); grain.className='grain';
-  const no=String(idx).padStart(2,'0');
 
   if(sc.kind==='cover'){
     s.className='spread cover';
@@ -432,29 +415,16 @@ SCENES.forEach((sc,idx)=>{
       `<div class="plate"><div class="eyebrow">${META.eyebrow}</div>`+
       `<h1 class="serif">${META.title}</h1><div class="rule"></div>`+
       `<div class="dates serif">${META.dates}</div></div>`);
-  } else if(sc.kind.startsWith('feature')){
-    const v = sc.kind.endsWith('-r')?'r' : sc.kind.endsWith('-t')?'t':'l';
-    s.className='spread feature'; s.dataset.var=v;
-    const g=document.createElement('div'); g.className='feat-grid';
-    const panel=document.createElement('div'); panel.className='panel';
-    const chips=(lead.pal.swatches||[]).map(c=>`<i style="background:${c}"></i>`).join('');
-    panel.innerHTML=`<div class="big serif">${no}</div><div class="prule"></div>`+
-      `<div class="chips">${chips}</div><div class="word">plate ${no} · ${String(total).padStart(2,'0')}</div>`;
-    const f=fig(lead);
-    if(v==='r'){ g.appendChild(panel); g.appendChild(f); } else { g.appendChild(f); g.appendChild(panel); }
+  } else {
+    // A page IS its photos, shown whole on their own colour. The layout adapts
+    // to the count (1 hero … 6 grid … many = gallery wall) so a dense book
+    // stays legible and a sparse one stays generous. No panels, no numbers.
+    const n=sc.photos.length;
+    s.className='spread page p'+Math.min(n,6)+(n>6?' pN':'');
+    if(n===2 && !sc.photos[0].portrait && !sc.photos[1].portrait) s.classList.add('rows');
+    const g=document.createElement('div'); g.className='grid';
+    sc.photos.forEach(ph=>g.appendChild(fig(ph)));
     s.appendChild(g);
-  } else if(sc.kind==='full'){
-    s.className='spread full'; s.appendChild(fig(lead));
-    s.insertAdjacentHTML('beforeend',`<div class="no">${no} / ${String(total).padStart(2,'0')}</div>`);
-  } else if(sc.kind==='duo'){
-    s.className='spread duo'; s.dataset.o = idx%2;
-    const st=document.createElement('div'); st.className='stage';
-    st.appendChild(fig(sc.photos[0],'a')); st.appendChild(fig(sc.photos[1]||sc.photos[0],'b'));
-    s.appendChild(st);
-  } else if(sc.kind==='mosaic'){
-    s.className='spread mosaic';
-    const w=document.createElement('div'); w.className='wall';
-    sc.photos.forEach(p=>w.appendChild(fig(p))); s.appendChild(w);
   }
   s.appendChild(grain); stage.appendChild(s);
 });
@@ -487,9 +457,13 @@ def main():
     ap.add_argument("--eyebrow", default="A Maternity Story")
     ap.add_argument("--dates", default="2026")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--dense", type=int, default=None,
+                    help="demo density: pack this many library photos into --pages pages")
+    ap.add_argument("--pages", type=int, default=None,
+                    help="target page count for --dense")
     args = ap.parse_args()
 
-    scenes = build(args.workdir, args.style)
+    scenes = build(args.workdir, args.style, dense=args.dense, pages=args.pages)
     meta = {"title": args.title, "eyebrow": args.eyebrow, "dates": args.dates}
     html = (PAGE
             .replace("__TITLE__", f"{args.title} — {args.eyebrow}")
