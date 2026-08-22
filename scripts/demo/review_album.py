@@ -517,6 +517,29 @@ _PAGE = """<!doctype html>
   #donebox { max-width:640px; margin:80px auto; padding:0 32px; text-align:center; }
   #donebox a { display:inline-block; margin-top:24px; font:14px 'SF Mono', Menlo, monospace;
                background:#c8a24a; color:#141311; text-decoration:none; padding:13px 30px; }
+  /* fullscreen lightbox — view a photo big, browse swap options, select one */
+  #lightbox { position:fixed; inset:0; background:rgba(8,7,6,0.96); display:none;
+              z-index:50; align-items:center; justify-content:center; }
+  #lightbox.open { display:flex; }
+  #lbimg { max-width:86vw; max-height:80vh; object-fit:contain; background:#000;
+           box-shadow:0 10px 50px rgba(0,0,0,0.6); }
+  #lbclose { position:absolute; top:18px; right:22px; width:44px; height:44px; line-height:1;
+             font:22px 'SF Mono', Menlo, monospace; color:#e8e4dc; background:rgba(20,19,17,0.7);
+             border:1px solid #6e6754; cursor:pointer; }
+  #lbclose:hover { border-color:#c8a24a; color:#c8a24a; }
+  .lbnav { position:absolute; top:50%; transform:translateY(-50%); width:52px; height:52px;
+           border-radius:50%; border:1px solid #6e6754; background:rgba(20,19,17,0.7);
+           color:#e8e4dc; font-size:26px; line-height:1; cursor:pointer; }
+  .lbnav:hover { border-color:#c8a24a; color:#c8a24a; }
+  #lbprev { left:22px; } #lbnext { right:22px; }
+  #lbbar { position:absolute; bottom:0; left:0; right:0; padding:18px 24px; display:flex;
+           gap:20px; align-items:center; justify-content:center; flex-wrap:wrap;
+           background:linear-gradient(transparent, rgba(8,7,6,0.92)); }
+  #lbcount { font:12px 'SF Mono', Menlo, monospace; color:#9a927f; }
+  #lbcap { font-size:13px; color:#c6bfb0; max-width:52vw; text-align:center; }
+  #lbselect { font:13px 'SF Mono', Menlo, monospace; background:#c8a24a; color:#141311;
+              border:none; padding:11px 24px; cursor:pointer; }
+  #lbselect:hover { background:#d8b25a; }
   .hidden { display:none !important; }
 </style>
 
@@ -604,10 +627,24 @@ _PAGE = """<!doctype html>
     These are my photos — print them</button>
 </div>
 
+<div id="lightbox">
+  <button id="lbclose" onclick="closeLightbox()" title="Close">&times;</button>
+  <button id="lbprev" class="lbnav" onclick="lbStep(-1)" title="Previous">&#8249;</button>
+  <img id="lbimg" src="" alt="">
+  <button id="lbnext" class="lbnav" onclick="lbStep(1)" title="Next">&#8250;</button>
+  <div id="lbbar">
+    <span id="lbcount"></span>
+    <span id="lbcap"></span>
+    <button id="lbselect" onclick="lbSelect()">Select</button>
+  </div>
+</div>
+
 <script>
 let DATA = null;
 const swaps = {};   // original selected media_id -> replacement media_id
 let polling = null;
+let LB = null;          // active lightbox: {items:[{id,caption,...}], i, onSelect, selectLabel}
+let PANEL_ITEMS = [];   // ordered media shown in the open alternatives panel
 
 function show(id) {
   for (const s of ["intake", "progress", "review", "donebox", "flaggedbox"])
@@ -772,6 +809,9 @@ function render() {
         <div class="flag">${alts ? alts + " from this shot" : "alternatives from the pool"}</div>
       </figcaption>`;
     fig.onclick = () => openPanel(s);
+    const cimg = fig.querySelector("img");
+    cimg.style.cursor = "zoom-in";
+    cimg.onclick = (e) => { e.stopPropagation(); openSelectedLightbox(s); };
     grid.appendChild(fig);
     n++;
   }
@@ -788,6 +828,8 @@ const N_OTHER_BEST = 10;
 function altCard(s, o, current) {
   const div = document.createElement("div");
   div.className = "alt";
+  div.dataset.mid = o.media_id;
+  div.dataset.reason = (o.reasons || []).join("; ");
   div.innerHTML = `<img loading="lazy" src="/thumb/${o.media_id}">
     ${o.fits === false ? '<div class="unfit">may print soft in this slot</div>' : ""}
     <div class="reason">${o.reasons.join("; ")}</div>
@@ -865,6 +907,66 @@ function openPanel(s) {
   }
   document.getElementById("palts-wrap").classList.toggle("hidden", offered === 0);
   document.getElementById("panel").className = "open";
+
+  // Wire every alt thumbnail to the lightbox: clicking one opens it big, and
+  // the arrows browse across ALL options shown in the panel, in display order.
+  const lbCards = [...document.querySelectorAll("#galts .alt, #palts .alt")];
+  PANEL_ITEMS = lbCards.map(c => ({id: c.dataset.mid, caption: c.dataset.reason || ""}));
+  lbCards.forEach((c, idx) => {
+    const im = c.querySelector("img");
+    im.style.cursor = "zoom-in";
+    im.onclick = (e) => {
+      e.stopPropagation();
+      openLightbox({items: PANEL_ITEMS, index: idx, selectLabel: "Use this photo",
+        onSelect: (it) => applyPanelSwap(it.id)});
+    };
+  });
+}
+// Swap the open slot to the lightbox-selected photo (id === the slot's own
+// media_id means "revert to the engine's pick"), then refresh grid + panel.
+function applyPanelSwap(mid) {
+  const s = PANEL_SLOT;
+  if (!s) return;
+  if (mid === s.media_id) delete swaps[s.media_id];
+  else swaps[s.media_id] = mid;
+  render();
+  openPanel(s);
+  closeLightbox();
+}
+// Fullscreen a selected photo; arrows walk the whole album, Select jumps to its
+// swap options.
+function openSelectedLightbox(slot) {
+  const items = DATA.selected.map(x => {
+    const shown = swaps[x.media_id] || x.media_id;
+    const why = swaps[x.media_id] ? "your choice" : (x.chosen_because[0] || "");
+    return {id: shown, slot: x, caption: `page ${x.page ?? "—"} — ${why}`};
+  });
+  let idx = DATA.selected.indexOf(slot);
+  if (idx < 0) idx = 0;
+  openLightbox({items, index: idx, selectLabel: "See swap options",
+    onSelect: (it) => { closeLightbox(); openPanel(it.slot); }});
+}
+// --- lightbox core -------------------------------------------------------
+function openLightbox(cfg) {
+  LB = cfg; LB.i = cfg.index || 0; lbRender();
+  document.getElementById("lightbox").className = "open";
+}
+function closeLightbox() { LB = null; document.getElementById("lightbox").className = ""; }
+function lbStep(d) {
+  if (!LB || LB.items.length < 2) return;
+  LB.i = (LB.i + d + LB.items.length) % LB.items.length; lbRender();
+}
+function lbSelect() { if (LB && LB.onSelect) LB.onSelect(LB.items[LB.i], LB.i); }
+function lbRender() {
+  if (!LB) return;
+  const it = LB.items[LB.i];
+  document.getElementById("lbimg").src = "/thumb/" + it.id;
+  document.getElementById("lbcap").textContent = it.caption || "";
+  document.getElementById("lbcount").textContent = (LB.i + 1) + " / " + LB.items.length;
+  document.getElementById("lbselect").textContent = LB.selectLabel || "Select";
+  const multi = LB.items.length > 1;
+  document.getElementById("lbprev").classList.toggle("hidden", !multi);
+  document.getElementById("lbnext").classList.toggle("hidden", !multi);
 }
 function poseOf(mediaId) {
   const hit = DATA.selected.find(x => x.media_id === mediaId);
@@ -879,8 +981,19 @@ function poseOf(mediaId) {
 function closePanel() { PANEL_SLOT = null; document.getElementById("panel").className = ""; }
 // Escape closes the open panel; a click on the backdrop (not its inner card) too.
 document.addEventListener("keydown", (e) => {
+  if (document.getElementById("lightbox").classList.contains("open")) {
+    if (e.key === "Escape") closeLightbox();
+    else if (e.key === "ArrowLeft") lbStep(-1);
+    else if (e.key === "ArrowRight") lbStep(1);
+    else if (e.key === "Enter") lbSelect();
+    return;
+  }
   if (e.key === "Escape" && document.getElementById("panel").classList.contains("open"))
     closePanel();
+});
+// A click on the dark backdrop (not the image or a control) closes the lightbox.
+document.getElementById("lightbox").addEventListener("click", (e) => {
+  if (e.target === document.getElementById("lightbox")) closeLightbox();
 });
 document.getElementById("panel").addEventListener("click", (e) => {
   if (e.target === document.getElementById("panel")) closePanel();
