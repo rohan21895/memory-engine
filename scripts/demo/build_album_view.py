@@ -299,19 +299,21 @@ figure img{ display:block; width:100%; height:100%; object-fit:cover; }
    full-bleed photo must be pure image, no padding, border or mat */
 #stage .canvas figure{ position:absolute; overflow:hidden;
   padding:0; margin:0; border-radius:0; background:none; box-shadow:none; outline:none; }
-/* blurred self fills the slot; the whole photo sits on top, never cropped */
-#stage .canvas figure .bok{ position:absolute; inset:0; z-index:0;
-  background-size:cover; background-position:center; transform:scale(1.22);
-  filter:blur(26px) saturate(1.35) brightness(.66); }
 #stage .canvas figure img{ position:relative; z-index:1; width:100%; height:100%;
   object-fit:contain; }
 
-/* collage & chaos read as scattered PRINTS: a white edge and a cast shadow so
-   the tilt and overlap feel like photographs dropped on the colour field */
-#stage .canvas[data-k="collage"] figure, #stage .canvas[data-k="chaos"] figure{
-  outline:clamp(5px,.6vw,9px) solid #f8f3ea; outline-offset:calc(-1 * clamp(5px,.6vw,9px));
-  box-shadow:0 40px 70px -26px rgba(0,0,0,.85), 0 12px 30px -14px rgba(0,0,0,.6); }
-/* full-bleed / diptych / quad / mosaic: no border, no gap, pure image */
+/* MATTED FRAME — a warm mat, a thin frame line and a soft cast shadow, so each
+   photo reads as a framed print hung on the wall (the mat absorbs any aspect) */
+#stage .canvas figure.frame{ background:var(--mat,#f6f1e7); padding:clamp(6px,1vw,16px);
+  outline:1px solid rgba(0,0,0,.24); outline-offset:0;
+  box-shadow:0 1px 1px rgba(0,0,0,.22), 0 26px 38px -16px rgba(0,0,0,.6); }
+#stage .canvas figure.frame img{ background:var(--mat,#f6f1e7); }
+
+/* BLEED — one full-page hero; a blurred, enlarged copy of the same photo fills
+   behind it so nothing is cropped and no edge is dead */
+#stage .canvas figure.bleed .bok{ position:absolute; inset:0; z-index:0;
+  background-size:cover; background-position:center; transform:scale(1.22);
+  filter:blur(26px) saturate(1.3) brightness(.66); }
 
 @media (max-width:760px){
   /* on a tall phone, let multi-photo spreads breathe into their own height */
@@ -404,13 +406,13 @@ JS = r"""
 const stage=document.getElementById('stage');
 const FK=['deep','ground','rise','accent','accent2','glow','light'];
 const figset=(f,p)=>{ FK.forEach(k=>f.style.setProperty('--f'+k,p[k])); };
-const fig=(ph,cls)=>{ const f=document.createElement('figure'); if(cls)f.className=cls; figset(f,ph.pal);
+// mode: 'frame' = matted print on the wall (mat absorbs any aspect, no crop);
+// 'bleed' = full-page, a blurred copy of the same photo fills behind it; ''
+// (cover) = raw fill, used only for the cover image.
+const fig=(ph,mode)=>{ const f=document.createElement('figure'); if(mode)f.className=mode; figset(f,ph.pal);
   f.style.setProperty('--ar', ((ph.w/ph.h)||1).toFixed(4));
-  // bokeh backdrop: a blurred, enlarged copy of the SAME photo fills the slot so
-  // the whole photo can sit on top (contain) with no crop and no dead space —
-  // which means any photo works in any slot shape, and mixed aspects arrange well
-  const bg=document.createElement('div'); bg.className='bok';
-  bg.style.backgroundImage='url("'+ph.src+'")'; f.appendChild(bg);
+  if(mode==='bleed'){ const bg=document.createElement('div'); bg.className='bok';
+    bg.style.backgroundImage='url("'+ph.src+'")'; f.appendChild(bg); }
   const i=new Image(); i.src=ph.src; i.loading='lazy'; i.decoding='async'; f.appendChild(i); return f; };
 const spreadVars=(s,lead,second)=>{ const p=lead.pal; s.style.setProperty('--deep',p.deep);
   s.style.setProperty('--ground',p.ground); s.style.setProperty('--rise',p.rise);
@@ -418,31 +420,46 @@ const spreadVars=(s,lead,second)=>{ const p=lead.pal; s.style.setProperty('--dee
   s.style.setProperty('--accent2',(second||lead).pal.accent2); };
 const total=SCENES.length-1;
 
-// Spread archetypes: full-page compositions, not a centred grid. Coordinates are
-// [x,y,w,h,rot?,z?] in % of the WHOLE spread; values below 0 / above 100 bleed a
-// photo off the edge on purpose. Some archetypes are silent full-bleed frames,
-// some are edge-to-edge diptychs/quads (no gutter), some are tilted collages on
-// the colour field, some are deliberate chaos with photos running off the page.
-// The book cycles through them so drama changes spread to spread.
+// GALLERY-WALL arrangements, straight off the "photo wall ideas" playbook.
+// Each rect is [x,y,w,h] in % of the page; frames are matted prints on a wall,
+// deliberately MIXED in size and orientation (a wide frame, a tall frame, a
+// square) and tightly aligned so the cluster is balanced, never a grid. A mat
+// absorbs any aspect, so a portrait photo lives happily in a landscape frame.
+// `k` picks the treatment: 'gallery' = matted frames, 'bleed' = one full-bleed
+// hero for contrast. Several arrangements per count cycle for variety.
 const ARCH={
- 1:[{k:'bleed',  t:[[0,0,100,100]]},                                   // silent full-bleed, no border
-    {k:'air',    t:[[-8,7,64,94,-1.2]]},                               // bleeds off left, air to the right
-    {k:'bleed',  t:[[0,0,100,100]]}],
- 2:[{k:'diptych',t:[[0,0,50,100],[50,0,50,100]]},                      // two full-bleed halves, no gutter
-    {k:'chaos',  t:[[-4,0,66,100,0,1],[54,20,50,64,3,2]]},             // big bleed + tilted overlap
-    {k:'band',   t:[[0,0,100,55],[0,55,100,45]]}],                     // full-bleed horizontal bands
- 3:[{k:'bleedtwo',t:[[0,0,58,100],[58,0,42,50],[58,50,42,50]]},        // hero bleed + two flush
-    {k:'collage',t:[[5,9,45,64,-4,1],[42,5,42,55,4,3],[37,51,47,45,-2,2]]},
-    {k:'chaos',  t:[[-5,-4,58,68,-2,1],[52,9,54,62,3,2],[22,56,52,50,-3,3]]}],
- 4:[{k:'bleedquad',t:[[0,0,50,50],[50,0,50,50],[0,50,50,50],[50,50,50,50]]},
-    {k:'collage',t:[[4,7,41,52,-4,1],[47,4,41,47,4,3],[6,52,40,45,3,2],[50,51,45,46,-3,4]]},
-    {k:'chaos',  t:[[-6,-4,52,62,-2,1],[52,3,54,56,3,2],[5,54,42,52,-3,3],[54,57,52,50,2,1]]}],
- 5:[{k:'chaos', t:[[0,0,56,100,0,1],[56,3,46,46,3,2],[56,52,26,48,-3,2],[80,54,24,46,2,3],[70,24,30,42,-2,4]]},
-    {k:'collage',t:[[3,6,41,53,-3,1],[46,3,33,43,3,3],[74,15,25,41,-3,2],[7,57,40,42,2,2],[47,52,46,47,-2,4]]}],
- 6:[{k:'bleedgrid',t:[[0,0,33.4,50],[33.3,0,33.4,50],[66.6,0,33.4,50],[0,50,33.4,50],[33.3,50,33.4,50],[66.6,50,33.4,50]]},
-    {k:'chaos', t:[[-4,-3,40,52,-2,1],[38,3,34,46,3,2],[70,-3,38,48,-3,1],[3,52,36,48,2,2],[38,55,32,45,-2,3],[68,52,40,48,3,1]]}],
+ 1:[{k:'bleed',   t:[[0,0,100,100]]},                                   // silent full-bleed breather
+    {k:'gallery', t:[[31,14,38,72]]}],                                  // one framed print, centred
+ 2:[{k:'gallery', t:[[7,19,46,50],[57,34,36,50]]},                      // big landscape + offset portrait
+    {k:'gallery', t:[[9,14,34,66],[49,26,44,48]]}],                     // tall + wide, stepped
+ 3:[{k:'gallery', t:[[33,24,36,52],[7,30,23,40],[70,30,23,40]]},        // Butterfly: centre anchor + wings
+    {k:'gallery', t:[[6,15,44,44],[54,13,40,34],[40,60,44,32]]}],       // Tetris of three
+ 4:[{k:'gallery', t:[[7,13,38,44],[49,11,45,32],[49,47,27,42],[79,47,15,42]]},   // Pinwheel-ish
+    {k:'gallery', t:[[6,26,24,50],[33,14,34,44],[70,22,24,36],[36,62,34,26]]}],  // scattered balance
+ 5:[{k:'gallery', t:[[6,15,38,56],[48,13,25,32],[76,13,18,32],[48,49,25,34],[76,49,18,34]]},  // Squared: anchor + quad
+    {k:'gallery', t:[[6,12,30,38],[40,10,30,30],[73,16,21,34],[6,55,30,34],[40,46,52,42]]}],
+ 6:[{k:'gallery', t:[[5,10,31,42],[39,9,29,32],[70,12,25,34],[5,57,24,34],[31,52,35,38],[68,52,27,36]]},
+    {k:'gallery', t:[[6,13,26,34],[35,10,32,30],[70,13,24,32],[6,52,32,38],[41,46,28,44],[71,50,24,38]]}],
 };
-const pickArch=(n,idx)=> ARCH[n] ? ARCH[n][(idx*3+n)%ARCH[n].length] : null;
+const pickArch=(n,idx)=> ARCH[n] ? ARCH[n][idx % ARCH[n].length] : null;
+
+// SALON hang for many photos: matted frames of varied size in balanced rows
+// with tight even gaps -- the dense gallery wall from the references.
+function salon(n){
+  const rows = n<=8 ? 2 : 3, g = 2.2;
+  const rowH = (100 - g*(rows+1)) / rows, rects = [];
+  let k = 0;
+  for(let r=0; r<rows; r++){
+    const cnt = Math.min(Math.ceil(n/rows), n-k); if(cnt<=0) break;
+    const raw = []; let sum = 0;
+    for(let c=0;c<cnt;c++){ const w = 0.72 + ((c*7 + r*5) % 6) * 0.11; raw.push(w); sum += w; }
+    const avail = 100 - g*(cnt+1); let x = g;
+    for(let c=0;c<cnt;c++){ const w = raw[c]/sum*avail;
+      const h = rowH * (0.66 + ((c + r) % 3) * 0.15);
+      rects.push([x, g + r*(rowH+g) + (rowH-h)/2, w, h]); x += w + g; k++; }
+  }
+  return rects;
+}
 
 SCENES.forEach((sc,idx)=>{
   const s=document.createElement('section'); const lead=sc.photos[0];
@@ -460,28 +477,19 @@ SCENES.forEach((sc,idx)=>{
       `<h1 class="serif">${META.title}</h1><div class="rule"></div>`+
       `<div class="dates serif">${META.dates}</div></div>`);
   } else {
-    // A full-page composed spread. Photos are placed edge to edge (and off the
-    // edge) from an archetype -- full-bleed, diptych, collage, chaos -- so each
-    // spread has its own drama instead of a uniform grid.
+    // A gallery-wall spread: matted frames of mixed size on the wall, balanced
+    // but never a grid. One-photo pages sometimes go full-bleed for contrast;
+    // crowded pages become a salon hang.
     const n=sc.photos.length;
     s.className='spread page';
     const cv=document.createElement('div'); cv.className='canvas';
     const arch=pickArch(n,idx);
-    if(arch){
-      cv.dataset.k=arch.k;
-      sc.photos.forEach((ph,k)=>{ const r=arch.t[k]||arch.t[arch.t.length-1]; const f=fig(ph);
-        f.style.left=r[0]+'%'; f.style.top=r[1]+'%'; f.style.width=r[2]+'%'; f.style.height=r[3]+'%';
-        if(r[4]) f.style.transform='rotate('+r[4]+'deg)'; f.style.zIndex=r[5]||1;
-        cv.appendChild(f); });
-    } else {
-      // many photos: an edge-to-edge full-bleed mosaic (no gutters, no margins)
-      cv.dataset.k='mosaic';
-      const cols=Math.ceil(Math.sqrt(n*1.5)), rows=Math.ceil(n/cols);
-      const cw=100/cols, ch=100/rows;
-      sc.photos.forEach((ph,k)=>{ const f=fig(ph);
-        f.style.left=((k%cols)*cw)+'%'; f.style.top=(Math.floor(k/cols)*ch)+'%';
-        f.style.width=cw+'%'; f.style.height=ch+'%'; cv.appendChild(f); });
-    }
+    const rects = arch ? arch.t : salon(n);
+    const mode  = arch && arch.k==='bleed' ? 'bleed' : 'frame';
+    cv.dataset.k = arch ? arch.k : 'salon';
+    sc.photos.forEach((ph,k)=>{ const r=rects[k]||rects[rects.length-1]; const f=fig(ph, mode);
+      f.style.left=r[0]+'%'; f.style.top=r[1]+'%'; f.style.width=r[2]+'%'; f.style.height=r[3]+'%';
+      cv.appendChild(f); });
     s.appendChild(cv);
   }
   s.appendChild(grain); stage.appendChild(s);
