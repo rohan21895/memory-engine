@@ -298,22 +298,28 @@ figure img{ display:block; width:100%; height:100%; object-fit:cover; }
   grid-auto-rows:clamp(150px,20vw,270px); gap:clamp(6px,.8vw,13px);
   grid-auto-flow:dense; width:min(96%,1220px); }
 
-/* every tile is a bokeh square: a blurred enlarged copy of its own photo fills
-   the cell, the whole photo sits on top (contain) -- any aspect, no crop */
+/* portrait & landscape tiles are oriented to match their photo, so they fill
+   cleanly with cover (near-zero crop) -- NO bokeh */
 #stage .grid figure{ position:relative; overflow:hidden;
   padding:0; margin:0; border-radius:2px; background:none; box-shadow:none;
   outline:1px solid rgba(255,255,255,.12); outline-offset:-1px; }
-#stage figure.bleed{ position:relative; overflow:hidden; }
-#stage figure.bleed .bok{ position:absolute; inset:0; z-index:0;
+#stage .grid figure img{ position:relative; z-index:1; width:100%; height:100%;
+  object-fit:cover; }
+/* SQUARE photos are the ONLY case that uses bokeh: a blurred enlarged copy of
+   the same photo squares the cell off, the whole photo sits on top (contain) */
+#stage figure.square .bok{ position:absolute; inset:0; z-index:0;
   background-size:cover; background-position:center; transform:scale(1.25);
   filter:blur(24px) saturate(1.3) brightness(.72); }
-#stage figure.bleed img{ position:relative; z-index:1; width:100%; height:100%;
-  object-fit:contain; }
+#stage figure.square img{ object-fit:contain; }
 
-/* single-photo breather: full-bleed, whole photo on its own blurred field */
-.spread.page.solo{ padding:0; }
-#stage .solo .full{ position:absolute; inset:0; }
-#stage .solo .full .bok{ filter:blur(40px) saturate(1.3) brightness(.6); transform:scale(1.3); }
+/* single-photo breather: the whole photo, centred on the wall at its own
+   aspect -- no crop, no bokeh */
+.spread.page.solo{ padding:clamp(20px,4vw,64px); place-items:center; }
+#stage .solo figure.plain{ position:relative; overflow:hidden; border-radius:2px;
+  aspect-ratio:var(--ar,1); height:min(84svh,900px); max-width:100%;
+  outline:1px solid rgba(255,255,255,.12); outline-offset:-1px; }
+#stage .solo figure.plain img{ position:relative; z-index:1; width:100%; height:100%;
+  object-fit:cover; }
 
 @media (max-width:760px){
   .grid{ --cols:2!important; grid-auto-rows:clamp(150px,42vw,230px); }
@@ -406,12 +412,13 @@ JS = r"""
 const stage=document.getElementById('stage');
 const FK=['deep','ground','rise','accent','accent2','glow','light'];
 const figset=(f,p)=>{ FK.forEach(k=>f.style.setProperty('--f'+k,p[k])); };
-// mode: 'frame' = matted print on the wall (mat absorbs any aspect, no crop);
-// 'bleed' = full-page, a blurred copy of the same photo fills behind it; ''
-// (cover) = raw fill, used only for the cover image.
+// mode: 'cover' = fill the tile (portrait/landscape tiles already match the
+// photo's orientation, so this crops almost nothing); 'square' = the ONLY case
+// that uses bokeh -- a blurred self-fill squares a square photo off cleanly;
+// 'plain' = whole photo centred on the wall (the single-photo breather).
 const fig=(ph,mode)=>{ const f=document.createElement('figure'); if(mode)f.className=mode; figset(f,ph.pal);
   f.style.setProperty('--ar', ((ph.w/ph.h)||1).toFixed(4));
-  if(mode==='bleed'){ const bg=document.createElement('div'); bg.className='bok';
+  if(mode==='square'){ const bg=document.createElement('div'); bg.className='bok';
     bg.style.backgroundImage='url("'+ph.src+'")'; f.appendChild(bg); }
   const i=new Image(); i.src=ph.src; i.loading='lazy'; i.decoding='async'; f.appendChild(i); return f; };
 const spreadVars=(s,lead,second)=>{ const p=lead.pal; s.style.setProperty('--deep',p.deep);
@@ -454,15 +461,16 @@ SCENES.forEach((sc,idx)=>{
       `<h1 class="serif">${META.title}</h1><div class="rule"></div>`+
       `<div class="dates serif">${META.dates}</div></div>`);
   } else if(sc.photos.length===1){
-    // a single-photo spread is a full-bleed breather: whole photo, blurred fill
+    // a single-photo spread is a breather: whole photo centred on the wall, no crop
     s.className='spread page solo';
-    const f=fig(sc.photos[0],'bleed'); f.classList.add('full'); s.appendChild(f);
+    s.appendChild(fig(sc.photos[0],'plain'));
   } else {
     // dense modular grid: varied spans, every edge aligned to a shared gridline
     const n=sc.photos.length, cols=colsFor(n);
     s.className='spread page';
     const g=document.createElement('div'); g.className='grid'; g.style.setProperty('--cols',cols);
-    sc.photos.forEach((ph,k)=>{ const [a,b]=spanForPhoto(ph,cols); const f=fig(ph,'bleed');
+    sc.photos.forEach((ph,k)=>{ const [a,b]=spanForPhoto(ph,cols);
+      const ar=(ph.w/ph.h)||1; const f=fig(ph, (ar>0.82 && ar<1.25) ? 'square' : 'cover');
       f.style.gridColumn='span '+a; f.style.gridRow='span '+b; g.appendChild(f); });
     s.appendChild(g);
   }
