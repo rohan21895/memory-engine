@@ -195,30 +195,28 @@ def build(workdir: Path, style: str, dense: int | None = None,
     return scenes
 
 
+_MAX_PER_PAGE = 4  # keep tiles large enough to read without zooming
+
+
 def _pack(photos: list[dict], pages: int) -> list[dict]:
-    """Distribute photos across ~`pages` spreads with a deliberately uneven
-    rhythm: single-photo full-bleed breathers next to 4-5 photo collage/chaos
-    pages, so the book has dynamics instead of the same count every spread."""
+    """Distribute photos across spreads with an uneven rhythm (single-photo
+    full-bleed breathers next to 3-4 photo pages) but never more than
+    _MAX_PER_PAGE per spread, so tiles stay large. Page count flexes to honour
+    the cap rather than cramming the remainder onto one spread."""
     if not photos:
         return []
     scenes = [{"kind": "cover", "photos": [photos[0]], "n": 1}]
     body = photos[1:]
-    # a repeating rhythm of page sizes: 1s become silent full-bleed spreads,
-    # 4-5s become collage / chaos. Scaled so the whole set lands near `pages`.
-    rhythm = [1, 3, 4, 2, 5, 1, 3, 4, 2, 3]
+    rhythm = [3, 4, 2, 4, 1, 3, 4, 2, 3, 4]          # all <= _MAX_PER_PAGE
     avg = sum(rhythm) / len(rhythm)
-    scale = max(0.4, (len(body) / max(1, pages - 1)) / avg)
+    target = max(1.0, min(float(_MAX_PER_PAGE), len(body) / max(1, pages - 1)))
+    scale = target / avg
     i = k = 0
-    while i < len(body) and len(scenes) < pages:
-        cnt = max(1, round(rhythm[k % len(rhythm)] * scale))
-        if len(scenes) == pages - 1:      # last spread mops up the remainder
-            cnt = len(body) - i
+    while i < len(body):
+        cnt = max(1, min(_MAX_PER_PAGE, round(rhythm[k % len(rhythm)] * scale)))
         cnt = min(cnt, len(body) - i)
         scenes.append({"kind": "page", "photos": body[i:i + cnt], "n": cnt})
         i += cnt; k += 1
-    if i < len(body):                     # never drop the tail
-        scenes[-1]["photos"].extend(body[i:])
-        scenes[-1]["n"] = len(scenes[-1]["photos"])
     return scenes
 
 
@@ -429,18 +427,18 @@ const total=SCENES.length-1;
 // dense back-fills the gaps. Each tile is bokeh-filled so any aspect squares off
 // cleanly with no crop, and the column count + row floor keep tiles from ever
 // getting tiny or thin.
-const SPAN3=[[2,2],[1,1],[1,2],[1,1],[2,1],[1,1],[1,1],[1,2],[2,1],[1,1],[1,1],[2,2]];
-const SPAN4=[[2,2],[1,1],[2,1],[1,2],[1,1],[1,1],[2,2],[1,1],[1,2],[2,1],[1,1],[1,1]];
+// 2 columns keeps tiles large (<=4 photos/page); spans still vary the scale
+// without a 2x2 that would dominate a two-column page.
+const SPAN2=[[1,1],[2,1],[1,1],[1,2],[1,1],[1,1],[2,1],[1,2]];
 function spanFor(n, cols, idx){
-  const pat = cols>=4 ? SPAN4 : SPAN3;
-  const off = idx % pat.length;                 // rotate the pattern per page for variety
+  const off = idx % SPAN2.length;               // rotate the pattern per page for variety
   const out = [];
-  for(let i=0;i<n;i++){ let [a,b]=pat[(i+off)%pat.length];
+  for(let i=0;i<n;i++){ let [a,b]=SPAN2[(i+off)%SPAN2.length];
     a=Math.min(a,cols); out.push([a,b]); }
   return out;
 }
-// columns chosen so tiles keep a healthy minimum size (never zoom-to-see)
-function colsFor(n){ return n<=2 ? 2 : n<=6 ? 3 : 4; }
+// two columns so tiles stay big and readable (no zoom-to-see)
+function colsFor(n){ return 2; }
 
 SCENES.forEach((sc,idx)=>{
   const s=document.createElement('section'); const lead=sc.photos[0];
@@ -483,6 +481,19 @@ const io=new IntersectionObserver((es)=>es.forEach(e=>{ if(e.isIntersecting){ co
 spreads.forEach(s=>io.observe(s));
 addEventListener('scroll',()=>{ const h=document.body.scrollHeight-innerHeight;
   bar.style.width=(100*scrollY/(h||1))+'%'; },{passive:true});
+
+// square the base grid cell (row height == column width) so tiles read big and
+// the same in every column, responsively
+function sizeGrids(){
+  document.querySelectorAll('.grid').forEach(g=>{
+    const cs=getComputedStyle(g);
+    const cols=parseInt(cs.getPropertyValue('--cols'))||2;
+    const gap=parseFloat(cs.columnGap)||10;
+    const cell=(g.clientWidth - gap*(cols-1))/cols;
+    if(cell>0) g.style.gridAutoRows=cell+'px';
+  });
+}
+addEventListener('resize', sizeGrids); sizeGrids();
 
 // version switcher: swap the whole design language over the same photos, in place
 const btns=[...document.querySelectorAll('#switch button')];
