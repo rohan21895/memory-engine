@@ -427,17 +427,15 @@ const total=SCENES.length-1;
 // dense back-fills the gaps. Each tile is bokeh-filled so any aspect squares off
 // cleanly with no crop, and the column count + row floor keep tiles from ever
 // getting tiny or thin.
-// 2 columns keeps tiles large (<=4 photos/page); spans still vary the scale
-// without a 2x2 that would dominate a two-column page.
-const SPAN2=[[1,1],[2,1],[1,1],[1,2],[1,1],[1,1],[2,1],[1,2]];
-function spanFor(n, cols, idx){
-  const off = idx % SPAN2.length;               // rotate the pattern per page for variety
-  const out = [];
-  for(let i=0;i<n;i++){ let [a,b]=SPAN2[(i+off)%SPAN2.length];
-    a=Math.min(a,cols); out.push([a,b]); }
-  return out;
+// Orientation drives the tile: a portrait photo gets a TALL tile, a landscape
+// photo a WIDE one, a square photo a square -- so the frame matches the picture
+// and bokeh only fills the small remainder. Two columns keeps tiles large.
+function spanForPhoto(ph, cols){
+  const ar = (ph.w/ph.h) || 1;
+  if(ar <= 0.82) return [1, 2];                 // portrait -> tall  (~2:3, fills)
+  if(ar >= 1.25) return [Math.min(2, cols), 2]; // landscape -> wide & big (~4:3, fills)
+  return [1, 1];                                // square -> bokeh square
 }
-// two columns so tiles stay big and readable (no zoom-to-see)
 function colsFor(n){ return 2; }
 
 SCENES.forEach((sc,idx)=>{
@@ -464,8 +462,7 @@ SCENES.forEach((sc,idx)=>{
     const n=sc.photos.length, cols=colsFor(n);
     s.className='spread page';
     const g=document.createElement('div'); g.className='grid'; g.style.setProperty('--cols',cols);
-    const sp=spanFor(n,cols,idx);
-    sc.photos.forEach((ph,k)=>{ const [a,b]=sp[k]; const f=fig(ph,'bleed');
+    sc.photos.forEach((ph,k)=>{ const [a,b]=spanForPhoto(ph,cols); const f=fig(ph,'bleed');
       f.style.gridColumn='span '+a; f.style.gridRow='span '+b; g.appendChild(f); });
     s.appendChild(g);
   }
@@ -490,7 +487,9 @@ function sizeGrids(){
     const cols=parseInt(cs.getPropertyValue('--cols'))||2;
     const gap=parseFloat(cs.columnGap)||10;
     const cell=(g.clientWidth - gap*(cols-1))/cols;
-    if(cell>0) g.style.gridAutoRows=cell+'px';
+    // row ~0.76 of a column so a 1x2 tile lands near portrait 2:3 and a 2x1 near
+    // landscape 3:2 -- the orientation tile matches the photo, bokeh fills little
+    if(cell>0) g.style.gridAutoRows=(cell*0.76)+'px';
   });
 }
 addEventListener('resize', sizeGrids); sizeGrids();
