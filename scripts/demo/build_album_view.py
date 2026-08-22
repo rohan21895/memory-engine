@@ -291,33 +291,35 @@ figure img{ display:block; width:100%; height:100%; object-fit:cover; }
    hand-designed composition (varied scale, asymmetry, offset, a little rotation
    and overlap) so pages read as editorial / collage / scatter, never a row of
    equal boxes. Compositions rotate across the book so no two feel alike. */
-/* Full-page composed spreads: photos placed edge to edge (and off the edge)
-   from an archetype. The spread has no padding so images can truly bleed. */
-.spread.page{ padding:0; }
-.canvas{ position:absolute; inset:0; z-index:0; }
-/* reset the design-language matting inside the canvas (id-boosted to win): a
-   full-bleed photo must be pure image, no padding, border or mat */
-#stage .canvas figure{ position:absolute; overflow:hidden;
-  padding:0; margin:0; border-radius:0; background:none; box-shadow:none; outline:none; }
-#stage .canvas figure img{ position:relative; z-index:1; width:100%; height:100%;
+/* A page is a dense modular grid: every tile snaps to shared gridlines, so each
+   photo's edge always meets a neighbour's -- the alignment that reads as
+   designed. Varied spans give scale; the row floor + column cap keep tiles from
+   ever getting tiny or thin. */
+.spread.page{ padding:clamp(20px,3.4vw,56px); }
+.grid{ display:grid; grid-template-columns:repeat(var(--cols,3),minmax(0,1fr));
+  grid-auto-rows:clamp(150px,20vw,270px); gap:clamp(6px,.8vw,13px);
+  grid-auto-flow:dense; width:min(96%,1220px); }
+
+/* every tile is a bokeh square: a blurred enlarged copy of its own photo fills
+   the cell, the whole photo sits on top (contain) -- any aspect, no crop */
+#stage .grid figure{ position:relative; overflow:hidden;
+  padding:0; margin:0; border-radius:2px; background:none; box-shadow:none;
+  outline:1px solid rgba(255,255,255,.12); outline-offset:-1px; }
+#stage figure.bleed{ position:relative; overflow:hidden; }
+#stage figure.bleed .bok{ position:absolute; inset:0; z-index:0;
+  background-size:cover; background-position:center; transform:scale(1.25);
+  filter:blur(24px) saturate(1.3) brightness(.72); }
+#stage figure.bleed img{ position:relative; z-index:1; width:100%; height:100%;
   object-fit:contain; }
 
-/* MATTED FRAME — a warm mat, a thin frame line and a soft cast shadow, so each
-   photo reads as a framed print hung on the wall (the mat absorbs any aspect) */
-#stage .canvas figure.frame{ background:var(--mat,#f6f1e7); padding:clamp(6px,1vw,16px);
-  outline:1px solid rgba(0,0,0,.24); outline-offset:0;
-  box-shadow:0 1px 1px rgba(0,0,0,.22), 0 26px 38px -16px rgba(0,0,0,.6); }
-#stage .canvas figure.frame img{ background:var(--mat,#f6f1e7); }
-
-/* BLEED — one full-page hero; a blurred, enlarged copy of the same photo fills
-   behind it so nothing is cropped and no edge is dead */
-#stage .canvas figure.bleed .bok{ position:absolute; inset:0; z-index:0;
-  background-size:cover; background-position:center; transform:scale(1.22);
-  filter:blur(26px) saturate(1.3) brightness(.66); }
+/* single-photo breather: full-bleed, whole photo on its own blurred field */
+.spread.page.solo{ padding:0; }
+#stage .solo .full{ position:absolute; inset:0; }
+#stage .solo .full .bok{ filter:blur(40px) saturate(1.3) brightness(.6); transform:scale(1.3); }
 
 @media (max-width:760px){
-  /* on a tall phone, let multi-photo spreads breathe into their own height */
-  .spread.page{ min-height:auto; }
+  .grid{ --cols:2!important; grid-auto-rows:clamp(150px,42vw,230px); }
+  .spread.page{ min-height:auto; padding:14px; }
 }
 
 #progress{ position:fixed; left:0; top:0; height:3px; width:100%; z-index:9; }
@@ -420,46 +422,25 @@ const spreadVars=(s,lead,second)=>{ const p=lead.pal; s.style.setProperty('--dee
   s.style.setProperty('--accent2',(second||lead).pal.accent2); };
 const total=SCENES.length-1;
 
-// GALLERY-WALL arrangements, straight off the "photo wall ideas" playbook.
-// Each rect is [x,y,w,h] in % of the page; frames are matted prints on a wall,
-// deliberately MIXED in size and orientation (a wide frame, a tall frame, a
-// square) and tightly aligned so the cluster is balanced, never a grid. A mat
-// absorbs any aspect, so a portrait photo lives happily in a landscape frame.
-// `k` picks the treatment: 'gallery' = matted frames, 'bleed' = one full-bleed
-// hero for contrast. Several arrangements per count cycle for variety.
-const ARCH={
- 1:[{k:'bleed',   t:[[0,0,100,100]]},                                   // silent full-bleed breather
-    {k:'gallery', t:[[31,14,38,72]]}],                                  // one framed print, centred
- 2:[{k:'gallery', t:[[7,19,46,50],[57,34,36,50]]},                      // big landscape + offset portrait
-    {k:'gallery', t:[[9,14,34,66],[49,26,44,48]]}],                     // tall + wide, stepped
- 3:[{k:'gallery', t:[[33,24,36,52],[7,30,23,40],[70,30,23,40]]},        // Butterfly: centre anchor + wings
-    {k:'gallery', t:[[6,15,44,44],[54,13,40,34],[40,60,44,32]]}],       // Tetris of three
- 4:[{k:'gallery', t:[[7,13,38,44],[49,11,45,32],[49,47,27,42],[79,47,15,42]]},   // Pinwheel-ish
-    {k:'gallery', t:[[6,26,24,50],[33,14,34,44],[70,22,24,36],[36,62,34,26]]}],  // scattered balance
- 5:[{k:'gallery', t:[[6,15,38,56],[48,13,25,32],[76,13,18,32],[48,49,25,34],[76,49,18,34]]},  // Squared: anchor + quad
-    {k:'gallery', t:[[6,12,30,38],[40,10,30,30],[73,16,21,34],[6,55,30,34],[40,46,52,42]]}],
- 6:[{k:'gallery', t:[[5,10,31,42],[39,9,29,32],[70,12,25,34],[5,57,24,34],[31,52,35,38],[68,52,27,36]]},
-    {k:'gallery', t:[[6,13,26,34],[35,10,32,30],[70,13,24,32],[6,52,32,38],[41,46,28,44],[71,50,24,38]]}],
-};
-const pickArch=(n,idx)=> ARCH[n] ? ARCH[n][idx % ARCH[n].length] : null;
-
-// SALON hang for many photos: matted frames of varied size in balanced rows
-// with tight even gaps -- the dense gallery wall from the references.
-function salon(n){
-  const rows = n<=8 ? 2 : 3, g = 2.2;
-  const rowH = (100 - g*(rows+1)) / rows, rects = [];
-  let k = 0;
-  for(let r=0; r<rows; r++){
-    const cnt = Math.min(Math.ceil(n/rows), n-k); if(cnt<=0) break;
-    const raw = []; let sum = 0;
-    for(let c=0;c<cnt;c++){ const w = 0.72 + ((c*7 + r*5) % 6) * 0.11; raw.push(w); sum += w; }
-    const avail = 100 - g*(cnt+1); let x = g;
-    for(let c=0;c<cnt;c++){ const w = raw[c]/sum*avail;
-      const h = rowH * (0.66 + ((c + r) % 3) * 0.15);
-      rects.push([x, g + r*(rowH+g) + (rowH-h)/2, w, h]); x += w + g; k++; }
-  }
-  return rects;
+// A page is a dense modular GRID with varied spans. Because every tile snaps to
+// the grid lines, each photo's edge always coincides with a neighbour's edge --
+// the alignment that makes a gallery wall read as designed rather than random.
+// Spans mix sizes (a 2x2 anchor, some 2x1 / 1x2, the rest 1x1); grid-auto-flow
+// dense back-fills the gaps. Each tile is bokeh-filled so any aspect squares off
+// cleanly with no crop, and the column count + row floor keep tiles from ever
+// getting tiny or thin.
+const SPAN3=[[2,2],[1,1],[1,2],[1,1],[2,1],[1,1],[1,1],[1,2],[2,1],[1,1],[1,1],[2,2]];
+const SPAN4=[[2,2],[1,1],[2,1],[1,2],[1,1],[1,1],[2,2],[1,1],[1,2],[2,1],[1,1],[1,1]];
+function spanFor(n, cols, idx){
+  const pat = cols>=4 ? SPAN4 : SPAN3;
+  const off = idx % pat.length;                 // rotate the pattern per page for variety
+  const out = [];
+  for(let i=0;i<n;i++){ let [a,b]=pat[(i+off)%pat.length];
+    a=Math.min(a,cols); out.push([a,b]); }
+  return out;
 }
+// columns chosen so tiles keep a healthy minimum size (never zoom-to-see)
+function colsFor(n){ return n<=2 ? 2 : n<=6 ? 3 : 4; }
 
 SCENES.forEach((sc,idx)=>{
   const s=document.createElement('section'); const lead=sc.photos[0];
@@ -476,21 +457,19 @@ SCENES.forEach((sc,idx)=>{
       `<div class="plate"><div class="eyebrow">${META.eyebrow}</div>`+
       `<h1 class="serif">${META.title}</h1><div class="rule"></div>`+
       `<div class="dates serif">${META.dates}</div></div>`);
+  } else if(sc.photos.length===1){
+    // a single-photo spread is a full-bleed breather: whole photo, blurred fill
+    s.className='spread page solo';
+    const f=fig(sc.photos[0],'bleed'); f.classList.add('full'); s.appendChild(f);
   } else {
-    // A gallery-wall spread: matted frames of mixed size on the wall, balanced
-    // but never a grid. One-photo pages sometimes go full-bleed for contrast;
-    // crowded pages become a salon hang.
-    const n=sc.photos.length;
+    // dense modular grid: varied spans, every edge aligned to a shared gridline
+    const n=sc.photos.length, cols=colsFor(n);
     s.className='spread page';
-    const cv=document.createElement('div'); cv.className='canvas';
-    const arch=pickArch(n,idx);
-    const rects = arch ? arch.t : salon(n);
-    const mode  = arch && arch.k==='bleed' ? 'bleed' : 'frame';
-    cv.dataset.k = arch ? arch.k : 'salon';
-    sc.photos.forEach((ph,k)=>{ const r=rects[k]||rects[rects.length-1]; const f=fig(ph, mode);
-      f.style.left=r[0]+'%'; f.style.top=r[1]+'%'; f.style.width=r[2]+'%'; f.style.height=r[3]+'%';
-      cv.appendChild(f); });
-    s.appendChild(cv);
+    const g=document.createElement('div'); g.className='grid'; g.style.setProperty('--cols',cols);
+    const sp=spanFor(n,cols,idx);
+    sc.photos.forEach((ph,k)=>{ const [a,b]=sp[k]; const f=fig(ph,'bleed');
+      f.style.gridColumn='span '+a; f.style.gridRow='span '+b; g.appendChild(f); });
+    s.appendChild(g);
   }
   s.appendChild(grain); stage.appendChild(s);
 });
