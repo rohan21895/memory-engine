@@ -287,23 +287,27 @@ figure img{ display:block; width:100%; height:100%; object-fit:cover; }
    and overlap) so pages read as editorial / collage / scatter, never a row of
    equal boxes. Compositions rotate across the book so no two feel alike. */
 .page{ place-items:center; }
-.stage{ position:relative; width:min(94%,1300px); height:min(88svh,900px); }
-.stage figure{ position:absolute; will-change:transform;
-  box-shadow:0 30px 60px -30px rgba(0,0,0,.7), 0 8px 22px -12px rgba(0,0,0,.5); }
-.stage[data-mood="collage"] figure{ box-shadow:0 40px 70px -28px rgba(0,0,0,.8),
-  0 12px 30px -12px rgba(0,0,0,.55); }
+.stage{ width:min(94%,1180px); }
+.stage figure{ box-shadow:0 26px 52px -30px rgba(0,0,0,.7), 0 6px 18px -12px rgba(0,0,0,.5); }
 
-/* many photos -> an intentionally uneven masonry wall (some cells span) */
-.wall{ place-items:center; }
-.wallgrid{ display:grid; gap:clamp(7px,1vw,15px); width:min(95%,1320px); height:min(88svh,900px);
-  grid-auto-flow:dense; grid-template-columns:repeat(6,1fr); grid-auto-rows:1fr; }
-.wallgrid figure{ width:100%; height:100%; }
-.wallgrid figure:nth-child(6n+1){ grid-column:span 2; grid-row:span 2; }
-.wallgrid figure:nth-child(6n+4){ grid-row:span 2; }
-.wallgrid figure:nth-child(9n+3){ grid-column:span 2; }
-@media (max-width:760px){ .stage{ height:min(120svh,760px); }
-  .wallgrid{ grid-template-columns:repeat(2,1fr); height:auto; grid-auto-rows:32svh; }
-  .wallgrid figure:nth-child(6n+1){ grid-column:span 2; } }
+/* SOLO — a single frame at its own shape, generous but not edge-to-edge */
+.m-solo{ display:flex; justify-content:center; }
+.m-solo figure{ height:min(84svh,840px); aspect-ratio:var(--ar,1); max-width:94%; }
+
+/* MASONRY — unequal-width columns, each tile at its own aspect (no crop). The
+   uneven column widths give scale hierarchy even when photos share a shape, so
+   it reads like a feed, never a grid. */
+.masonry{ display:flex; gap:clamp(8px,1vw,15px); align-items:flex-start; width:100%; }
+.masonry .col{ display:flex; flex-direction:column; gap:clamp(8px,1vw,15px); min-width:0; }
+.masonry figure{ width:100%; aspect-ratio:var(--ar,1); }
+
+/* HERO — one full-width lead over a masonry cluster of the rest */
+.m-hero .lead{ width:100%; max-height:54svh; aspect-ratio:var(--ar,1);
+  margin:0 0 clamp(9px,1.1vw,16px); }
+
+@media (max-width:760px){ .masonry{ flex-wrap:wrap; }
+  .masonry .col{ flex:1 1 46%!important; }
+  .m-solo figure{ height:auto; width:92%; } }
 
 #progress{ position:fixed; left:0; top:0; height:3px; width:100%; z-index:9; }
 #bar{ display:block; height:100%; width:0;
@@ -392,6 +396,7 @@ const stage=document.getElementById('stage');
 const FK=['deep','ground','rise','accent','accent2','glow','light'];
 const figset=(f,p)=>{ FK.forEach(k=>f.style.setProperty('--f'+k,p[k])); };
 const fig=(ph,cls)=>{ const f=document.createElement('figure'); if(cls)f.className=cls; figset(f,ph.pal);
+  f.style.setProperty('--ar', ((ph.w/ph.h)||1).toFixed(4));  // tile takes the photo's real shape
   const i=new Image(); i.src=ph.src; i.loading='lazy'; i.decoding='async'; f.appendChild(i); return f; };
 const spreadVars=(s,lead,second)=>{ const p=lead.pal; s.style.setProperty('--deep',p.deep);
   s.style.setProperty('--ground',p.ground); s.style.setProperty('--rise',p.rise);
@@ -399,27 +404,33 @@ const spreadVars=(s,lead,second)=>{ const p=lead.pal; s.style.setProperty('--dee
   s.style.setProperty('--accent2',(second||lead).pal.accent2); };
 const total=SCENES.length-1;
 
-// Composition library: rects are [x,y,w,h,rot?,z?] in % of the stage. Several
-// moods per photo-count; the book cycles through them so structured, editorial,
-// collage and scatter pages interleave — varied scale and offset, never a grid.
-const COMP={
- 1:[{m:'editorial',r:[[7,5,86,90]]},
-    {m:'scatter',r:[[15,8,70,84,-1.3]]}],
- 2:[{m:'editorial',r:[[2,7,56,86,0,1],[52,32,46,60,0,2]]},
-    {m:'collage',r:[[4,13,54,71,-3,1],[46,4,50,66,3,2]]},
-    {m:'structured',r:[[3,7,45,86],[53,7,44,86]]}],
- 3:[{m:'editorial',r:[[2,4,54,92,0,1],[59,4,39,44,0,2],[59,52,39,44,0,2]]},
-    {m:'collage',r:[[5,10,48,64,-3,1],[44,3,42,52,3,3],[40,55,46,43,-2,2]]},
-    {m:'scatter',r:[[1,15,31,70],[35,6,33,86],[70,17,29,68]]}],
- 4:[{m:'editorial',r:[[2,3,52,56,0,1],[57,3,41,41,0,1],[2,63,38,34,0,1],[43,48,55,50,0,2]]},
-    {m:'collage',r:[[3,8,45,53,-3,1],[48,3,42,47,3,3],[8,55,42,43,2,2],[52,52,44,45,-2,4]]},
-    {m:'scatter',r:[[4,5,39,45,-2,1],[51,9,45,39,2,2],[13,53,35,43,3,1],[55,51,41,45,-2,3]]}],
- 5:[{m:'editorial',r:[[2,3,54,94,0,1],[59,3,39,31,0,2],[59,37,39,28,0,2],[59,68,18,29,0,2],[80,68,18,29,0,2]]},
-    {m:'collage',r:[[4,7,47,59,-2,1],[48,3,35,41,3,3],[75,20,22,35,-3,2],[9,61,39,36,2,2],[50,52,44,45,-2,4]]}],
- 6:[{m:'structured',r:[[1,4,41,45],[44,4,26,45],[72,4,27,45],[1,52,26,45],[29,52,27,45],[58,52,41,45]]},
-    {m:'collage',r:[[3,6,35,43,-3,1],[40,3,31,39,2,2],[73,10,24,37,3,1],[7,54,29,41,2,2],[38,52,31,43,-2,3],[71,52,26,43,3,1]]}],
-};
-const pickComp=(n,idx)=>{ const v=COMP[n]; if(!v) return null; return v[(idx*3+n)%v.length]; };
+// Each page is laid out from its photos' real shapes -- never a grid of equal
+// boxes and nothing cropped: every tile keeps its own aspect. Variety comes from
+// UNEQUAL column widths (a wide column beside narrow ones) so tiles differ in
+// scale even when every photo is the same shape, plus page-to-page changes of
+// organisation -- a lone frame, a full-bleed hero, a 2/3/4-column feed -- so it
+// reads social, not wedding-album.
+const W2=[[1.6,1],[1,1.5],[1.35,0.85]];
+const W3=[[1.7,1,0.78],[1,1.7,0.92],[0.82,1.3,1.05],[1.4,0.78,1.15]];
+const W4=[[1.5,0.9,1.2,0.8],[1,1.5,0.85,1.15],[1.25,0.82,1.35,0.95]];
+function planPage(photos, idx){
+  const n=photos.length;
+  if(n===1) return {mode:'solo'};
+  if(n>=4 && idx%3===0){ const w=(n-1<=4?W2:W3); return {mode:'hero', widths:w[idx%w.length]}; }
+  const set = n<=3 ? W2 : n<=8 ? W3 : W4;
+  return {mode:'masonry', widths:set[idx%set.length]};
+}
+// distribute photos into unequal-width columns, shortest column first, so the
+// columns finish near the same height without cropping or reordering rigidly
+function masonry(photos, widths){
+  const cols=widths.map(()=>document.createElement('div'));
+  const colH=widths.map(()=>0);
+  cols.forEach((d,i)=>{ d.className='col'; d.style.flexGrow=widths[i]; d.style.flexBasis='0'; });
+  photos.forEach(ph=>{ let c=0; for(let k=1;k<widths.length;k++) if(colH[k]<colH[c]) c=k;
+    colH[c] += widths[c]/((ph.w/ph.h)||1); cols[c].appendChild(fig(ph)); });
+  const m=document.createElement('div'); m.className='masonry'; cols.forEach(d=>m.appendChild(d));
+  return m;
+}
 
 SCENES.forEach((sc,idx)=>{
   const s=document.createElement('section'); const lead=sc.photos[0];
@@ -437,25 +448,19 @@ SCENES.forEach((sc,idx)=>{
       `<h1 class="serif">${META.title}</h1><div class="rule"></div>`+
       `<div class="dates serif">${META.dates}</div></div>`);
   } else {
-    // A composed spread: figures placed from a hand-designed composition so the
-    // page reads as editorial/collage/scatter — varied size, offset, overlap —
-    // never a row of equal boxes. Many photos fall back to an uneven wall.
-    const n=sc.photos.length;
-    const comp=pickComp(n,idx);
-    if(comp){
-      s.className='spread page';
-      const stg=document.createElement('div'); stg.className='stage'; stg.dataset.mood=comp.m;
-      sc.photos.forEach((ph,k)=>{ const f=fig(ph); const r=comp.r[k]||comp.r[comp.r.length-1];
-        f.style.left=r[0]+'%'; f.style.top=r[1]+'%'; f.style.width=r[2]+'%'; f.style.height=r[3]+'%';
-        f.style.transform='rotate('+(r[4]||0)+'deg)'; f.style.zIndex=r[5]||1;
-        stg.appendChild(f); });
-      s.appendChild(stg);
+    // Aspect-aware page: tiles keep their real shape, no crop, no equal grid.
+    const plan=planPage(sc.photos, idx);
+    s.className='spread page';
+    const stg=document.createElement('div'); stg.className='stage m-'+plan.mode;
+    if(plan.mode==='solo'){
+      stg.appendChild(fig(sc.photos[0]));
+    } else if(plan.mode==='hero'){
+      stg.appendChild(fig(sc.photos[0],'lead'));
+      stg.appendChild(masonry(sc.photos.slice(1), plan.widths));
     } else {
-      s.className='spread wall';
-      const w=document.createElement('div'); w.className='wallgrid';
-      sc.photos.forEach(ph=>w.appendChild(fig(ph)));
-      s.appendChild(w);
+      stg.appendChild(masonry(sc.photos, plan.widths));
     }
+    s.appendChild(stg);
   }
   s.appendChild(grain); stage.appendChild(s);
 });
