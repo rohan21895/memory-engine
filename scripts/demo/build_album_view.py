@@ -299,7 +299,12 @@ figure img{ display:block; width:100%; height:100%; object-fit:cover; }
    full-bleed photo must be pure image, no padding, border or mat */
 #stage .canvas figure{ position:absolute; overflow:hidden;
   padding:0; margin:0; border-radius:0; background:none; box-shadow:none; outline:none; }
-#stage .canvas figure img{ width:100%; height:100%; object-fit:cover; }
+/* blurred self fills the slot; the whole photo sits on top, never cropped */
+#stage .canvas figure .bok{ position:absolute; inset:0; z-index:0;
+  background-size:cover; background-position:center; transform:scale(1.22);
+  filter:blur(26px) saturate(1.35) brightness(.66); }
+#stage .canvas figure img{ position:relative; z-index:1; width:100%; height:100%;
+  object-fit:contain; }
 
 /* collage & chaos read as scattered PRINTS: a white edge and a cast shadow so
    the tilt and overlap feel like photographs dropped on the colour field */
@@ -400,7 +405,12 @@ const stage=document.getElementById('stage');
 const FK=['deep','ground','rise','accent','accent2','glow','light'];
 const figset=(f,p)=>{ FK.forEach(k=>f.style.setProperty('--f'+k,p[k])); };
 const fig=(ph,cls)=>{ const f=document.createElement('figure'); if(cls)f.className=cls; figset(f,ph.pal);
-  f.style.setProperty('--ar', ((ph.w/ph.h)||1).toFixed(4));  // tile takes the photo's real shape
+  f.style.setProperty('--ar', ((ph.w/ph.h)||1).toFixed(4));
+  // bokeh backdrop: a blurred, enlarged copy of the SAME photo fills the slot so
+  // the whole photo can sit on top (contain) with no crop and no dead space —
+  // which means any photo works in any slot shape, and mixed aspects arrange well
+  const bg=document.createElement('div'); bg.className='bok';
+  bg.style.backgroundImage='url("'+ph.src+'")'; f.appendChild(bg);
   const i=new Image(); i.src=ph.src; i.loading='lazy'; i.decoding='async'; f.appendChild(i); return f; };
 const spreadVars=(s,lead,second)=>{ const p=lead.pal; s.style.setProperty('--deep',p.deep);
   s.style.setProperty('--ground',p.ground); s.style.setProperty('--rise',p.rise);
