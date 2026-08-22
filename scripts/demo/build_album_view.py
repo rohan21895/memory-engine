@@ -196,22 +196,27 @@ def build(workdir: Path, style: str, dense: int | None = None,
 
 
 def _pack(photos: list[dict], pages: int) -> list[dict]:
-    """Distribute photos across `pages` spreads: a single-photo cover, then an
-    even split with a gentle rhythm so dense pages don't march in lockstep."""
+    """Distribute photos across ~`pages` spreads with a deliberately uneven
+    rhythm: single-photo full-bleed breathers next to 4-5 photo collage/chaos
+    pages, so the book has dynamics instead of the same count every spread."""
     if not photos:
         return []
     scenes = [{"kind": "cover", "photos": [photos[0]], "n": 1}]
-    body, slots = photos[1:], max(1, pages - 1)
-    base, extra = divmod(len(body), slots)
-    # rhythm: nudge counts up/down around the mean so spreads breathe (…3,4,2,3…)
-    rhythm, i = (1, 0, -1, 0), 0
-    for k in range(slots):
-        if i >= len(body):
-            break
-        cnt = max(1, base + (1 if k < extra else 0) + (rhythm[k % 4] if base >= 3 else 0))
-        chunk = body[i:i + cnt]; i += cnt
-        scenes.append({"kind": "page", "photos": chunk, "n": len(chunk)})
-    if i < len(body):  # never drop the tail
+    body = photos[1:]
+    # a repeating rhythm of page sizes: 1s become silent full-bleed spreads,
+    # 4-5s become collage / chaos. Scaled so the whole set lands near `pages`.
+    rhythm = [1, 3, 4, 2, 5, 1, 3, 4, 2, 3]
+    avg = sum(rhythm) / len(rhythm)
+    scale = max(0.4, (len(body) / max(1, pages - 1)) / avg)
+    i = k = 0
+    while i < len(body) and len(scenes) < pages:
+        cnt = max(1, round(rhythm[k % len(rhythm)] * scale))
+        if len(scenes) == pages - 1:      # last spread mops up the remainder
+            cnt = len(body) - i
+        cnt = min(cnt, len(body) - i)
+        scenes.append({"kind": "page", "photos": body[i:i + cnt], "n": cnt})
+        i += cnt; k += 1
+    if i < len(body):                     # never drop the tail
         scenes[-1]["photos"].extend(body[i:])
         scenes[-1]["n"] = len(scenes[-1]["photos"])
     return scenes
@@ -286,28 +291,27 @@ figure img{ display:block; width:100%; height:100%; object-fit:cover; }
    hand-designed composition (varied scale, asymmetry, offset, a little rotation
    and overlap) so pages read as editorial / collage / scatter, never a row of
    equal boxes. Compositions rotate across the book so no two feel alike. */
-.page{ place-items:center; }
-.stage{ width:min(94%,1180px); }
-.stage figure{ box-shadow:0 26px 52px -30px rgba(0,0,0,.7), 0 6px 18px -12px rgba(0,0,0,.5); }
+/* Full-page composed spreads: photos placed edge to edge (and off the edge)
+   from an archetype. The spread has no padding so images can truly bleed. */
+.spread.page{ padding:0; }
+.canvas{ position:absolute; inset:0; z-index:0; }
+/* reset the design-language matting inside the canvas (id-boosted to win): a
+   full-bleed photo must be pure image, no padding, border or mat */
+#stage .canvas figure{ position:absolute; overflow:hidden;
+  padding:0; margin:0; border-radius:0; background:none; box-shadow:none; outline:none; }
+#stage .canvas figure img{ width:100%; height:100%; object-fit:cover; }
 
-/* SOLO — a single frame at its own shape, generous but not edge-to-edge */
-.m-solo{ display:flex; justify-content:center; }
-.m-solo figure{ height:min(84svh,840px); aspect-ratio:var(--ar,1); max-width:94%; }
+/* collage & chaos read as scattered PRINTS: a white edge and a cast shadow so
+   the tilt and overlap feel like photographs dropped on the colour field */
+#stage .canvas[data-k="collage"] figure, #stage .canvas[data-k="chaos"] figure{
+  outline:clamp(5px,.6vw,9px) solid #f8f3ea; outline-offset:calc(-1 * clamp(5px,.6vw,9px));
+  box-shadow:0 40px 70px -26px rgba(0,0,0,.85), 0 12px 30px -14px rgba(0,0,0,.6); }
+/* full-bleed / diptych / quad / mosaic: no border, no gap, pure image */
 
-/* MASONRY — unequal-width columns, each tile at its own aspect (no crop). The
-   uneven column widths give scale hierarchy even when photos share a shape, so
-   it reads like a feed, never a grid. */
-.masonry{ display:flex; gap:clamp(8px,1vw,15px); align-items:flex-start; width:100%; }
-.masonry .col{ display:flex; flex-direction:column; gap:clamp(8px,1vw,15px); min-width:0; }
-.masonry figure{ width:100%; aspect-ratio:var(--ar,1); }
-
-/* HERO — one full-width lead over a masonry cluster of the rest */
-.m-hero .lead{ width:100%; max-height:54svh; aspect-ratio:var(--ar,1);
-  margin:0 0 clamp(9px,1.1vw,16px); }
-
-@media (max-width:760px){ .masonry{ flex-wrap:wrap; }
-  .masonry .col{ flex:1 1 46%!important; }
-  .m-solo figure{ height:auto; width:92%; } }
+@media (max-width:760px){
+  /* on a tall phone, let multi-photo spreads breathe into their own height */
+  .spread.page{ min-height:auto; }
+}
 
 #progress{ position:fixed; left:0; top:0; height:3px; width:100%; z-index:9; }
 #bar{ display:block; height:100%; width:0;
@@ -404,33 +408,31 @@ const spreadVars=(s,lead,second)=>{ const p=lead.pal; s.style.setProperty('--dee
   s.style.setProperty('--accent2',(second||lead).pal.accent2); };
 const total=SCENES.length-1;
 
-// Each page is laid out from its photos' real shapes -- never a grid of equal
-// boxes and nothing cropped: every tile keeps its own aspect. Variety comes from
-// UNEQUAL column widths (a wide column beside narrow ones) so tiles differ in
-// scale even when every photo is the same shape, plus page-to-page changes of
-// organisation -- a lone frame, a full-bleed hero, a 2/3/4-column feed -- so it
-// reads social, not wedding-album.
-const W2=[[1.6,1],[1,1.5],[1.35,0.85]];
-const W3=[[1.7,1,0.78],[1,1.7,0.92],[0.82,1.3,1.05],[1.4,0.78,1.15]];
-const W4=[[1.5,0.9,1.2,0.8],[1,1.5,0.85,1.15],[1.25,0.82,1.35,0.95]];
-function planPage(photos, idx){
-  const n=photos.length;
-  if(n===1) return {mode:'solo'};
-  if(n>=4 && idx%3===0){ const w=(n-1<=4?W2:W3); return {mode:'hero', widths:w[idx%w.length]}; }
-  const set = n<=3 ? W2 : n<=8 ? W3 : W4;
-  return {mode:'masonry', widths:set[idx%set.length]};
-}
-// distribute photos into unequal-width columns, shortest column first, so the
-// columns finish near the same height without cropping or reordering rigidly
-function masonry(photos, widths){
-  const cols=widths.map(()=>document.createElement('div'));
-  const colH=widths.map(()=>0);
-  cols.forEach((d,i)=>{ d.className='col'; d.style.flexGrow=widths[i]; d.style.flexBasis='0'; });
-  photos.forEach(ph=>{ let c=0; for(let k=1;k<widths.length;k++) if(colH[k]<colH[c]) c=k;
-    colH[c] += widths[c]/((ph.w/ph.h)||1); cols[c].appendChild(fig(ph)); });
-  const m=document.createElement('div'); m.className='masonry'; cols.forEach(d=>m.appendChild(d));
-  return m;
-}
+// Spread archetypes: full-page compositions, not a centred grid. Coordinates are
+// [x,y,w,h,rot?,z?] in % of the WHOLE spread; values below 0 / above 100 bleed a
+// photo off the edge on purpose. Some archetypes are silent full-bleed frames,
+// some are edge-to-edge diptychs/quads (no gutter), some are tilted collages on
+// the colour field, some are deliberate chaos with photos running off the page.
+// The book cycles through them so drama changes spread to spread.
+const ARCH={
+ 1:[{k:'bleed',  t:[[0,0,100,100]]},                                   // silent full-bleed, no border
+    {k:'air',    t:[[-8,7,64,94,-1.2]]},                               // bleeds off left, air to the right
+    {k:'bleed',  t:[[0,0,100,100]]}],
+ 2:[{k:'diptych',t:[[0,0,50,100],[50,0,50,100]]},                      // two full-bleed halves, no gutter
+    {k:'chaos',  t:[[-4,0,66,100,0,1],[54,20,50,64,3,2]]},             // big bleed + tilted overlap
+    {k:'band',   t:[[0,0,100,55],[0,55,100,45]]}],                     // full-bleed horizontal bands
+ 3:[{k:'bleedtwo',t:[[0,0,58,100],[58,0,42,50],[58,50,42,50]]},        // hero bleed + two flush
+    {k:'collage',t:[[5,9,45,64,-4,1],[42,5,42,55,4,3],[37,51,47,45,-2,2]]},
+    {k:'chaos',  t:[[-5,-4,58,68,-2,1],[52,9,54,62,3,2],[22,56,52,50,-3,3]]}],
+ 4:[{k:'bleedquad',t:[[0,0,50,50],[50,0,50,50],[0,50,50,50],[50,50,50,50]]},
+    {k:'collage',t:[[4,7,41,52,-4,1],[47,4,41,47,4,3],[6,52,40,45,3,2],[50,51,45,46,-3,4]]},
+    {k:'chaos',  t:[[-6,-4,52,62,-2,1],[52,3,54,56,3,2],[5,54,42,52,-3,3],[54,57,52,50,2,1]]}],
+ 5:[{k:'chaos', t:[[0,0,56,100,0,1],[56,3,46,46,3,2],[56,52,26,48,-3,2],[80,54,24,46,2,3],[70,24,30,42,-2,4]]},
+    {k:'collage',t:[[3,6,41,53,-3,1],[46,3,33,43,3,3],[74,15,25,41,-3,2],[7,57,40,42,2,2],[47,52,46,47,-2,4]]}],
+ 6:[{k:'bleedgrid',t:[[0,0,33.4,50],[33.3,0,33.4,50],[66.6,0,33.4,50],[0,50,33.4,50],[33.3,50,33.4,50],[66.6,50,33.4,50]]},
+    {k:'chaos', t:[[-4,-3,40,52,-2,1],[38,3,34,46,3,2],[70,-3,38,48,-3,1],[3,52,36,48,2,2],[38,55,32,45,-2,3],[68,52,40,48,3,1]]}],
+};
+const pickArch=(n,idx)=> ARCH[n] ? ARCH[n][(idx*3+n)%ARCH[n].length] : null;
 
 SCENES.forEach((sc,idx)=>{
   const s=document.createElement('section'); const lead=sc.photos[0];
@@ -448,19 +450,29 @@ SCENES.forEach((sc,idx)=>{
       `<h1 class="serif">${META.title}</h1><div class="rule"></div>`+
       `<div class="dates serif">${META.dates}</div></div>`);
   } else {
-    // Aspect-aware page: tiles keep their real shape, no crop, no equal grid.
-    const plan=planPage(sc.photos, idx);
+    // A full-page composed spread. Photos are placed edge to edge (and off the
+    // edge) from an archetype -- full-bleed, diptych, collage, chaos -- so each
+    // spread has its own drama instead of a uniform grid.
+    const n=sc.photos.length;
     s.className='spread page';
-    const stg=document.createElement('div'); stg.className='stage m-'+plan.mode;
-    if(plan.mode==='solo'){
-      stg.appendChild(fig(sc.photos[0]));
-    } else if(plan.mode==='hero'){
-      stg.appendChild(fig(sc.photos[0],'lead'));
-      stg.appendChild(masonry(sc.photos.slice(1), plan.widths));
+    const cv=document.createElement('div'); cv.className='canvas';
+    const arch=pickArch(n,idx);
+    if(arch){
+      cv.dataset.k=arch.k;
+      sc.photos.forEach((ph,k)=>{ const r=arch.t[k]||arch.t[arch.t.length-1]; const f=fig(ph);
+        f.style.left=r[0]+'%'; f.style.top=r[1]+'%'; f.style.width=r[2]+'%'; f.style.height=r[3]+'%';
+        if(r[4]) f.style.transform='rotate('+r[4]+'deg)'; f.style.zIndex=r[5]||1;
+        cv.appendChild(f); });
     } else {
-      stg.appendChild(masonry(sc.photos, plan.widths));
+      // many photos: an edge-to-edge full-bleed mosaic (no gutters, no margins)
+      cv.dataset.k='mosaic';
+      const cols=Math.ceil(Math.sqrt(n*1.5)), rows=Math.ceil(n/cols);
+      const cw=100/cols, ch=100/rows;
+      sc.photos.forEach((ph,k)=>{ const f=fig(ph);
+        f.style.left=((k%cols)*cw)+'%'; f.style.top=(Math.floor(k/cols)*ch)+'%';
+        f.style.width=cw+'%'; f.style.height=ch+'%'; cv.appendChild(f); });
     }
-    s.appendChild(stg);
+    s.appendChild(cv);
   }
   s.appendChild(grain); stage.appendChild(s);
 });
