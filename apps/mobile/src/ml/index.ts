@@ -1,16 +1,30 @@
 import { StubOnDeviceModel } from "./stub-model";
-import type { OnDeviceModel } from "./types";
+import type { ModelResult, OnDeviceModel } from "./types";
+import { yunetModel } from "./yunet";
 
 export type { ModelResult, OnDeviceModel } from "./types";
 
-const model: OnDeviceModel = new StubOnDeviceModel();
+const stub = new StubOnDeviceModel();
 
 /**
- * Returns the active on-device model implementation.
- *
- * CL-1 will replace the stub with an onnxruntime-react-native implementation
- * of this same interface, backed by SigLIP2 embeddings and YuNet face counts.
+ * The active on-device model: real YuNet face detection via
+ * onnxruntime-react-native (docs/model-cards/yunet-ondevice.md), with a
+ * per-call fallback to the deterministic stub if the native runtime is
+ * unavailable — the app degrades gracefully instead of crashing. The
+ * `embedding` is a cheap on-device colour histogram until M2 brings a
+ * quantized SigLIP.
  */
+const model: OnDeviceModel = {
+  async run(imageUri: string): Promise<ModelResult> {
+    try {
+      return await yunetModel.run(imageUri);
+    } catch (error) {
+      console.warn("[ml] on-device model unavailable, using stub:", error);
+      return stub.run(imageUri);
+    }
+  },
+};
+
 export function getModel(): OnDeviceModel {
   return model;
 }
