@@ -10,10 +10,13 @@ import {
   View,
 } from "react-native";
 
+import { buildAlbum } from "./src/build-album";
 import { pickDeviceGallery } from "./src/import/device-gallery";
 import { pickLocalFolder } from "./src/import/folder-picker";
 import { useGooglePhotosPicker } from "./src/import/google-photos";
 import type { PickedPhoto, PhotoSource } from "./src/import/picked-photo";
+import type { ReviewData } from "./src/review/mock-data";
+import ReviewScreen from "./src/review/ReviewScreen";
 
 const C = {
   bg: "#141311",
@@ -39,6 +42,7 @@ const SOURCES: SourceConfig[] = [
 
 export default function App() {
   const [photos, setPhotos] = useState<PickedPhoto[]>([]);
+  const [album, setAlbum] = useState<ReviewData | null>(null);
   const [busySource, setBusySource] = useState<PhotoSource | null>(null);
   const [message, setMessage] = useState("Pick a source to begin.");
   const [isError, setIsError] = useState(false);
@@ -57,11 +61,16 @@ export default function App() {
               ? await pickLocalFolder()
               : await pickGooglePhotos();
         setPhotos(next);
+        if (next.length === 0) {
+          setMessage("No photos selected.");
+          return;
+        }
         setMessage(
-          next.length === 0
-            ? "No photos selected."
-            : `${next.length.toLocaleString()} photo${next.length === 1 ? "" : "s"} ready on device.`,
+          `Finding your best shots from ${next.length.toLocaleString()} photo${next.length === 1 ? "" : "s"}…`,
         );
+        // On-device: model + selection run here, nothing leaves the phone.
+        const built = await buildAlbum(next);
+        setAlbum(built);
       } catch (error) {
         setIsError(true);
         setMessage(error instanceof Error ? error.message : "Could not open this source.");
@@ -71,6 +80,10 @@ export default function App() {
     },
     [pickGooglePhotos],
   );
+
+  if (album) {
+    return <ReviewScreen data={album} onBack={() => setAlbum(null)} />;
+  }
 
   return (
     <View style={styles.root}>

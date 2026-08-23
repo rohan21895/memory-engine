@@ -5,6 +5,7 @@ import Lightbox, { type LightboxItem, type LightboxMode } from "./Lightbox";
 import ReviewGrid, { type ReviewGridItem } from "./ReviewGrid";
 import mockReviewData, {
   type ReviewAlternative,
+  type ReviewData,
   type ReviewMedia,
   type ReviewSelected,
 } from "./mock-data";
@@ -49,22 +50,28 @@ function alternativeItems(selected: ReviewSelected): LightboxItem[] {
   ];
 }
 
-export default function ReviewScreen() {
+export default function ReviewScreen({
+  data = mockReviewData,
+  onBack,
+}: {
+  data?: ReviewData;
+  onBack?: () => void;
+} = {}) {
   const [swaps, setSwaps] = useState<Swaps>({});
   const [viewer, setViewer] = useState<ViewerState | null>(null);
 
   const mediaById = useMemo(() => {
     const entries: ReviewMedia[] = [
-      ...mockReviewData.selected,
-      ...mockReviewData.pool,
-      ...mockReviewData.selected.flatMap((item) => item.alternatives),
+      ...data.selected,
+      ...data.pool,
+      ...data.selected.flatMap((item) => item.alternatives),
     ];
     return new Map(entries.map((item) => [item.media_id, item]));
-  }, []);
+  }, [data]);
 
   const gridItems = useMemo<ReviewGridItem[]>(
     () =>
-      mockReviewData.selected.map((selected) => {
+      data.selected.map((selected) => {
         const replacementId = swaps[selected.media_id];
         const shown =
           (replacementId ? mediaById.get(replacementId) : undefined) ?? selected;
@@ -94,7 +101,7 @@ export default function ReviewScreen() {
   );
 
   const selectedForViewer = viewer?.slotMediaId
-    ? mockReviewData.selected.find((item) => item.media_id === viewer.slotMediaId)
+    ? data.selected.find((item) => item.media_id === viewer.slotMediaId)
     : undefined;
   const lightboxItems =
     viewer?.mode === "browse-alternatives" && selectedForViewer
@@ -108,7 +115,7 @@ export default function ReviewScreen() {
   const openAlternatives = useCallback(
     (item: LightboxItem) => {
       const slotMediaId = item.slot_media_id;
-      const selected = mockReviewData.selected.find(
+      const selected = data.selected.find(
         (candidate) => candidate.media_id === slotMediaId,
       );
       if (!selected) {
@@ -127,7 +134,7 @@ export default function ReviewScreen() {
         slotMediaId: selected.media_id,
       });
     },
-    [swaps],
+    [data, swaps],
   );
 
   const useThisPhoto = useCallback(
@@ -157,10 +164,15 @@ export default function ReviewScreen() {
       <StatusBar backgroundColor={C.bg} barStyle="light-content" />
       <View style={styles.header}>
         <View style={styles.headingCopy}>
+          {onBack ? (
+            <Pressable accessibilityRole="button" onPress={onBack} hitSlop={12}>
+              <Text style={styles.back}>‹ Back</Text>
+            </Pressable>
+          ) : null}
           <Text style={styles.eyebrow}>YOUR ALBUM</Text>
           <Text style={styles.title}>Review the picks</Text>
           <Text style={styles.subtitle}>
-            {mockReviewData.selected.length} photos selected · Tap one to browse
+            {data.selected.length} photos selected · Tap one to browse
           </Text>
         </View>
         {swapCount > 0 ? (
@@ -203,6 +215,7 @@ const styles = StyleSheet.create({
     paddingTop: (StatusBar.currentHeight ?? 24) + 22,
   },
   headingCopy: { flex: 1, paddingRight: 12 },
+  back: { color: C.muted, fontSize: 14, marginBottom: 8 },
   eyebrow: { color: C.gold, fontSize: 10, letterSpacing: 1.8 },
   title: { color: C.text, fontSize: 28, fontWeight: "400", marginTop: 5 },
   subtitle: { color: C.muted, fontSize: 13, lineHeight: 18, marginTop: 7 },
