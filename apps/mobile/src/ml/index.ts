@@ -1,30 +1,20 @@
 import { StubOnDeviceModel } from "./stub-model";
 import type { ModelResult, OnDeviceModel } from "./types";
-import { yunetModel } from "./yunet";
 
 export type { ModelResult, OnDeviceModel } from "./types";
 
+// NOTE: the real YuNet path (./yunet.ts) is intentionally NOT imported here.
+// It depends on onnxruntime-react-native, which is old-architecture only; under
+// RN 0.86's forced New Architecture its native binding is null and calling
+// .install() on it throws `Cannot read property 'install' of null`. That throw
+// happens during Metro module evaluation, so it CANNOT be caught with a
+// try/catch around a dynamic import() — it crashes the whole app the moment the
+// module is loaded (at album build time). So onnxruntime must never enter the
+// bundle's runtime path at all. On-device faces return via ./yunet.ts once it is
+// ported to react-native-fast-tflite (New-Arch native). Until then: stub only.
+// ponytail: single stub, swap in tflite model behind this same interface later.
 const stub = new StubOnDeviceModel();
 
-/**
- * The active on-device model: real YuNet face detection via
- * onnxruntime-react-native (docs/model-cards/yunet-ondevice.md), with a
- * per-call fallback to the deterministic stub if the native runtime is
- * unavailable — the app degrades gracefully instead of crashing. The
- * `embedding` is a cheap on-device colour histogram until M2 brings a
- * quantized SigLIP.
- */
-const model: OnDeviceModel = {
-  async run(imageUri: string): Promise<ModelResult> {
-    try {
-      return await yunetModel.run(imageUri);
-    } catch (error) {
-      console.warn("[ml] on-device model unavailable, using stub:", error);
-      return stub.run(imageUri);
-    }
-  },
-};
-
 export function getModel(): OnDeviceModel {
-  return model;
+  return stub;
 }

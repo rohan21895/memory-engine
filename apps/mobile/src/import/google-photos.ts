@@ -1,27 +1,35 @@
-import * as AuthSession from "expo-auth-session";
+import {
+  GoogleSignin,
+  isErrorWithCode,
+  statusCodes,
+} from "@react-native-google-signin/google-signin";
 import * as FileSystem from "expo-file-system/legacy";
-import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
 import { useCallback } from "react";
 
 import { recordGooglePhotosConsent } from "../privacy/consent-ledger";
 import type { PickedPhoto } from "./picked-photo";
 
-WebBrowser.maybeCompleteAuthSession();
-
 export const GOOGLE_PHOTOS_SCOPE =
   "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
-export const GOOGLE_REDIRECT_URI = "com.photeo.app:/oauthredirect";
 
 const API_ROOT = "https://photospicker.googleapis.com/v1";
-const TOKEN_KEY = "photeo.google-oauth-token.v1";
-const GOOGLE_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID ?? "";
+// Native Google Sign-In authenticates against the app's own signature (the
+// Android OAuth client, keyed by package + SHA-1) and needs the WEB client id
+// only as the token audience. There is NO browser redirect, so the old
+// `Error 400: invalid_request` (custom-scheme redirect rejected by Google) is
+// structurally impossible here.
+const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? "";
 
-const discovery: AuthSession.DiscoveryDocument = {
-  authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
-  tokenEndpoint: "https://oauth2.googleapis.com/token",
-  revocationEndpoint: "https://oauth2.googleapis.com/revoke",
-};
+let configured = false;
+function ensureConfigured(): void {
+  if (configured) return;
+  GoogleSignin.configure({
+    scopes: [GOOGLE_PHOTOS_SCOPE],
+    webClientId: GOOGLE_WEB_CLIENT_ID || undefined,
+  });
+  configured = true;
+}
 
 type PickerSession = {
   id: string;
@@ -196,77 +204,56 @@ async function listSelectedMedia(
   return picked;
 }
 
+async function acquireAccessToken(): Promise<string | null> {
+  ensureConfigured();
+  await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+  try {
+    await GoogleSignin.signIn();
+  } catch (error) {
+    // User dismissed the native account chooser — treat as a clean cancel.
+    if (isErrorWithCode(error) && error.code === statusCodes.SIGN_IN_CANCELLED) {
+      return null;
+    }
+    throw error;
+  }
+  const { accessToken } = await GoogleSignin.getTokens();
+  return accessToken;
+}
+
 export function useGooglePhotosPicker(): {
   configured: boolean;
   pickGooglePhotos: () => Promise<PickedPhoto[]>;
 } {
-  const [request, , promptAsync] = AuthSession.useAuthRequest(
-    {
-      clientId: GOOGLE_CLIENT_ID || "google-oauth-not-configured",
-      codeChallengeMethod: AuthSession.CodeChallengeMethod.S256,
-      redirectUri: GOOGLE_REDIRECT_URI,
-      responseType: AuthSession.ResponseType.Code,
-      scopes: [GOOGLE_PHOTOS_SCOPE],
-      usePKCE: true,
-      extraParams: { access_type: "offline", prompt: "consent" },
-    },
-    discovery,
-  );
-
   const pickGooglePhotos = useCallback(async (): Promise<PickedPhoto[]> => {
-    if (!GOOGLE_CLIENT_ID) {
+    if (!GOOGLE_WEB_CLIENT_ID) {
       throw new Error(
-        "Google Photos needs EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID. See GOOGLE_OAUTH_SETUP.md.",
+        "Google Photos needs EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID (a Web OAuth client id). See GOOGLE_OAUTH_SETUP.md.",
       );
-    }
-    if (!request) {
-      throw new Error("Google sign-in is still loading. Please try again.");
     }
 
     await recordGooglePhotosConsent();
-    const authResult = await promptAsync();
-    if (authResult.type !== "success" || !authResult.params.code) {
+    const accessToken = await acquireAccessToken();
+    if (!accessToken) {
       return [];
     }
 
-    const token = await AuthSession.exchangeCodeAsync(
-      {
-        clientId: GOOGLE_CLIENT_ID,
-        code: authResult.params.code,
-        extraParams: { code_verifier: request.codeVerifier ?? "" },
-        redirectUri: GOOGLE_REDIRECT_URI,
-      },
-      discovery,
-    );
-    await SecureStore.setItemAsync(
-      TOKEN_KEY,
-      JSON.stringify({
-        accessToken: token.accessToken,
-        expiresIn: token.expiresIn,
-        issuedAt: token.issuedAt,
-        refreshToken: token.refreshToken,
-      }),
-    );
-
-    const session = await googleFetch<PickerSession>("/sessions", token.accessToken, {
+    const session = await googleFetch<PickerSession>("/sessions", accessToken, {
       method: "POST",
-      body: JSON.stringify({ pickingConfig: { maxItemCount: "1000" } }),
+      body: JSON.stringify({ pickingConfig: { maxItemCount: "2000" } }),
     });
 
-    await WebBrowser.openBrowserAsync(session.pickerUri, {
-      showTitle: true,
-    });
-    const completedSession = await waitForSelection(session, token.accessToken);
+    await WebBrowser.openBrowserAsync(session.pickerUri, { showTitle: true });
+    const completedSession = await waitForSelection(session, accessToken);
     try {
-      return await listSelectedMedia(completedSession.id, token.accessToken);
+      return await listSelectedMedia(completedSession.id, accessToken);
     } finally {
       await googleFetch<void>(
         `/sessions/${encodeURIComponent(completedSession.id)}`,
-        token.accessToken,
+        accessToken,
         { method: "DELETE" },
       );
     }
-  }, [promptAsync, request]);
+  }, []);
 
-  return { configured: Boolean(GOOGLE_CLIENT_ID), pickGooglePhotos };
+  return { configured: Boolean(GOOGLE_WEB_CLIENT_ID), pickGooglePhotos };
 }

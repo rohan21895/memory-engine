@@ -53,9 +53,11 @@ function alternativeItems(selected: ReviewSelected): LightboxItem[] {
 export default function ReviewScreen({
   data = mockReviewData,
   onBack,
+  onFinalize,
 }: {
   data?: ReviewData;
   onBack?: () => void;
+  onFinalize?: (photos: { media_id: string; uri: string; page: number }[]) => void;
 } = {}) {
   const [swaps, setSwaps] = useState<Swaps>({});
   const [viewer, setViewer] = useState<ViewerState | null>(null);
@@ -188,7 +190,32 @@ export default function ReviewScreen({
         ) : null}
       </View>
 
-      <ReviewGrid items={gridItems} onPressPhoto={openAlbum} />
+      <View style={styles.gridWrap}>
+        <ReviewGrid items={gridItems} onPressPhoto={openAlbum} />
+      </View>
+
+      {onFinalize ? (
+        <View style={styles.footer}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() =>
+              onFinalize(
+                gridItems.map((item) => ({
+                  media_id: item.media_id,
+                  uri: item.uri,
+                  page: item.page,
+                })),
+              )
+            }
+            style={({ pressed }) => [styles.create, pressed && styles.createPressed]}
+          >
+            <Text style={styles.createText}>
+              Create album · {gridItems.length} photo
+              {gridItems.length === 1 ? "" : "s"}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       <Lightbox
         initialIndex={viewer?.initialIndex ?? 0}
@@ -205,6 +232,23 @@ export default function ReviewScreen({
 
 const styles = StyleSheet.create({
   root: { backgroundColor: C.bg, flex: 1 },
+  gridWrap: { flex: 1 },
+  footer: {
+    backgroundColor: C.bg,
+    borderTopColor: C.line,
+    borderTopWidth: 1,
+    paddingBottom: 30,
+    paddingHorizontal: 20,
+    paddingTop: 14,
+  },
+  create: {
+    alignItems: "center",
+    backgroundColor: C.gold,
+    borderRadius: 8,
+    paddingVertical: 15,
+  },
+  createPressed: { opacity: 0.75 },
+  createText: { color: "#1a1712", fontSize: 16, fontWeight: "600" },
   header: {
     alignItems: "flex-end",
     borderBottomColor: C.line,

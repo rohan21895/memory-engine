@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@react-native-google-signin/google-signin": "^16.1.4",
     "@shopify/flash-list": "2.0.2",
     "expo": "~57.0.15",
     "expo-asset": "~57.0.13",
@@ -11,6 +12,7 @@
     "expo-image": "~57.0.3",
     "expo-image-manipulator": "~57.0.12",
     "expo-image-picker": "~57.0.12",
+    "expo-media-library": "~57.0.4",
     "expo-secure-store": "~57.0.1",
     "expo-status-bar": "~57.0.1",
     "expo-web-browser": "~57.0.2",

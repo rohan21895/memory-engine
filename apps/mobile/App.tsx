@@ -11,10 +11,11 @@ import {
 } from "react-native";
 
 import { buildAlbum } from "./src/build-album";
-import { pickDeviceGallery } from "./src/import/device-gallery";
+import GalleryGrid from "./src/import/GalleryGrid";
 import { pickLocalFolder } from "./src/import/folder-picker";
 import { useGooglePhotosPicker } from "./src/import/google-photos";
 import type { PickedPhoto, PhotoSource } from "./src/import/picked-photo";
+import FinalAlbum, { type FinalPhoto } from "./src/review/FinalAlbum";
 import type { ReviewData } from "./src/review/mock-data";
 import ReviewScreen from "./src/review/ReviewScreen";
 
@@ -35,7 +36,7 @@ type SourceConfig = {
 };
 
 const SOURCES: SourceConfig[] = [
-  { key: "device-gallery", label: "Device gallery", hint: "Android Photo Picker" },
+  { key: "device-gallery", label: "Device gallery", hint: "All photos · no limit" },
   { key: "local-folder", label: "Local folder", hint: "Storage Access Framework" },
   { key: "google-photos", label: "Google Photos", hint: "Photos Picker API · PKCE" },
 ];
@@ -43,34 +44,41 @@ const SOURCES: SourceConfig[] = [
 export default function App() {
   const [photos, setPhotos] = useState<PickedPhoto[]>([]);
   const [album, setAlbum] = useState<ReviewData | null>(null);
+  const [finalPhotos, setFinalPhotos] = useState<FinalPhoto[] | null>(null);
   const [busySource, setBusySource] = useState<PhotoSource | null>(null);
+  const [showGallery, setShowGallery] = useState(false);
   const [message, setMessage] = useState("Pick a source to begin.");
   const [isError, setIsError] = useState(false);
   const { configured: googleConfigured, pickGooglePhotos } = useGooglePhotosPicker();
 
+  const processPhotos = useCallback(async (next: PickedPhoto[]) => {
+    setPhotos(next);
+    if (next.length === 0) {
+      setMessage("No photos selected.");
+      return;
+    }
+    setMessage(
+      `Finding your best shots from ${next.length.toLocaleString()} photo${next.length === 1 ? "" : "s"}…`,
+    );
+    // On-device: model + selection run here, nothing leaves the phone.
+    const built = await buildAlbum(next);
+    setAlbum(built);
+  }, []);
+
   const runPicker = useCallback(
     async (source: PhotoSource) => {
+      // Device gallery opens the in-app unlimited grid (the OS picker caps at 100).
+      if (source === "device-gallery") {
+        setShowGallery(true);
+        return;
+      }
       setBusySource(source);
       setIsError(false);
       setMessage("Opening picker…");
       try {
         const next =
-          source === "device-gallery"
-            ? await pickDeviceGallery()
-            : source === "local-folder"
-              ? await pickLocalFolder()
-              : await pickGooglePhotos();
-        setPhotos(next);
-        if (next.length === 0) {
-          setMessage("No photos selected.");
-          return;
-        }
-        setMessage(
-          `Finding your best shots from ${next.length.toLocaleString()} photo${next.length === 1 ? "" : "s"}…`,
-        );
-        // On-device: model + selection run here, nothing leaves the phone.
-        const built = await buildAlbum(next);
-        setAlbum(built);
+          source === "local-folder" ? await pickLocalFolder() : await pickGooglePhotos();
+        await processPhotos(next);
       } catch (error) {
         setIsError(true);
         setMessage(error instanceof Error ? error.message : "Could not open this source.");
@@ -78,11 +86,48 @@ export default function App() {
         setBusySource(null);
       }
     },
-    [pickGooglePhotos],
+    [pickGooglePhotos, processPhotos],
   );
 
+  if (showGallery) {
+    return (
+      <GalleryGrid
+        onBack={() => setShowGallery(false)}
+        onConfirm={(picked) => {
+          setShowGallery(false);
+          setIsError(false);
+          void processPhotos(picked).catch((error) => {
+            setIsError(true);
+            setMessage(error instanceof Error ? error.message : "Could not build album.");
+          });
+        }}
+      />
+    );
+  }
+
+  if (finalPhotos) {
+    return (
+      <FinalAlbum
+        photos={finalPhotos}
+        onBack={() => setFinalPhotos(null)}
+        onRestart={() => {
+          setFinalPhotos(null);
+          setAlbum(null);
+          setPhotos([]);
+          setMessage("Pick a source to begin.");
+        }}
+      />
+    );
+  }
+
   if (album) {
-    return <ReviewScreen data={album} onBack={() => setAlbum(null)} />;
+    return (
+      <ReviewScreen
+        data={album}
+        onBack={() => setAlbum(null)}
+        onFinalize={(picked) => setFinalPhotos(picked)}
+      />
+    );
   }
 
   return (
