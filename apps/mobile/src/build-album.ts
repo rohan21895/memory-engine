@@ -24,10 +24,10 @@ export async function buildAlbum(
 ): Promise<ReviewData> {
   const model = getModel();
   const enriched = await Promise.all(
-    photos.map(async (photo) => ({
-      ...photo,
-      faces: (await model.run(photo.uri)).faces,
-    })),
+    photos.map(async (photo) => {
+      const result = await model.run(photo.uri);
+      return { ...photo, faces: result.faces, embedding: result.embedding };
+    }),
   );
 
   const album: AlbumData = selectBestShots(enriched, {
