@@ -5,9 +5,18 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "scheme": "photeo",
+    "scheme": ["photeo", "com.photeo.app"],
     "userInterfaceStyle": "dark",
     "backgroundColor": "#141311",
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Photeo to import the photos you choose for on-device review."
+        }
+      ],
+      "expo-secure-store"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.photeo.app"
@@ -24,6 +33,11 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-web-browser",
+      "expo-secure-store",
+      "expo-image"
+    ]
   }
 }
