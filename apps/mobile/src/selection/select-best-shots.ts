@@ -2,189 +2,313 @@ import type { PickedPhoto } from "../import/picked-photo";
 
 import type { AlbumData, Alt, Pool, Selected } from "./types";
 
-const CAPTURE_BUCKET_MS = 3_000;
-const FALLBACK_WINDOW_SIZE = 3;
+const NEAR_DUPLICATE_COSINE = 0.92;
+const LUMA_FEATURE_COUNT = 64;
 
-type FutureSelectionFields = {
-  captureTime?: unknown;
-  capture_time?: unknown;
-  faces?: unknown;
+type AnalyzedPhoto = PickedPhoto & {
+  embedding?: unknown;
 };
 
-type RankedPhoto = {
+type Candidate = {
   photo: PickedPhoto;
   inputIndex: number;
-  score: number;
+  embedding?: number[];
+  quality: number;
+  detailScore?: number;
   pixels: number;
-  aspectScore: number;
-  faces?: number;
 };
 
-type PhotoGroup = {
-  key: string;
+type Take = {
   firstInputIndex: number;
-  photos: RankedPhoto[];
+  candidates: Candidate[];
+};
+
+type RankedTake = {
+  take: Take;
+  winner: Candidate;
 };
 
 /**
- * Select a deterministic, on-device placeholder set from imported photos.
- *
- * This public signature is intentionally stable: Claude's M2 TypeScript
- * selection engine will replace the implementation without changing callers.
- * Current ranking uses only cheap metadata. If a future PickedPhoto supplies a
- * numeric `faces`, `captureTime`, or `capture_time` field, this placeholder also
- * consumes it without requiring a native or ML dependency.
+ * Collapse near-duplicate frames and choose a deterministic, diverse set using
+ * only on-device image signals and source metadata.
  */
 export function selectBestShots(
   photos: PickedPhoto[],
   opts: { count: number },
 ): AlbumData {
-  const uniquePhotos = deduplicateMediaIds(photos);
-  const groups = groupPhotos(uniquePhotos);
-  const rankedGroups = groups.map(rankGroup).sort(compareGroups);
-  const requestedCount = normalizeCount(opts.count);
-  const chosenGroups = rankedGroups.slice(0, requestedCount);
-  const selectedIds = new Set(chosenGroups.map(({ winner }) => winner.photo.id));
-  const selectedGroupKeys = new Set(chosenGroups.map(({ group }) => group.key));
+  const candidates = buildCandidates(photos);
+  const requestedCount = normalizeCount(opts.count, candidates.length > 0);
 
-  const selected: Selected[] = chosenGroups.map(({ group, winner }, index) => ({
-    media_id: winner.photo.id,
-    page: index + 1,
-    chosen_because: chosenReasons(winner, group.photos.length),
-    alternatives: alternativesFor(group, winner),
-  }));
+  if (candidates.length === 0) {
+    return {
+      album_id: albumId([], requestedCount),
+      selected: [],
+      pool: [],
+    };
+  }
 
-  const winnerByGroup = new Map(
-    rankedGroups.map(({ group, winner }) => [group.key, winner] as const),
+  const rankedTakes = buildTakes(candidates)
+    .map(rankTake)
+    .sort(compareRankedTakes);
+  const chosenTakes = rankedTakes.slice(
+    0,
+    Math.min(requestedCount, rankedTakes.length),
   );
-  const groupKeyByMediaId = new Map<string, string>();
-  for (const group of groups) {
-    for (const ranked of group.photos) {
-      groupKeyByMediaId.set(ranked.photo.id, group.key);
+  const selectedIds = new Set(
+    chosenTakes.map(({ winner }) => winner.photo.id),
+  );
+  const selectedTakeByMediaId = new Map<string, RankedTake>();
+  const takeByMediaId = new Map<string, RankedTake>();
+
+  for (const rankedTake of rankedTakes) {
+    for (const candidate of rankedTake.take.candidates) {
+      takeByMediaId.set(candidate.photo.id, rankedTake);
+    }
+  }
+  for (const rankedTake of chosenTakes) {
+    for (const candidate of rankedTake.take.candidates) {
+      selectedTakeByMediaId.set(candidate.photo.id, rankedTake);
     }
   }
 
-  const pool: Pool[] = uniquePhotos
-    .filter((photo) => !selectedIds.has(photo.id))
-    .map((photo) => {
-      const groupKey = groupKeyByMediaId.get(photo.id);
-      const winner = groupKey ? winnerByGroup.get(groupKey) : undefined;
-      const ranked = rankPhoto(photo, photos.indexOf(photo));
-      const reasons =
-        groupKey && winner && selectedGroupKeys.has(groupKey)
-          ? notChosenReasons(ranked, winner)
-          : ["Album target was filled before this shot group was selected."];
+  const selected: Selected[] = chosenTakes.map(
+    ({ take, winner }, index) => ({
+      media_id: winner.photo.id,
+      page: index + 1,
+      chosen_because: chosenReasons(winner, take.candidates.length),
+      alternatives: alternativesFor(take, winner),
+    }),
+  );
 
-      return {
-        media_id: photo.id,
-        quality: roundScore(ranked.score),
-        reasons,
-      };
-    });
+  const pool: Pool[] = candidates
+    .filter((candidate) => !selectedIds.has(candidate.photo.id))
+    .map((candidate) => ({
+      media_id: candidate.photo.id,
+      quality: roundScore(candidate.quality),
+      reasons: poolReasons(
+        candidate,
+        takeByMediaId.get(candidate.photo.id),
+        selectedTakeByMediaId.has(candidate.photo.id),
+      ),
+    }));
 
   return {
-    album_id: albumId(uniquePhotos, requestedCount),
+    album_id: albumId(
+      candidates.map(({ photo }) => photo),
+      requestedCount,
+    ),
     selected,
     pool,
   };
 }
 
-function deduplicateMediaIds(photos: PickedPhoto[]): PickedPhoto[] {
-  const seen = new Set<string>();
-  return photos.filter((photo) => {
-    if (seen.has(photo.id)) {
-      return false;
+function buildCandidates(photos: PickedPhoto[]): Candidate[] {
+  const seenIds = new Set<string>();
+  const candidates: Candidate[] = [];
+
+  photos.forEach((photo, inputIndex) => {
+    if (seenIds.has(photo.id)) {
+      return;
     }
-    seen.add(photo.id);
-    return true;
+    seenIds.add(photo.id);
+
+    const embedding = readEmbedding(photo);
+    const detailScore = thumbnailDetailScore(embedding);
+    const pixels = sourcePixels(photo);
+    candidates.push({
+      photo,
+      inputIndex,
+      embedding,
+      quality: qualityScore(detailScore, pixels),
+      detailScore,
+      pixels,
+    });
   });
+
+  return candidates;
 }
 
-function groupPhotos(photos: PickedPhoto[]): PhotoGroup[] {
-  const stems = photos.map((photo) => duplicateStem(photo.filename));
-  const stemCounts = new Map<string, number>();
-  for (const stem of stems) {
-    stemCounts.set(stem, (stemCounts.get(stem) ?? 0) + 1);
+function buildTakes(candidates: Candidate[]): Take[] {
+  const takes: Take[] = [];
+
+  for (const candidate of candidates) {
+    const matchingTake = takes.find((take) =>
+      take.candidates.every(
+        (member) =>
+          cosineSimilarity(candidate.embedding, member.embedding) >=
+          NEAR_DUPLICATE_COSINE,
+      ),
+    );
+
+    if (matchingTake) {
+      matchingTake.candidates.push(candidate);
+    } else {
+      takes.push({
+        firstInputIndex: candidate.inputIndex,
+        candidates: [candidate],
+      });
+    }
   }
 
-  let fallbackIndex = 0;
-  const groups = new Map<string, PhotoGroup>();
-  photos.forEach((photo, inputIndex) => {
-    const captureBucket = captureTimeBucket(photo);
-    const repeatedStem = (stemCounts.get(stems[inputIndex]) ?? 0) > 1;
-    let key: string;
-
-    if (captureBucket !== undefined) {
-      key = `capture:${captureBucket}`;
-    } else if (repeatedStem) {
-      key = `filename:${stems[inputIndex]}`;
-    } else {
-      key = `window:${Math.floor(fallbackIndex / FALLBACK_WINDOW_SIZE)}`;
-      fallbackIndex += 1;
-    }
-
-    const group = groups.get(key) ?? {
-      key,
-      firstInputIndex: inputIndex,
-      photos: [],
-    };
-    group.photos.push(rankPhoto(photo, inputIndex));
-    groups.set(key, group);
-  });
-
-  return [...groups.values()];
+  return takes;
 }
 
-function duplicateStem(filename: string): string {
-  const leaf = filename.split(/[\\/]/).at(-1) ?? filename;
-  const extensionIndex = leaf.lastIndexOf(".");
-  const withoutExtension = extensionIndex > 0 ? leaf.slice(0, extensionIndex) : leaf;
-
-  return withoutExtension
-    .normalize("NFKC")
-    .toLocaleLowerCase("en-US")
-    .replace(/\s*\(\d+\)$/u, "")
-    .replace(
-      /[\s_-]+(?:copy|duplicate|dup|edited|edit|enhanced|filtered|export)(?:[\s_-]*\d+)?$/u,
-      "",
-    )
-    .trim();
+function rankTake(take: Take): RankedTake {
+  const winner = [...take.candidates].sort(compareCandidates)[0];
+  return { take, winner };
 }
 
-function captureTimeBucket(photo: PickedPhoto): number | undefined {
-  const future = photo as PickedPhoto & FutureSelectionFields;
-  const raw = future.captureTime ?? future.capture_time;
-  let milliseconds: number;
+function compareCandidates(left: Candidate, right: Candidate): number {
+  return (
+    right.quality - left.quality ||
+    right.pixels - left.pixels ||
+    left.inputIndex - right.inputIndex ||
+    left.photo.id.localeCompare(right.photo.id)
+  );
+}
 
-  if (typeof raw === "number") {
-    milliseconds = raw < 100_000_000_000 ? raw * 1_000 : raw;
-  } else if (typeof raw === "string") {
-    milliseconds = Date.parse(raw);
+function compareRankedTakes(left: RankedTake, right: RankedTake): number {
+  return (
+    compareCandidates(left.winner, right.winner) ||
+    left.take.firstInputIndex - right.take.firstInputIndex
+  );
+}
+
+function alternativesFor(take: Take, winner: Candidate): Alt[] {
+  return take.candidates
+    .filter((candidate) => candidate.photo.id !== winner.photo.id)
+    .sort(compareCandidates)
+    .map((candidate) => ({
+      media_id: candidate.photo.id,
+      not_chosen_because: [
+        `Near-duplicate of the chosen frame (cosine similarity ${formatSimilarity(
+          cosineSimilarity(candidate.embedding, winner.embedding),
+        )}).`,
+      ],
+    }));
+}
+
+function chosenReasons(winner: Candidate, takeSize: number): string[] {
+  const reasons = [
+    takeSize > 1
+      ? `Strongest thumbnail-detail proxy among ${takeSize} near-duplicate frames.`
+      : "Selected from a distinct visual take to keep the album varied.",
+  ];
+
+  if (winner.detailScore !== undefined) {
+    reasons.push(
+      `Thumbnail contrast/detail proxy: ${Math.round(winner.detailScore * 100)}%.`,
+    );
   } else {
+    reasons.push("No reliable thumbnail-detail proxy was available; stable metadata order was used.");
+  }
+  if (winner.pixels > 0) {
+    reasons.push(`${(winner.pixels / 1_000_000).toFixed(1)} MP source resolution.`);
+  }
+
+  return reasons;
+}
+
+function poolReasons(
+  candidate: Candidate,
+  rankedTake: RankedTake | undefined,
+  selectedTake: boolean,
+): string[] {
+  if (!rankedTake) {
+    return ["No valid take information was available for this frame."];
+  }
+
+  if (selectedTake) {
+    return [
+      `Near-duplicate of the chosen frame (cosine similarity ${formatSimilarity(
+        cosineSimilarity(candidate.embedding, rankedTake.winner.embedding),
+      )}).`,
+    ];
+  }
+
+  if (candidate.photo.id !== rankedTake.winner.photo.id) {
+    return [
+      "Near-duplicate within an unselected take; this was not that take's strongest frame.",
+      "The album target was already filled with stronger frames from distinct takes.",
+    ];
+  }
+
+  return [
+    "The album target was already filled with stronger frames from distinct takes.",
+  ];
+}
+
+function readEmbedding(photo: PickedPhoto): number[] | undefined {
+  const raw = (photo as AnalyzedPhoto).embedding;
+  if (!Array.isArray(raw) || raw.length === 0) {
     return undefined;
   }
 
-  return Number.isFinite(milliseconds)
-    ? Math.floor(milliseconds / CAPTURE_BUCKET_MS)
-    : undefined;
+  const embedding: number[] = [];
+  for (const value of raw) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return undefined;
+    }
+    embedding.push(value);
+  }
+
+  return embedding;
 }
 
-function rankGroup(group: PhotoGroup): { group: PhotoGroup; winner: RankedPhoto } {
-  const ordered = [...group.photos].sort(compareRankedPhotos);
-  return { group, winner: ordered[0] };
+function cosineSimilarity(
+  left: number[] | undefined,
+  right: number[] | undefined,
+): number {
+  if (!left || !right || left.length !== right.length || left.length === 0) {
+    return 0;
+  }
+
+  let dot = 0;
+  let leftMagnitudeSquared = 0;
+  let rightMagnitudeSquared = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    dot += left[index] * right[index];
+    leftMagnitudeSquared += left[index] * left[index];
+    rightMagnitudeSquared += right[index] * right[index];
+  }
+
+  const denominator = Math.sqrt(leftMagnitudeSquared * rightMagnitudeSquared);
+  return denominator > Number.EPSILON ? dot / denominator : 0;
 }
 
-function rankPhoto(photo: PickedPhoto, inputIndex: number): RankedPhoto {
+function thumbnailDetailScore(embedding?: number[]): number | undefined {
+  if (!embedding || embedding.length < LUMA_FEATURE_COUNT) {
+    return undefined;
+  }
+
+  const luma = embedding.slice(0, LUMA_FEATURE_COUNT);
+  const mean = luma.reduce((sum, value) => sum + value, 0) / luma.length;
+  const variance =
+    luma.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+    luma.length;
+
+  return clamp01(Math.sqrt(variance) * Math.sqrt(LUMA_FEATURE_COUNT));
+}
+
+function sourcePixels(photo: PickedPhoto): number {
   const width = positiveNumber(photo.width);
   const height = positiveNumber(photo.height);
-  const pixels = width !== undefined && height !== undefined ? width * height : 0;
-  const aspectScore = aspectSanity(width, height);
-  const faces = faceCount(photo);
-  const resolutionScore = Math.min(1, pixels / 20_000_000);
-  const faceScore = faces === undefined ? 0 : Math.min(1, faces / 5);
-  const score = resolutionScore * 0.65 + aspectScore * 0.25 + faceScore * 0.1;
+  return width !== undefined && height !== undefined ? width * height : 0;
+}
 
-  return { photo, inputIndex, score, pixels, aspectScore, faces };
+function qualityScore(detailScore: number | undefined, pixels: number): number {
+  const resolutionScore = pixels > 0 ? clamp01(Math.sqrt(pixels / 12_000_000)) : undefined;
+
+  if (detailScore !== undefined && resolutionScore !== undefined) {
+    return clamp01(detailScore * 0.85 + resolutionScore * 0.15);
+  }
+  if (detailScore !== undefined) {
+    return detailScore;
+  }
+  if (resolutionScore !== undefined) {
+    return 0.25 + resolutionScore * 0.5;
+  }
+  return 0.5;
 }
 
 function positiveNumber(value: number | undefined): number | undefined {
@@ -193,117 +317,33 @@ function positiveNumber(value: number | undefined): number | undefined {
     : undefined;
 }
 
-function aspectSanity(width?: number, height?: number): number {
-  if (width === undefined || height === undefined) {
-    return 0.25;
+function normalizeCount(count: number, hasPhotos: boolean): number {
+  if (!hasPhotos) {
+    return 0;
   }
-  const ratio = Math.max(width, height) / Math.min(width, height);
-  if (ratio <= 2) {
-    return 1;
-  }
-  if (ratio <= 3) {
-    return 0.5;
-  }
-  return 0;
-}
-
-function faceCount(photo: PickedPhoto): number | undefined {
-  const raw = (photo as PickedPhoto & FutureSelectionFields).faces;
-  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0
-    ? Math.floor(raw)
-    : undefined;
-}
-
-function compareRankedPhotos(left: RankedPhoto, right: RankedPhoto): number {
-  return (
-    right.score - left.score ||
-    left.photo.id.localeCompare(right.photo.id) ||
-    left.photo.filename.localeCompare(right.photo.filename) ||
-    left.inputIndex - right.inputIndex
-  );
-}
-
-function compareGroups(
-  left: { group: PhotoGroup; winner: RankedPhoto },
-  right: { group: PhotoGroup; winner: RankedPhoto },
-): number {
-  return (
-    compareRankedPhotos(left.winner, right.winner) ||
-    left.group.firstInputIndex - right.group.firstInputIndex ||
-    left.group.key.localeCompare(right.group.key)
-  );
-}
-
-function alternativesFor(group: PhotoGroup, winner: RankedPhoto): Alt[] {
-  return group.photos
-    .filter((candidate) => candidate.photo.id !== winner.photo.id)
-    .sort(compareRankedPhotos)
-    .map((candidate) => ({
-      media_id: candidate.photo.id,
-      not_chosen_because: notChosenReasons(candidate, winner),
-    }));
-}
-
-function chosenReasons(winner: RankedPhoto, groupSize: number): string[] {
-  const reasons = [
-    groupSize > 1
-      ? `Highest metadata quality proxy among ${groupSize} similar shots.`
-      : "Only candidate in its near-duplicate group.",
-  ];
-
-  if (winner.pixels > 0) {
-    reasons.push(`${(winner.pixels / 1_000_000).toFixed(1)} MP source resolution.`);
-  } else {
-    reasons.push("Source dimensions unavailable; ranked with neutral size metadata.");
-  }
-  if (winner.aspectScore === 1) {
-    reasons.push("Aspect ratio is suitable for a typical album page.");
-  }
-  if (winner.faces !== undefined) {
-    reasons.push(`${winner.faces} ${winner.faces === 1 ? "face" : "faces"} detected.`);
-  }
-  return reasons;
-}
-
-function notChosenReasons(candidate: RankedPhoto, winner: RankedPhoto): string[] {
-  const reasons: string[] = [];
-  if (candidate.pixels < winner.pixels) {
-    reasons.push("Lower source resolution than the selected similar shot.");
-  }
-  if (candidate.aspectScore < winner.aspectScore) {
-    reasons.push("Less album-friendly aspect ratio than the selected similar shot.");
-  }
-  if (
-    candidate.faces !== undefined &&
-    winner.faces !== undefined &&
-    candidate.faces < winner.faces
-  ) {
-    reasons.push("Fewer detected faces than the selected similar shot.");
-  }
-  if (reasons.length === 0) {
-    reasons.push(
-      candidate.score < winner.score
-        ? "Lower combined metadata quality proxy than the selected similar shot."
-        : "Quality proxy tied; stable media ID ordering kept selection deterministic.",
-    );
-  }
-  return reasons;
-}
-
-function normalizeCount(count: number): number {
-  return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  return Number.isFinite(count) ? Math.max(1, Math.floor(count)) : 1;
 }
 
 function albumId(photos: PickedPhoto[], count: number): string {
   const material = `${count}\u0000${photos.map((photo) => photo.id).join("\u0000")}`;
   let hash = 0x811c9dc5;
+
   for (let index = 0; index < material.length; index += 1) {
     hash ^= material.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  return `local-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+
+  return `local-${hash.toString(16).padStart(8, "0")}`;
+}
+
+function formatSimilarity(similarity: number): string {
+  return clamp01(similarity).toFixed(3);
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 function roundScore(score: number): number {
-  return Math.round(score * 1_000_000) / 1_000_000;
+  return Math.round(clamp01(score) * 1_000_000) / 1_000_000;
 }

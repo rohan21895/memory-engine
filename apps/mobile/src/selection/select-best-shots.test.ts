@@ -2,55 +2,92 @@ import type { PickedPhoto } from "../import/picked-photo";
 
 import { selectBestShots } from "./select-best-shots";
 
+type AnalyzedPhoto = PickedPhoto & {
+  embedding: number[];
+  faces: number;
+};
+
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(`Selection self-check failed: ${message}`);
   }
 }
 
-const photos: PickedPhoto[] = [
-  photo("beach-a", "beach.jpg", 4_000, 3_000),
-  photo("beach-b", "beach copy.jpg", 2_000, 1_500),
-  photo("party-a", "party.jpg", 3_000, 2_000),
-  photo("party-b", "party (1).jpg", 2_400, 1_600),
-  photo("view-a", "mountain.jpg", 4_032, 3_024),
+const nearDuplicateA = basisEmbedding(0);
+const nearDuplicateB = [...nearDuplicateA];
+nearDuplicateB[0] = 0.99;
+nearDuplicateB[1] = 0.1;
+
+const duplicateResult = selectBestShots(
+  [
+    photo("burst-a", nearDuplicateA),
+    photo("burst-b", nearDuplicateB),
+  ],
+  { count: 10 },
+);
+
+assert(
+  duplicateResult.selected.length === 1,
+  "high-similarity frames should collapse to one selected take",
+);
+assert(
+  duplicateResult.selected[0].alternatives.some(
+    ({ media_id }) => media_id === "burst-b",
+  ),
+  "the non-selected near-duplicate should be offered as an alternative",
+);
+assert(
+  duplicateResult.pool.some(({ media_id }) => media_id === "burst-b"),
+  "an offered alternative should also remain in the pool",
+);
+
+const distinctPhotos = [
+  photo("distinct-a", basisEmbedding(0)),
+  photo("distinct-b", basisEmbedding(1)),
+  photo("distinct-c", basisEmbedding(2)),
 ];
-
-const groupCount = 3;
-const requestedCount = 10;
-const result = selectBestShots(photos, { count: requestedCount });
-const selectedIds = new Set(result.selected.map(({ media_id }) => media_id));
+const distinctResult = selectBestShots(distinctPhotos, { count: 3 });
 
 assert(
-  result.selected.length === Math.min(requestedCount, groupCount),
-  "selected count should be capped by the number of shot groups",
+  distinctResult.selected.length === distinctPhotos.length,
+  "fully distinct embeddings should all be kept when count allows",
 );
 assert(
-  result.selected.every(({ alternatives }) => alternatives.length >= 0),
-  "every selected photo should expose an alternatives array",
-);
-assert(
-  result.pool.every(({ media_id }) => !selectedIds.has(media_id)),
-  "a media ID must not appear in both selected and pool",
-);
-assert(
-  result.selected.length + result.pool.length === photos.length,
-  "every input photo should appear in selected or pool",
+  distinctResult.pool.length === 0,
+  "fully selected distinct frames should leave an empty pool",
 );
 
-function photo(
-  id: string,
-  filename: string,
-  width: number,
-  height: number,
-): PickedPhoto {
+const cappedResult = selectBestShots(distinctPhotos, { count: 2 });
+assert(cappedResult.selected.length === 2, "selection must respect count");
+assert(
+  cappedResult.selected.every(({ page }, index) => page === index + 1),
+  "selected pages should be one-based and sequential",
+);
+assert(
+  cappedResult.pool.length === 1,
+  "frames beyond count should remain available in the pool",
+);
+
+const emptyResult = selectBestShots([], { count: 5 });
+assert(emptyResult.selected.length === 0, "empty input should select nothing");
+assert(emptyResult.pool.length === 0, "empty input should have an empty pool");
+
+function basisEmbedding(position: number): number[] {
+  return Array.from({ length: 64 }, (_, index) =>
+    index === position ? 1 : 0,
+  );
+}
+
+function photo(id: string, embedding: number[]): AnalyzedPhoto {
   return {
     id,
-    uri: `file:///photos/${filename}`,
-    filename,
-    width,
-    height,
+    uri: `file:///photos/${id}.jpg`,
+    filename: `${id}.jpg`,
+    width: 4_000,
+    height: 3_000,
     mimeType: "image/jpeg",
     source: "device-gallery",
+    embedding,
+    faces: 0,
   };
 }
