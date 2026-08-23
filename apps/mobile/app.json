@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Photeo",
+    "slug": "photeo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "photeo",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#141311",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.photeo.app"
+    },
+    "android": {
+      "package": "com.photeo.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#141311",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
