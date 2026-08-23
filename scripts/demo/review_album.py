@@ -1024,8 +1024,19 @@ class ReviewHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+
+    # CORS preflight: the native/web app on the phone POSTs JSON, which browsers
+    # (and RN's fetch on web) gate behind an OPTIONS check.
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _json(self, code: int, payload: dict) -> None:
         self._send(code, json.dumps(payload).encode(), "application/json")
@@ -1053,6 +1064,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
             self.send_header("Content-Length", str(pdf.stat().st_size))
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             with pdf.open("rb") as file:
                 while chunk := file.read(1 << 20):
@@ -1286,21 +1298,36 @@ def main() -> int:
     parser.add_argument("workdir", type=Path, nargs="?", default=None,
                         help="open straight onto this run's review screen")
     parser.add_argument("--port", type=int, default=4189)
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="0.0.0.0 to reach it from a phone on the same Wi-Fi "
+                             "(exposes the folder browser + intake to the LAN)")
     args = parser.parse_args()
 
     if args.workdir is not None:
         workdir = args.workdir.expanduser().resolve()
         if not load_review_state(workdir):
             raise SystemExit(f"no selection sidecar under {workdir}/outputs/selection")
-        print(f"review UI: http://127.0.0.1:{args.port}  (album "
-              f"{FLOW.sidecar.get('album_id', '')[:12]}, "
-              f"{len(FLOW.sidecar['selected'])} selected)")
+        opened = (f"album {FLOW.sidecar.get('album_id', '')[:12]}, "
+                  f"{len(FLOW.sidecar['selected'])} selected")
     else:
-        print(f"album flow: http://127.0.0.1:{args.port}  (intake)")
+        opened = "intake"
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), ReviewHandler)
+    shown = _lan_ip() if args.host == "0.0.0.0" else "127.0.0.1"
+    print(f"review UI: http://{shown}:{args.port}  ({opened})")
+
+    server = ThreadingHTTPServer((args.host, args.port), ReviewHandler)
     server.serve_forever()
     return 0
+
+
+def _lan_ip() -> str:
+    """Best-effort LAN address to point a phone at (no packets are sent)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.168.1.1", 1))
+            return s.getsockname()[0]
+        except OSError:
+            return "127.0.0.1"
 
 
 if __name__ == "__main__":
