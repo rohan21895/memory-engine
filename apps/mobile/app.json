@@ -17,6 +17,14 @@
       "expo-secure-store",
       "expo-image",
       "expo-asset",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Photeo uses photo locations to group your library by place. Nothing leaves the phone.",
+          "locationAlwaysPermission": false,
+          "locationAlwaysAndWhenInUsePermission": false
+        }
+      ],
       "@react-native-google-signin/google-signin",
       [
         "expo-media-library",
