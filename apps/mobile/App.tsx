@@ -11,9 +11,21 @@ import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useState } from "react";
 import { StyleSheet, View } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AlbumDetailScreen } from "./src/albums/AlbumDetailScreen";
 import {
+  DeleteAlbumScreen,
+  ManageAlbumSheet,
+  PrintOrderedScreen,
+  PrintOrderScreen,
+  PrintPreviewScreen,
+  ShareSentScreen,
+  ShareSheet,
+  SharedAlbumScreen,
+} from "./src/albums/AlbumActionScreens";
+import {
+  deleteAlbum,
   loadAlbums,
   renameAlbum,
   saveAlbum,
@@ -29,9 +41,12 @@ import { Slideshow } from "./src/review/Slideshow";
 import { TabBar, type AppTab } from "./src/ui/components/TabBar";
 import { colors, copy, LoadingState } from "./src/ui";
 import { AccountScreen } from "./src/ui/screens/AccountScreen";
-import { AlbumsScreen } from "./src/ui/screens/AlbumsScreen";
+import { AlbumsScreen, type SharedAlbumPreview } from "./src/ui/screens/AlbumsScreen";
+import { BuildErrorScreen } from "./src/ui/screens/BuildErrorScreen";
 import { BuildingScreen } from "./src/ui/screens/BuildingScreen";
+import { FamilyScreen } from "./src/ui/screens/FamilyScreen";
 import { LoginScreen } from "./src/ui/screens/LoginScreen";
+import { NamePersonScreen, type NamePersonTarget } from "./src/ui/screens/NamePersonScreen";
 import { PhotosScreen } from "./src/ui/screens/PhotosScreen";
 import { StartScreen } from "./src/ui/screens/StartScreen";
 import { WelcomeScreen } from "./src/ui/screens/WelcomeScreen";
@@ -39,8 +54,14 @@ import { WelcomeScreen } from "./src/ui/screens/WelcomeScreen";
 const WELCOME_SEEN_KEY = "photeo-welcome-seen-v1";
 
 type Gate = "checking" | "welcome" | "login" | "permission" | "ready";
-type CreateStep = "pick" | "building" | "review" | "ready" | null;
+type CreateStep = "pick" | "building" | "review" | "ready" | "error" | null;
 type LibraryRoute = { albumId: string; screen: "detail" | "slideshow" } | null;
+type ActionOrigin = "detail" | "ready";
+type AlbumActionRoute =
+  | { albumId: string; origin: ActionOrigin; screen: "manage" | "delete" | "share" | "print" }
+  | { albumId: string; names: string[]; origin: ActionOrigin; screen: "share-sent" }
+  | { albumId: string; origin: ActionOrigin; screen: "print-preview" | "print-done"; size: string; total: number }
+  | null;
 
 function suggestedAlbumTitle(photos: PickedPhoto[]) {
   const timestamp = photos.map((photo) => photo.creationTime).find((value): value is number => typeof value === "number" && Number.isFinite(value));
@@ -48,7 +69,7 @@ function suggestedAlbumTitle(photos: PickedPhoto[]) {
   return `${new Date(timestamp).toLocaleDateString(undefined, { month: "long" })} memories`;
 }
 
-export default function App() {
+function PhoteoApp() {
   const [fontsLoaded, fontError] = useFonts({
     Figtree_400Regular,
     Figtree_500Medium,
@@ -63,11 +84,14 @@ export default function App() {
   const [finalPhotos, setFinalPhotos] = useState<FinalPhoto[] | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionMessage, setPermissionMessage] = useState<string | null>(null);
-  const [buildMessage, setBuildMessage] = useState<string | null>(null);
   const [pickedPhotos, setPickedPhotos] = useState<PickedPhoto[]>([]);
   const [savedAlbums, setSavedAlbums] = useState<SavedAlbum[]>([]);
   const [currentAlbumId, setCurrentAlbumId] = useState<string | null>(null);
   const [libraryRoute, setLibraryRoute] = useState<LibraryRoute>(null);
+  const [actionRoute, setActionRoute] = useState<AlbumActionRoute>(null);
+  const [familyOpen, setFamilyOpen] = useState(false);
+  const [personToName, setPersonToName] = useState<NamePersonTarget | null>(null);
+  const [sharedAlbum, setSharedAlbum] = useState<SharedAlbumPreview | null>(null);
 
   useEffect(() => {
     void SecureStore.getItemAsync(WELCOME_SEEN_KEY)
@@ -106,14 +130,12 @@ export default function App() {
 
     setPickedPhotos(next);
     setCreateStep("building");
-    setBuildMessage(null);
     try {
       const built = await buildAlbum(next);
       setAlbum(built);
       setCreateStep("review");
     } catch {
-      setBuildMessage(copy.start.buildError);
-      setCreateStep(null);
+      setCreateStep("error");
     }
   }, []);
 
@@ -146,6 +168,7 @@ export default function App() {
     setFinalPhotos(null);
     setPickedPhotos([]);
     setCurrentAlbumId(null);
+    setActionRoute(null);
     setTab("albums");
   }, []);
 
@@ -154,6 +177,9 @@ export default function App() {
     : null;
   const routedAlbum = libraryRoute
     ? savedAlbums.find((candidate) => candidate.id === libraryRoute.albumId) ?? null
+    : null;
+  const actionAlbum = actionRoute
+    ? savedAlbums.find((candidate) => candidate.id === actionRoute.albumId) ?? null
     : null;
 
   if ((!fontsLoaded && !fontError) || gate === "checking") {
@@ -184,6 +210,36 @@ export default function App() {
     );
   }
 
+  if (familyOpen) return <FamilyScreen onBack={() => setFamilyOpen(false)} />;
+
+  if (personToName) return <NamePersonScreen onBack={() => setPersonToName(null)} person={personToName} />;
+
+  if (sharedAlbum) return <SharedAlbumScreen album={sharedAlbum} onBack={() => setSharedAlbum(null)} onShare={() => undefined} />;
+
+  if (actionRoute && actionAlbum) {
+    if (actionRoute.screen === "manage") {
+      return <ManageAlbumSheet album={actionAlbum} onBack={() => setActionRoute(null)} onDelete={() => setActionRoute({ ...actionRoute, screen: "delete" })} onRename={(title) => { void renameAlbum(actionAlbum.id, title).then((next) => { setSavedAlbums(next); setActionRoute(null); }).catch(() => setActionRoute(null)); }} />;
+    }
+    if (actionRoute.screen === "delete") {
+      return <DeleteAlbumScreen albumTitle={actionAlbum.title} onBack={() => setActionRoute({ ...actionRoute, screen: "manage" })} onDelete={() => { void deleteAlbum(actionAlbum.id).then((next) => { setSavedAlbums(next); setActionRoute(null); setLibraryRoute(null); resetCreateFlow(); }).catch(() => setActionRoute(null)); }} />;
+    }
+    if (actionRoute.screen === "share") {
+      return <ShareSheet albumTitle={actionAlbum.title} onBack={() => setActionRoute(null)} onSent={(names) => setActionRoute({ ...actionRoute, names, screen: "share-sent" })} />;
+    }
+    if (actionRoute.screen === "share-sent") {
+      return <ShareSentScreen albumTitle={actionAlbum.title} names={actionRoute.names} onDone={() => setActionRoute(null)} />;
+    }
+    if (actionRoute.screen === "print") {
+      return <PrintOrderScreen album={actionAlbum} onBack={() => setActionRoute(null)} onOrdered={(size, total) => setActionRoute({ ...actionRoute, screen: "print-done", size, total })} onPreview={(size, total) => setActionRoute({ ...actionRoute, screen: "print-preview", size, total })} />;
+    }
+    if (actionRoute.screen === "print-preview") {
+      return <PrintPreviewScreen album={actionAlbum} onBack={() => setActionRoute({ albumId: actionAlbum.id, origin: actionRoute.origin, screen: "print" })} onContinue={() => setActionRoute({ ...actionRoute, screen: "print-done" })} size={actionRoute.size} total={actionRoute.total} />;
+    }
+    if (actionRoute.screen === "print-done") {
+      return <PrintOrderedScreen albumTitle={actionAlbum.title} onDone={() => setActionRoute(null)} size={actionRoute.size} total={actionRoute.total} />;
+    }
+  }
+
   if (libraryRoute?.screen === "slideshow" && routedAlbum) {
     return <Slideshow album={routedAlbum} onBack={() => setLibraryRoute({ albumId: routedAlbum.id, screen: "detail" })} />;
   }
@@ -193,10 +249,10 @@ export default function App() {
       <AlbumDetailScreen
         album={routedAlbum}
         onBack={() => setLibraryRoute(null)}
-        onManage={() => undefined}
+        onManage={() => setActionRoute({ albumId: routedAlbum.id, origin: "detail", screen: "manage" })}
         onPlay={() => setLibraryRoute({ albumId: routedAlbum.id, screen: "slideshow" })}
-        onPrint={() => undefined}
-        onShare={() => undefined}
+        onPrint={() => setActionRoute({ albumId: routedAlbum.id, origin: "detail", screen: "print" })}
+        onShare={() => setActionRoute({ albumId: routedAlbum.id, origin: "detail", screen: "share" })}
       />
     );
   }
@@ -211,6 +267,10 @@ export default function App() {
   }
 
   if (createStep === "building") return <BuildingScreen />;
+
+  if (createStep === "error") {
+    return <BuildErrorScreen onBack={resetCreateFlow} onRetry={() => void processPhotos(pickedPhotos)} />;
+  }
 
   if (createStep === "review" && album) {
     return (
@@ -236,6 +296,8 @@ export default function App() {
           setLibraryRoute({ albumId: currentAlbum.id, screen: "slideshow" });
         }}
         onRestart={resetCreateFlow}
+        onPrint={() => setActionRoute({ albumId: currentAlbum.id, origin: "ready", screen: "print" })}
+        onShare={() => setActionRoute({ albumId: currentAlbum.id, origin: "ready", screen: "share" })}
         onTitleChange={(title) => {
           void renameAlbum(currentAlbum.id, title).then(setSavedAlbums).catch(() => undefined);
         }}
@@ -252,20 +314,23 @@ export default function App() {
         {tab === "albums" ? (
           <AlbumsScreen
             albums={savedAlbums}
-            message={buildMessage}
             onCreate={() => {
-              setBuildMessage(null);
               setCreateStep("pick");
             }}
             onOpen={(selected) => setLibraryRoute({ albumId: selected.id, screen: "detail" })}
+            onOpenShared={setSharedAlbum}
           />
         ) : null}
-        {tab === "photos" ? <PhotosScreen /> : null}
-        {tab === "account" ? <AccountScreen albumCount={savedAlbums.length} /> : null}
+        {tab === "photos" ? <PhotosScreen onNamePerson={setPersonToName} /> : null}
+        {tab === "account" ? <AccountScreen albumCount={savedAlbums.length} onFamily={() => setFamilyOpen(true)} /> : null}
       </View>
       <TabBar activeTab={tab} onChange={(next) => { setLibraryRoute(null); setTab(next); }} />
     </View>
   );
+}
+
+export default function App() {
+  return <SafeAreaProvider><PhoteoApp /></SafeAreaProvider>;
 }
 
 const styles = StyleSheet.create({

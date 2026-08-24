@@ -1,153 +1,82 @@
-# Photeo Android app status
+# Photeo mobile app status
 
 Last updated: 2026-08-24
 
 ## Current checkpoint
 
-Photeo has a working, TypeScript-clean Expo 57 Android flow, a coverage-first
-album planner, on-device MoveNet body-pose inference, and MIT-licensed TinyCLIP
-semantic embeddings with six zero-shot expression axes. MobileFaceNet now adds
-real 192-dimensional face-identity embeddings for the People filter and the
-planner's people floor, with a guarded perceptual fallback. The standalone release
-APK was rebuilt with all three TFLite graphs and verified byte-for-byte. The
-last pre-Phase-4 release was installed on device `177fc81a` and driven through
-a real four-photo Pick → Making → Review → Done flow without a crash. The phone
-was not visible to ADB or macOS USB discovery during the Phase-4 session, so the
-new APK's install and identity-grouping walkthrough remain the one external
-validation step pending.
+The finalized 26-screen light visual design is implemented in `apps/mobile` on `codex/design-impl`. The release app uses Figtree, a three-tab Albums / Photos / Account shell, the real local album-selection engine, crash-safe album persistence, and guarded native/file/model calls.
 
-## Shipped on `main`
+The release APK was built, installed, and exercised on Android device `177fc81a`. A real nine-photo selection completed as a five-photo album, persisted, reopened, and survived an APK reinstall. Share, print preview, family, shared-album, manage, and delete-confirmation routes rendered without a crash. No original photo was modified or uploaded.
 
-- Granny-proof guided flow: Welcome → Start → Pick → Making → Review → Done.
-- Persisted first-run welcome, one primary action per screen, visible Pick /
-  Review / Done progress, large controls, accessible labels, friendly empty,
-  error, loading, and permission states, and repeated on-device privacy copy.
-- Editorial Photeo design system with bundled Fraunces and Atkinson Hyperlegible
-  Next fonts. Presentation copy is centralized under `apps/mobile/src/ui/`.
-- Full-library picker with date, album, city/country place, and People filters;
-  slide-select, select-all, sparse-filter paging, and a seen-asset cache.
-- ML Kit face detection and local face-index queries.
-- Quality-v2 sharpness, exposure, blink, cut-face, category, and screenshot /
-  document signals, with perceptual image fingerprints as the safe fallback.
-- Coverage planner in `apps/mobile/src/selection/album-planner.ts`, porting the
-  desktop selector's decision structure:
-  - greedy marginal gain over quality-standing, time, place, moment, body-pose,
-    and person axes with 0.5 geometric bucket decay;
-  - library-calibrated MMR plus a hard distinctness backstop;
-  - greedy max-coverage people floor, per-person cap, and scenery reservation;
-  - pose-family and body-pose caps, with the body-pose cap relaxed last;
-  - rare-moment and scarce-person soft-floor waivers;
-  - sovereign pins, absolute excludes, hard content gates, six-decimal gain
-    quantization, media-id tie-breaking, and deterministic chronological output.
-- Dependency-free TypeScript COCO-17 joint-angle clustering in
-  `apps/mobile/src/selection/pose.ts`.
-- Official MoveNet SinglePose Lightning int8 runs through the New-Architecture
-  JSI TFLite host. Its 17 COCO keypoints feed the joint-angle math, deterministic
-  pose clusters, planner diversity reward, and pose caps. Loading,
-  preprocessing, tensor validation, and inference all fail neutral.
-- TinyCLIP ViT-8M/16 replaces perceptual fingerprints when available for visual
-  grouping, redundancy, and moment coverage. Six offline text-embedding
-  contrasts add aesthetic, composition, clean-frame/bystander, sleeping/awake,
-  embrace-context, and screenshot/document evidence. The text encoder does not
-  ship. TinyCLIP loading and inference are serialized and fail back to the
-  perceptual embedding without interrupting album creation.
-- MobileFaceNet runs on every ML Kit face crop and L2-normalizes its 192-d
-  output for cosine identity clustering at `0.5`. Identity and fallback
-  perceptual embeddings are tagged and never mixed; the fallback retains its
-  conservative `0.92` threshold. Face-index v2 invalidates the old perceptual
-  cache and rescans crash-safely.
-- People clusters update after every resumable scan batch, so the People filter
-  and planner receive stable person ids without waiting for the whole library
-  scan to finish. A deterministic full rebuild still prunes deleted assets at
-  scan completion.
+## Shipped
+
+- Warm cream, white, ink, terracotta, privacy-green visual system with Figtree weights 400–800 and dark status-bar content.
+- First-run onboarding, optional account screen, and guarded photo-permission gate.
+- Albums, Photos, and Account tabs with a full-screen album-creation flow.
+- Restyled picker and real Face, Location, and Date filtering without changing selection, photo-index, or planner semantics.
+- On-device building progress, coverage-based review reasons, alternate-shot swapping, missed shots, removal, and editable Album Ready screen.
+- Crash-safe local JSON persistence for album title, cover, photos, review data, and date range.
+- Albums shelf and empty state, album detail, animated slideshow, print/share entry points, and real rename/delete operations.
+- Photos library backed by real media, face, place, country, city, and month indexes. Face scanning is user-started from the no-people state so a large initial scan cannot block normal tab navigation.
+- Account counts backed by local albums and the device media library.
+- Designed build-error recovery with retry and return-to-albums actions.
+- Neutral fallbacks for unavailable permissions, files, indexes, models, and native modules.
+
+## Visual stubs requiring services or contracts
+
+These screens are deliberately usable previews and contain `TODO(owner): needs backend` comments. They make no network request and do not claim that an external operation completed.
+
+- Phone/email OTP delivery and verification.
+- Family membership, removal, and invite delivery.
+- Shared-with-you metadata, media download, playback, and cross-phone album delivery.
+- Share recipient delivery and new-recipient invitations. The confirmation says nothing was uploaded.
+- Person-name and relationship persistence; the current face-index contract has no name field.
+- Print pricing, address collection, payment, PDF/print rendering, fulfillment, and delivery. Confirmations are labeled preview-only and no payment is taken. Print rendering remains blocked until AlbumSpec is frozen.
 
 ## Verification
 
 - `npx tsc --noEmit -p tsconfig.json`: clean.
-- `node --test src/selection/*.test.ts src/faces/*.test.ts src/ml/*.test.ts`:
-  ten test modules green.
-- Release APK: built successfully with bundled JavaScript and native TFLite /
-  Nitro code. Size `338272394` bytes; SHA-256
-  `b7a62102cc59c3cf1fa9e0cf056ed762eca4bb0778c7393a5114e5ab06cc8105`.
-- APK contains the exact verified MoveNet artifact; extracting its packaged
-  resource reproduces the SHA-256 below.
-- The TinyCLIP TFLite output matched its source ONNX embedding at cosine 1.0;
-  the APK contains the exact TFLite artifact identified below.
-- APK extraction also reproduces the exact MobileFaceNet SHA-256 below; Metro
-  statically bundled all three TFLite resources.
-- Prior on-phone walkthrough: four real photos produced a two-page album through
-  the complete guided flow; no app crash appeared in logcat. Phase-4 install is
-  pending because `adb devices -l`, ADB mDNS, and macOS USB discovery all showed
-  no connected device during this session.
+- Pure selection tests plus face clustering and face-cluster merge self-checks: pass with Node 22 type stripping.
+- `git diff --check`: clean.
+- Clean Expo Android prebuild: pass.
+- Gradle `assembleRelease`: pass.
+- Final install using `adb -s 177fc81a install -r`: `Success`.
+- Final process stayed foregrounded while switching Albums → Photos → Account; no React Native fatal, Android fatal, ANR, or input-dispatch timeout appeared in filtered logcat.
+- APK: `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`
+- APK size: `338404116` bytes.
+- APK SHA-256: `ef956a587185c9d66d5b43e158406dd00ad9d0e311c66c2c2209b4410e9835ee`.
 
-## On-device model provenance
+## Rebuild and install
 
-| Component | Source | License | Bundled | Notes |
-|---|---|---|---|---|
-| ML Kit face detection | `@infinitered/react-native-mlkit-face-detection` / Google ML Kit | Package and Google SDK terms | Yes | Guarded; failure returns no faces. |
-| MoveNet SinglePose Lightning int8 | [TensorFlow Hub](https://tfhub.dev/google/lite-model/movenet/singlepose/lightning/tflite/int8/4) | Apache-2.0 | Yes | Official 2.8 MB uint8 model; SHA-256 `cd7cc22fa946e5d146a7b98d496853e1923e22828d3972d579973f27f91bb105`. Input `[1,192,192,3]`; output `[1,1,17,3]`. |
-| `react-native-fast-tflite` | [mrousavy/react-native-fast-tflite](https://github.com/mrousavy/react-native-fast-tflite) | MIT | Yes | Version 3.0.1 with `react-native-nitro-modules` 0.37; CPU delegate by default for broad compatibility. |
-| TinyCLIP ViT-8M/16 Text-3M | [Microsoft TinyCLIP](https://github.com/microsoft/Cream/tree/main/TinyCLIP) / [MIT model card](https://huggingface.co/wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M) | MIT | Yes | Vision-only float32 TFLite, 32 MB; SHA-256 `a1ccb2b874a00c533402ade45beeb392ae8e06a60a6a90829ed26a6796f399e9`. Six offline text axes; JSON SHA-256 `79ed8de61276327f7420787ab4acca316280a7969091fd0e4a672cac4a8da7b8`. |
-| MobileCLIP official weights | Apple ML-MobileCLIP | Research-only model license | No | Explicitly rejected for a commercial product. A permissive SigLIP/OpenCLIP-derived alternative is required, otherwise the perceptual fallback stays. |
-| MobileFaceNet 192-d identity | [MCarlomagno/FaceRecognitionAuth artifact](https://github.com/MCarlomagno/FaceRecognitionAuth/blob/010f0ee203ddf008665e6ea202118fe9aeb28ad5/assets/mobilefacenet.tflite), derived from the `sirius-ai/MobileFaceNet_TF` lineage | BSD-3-Clause repository; pretrained-weight/data grant not separately documented | Yes | Float32 5.0 MB model; SHA-256 `be4bc7cfc53f7bc336d0f28b1ab92535f618c913a422b683210750f6b5354854`. Input `[1,112,112,3]`; output `[1,192]`. **RELICENSE OR REPLACE BEFORE COMMERCIAL LAUNCH.** |
-
-All native/model calls are lazy and guarded. A missing or incompatible model
-returns neutral signals and preserves the complete album flow.
-
-## RELICENSE BEFORE COMMERCIAL LAUNCH
-
-- **MobileFaceNet 192-d identity:** the bundled artifact is distributed by a
-  BSD-3-Clause repository and traces to the Apache-2.0 MobileFaceNet_TF
-  implementation, but its pretrained-weight and training-dataset grant is not
-  separately documented. License it from a provenance-complete source or
-  replace it before any commercial build.
-- **MoveNet SinglePose Lightning:** Apache-2.0 official TensorFlow model. Keep;
-  no relicensing action is currently required.
-- **TinyCLIP ViT-8M/16 Text-3M:** MIT repository and model-card license. Keep;
-  preserve its notice and verify the weight card again at commercial release.
-
-## Rebuild
+The ONNX Runtime package requires the checked-in `patches/onnxruntime-react-native+1.24.3.patch`. If dependencies are reinstalled with lifecycle scripts disabled, apply it explicitly before prebuilding.
 
 ```sh
 export JAVA_HOME=/opt/homebrew/opt/openjdk@17
 export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
 export PATH="/opt/homebrew/opt/node@22/bin:$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
-export npm_config_cache="$(git rev-parse --show-toplevel)/.npm-cache"
+export npm_config_cache="$(cd "$(git rev-parse --show-toplevel)/../memory-engine" && pwd)/.npm-cache"
 
 cd apps/mobile
+npm install --ignore-scripts
+npx patch-package
 npx tsc --noEmit -p tsconfig.json
-node --test src/selection/*.test.ts src/faces/*.test.ts src/ml/*.test.ts
+
+for test_file in src/selection/*.test.ts \
+  src/faces/face-cluster.test.ts \
+  src/faces/face-cluster-merge.test.ts
+do
+  node --experimental-strip-types "$test_file" || exit 1
+done
+
 npx expo prebuild --platform android --no-install
 cd android
 ./gradlew assembleRelease
-adb install -r app/build/outputs/apk/release/app-release.apk
+adb -s 177fc81a install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-## Novice walkthrough
+## Known limits
 
-1. Open Photeo and tap **Get started**.
-2. Tap **Choose photos** on the three-step start screen.
-3. Tap favorite photos; every selected tile gets a large gold check. Use
-   **Filter** only when needed to narrow by date, album, place, or person.
-4. Tap **Next**. The making screen explains that selection happens on the phone.
-5. Review the chosen pages, inspect alternatives if wanted, then tap
-   **Make my album**.
-6. The Done screen confirms that the album is saved on the phone and offers
-   **Make another album**.
-
-## Known limits / remaining work
-
-- TinyCLIP is deliberately the smallest published variant (41.1% zero-shot
-  ImageNet top-1 in its model card). Its expression contrasts are useful ranking
-  evidence, not authoritative labels; high-impact gates remain conservative and
-  every signal falls back to neutral/perceptual evidence on failure.
-- MobileFaceNet identity quality is not yet calibrated on Photeo's own diverse
-  family benchmark. The `0.5` cosine threshold favors precision; individual
-  inference failures safely use the older perceptual crop embedding.
-- The Phase-4 APK still needs installation on `177fc81a` and a fresh screenshot
-  walkthrough once that device is physically reconnected.
-- Face/head-region sharpness, per-face exposure, and ML Kit head-pose confidence
-  tightening remain to be added.
-- Body pose uses a single-person model, so crowded group photos contribute only
-  the most prominent detected body. Unreadable or low-confidence poses remain
-  neutral by design.
+- MobileFaceNet identity clustering still needs product-specific calibration and model-license review before commercial launch.
+- Large face scans are resumable and explicit, but remain CPU intensive while running.
+- TinyCLIP expression scores are ranking evidence, not authoritative labels; failures remain neutral or use the guarded perceptual fallback.
+- MoveNet is single-person, so crowded group photos only contribute the most prominent detected body pose.

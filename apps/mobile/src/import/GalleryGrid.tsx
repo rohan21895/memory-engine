@@ -19,7 +19,6 @@ import {
 
 import {
   assetIdsForPerson,
-  buildFaceIndex,
   getPeople,
   isFaceDetectionAvailable,
   loadFaceIndex,
@@ -207,8 +206,6 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const [indexing, setIndexing] = useState(false);
   const [people, setPeople] = useState<FaceIndexPerson[]>([]);
   const [personId, setPersonId] = useState<string | null>(null);
-  const [peopleIndexPct, setPeopleIndexPct] = useState<number | null>(null);
-  const [peopleIndexing, setPeopleIndexing] = useState(false);
   const [filterVisible, setFilterVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [reloading, setReloading] = useState(false);
@@ -357,17 +354,6 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         const refreshPeople = () => setPeople(getPeople());
         await loadFaceIndex();
         refreshPeople();
-        setPeopleIndexing(true);
-        void buildFaceIndex({
-          onProgress: (done, total) => {
-            refreshPeople();
-            setPeopleIndexPct(total > 0 ? Math.min(1, done / total) : null);
-          },
-        }).finally(() => {
-          refreshPeople();
-          setPeopleIndexPct(null);
-          setPeopleIndexing(false);
-        });
       }
       } catch {
         setStatus("error");
@@ -688,11 +674,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         onBack={() => setFilterVisible(false)}
         people={filterPeople}
         peopleAvailable={peopleAvailable}
-        peopleLoadingText={peopleIndexing
-          ? copy.filters.scanningPeople(
-              peopleIndexPct === null ? undefined : Math.round(peopleIndexPct * 100),
-            )
-          : undefined}
+        peopleLoadingText={undefined}
       />
     );
   }

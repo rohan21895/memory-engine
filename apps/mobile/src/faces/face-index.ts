@@ -13,7 +13,9 @@ const INDEX_VERSION = 3;
 const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
-const SCAN_BATCH_SIZE = 8;
+// Face crop fingerprinting runs on the JS thread after native detection. Keep
+// batches small so a large first scan cannot starve taps and navigation.
+const SCAN_BATCH_SIZE = 1;
 const FACE_THUMBNAIL_SIZE = 128;
 const LUMA_GRID_SIZE = 8;
 const COLOR_BINS = 4;

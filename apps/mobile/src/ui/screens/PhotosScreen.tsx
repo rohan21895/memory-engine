@@ -24,10 +24,11 @@ import {
 } from "../../import/photo-index";
 import { fonts } from "../fonts";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
+import type { NamePersonTarget } from "./NamePersonScreen";
 
 type PlaceCard = PlaceSummary & { coverUri: string };
 
-export function PhotosScreen() {
+export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePersonTarget) => void }) {
   const [query, setQuery] = useState("");
   const [people, setPeople] = useState<FaceIndexPerson[]>([]);
   const [places, setPlaces] = useState<PlaceCard[]>([]);
@@ -36,6 +37,7 @@ export function PhotosScreen() {
   const [selectedPlace, setSelectedPlace] = useState<string | null>(null);
   const [monthLabel, setMonthLabel] = useState("Recent photos");
   const [loading, setLoading] = useState(true);
+  const [scanningPeople, setScanningPeople] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -59,9 +61,6 @@ export function PhotosScreen() {
         await Promise.all([loadIndex().catch(() => undefined), loadFaceIndex().catch(() => undefined)]);
         refreshIndexes();
         void buildIndex({ onProgress: refreshIndexes }).then(refreshIndexes).catch(() => undefined);
-        if (isFaceDetectionAvailable()) {
-          void buildFaceIndex({ onProgress: refreshIndexes }).then(refreshIndexes).catch(() => undefined);
-        }
       } catch {
         // A neutral empty library is safer than surfacing a native-module error.
       } finally {
@@ -70,6 +69,16 @@ export function PhotosScreen() {
     })();
     return () => { active = false; };
   }, []);
+
+  const scanForPeople = () => {
+    if (scanningPeople || !isFaceDetectionAvailable()) return;
+    setScanningPeople(true);
+    const refreshPeople = () => setPeople(getPeople());
+    void buildFaceIndex({ onProgress: refreshPeople })
+      .then(refreshPeople)
+      .catch(() => undefined)
+      .finally(() => setScanningPeople(false));
+  };
 
   const needle = query.trim().toLocaleLowerCase();
   const visiblePeople = people.filter((person, index) => `person ${index + 1}`.includes(needle));
@@ -94,7 +103,18 @@ export function PhotosScreen() {
           {visiblePeople.map((person, index) => {
             const active = selectedPerson === person.id;
             return (
-              <Pressable key={person.id} onPress={() => { setSelectedPlace(null); setSelectedPerson(active ? null : person.id); }} style={styles.person}>
+              <Pressable
+                accessibilityHint="Tap to filter photos. Hold to add a name."
+                key={person.id}
+                onLongPress={() => onNamePerson?.({
+                  id: person.id,
+                  label: `Person ${index + 1}`,
+                  faceThumbUri: person.faceThumbUri,
+                  assetIds: assetIdsForPerson(person.id).slice(0, 8),
+                })}
+                onPress={() => { setSelectedPlace(null); setSelectedPerson(active ? null : person.id); }}
+                style={styles.person}
+              >
                 <Image cachePolicy="memory-disk" contentFit="cover" source={person.faceThumbUri ?? contentUri(person.coverAssetId)} style={[styles.avatar, active ? styles.avatarActive : null]} />
                 <Text numberOfLines={1} style={[styles.personName, active ? styles.activeText : null]}>Person {index + 1}</Text>
               </Pressable>
@@ -102,7 +122,11 @@ export function PhotosScreen() {
           })}
         </ScrollView>
       ) : (
-        <View style={styles.noPeople}><Text style={styles.noPeopleTitle}>{loading ? "Finding people…" : "No people found yet"}</Text><Text style={styles.noPeopleText}>Face grouping happens on this phone and may take a few minutes the first time.</Text></View>
+        <View style={styles.noPeople}>
+          <Text style={styles.noPeopleTitle}>{loading ? "Checking your people…" : scanningPeople ? "Finding people…" : "No people found yet"}</Text>
+          <Text style={styles.noPeopleText}>Face grouping happens on this phone and may take a few minutes the first time.</Text>
+          {!loading ? <Pressable accessibilityRole="button" disabled={scanningPeople || !isFaceDetectionAvailable()} onPress={scanForPeople} style={[styles.peopleScan, scanningPeople ? styles.scanDisabled : null]}><Text style={styles.peopleScanText}>{scanningPeople ? "Scanning on this phone…" : "Find people on this phone"}</Text></Pressable> : null}
+        </View>
       )}
 
       <View style={styles.sectionHeading}><Text style={styles.section}>Places</Text><Text style={styles.seeAll}>See all</Text></View>
@@ -139,6 +163,8 @@ const styles = StyleSheet.create({
   noPeopleText: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   noPeopleTitle: { color: colors.text, fontFamily: fonts.bold, ...typeScale.label },
   peopleRow: { gap: 14, paddingVertical: spacing.xs },
+  peopleScan: { alignItems: "center", alignSelf: "flex-start", backgroundColor: colors.panelRaised, borderRadius: 20, height: 40, justifyContent: "center", marginTop: spacing.xs, paddingHorizontal: spacing.md },
+  peopleScanText: { color: colors.gold, fontFamily: fonts.bold, ...typeScale.small },
   person: { alignItems: "center", gap: 6, width: 66 },
   personName: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12.5, width: 66 },
   place: { width: 132 },
@@ -151,6 +177,7 @@ const styles = StyleSheet.create({
   search: { alignItems: "center", backgroundColor: "#f0eee8", borderRadius: radii.pill, flexDirection: "row", gap: spacing.xs, height: 48, marginTop: 14, paddingHorizontal: spacing.md },
   searchIcon: { color: "#8b8378", fontFamily: fonts.regular, fontSize: 21 },
   searchInput: { color: colors.text, flex: 1, fontFamily: fonts.regular, fontSize: 16, paddingVertical: 0 },
+  scanDisabled: { opacity: 0.55 },
   section: { color: colors.text, fontFamily: fonts.bold, ...typeScale.label },
   sectionHeading: { alignItems: "baseline", flexDirection: "row", justifyContent: "space-between", paddingTop: spacing.lg },
   seeAll: { color: colors.gold, fontFamily: fonts.semibold, ...typeScale.small },
