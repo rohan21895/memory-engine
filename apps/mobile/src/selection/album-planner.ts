@@ -42,6 +42,7 @@ export type PlannerCandidate = {
   sleeping?: number;
   embraceContext?: number;
   eyesOpen?: number;
+  naturalExpression?: number;
 };
 
 export type PlannerPolicy = {
@@ -122,8 +123,39 @@ export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
   excludedMediaIds: [],
 };
 
-export type PlannerRejection = {
+export type PlannerReasonCode =
+  | "below_quality_floor"
+  | "coverage_moment"
+  | "coverage_time"
+  | "different_place"
+  | "different_pose"
+  | "distinct_take"
+  | "eyes_open"
+  | "exposure_clipped"
+  | "face_cut"
+  | "face_out_of_focus"
+  | "face_too_dark"
+  | "hard_image_gate"
+  | "natural_expression"
+  | "only_shot_of_person"
+  | "person_cap"
+  | "screenshot"
+  | "sharpest_of_take"
+  | "smiling"
+  | "smiling_sharp"
+  | "strong_photo"
+  | "subject_out_of_focus"
+  | "user_choice"
+  | "user_excluded";
+
+export type PlannerReason = {
+  reasonCode: PlannerReasonCode;
+  message: string;
+};
+
+export type PlannerRejection = PlannerReason & {
   mediaId: string;
+  /** Compatibility text for consumers that have not adopted reasonCode yet. */
   reason: string;
 };
 
@@ -137,6 +169,7 @@ export type AlbumPlan = {
   rescuedIds: string[];
   missingPersonIds: string[];
   personCounts: Record<string, number>;
+  reasonDetailsByMediaId: Record<string, PlannerReason[]>;
   reasonsByMediaId: Record<string, string[]>;
 };
 
@@ -192,12 +225,12 @@ export function planAlbum(
   const absoluteSurvivors = ordered.filter((candidate) => {
     if (pinned.has(candidate.mediaId)) return true;
     const reason = absoluteRejection(candidate, excluded);
-    if (reason) rejected.push({ mediaId: candidate.mediaId, reason });
+    if (reason) rejected.push({ mediaId: candidate.mediaId, reason: reason.message, ...reason });
     return !reason;
   });
 
   const rareIds = rareMomentIds(absoluteSurvivors, policy);
-  const softFailures = new Map<string, string>();
+  const softFailures = new Map<string, PlannerReason>();
   for (const candidate of absoluteSurvivors) {
     if (pinned.has(candidate.mediaId)) continue;
     const failure = softFailure(candidate, policy);
@@ -212,7 +245,7 @@ export function planAlbum(
       rescued.add(candidate.mediaId);
       return true;
     }
-    rejected.push({ mediaId: candidate.mediaId, reason: failure });
+    rejected.push({ mediaId: candidate.mediaId, reason: failure.message, ...failure });
     return false;
   });
 
@@ -235,7 +268,8 @@ export function planAlbum(
     pinned,
   );
   for (const mediaId of greedy.capBlocked) {
-    rejected.push({ mediaId, reason: "per-person cap reached" });
+    const rejection = plannerReason("person_cap", "per-person cap reached");
+    rejected.push({ mediaId, reason: rejection.message, ...rejection });
   }
 
   const selectedSet = new Set(greedy.selected);
@@ -265,6 +299,7 @@ export function planAlbum(
     rescuedIds: Array.from(rescued).sort(),
     missingPersonIds,
     personCounts,
+    reasonDetailsByMediaId: greedy.reasonDetails,
     reasonsByMediaId: greedy.reasons,
   };
 }
@@ -280,9 +315,10 @@ function greedySelect(
 ) {
   const selected: string[] = [];
   const remaining = survivors.map((candidate) => candidate.mediaId);
+  const reasonDetails: Record<string, PlannerReason[]> = {};
   const reasons: Record<string, string[]> = {};
   if (target === 0 || survivors.length === 0) {
-    return { selected, capBlocked: [] as string[], reasons };
+    return { selected, capBlocked: [] as string[], reasonDetails, reasons };
   }
 
   const knownTimes = survivors
@@ -359,11 +395,16 @@ function greedySelect(
   const sleepingCap = Math.max(1, Math.floor(target * policy.maxSleepingFraction));
   let sleepingCount = 0;
 
-  const commit = (mediaId: string, why: string[]) => {
+  const commit = (mediaId: string, why: PlannerReason[]) => {
     const candidate = byId.get(mediaId)!;
+    const details = dedupeReasons([
+      ...selectionSignalReasons(candidate, standing.get(mediaId) ?? 0),
+      ...why,
+    ]);
     selected.push(mediaId);
     remaining.splice(remaining.indexOf(mediaId), 1);
-    reasons[mediaId] = why;
+    reasonDetails[mediaId] = details;
+    reasons[mediaId] = details.map(({ message }) => message);
     increment(shotCounts, shotKey.get(mediaId)!);
     increment(familyCounts, familyKey.get(mediaId)!);
     increment(timeCounts, timeKey.get(mediaId)!);
@@ -428,7 +469,7 @@ function greedySelect(
   };
 
   for (const mediaId of remaining.filter((id) => pinned.has(id)).sort()) {
-    commit(mediaId, ["Kept because you chose it."]);
+    commit(mediaId, [plannerReason("user_choice", "Kept because you chose it.")]);
   }
 
   if (policy.minPerPerson > 0) {
@@ -455,7 +496,7 @@ function greedySelect(
             left.mediaId.localeCompare(right.mediaId),
         );
       if (options.length === 0) break;
-      commit(options[0].mediaId, ["Keeps everyone in the story."]);
+      commit(options[0].mediaId, [plannerReason("only_shot_of_person", "Keeps everyone in the story.")]);
     }
   }
 
@@ -527,7 +568,7 @@ function greedySelect(
     commit(bestId, coverageReasons(bestId, standing, timeCounts, placeCounts, momentCounts, poseCounts, timeKey, placeKey, momentKey, poseKey));
   }
 
-  return { selected, capBlocked: Array.from(blocked).sort(), reasons };
+  return { selected, capBlocked: Array.from(blocked).sort(), reasonDetails, reasons };
 }
 
 function coverageReasons(
@@ -542,17 +583,46 @@ function coverageReasons(
   momentKey: Map<string, string>,
   poseKey: Map<string, string>,
 ) {
-  const reasons: string[] = [];
-  if ((momentCounts[momentKey.get(mediaId)!] ?? 0) === 0) reasons.push("Adds another moment to the story.");
-  if ((timeCounts[timeKey.get(mediaId)!] ?? 0) === 0) reasons.push("Keeps the album spread across the whole event.");
+  const reasons: PlannerReason[] = [];
+  if ((momentCounts[momentKey.get(mediaId)!] ?? 0) === 0) reasons.push(plannerReason("coverage_moment", "Adds another moment to the story."));
+  if ((timeCounts[timeKey.get(mediaId)!] ?? 0) === 0) reasons.push(plannerReason("coverage_time", "Keeps the album spread across the whole event."));
   if (placeKey.get(mediaId) !== UNKNOWN && (placeCounts[placeKey.get(mediaId)!] ?? 0) === 0) {
-    reasons.push("Shows a different place from the memory.");
+    reasons.push(plannerReason("different_place", "Shows a different place from the memory."));
   }
   if (!poseKey.get(mediaId)!.startsWith("nopose:") && (poseCounts[poseKey.get(mediaId)!] ?? 0) === 0) {
-    reasons.push("Adds a different pose.");
+    reasons.push(plannerReason("different_pose", "Adds a different pose."));
   }
-  if ((standing.get(mediaId) ?? 0) >= 0.7) reasons.push("One of the clearest photos in its group.");
-  return reasons.length > 0 ? reasons : ["A strong photo that fits the story."];
+  if ((standing.get(mediaId) ?? 0) >= 0.7) reasons.push(plannerReason("sharpest_of_take", "One of the clearest photos in its group."));
+  return reasons.length > 0 ? reasons : [plannerReason("strong_photo", "A strong photo that fits the story.")];
+}
+
+function selectionSignalReasons(candidate: NormalizedCandidate, standing: number): PlannerReason[] {
+  const reasons: PlannerReason[] = [];
+  if (candidate.smile !== undefined && candidate.smile >= 0.7) {
+    reasons.push(standing >= 0.7
+      ? plannerReason("smiling_sharp", "Everyone looks happy, and this is one of the clearest photos in its group.")
+      : plannerReason("smiling", "Everyone looks happy in this moment."));
+  }
+  if (candidate.eyesOpen !== undefined && candidate.eyesOpen >= 0.75) {
+    reasons.push(plannerReason("eyes_open", "Everyone's eyes are open and easy to see."));
+  }
+  if (candidate.naturalExpression !== undefined && candidate.naturalExpression >= 0.7) {
+    reasons.push(plannerReason("natural_expression", "The expression feels natural and warm."));
+  }
+  return reasons;
+}
+
+function plannerReason(reasonCode: PlannerReasonCode, message: string): PlannerReason {
+  return { reasonCode, message };
+}
+
+function dedupeReasons(reasons: PlannerReason[]): PlannerReason[] {
+  const seen = new Set<PlannerReasonCode>();
+  return reasons.filter(({ reasonCode }) => {
+    if (seen.has(reasonCode)) return false;
+    seen.add(reasonCode);
+    return true;
+  });
 }
 
 function normalizeCandidate(candidate: PlannerCandidate): NormalizedCandidate {
@@ -605,33 +675,33 @@ function validatePolicy(policy: PlannerPolicy) {
 }
 
 function absoluteRejection(candidate: NormalizedCandidate, excluded: Set<string>) {
-  if (excluded.has(candidate.mediaId)) return "excluded by user";
-  if (candidate.hardRejected) return candidate.hardRejectionReason || "failed a hard image gate";
-  if (candidate.screenshotDocument) return "screenshot or document";
+  if (excluded.has(candidate.mediaId)) return plannerReason("user_excluded", "excluded by user");
+  if (candidate.hardRejected) return plannerReason("hard_image_gate", candidate.hardRejectionReason || "failed a hard image gate");
+  if (candidate.screenshotDocument) return plannerReason("screenshot", "screenshot or document");
   return undefined;
 }
 
 function softFailure(candidate: NormalizedCandidate, policy: PlannerPolicy) {
-  if (candidate.quality < policy.qualityFloor) return "below the quality floor";
-  if (policy.rejectCutFaces && candidate.cutFace) return "a face is cut by the frame";
+  if (candidate.quality < policy.qualityFloor) return plannerReason("below_quality_floor", "below the quality floor");
+  if (policy.rejectCutFaces && candidate.cutFace) return plannerReason("face_cut", "a face is cut by the frame");
   if (candidate.clippedFraction !== undefined && candidate.clippedFraction > policy.maxClippedFraction) {
-    return "face exposure is clipped";
+    return plannerReason("exposure_clipped", "face exposure is clipped");
   }
   if (candidate.faceExposure !== undefined && candidate.faceExposure < policy.faceExposureFloor) {
-    return "a face is too dark";
+    return plannerReason("face_too_dark", "a face is too dark");
   }
   if (candidate.faceSharpness !== undefined && candidate.faceSharpness < policy.faceSharpnessFloor) {
-    return "a face is out of focus";
+    return plannerReason("face_out_of_focus", "a face is out of focus");
   }
   if (candidate.headSharpness !== undefined && candidate.headSharpness < policy.headSharpnessFloor) {
-    return "the subject is out of focus";
+    return plannerReason("subject_out_of_focus", "the subject is out of focus");
   }
   return undefined;
 }
 
 function scarcePersonRescues(
   candidates: NormalizedCandidate[],
-  failures: Map<string, string>,
+  failures: Map<string, PlannerReason>,
 ) {
   const result = new Set<string>();
   const people = Array.from(new Set(candidates.flatMap((candidate) => candidate.personIds)));

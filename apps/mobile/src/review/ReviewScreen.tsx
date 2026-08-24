@@ -105,7 +105,7 @@ export default function ReviewScreen({
     const addedItems = data.pool
       .filter((item) => added.has(item.media_id))
       .map((item, index) => ({
-        caption: item.reasons[0] ?? copy.reasons.neutralChosen,
+        caption: copy.review.changedReason,
         media_id: item.media_id,
         page: maxPage + index + 1,
         rawReasons: item.reasons,
@@ -220,7 +220,7 @@ export default function ReviewScreen({
                 return (
                   <View key={item.media_id} style={styles.missedCard}>
                     <Image cachePolicy="memory-disk" contentFit="cover" source={item.uri} style={styles.missedImage} />
-                    <Text numberOfLines={2} style={styles.missedReason}>{item.reasons[0] ?? copy.reasons.neutralLeftOut}</Text>
+                    <Text numberOfLines={2} style={styles.missedReason}>{plainAlternativeReason(item.reasons)}</Text>
                     <Pressable onPress={() => setAdded((current) => { const next = new Set(current); if (next.has(item.media_id)) next.delete(item.media_id); else next.add(item.media_id); return next; })} style={[styles.addButton, isAdded ? styles.addButtonActive : null]}>
                       <Text style={[styles.addText, isAdded ? styles.addTextActive : null]}>{isAdded ? "Added" : "Add to album"}</Text>
                     </Pressable>
