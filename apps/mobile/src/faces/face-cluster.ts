@@ -143,7 +143,77 @@ export function extendFaceClusters(
     }
   }
 
+  mergeSimilarPeople(people, identityThreshold, perceptualThreshold);
+
   return people.map(({ assetIdSet: _assetIdSet, ...person }) => person);
+}
+
+/**
+ * Second pass: greedy online assignment is order-dependent, so one person's
+ * faces routinely seed several clusters (a bad-angle first frame the later good
+ * frames never match). Repeatedly merge the closest pair of same-kind people
+ * whose centroids sit above the same similarity bar the assignment used, until
+ * none qualify. Only collapses clusters already within threshold, so it never
+ * merges people the assignment would have kept apart. The older cluster (lower
+ * index) survives, keeping surfaced ids stable.
+ *
+ * ponytail: O(k^2) per merge round over k people; fine for the hundreds of
+ * people a personal library yields. Swap for union-find on an ANN index if k
+ * ever reaches thousands.
+ */
+function mergeSimilarPeople(
+  people: MutablePerson[],
+  identityThreshold: number,
+  perceptualThreshold: number,
+): void {
+  for (;;) {
+    let bestI = -1;
+    let bestJ = -1;
+    let bestSimilarity = Number.NEGATIVE_INFINITY;
+
+    for (let i = 0; i < people.length; i += 1) {
+      for (let j = i + 1; j < people.length; j += 1) {
+        const a = people[i];
+        const b = people[j];
+        if (
+          a.embeddingKind !== b.embeddingKind ||
+          a.centroid.length === 0 ||
+          a.centroid.length !== b.centroid.length
+        ) {
+          continue;
+        }
+        const threshold =
+          a.embeddingKind === "identity" ? identityThreshold : perceptualThreshold;
+        const similarity = cosine(a.centroid, b.centroid);
+        if (similarity >= threshold && similarity > bestSimilarity) {
+          bestSimilarity = similarity;
+          bestI = i;
+          bestJ = j;
+        }
+      }
+    }
+
+    if (bestI === -1) {
+      return;
+    }
+
+    const survivor = people[bestI];
+    const absorbed = people[bestJ];
+    const total = survivor.faceCount + absorbed.faceCount;
+    survivor.centroid = survivor.centroid.map(
+      (value, index) =>
+        (value * survivor.faceCount + absorbed.centroid[index] * absorbed.faceCount) /
+        total,
+    );
+    survivor.faceCount = total;
+    for (const assetId of absorbed.assetIds) {
+      if (!survivor.assetIdSet.has(assetId)) {
+        survivor.assetIdSet.add(assetId);
+        survivor.assetIds.push(assetId);
+      }
+    }
+    people.splice(bestJ, 1);
+  }
 }
 
 export type { FaceObservation, Person } from "./types";
