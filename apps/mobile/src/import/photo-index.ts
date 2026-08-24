@@ -247,6 +247,26 @@ const UNKNOWN_NAMES: GeoNames = {
   countryName: UNKNOWN_COUNTRY,
 };
 
+const GEOCODE_TIMEOUT_MS = 4000;
+
+// reverseGeocodeAsync can hang indefinitely (offline, no Play geocoder). A hang
+// here would stall the whole scan, so race it against a timeout and move on.
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("geocode timeout")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 async function geocodeCell(cell: {
   id: string;
   latitude: number;
@@ -258,15 +278,18 @@ async function geocodeCell(cell: {
 
   let names = UNKNOWN_NAMES;
   try {
-    const addresses = await Location.reverseGeocodeAsync({
-      latitude: cell.latitude,
-      longitude: cell.longitude,
-    });
+    const addresses = await withTimeout(
+      Location.reverseGeocodeAsync({
+        latitude: cell.latitude,
+        longitude: cell.longitude,
+      }),
+      GEOCODE_TIMEOUT_MS,
+    );
     if (addresses[0]) {
       names = namesFromAddress(addresses[0]);
     }
   } catch {
-    // Offline or unavailable geocoding still records the cell (as unknown).
+    // Offline, unavailable, or slow geocoding still records the cell (unknown).
   }
   index.geocodeCache[cell.id] = names;
 }

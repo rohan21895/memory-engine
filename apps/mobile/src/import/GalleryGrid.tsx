@@ -106,6 +106,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   // One active location filter at a time; id is prefixed "city:" or "country:".
   const [locId, setLocId] = useState<string | null>(null);
   const [indexPct, setIndexPct] = useState<number | null>(null);
+  const [indexing, setIndexing] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const cursor = useRef<string | undefined>(undefined);
@@ -208,6 +209,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
       };
       await loadIndex();
       refreshPlaces();
+      setIndexing(true);
       void buildIndex({
         onProgress: (done, total) => {
           refreshPlaces();
@@ -216,6 +218,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
       }).finally(() => {
         refreshPlaces();
         setIndexPct(null);
+        setIndexing(false);
       });
     })();
   }, []);
@@ -491,7 +494,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
             </Pressable>
           );
         })}
-        {countries.length > 0 || cities.length > 0 || indexPct !== null ? (
+        {countries.length > 0 || cities.length > 0 || indexing ? (
           <View style={styles.divider} />
         ) : null}
         {countries.map((p) => {
@@ -527,10 +530,10 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
             </Pressable>
           );
         })}
-        {indexPct !== null ? (
+        {indexing ? (
           <View style={styles.chip}>
             <Text style={styles.chipText}>
-              Finding places {Math.round(indexPct * 100)}%
+              Finding places{indexPct !== null ? ` ${Math.round(indexPct * 100)}%` : "…"}
             </Text>
           </View>
         ) : null}
