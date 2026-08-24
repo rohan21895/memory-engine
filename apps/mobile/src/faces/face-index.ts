@@ -11,9 +11,9 @@ import { embedFaceIdentity } from "../ml/facenet.ts";
 import { incrementalScanTarget } from "../import/incremental-index.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
-// v5 invalidates perceptual-only checkpoints (including v4 builds affected by
-// fast-tflite's Android bare-resource URI bug) so identity is rebuilt once.
-const INDEX_VERSION = 5;
+// v17 applies the final device-calibrated overlap boundary to v16 locally.
+const INDEX_VERSION = 17;
+const MIGRATABLE_INDEX_VERSION = 16;
 const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
@@ -29,6 +29,9 @@ const BASE64_ALPHABET =
 
 /** ArcFace/MobileFaceNet-space cosine threshold for high-precision identity. */
 export const DEFAULT_FACE_INDEX_THRESHOLD = 0.5;
+export const FACE_INDEX_IDENTITY_MERGE_THRESHOLD = 0.37;
+export const FACE_INDEX_LARGE_CLUSTER_MERGE_THRESHOLD = 0.3;
+export const FACE_INDEX_LARGE_CLUSTER_MIN_FACES = 10;
 export const PERCEPTUAL_FACE_INDEX_THRESHOLD = DEFAULT_PERCEPTUAL_THRESHOLD;
 
 export type FaceIndexPerson = {
@@ -116,6 +119,7 @@ function emptyIndex(): PersistedFaceIndex {
 let index = emptyIndex();
 let activeBuild: Promise<void> | null = null;
 let hydration: Promise<void> | null = null;
+let duplicateDetectionsDropped = 0;
 
 function observationCounts(): Pick<
   FaceIndexStatus,
@@ -132,9 +136,54 @@ function observationCounts(): Pick<
 
 function logEmbeddingPath(context: string): void {
   const counts = observationCounts();
+  const closestPairs: Array<{
+    a: string;
+    b: string;
+    shared: number;
+    similarity: number;
+  }> = [];
+  for (let first = 0; first < index.people.length; first += 1) {
+    for (let second = first + 1; second < index.people.length; second += 1) {
+      const a = index.people[first];
+      const b = index.people[second];
+      if (a.embeddingKind !== b.embeddingKind) continue;
+      const bAssets = new Set(b.assetIds);
+      closestPairs.push({
+        a: a.id,
+        b: b.id,
+        shared: a.assetIds.reduce(
+          (count, assetId) => count + Number(bAssets.has(assetId)),
+          0,
+        ),
+        similarity: cosine(a.centroid, b.centroid),
+      });
+    }
+  }
+  const pairSummary = closestPairs
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, 6)
+    .map(
+      (pair) =>
+        `${pair.a}/${pair.b}:${pair.similarity.toFixed(3)}~${pair.shared}`,
+    )
+    .join(",");
+  const clusterSummary = index.people
+    .slice()
+    .sort((a, b) => b.faceCount - a.faceCount || a.id.localeCompare(b.id))
+    .slice(0, 12)
+    .map(
+      (person) =>
+        `${person.id}:${person.faceCount}/${new Set(person.assetIds).size}`,
+    )
+    .join(",");
   console.warn(
-    `[PhoteoFaceIndex] ${context} identity=${counts.identityObservations} perceptual=${counts.perceptualObservations}`,
+    `[PhoteoFaceIndex] ${context} identity=${counts.identityObservations} perceptual=${counts.perceptualObservations} duplicateBoxes=${duplicateDetectionsDropped} clusters=${clusterSummary || "none"} closest=${pairSummary || "none"}`,
   );
+}
+
+/** Emits anonymous centroid diagnostics for on-device clustering calibration. */
+export function logFaceIndexDiagnostics(context = "status"): void {
+  logEmbeddingPath(context);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -159,6 +208,75 @@ function validObservation(value: unknown): value is FaceObservation {
     validEmbedding(value.embedding) &&
     (value.embeddingKind === "identity" || value.embeddingKind === "perceptual")
   );
+}
+
+/** Removes repeat detections of one face while preserving distinct co-faces. */
+export function dedupeFaceObservations(
+  observations: FaceObservation[],
+  similarityThreshold = 0.75,
+): FaceObservation[] {
+  const kept: FaceObservation[] = [];
+  const byAsset = new Map<string, FaceObservation[]>();
+  for (const observation of observations) {
+    const siblings = byAsset.get(observation.assetId) ?? [];
+    const duplicate = siblings.some(
+      (candidate) =>
+        candidate.embeddingKind === observation.embeddingKind &&
+        cosine(candidate.embedding, observation.embedding) >=
+          similarityThreshold,
+    );
+    if (duplicate) continue;
+    siblings.push(observation);
+    byAsset.set(observation.assetId, siblings);
+    kept.push(observation);
+  }
+  return kept;
+}
+
+function boxIntersection(a: FaceBox, b: FaceBox): number {
+  const width = Math.max(
+    0,
+    Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x),
+  );
+  const height = Math.max(
+    0,
+    Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y),
+  );
+  return width * height;
+}
+
+/** Suppresses repeated ML Kit boxes without conflating neighboring faces. */
+export function dedupeFaceBoxes(boxes: FaceBox[]): FaceBox[] {
+  const kept: FaceBox[] = [];
+  for (const box of boxes) {
+    const area = box.width * box.height;
+    const duplicate = kept.some((candidate) => {
+      const candidateArea = candidate.width * candidate.height;
+      const intersection = boxIntersection(box, candidate);
+      const union = area + candidateArea - intersection;
+      const iou = union > 0 ? intersection / union : 0;
+      const containment =
+        Math.min(area, candidateArea) > 0
+          ? intersection / Math.min(area, candidateArea)
+          : 0;
+      const centerDistance = Math.hypot(
+        box.x + box.width / 2 - (candidate.x + candidate.width / 2),
+        box.y + box.height / 2 - (candidate.y + candidate.height / 2),
+      );
+      const centerTolerance =
+        Math.min(
+          Math.max(box.width, box.height),
+          Math.max(candidate.width, candidate.height),
+        ) * 0.7;
+      return (
+        iou >= 0.65 ||
+        containment >= 0.85 ||
+        centerDistance <= centerTolerance
+      );
+    });
+    if (!duplicate) kept.push(box);
+  }
+  return kept;
 }
 
 function validPerson(value: unknown): value is Person {
@@ -191,7 +309,8 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
     const value: unknown = JSON.parse(contents);
     if (
       !isRecord(value) ||
-      value.version !== INDEX_VERSION ||
+      (value.version !== INDEX_VERSION &&
+        value.version !== MIGRATABLE_INDEX_VERSION) ||
       !Array.isArray(value.observations) ||
       !value.observations.every(validObservation) ||
       !Array.isArray(value.people) ||
@@ -207,12 +326,26 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
     ) {
       return null;
     }
-    return {
+    const loaded = {
       ...(value as Omit<PersistedFaceIndex, "faceThumbUris">),
       faceThumbUris: stringRecord(value.faceThumbUris)
         ? value.faceThumbUris
         : {},
     };
+    if (value.version === MIGRATABLE_INDEX_VERSION) {
+      const observations = dedupeFaceObservations(loaded.observations);
+      return {
+        ...loaded,
+        version: INDEX_VERSION,
+        observations,
+        people: peopleFromObservations(
+          observations,
+          loaded.threshold,
+          FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
+        ),
+      };
+    }
+    return loaded;
   } catch {
     return null;
   }
@@ -291,8 +424,13 @@ function safeThreshold(value: number | undefined): number {
 function peopleFromObservations(
   observations: FaceObservation[],
   threshold = DEFAULT_FACE_INDEX_THRESHOLD,
+  identityMergeThreshold = threshold,
 ): Person[] {
   return clusterFaces(observations, {
+    identityLargeClusterMergeThreshold:
+      FACE_INDEX_LARGE_CLUSTER_MERGE_THRESHOLD,
+    identityLargeClusterMinFaces: FACE_INDEX_LARGE_CLUSTER_MIN_FACES,
+    identityMergeThreshold,
     threshold: safeThreshold(threshold),
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
   });
@@ -301,9 +439,19 @@ function peopleFromObservations(
 function summariesForPeople(
   people: Person[],
   faceThumbUris: Readonly<Record<string, string>> = {},
+  suppressLowSupport = false,
 ): FaceIndexPerson[] {
+  const largestCluster = people.reduce(
+    (largest, person) => Math.max(largest, person.faceCount),
+    0,
+  );
+  const visibleFloor = Math.max(3, Math.ceil(largestCluster * 0.1));
   return people
-    .filter((person) => person.assetIds.length > 0)
+    .filter(
+      (person) =>
+        person.assetIds.length > 0 &&
+        (!suppressLowSupport || person.faceCount >= visibleFloor),
+    )
     .map((person) => ({
       id: person.id,
       faceCount: person.faceCount,
@@ -360,7 +508,9 @@ export async function scanFaceAssets(
       assets.map(async (asset): Promise<FaceObservation[]> => {
         const imageUri = contentUri(asset.id);
         try {
-          const boxes = await dependencies.detectFaces(imageUri);
+          const detectedBoxes = await dependencies.detectFaces(imageUri);
+          const boxes = dedupeFaceBoxes(detectedBoxes);
+          duplicateDetectionsDropped += detectedBoxes.length - boxes.length;
           const observations: FaceObservation[] = [];
           for (const box of boxes) {
             try {
@@ -391,7 +541,7 @@ export async function scanFaceAssets(
               // One unreadable crop must not stop other faces or assets.
             }
           }
-          return observations;
+          return dedupeFaceObservations(observations);
         } catch {
           return [];
         }
@@ -637,33 +787,9 @@ async function createFaceEmbedding(
   };
 }
 
-function personIdForObservation(
-  observation: FaceObservation,
-): string | undefined {
-  const threshold =
-    observation.embeddingKind === "identity"
-      ? index.threshold
-      : PERCEPTUAL_FACE_INDEX_THRESHOLD;
-  let bestId: string | undefined;
-  let bestSimilarity = Number.NEGATIVE_INFINITY;
-  for (const person of index.people) {
-    if (
-      person.embeddingKind !== observation.embeddingKind ||
-      !person.assetIds.includes(observation.assetId)
-    ) {
-      continue;
-    }
-    const similarity = cosine(observation.embedding, person.centroid);
-    if (similarity >= threshold && similarity > bestSimilarity) {
-      bestId = person.id;
-      bestSimilarity = similarity;
-    }
-  }
-  return bestId;
-}
-
 async function persistCoverFaceThumbs(
   candidates: Array<{ observation: FaceObservation; cropUri: string }>,
+  assignments: ReadonlyMap<FaceObservation, string>,
 ): Promise<void> {
   try {
     const fileSystem = await fileSystemModule();
@@ -674,13 +800,10 @@ async function persistCoverFaceThumbs(
     await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
     for (const candidate of candidates) {
       try {
-        const personId = personIdForObservation(candidate.observation);
-        const person = index.people.find((entry) => entry.id === personId);
+        const personId = assignments.get(candidate.observation);
         if (
           !personId ||
-          !person ||
-          index.faceThumbUris[personId] ||
-          person.assetIds[0] !== candidate.observation.assetId
+          index.faceThumbUris[personId]
         ) {
           continue;
         }
@@ -710,14 +833,40 @@ function seenCount(): number {
 
 function rebuildPeople(threshold: number): void {
   index.threshold = safeThreshold(threshold);
-  index.people = peopleFromObservations(index.observations, index.threshold);
+  index.people = peopleFromObservations(
+    index.observations,
+    index.threshold,
+    FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
+  );
 }
 
-function appendPeople(observations: FaceObservation[]): void {
+function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
+  const assignments = new Map<FaceObservation, string>();
   index.people = extendFaceClusters(index.people, observations, {
+    identityLargeClusterMergeThreshold:
+      FACE_INDEX_LARGE_CLUSTER_MERGE_THRESHOLD,
+    identityLargeClusterMinFaces: FACE_INDEX_LARGE_CLUSTER_MIN_FACES,
+    identityMergeThreshold: FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
+    onAssign: (observation, personId) => assignments.set(observation, personId),
+    onMerge: (absorbedPersonId, survivingPersonId) => {
+      for (const [observation, personId] of assignments) {
+        if (personId === absorbedPersonId) {
+          assignments.set(observation, survivingPersonId);
+        }
+      }
+      if (
+        !index.faceThumbUris[survivingPersonId] &&
+        index.faceThumbUris[absorbedPersonId]
+      ) {
+        index.faceThumbUris[survivingPersonId] =
+          index.faceThumbUris[absorbedPersonId];
+      }
+      delete index.faceThumbUris[absorbedPersonId];
+    },
     threshold: index.threshold,
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
   });
+  return assignments;
 }
 
 async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
@@ -800,8 +949,8 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
           },
         });
         index.observations.push(...observations);
-        appendPeople(observations);
-        await persistCoverFaceThumbs(faceCropCandidates);
+        const assignments = appendPeople(observations);
+        await persistCoverFaceThumbs(faceCropCandidates, assignments);
         for (const asset of pending) {
           index.processedAssetIds[asset.id] = true;
         }
@@ -866,7 +1015,7 @@ export function buildFaceIndex(
 }
 
 export function getPeople(): FaceIndexPerson[] {
-  return summariesForPeople(index.people, index.faceThumbUris);
+  return summariesForPeople(index.people, index.faceThumbUris, true);
 }
 
 export function assetIdsForPerson(personId: string): string[] {

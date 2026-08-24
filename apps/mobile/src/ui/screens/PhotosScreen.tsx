@@ -21,6 +21,7 @@ import {
   getPeople,
   isFaceDetectionAvailable,
   loadFaceIndex,
+  logFaceIndexDiagnostics,
   type FaceIndexPerson,
 } from "../../faces/face-index";
 import {
@@ -131,6 +132,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
         }
         await Promise.all([loadIndex(), loadFaceIndex()]);
         if (!active) return;
+        logFaceIndexDiagnostics("photos hydrated");
         refreshIndexes();
         setReloading(true);
         setStatus("ready");

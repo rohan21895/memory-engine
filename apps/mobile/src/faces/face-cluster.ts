@@ -2,6 +2,11 @@ import type { FaceObservation, Person } from "./types";
 
 export const DEFAULT_IDENTITY_THRESHOLD = 0.5;
 export const DEFAULT_PERCEPTUAL_THRESHOLD = 0.92;
+const OVERLAP_TOLERANT_IDENTITY_SIMILARITY = 0.66;
+const SPARSE_DUPLICATE_SIMILARITY = 0.55;
+const SPARSE_DUPLICATE_OVERLAP_RATIO = 0.9;
+const SPARSE_DUPLICATE_MIN_FACES = 2;
+const SPARSE_DUPLICATE_MAX_FACES = 8;
 
 export function cosine(a: number[], b: number[]): number {
   if (a.length === 0 || a.length !== b.length) {
@@ -53,6 +58,11 @@ export function updateCentroid(
 type MutablePerson = Person & { assetIdSet: Set<string> };
 
 type ClusterOptions = {
+  identityLargeClusterMergeThreshold?: number;
+  identityLargeClusterMinFaces?: number;
+  identityMergeThreshold?: number;
+  onAssign?: (observation: FaceObservation, personId: string) => void;
+  onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void;
   threshold?: number;
   perceptualThreshold?: number;
 };
@@ -86,12 +96,29 @@ export function extendFaceClusters(
   const perceptualThreshold = Number.isFinite(opts.perceptualThreshold)
     ? (opts.perceptualThreshold as number)
     : DEFAULT_PERCEPTUAL_THRESHOLD;
+  const identityMergeThreshold = Number.isFinite(opts.identityMergeThreshold)
+    ? (opts.identityMergeThreshold as number)
+    : identityThreshold;
+  const identityLargeClusterMergeThreshold = Number.isFinite(
+    opts.identityLargeClusterMergeThreshold,
+  )
+    ? (opts.identityLargeClusterMergeThreshold as number)
+    : identityMergeThreshold;
+  const identityLargeClusterMinFaces = Number.isFinite(
+    opts.identityLargeClusterMinFaces,
+  )
+    ? (opts.identityLargeClusterMinFaces as number)
+    : Number.POSITIVE_INFINITY;
   const people: MutablePerson[] = existing.map((person) => ({
     ...person,
     assetIds: person.assetIds.slice(),
     centroid: person.centroid.slice(),
     assetIdSet: new Set(person.assetIds),
   }));
+  let nextPersonNumber = people.reduce((largest, person) => {
+    const match = /^person-(\d+)$/u.exec(person.id);
+    return match ? Math.max(largest, Number(match[1])) : largest;
+  }, 0) + 1;
 
   for (const observation of observations) {
     let bestIndex = -1;
@@ -101,6 +128,7 @@ export function extendFaceClusters(
       const person = people[index];
       if (
         observation.embeddingKind !== person.embeddingKind ||
+        person.assetIdSet.has(observation.assetId) ||
         observation.embedding.length === 0 ||
         observation.embedding.length !== person.centroid.length
       ) {
@@ -119,14 +147,16 @@ export function extendFaceClusters(
     }
 
     if (bestIndex === -1) {
+      const id = `person-${nextPersonNumber++}`;
       people.push({
-        id: `person-${people.length + 1}`,
+        id,
         faceCount: 1,
         assetIds: [observation.assetId],
         centroid: observation.embedding.slice(),
         embeddingKind: observation.embeddingKind,
         assetIdSet: new Set([observation.assetId]),
       });
+      opts.onAssign?.(observation, id);
       continue;
     }
 
@@ -141,9 +171,17 @@ export function extendFaceClusters(
       person.assetIdSet.add(observation.assetId);
       person.assetIds.push(observation.assetId);
     }
+    opts.onAssign?.(observation, person.id);
   }
 
-  mergeSimilarPeople(people, identityThreshold, perceptualThreshold);
+  mergeSimilarPeople(
+    people,
+    identityMergeThreshold,
+    identityLargeClusterMergeThreshold,
+    identityLargeClusterMinFaces,
+    perceptualThreshold,
+    opts.onMerge,
+  );
 
   return people.map(({ assetIdSet: _assetIdSet, ...person }) => person);
 }
@@ -152,10 +190,9 @@ export function extendFaceClusters(
  * Second pass: greedy online assignment is order-dependent, so one person's
  * faces routinely seed several clusters (a bad-angle first frame the later good
  * frames never match). Repeatedly merge the closest pair of same-kind people
- * whose centroids sit above the same similarity bar the assignment used, until
- * none qualify. Only collapses clusters already within threshold, so it never
- * merges people the assignment would have kept apart. The older cluster (lower
- * index) survives, keeping surfaced ids stable.
+ * above a calibrated centroid bar. Co-occurrence remains a cannot-link except
+ * for device-calibrated, well-supported duplicate signatures. The older
+ * cluster (lower index) survives, keeping surfaced ids stable.
  *
  * ponytail: O(k^2) per merge round over k people; fine for the hundreds of
  * people a personal library yields. Swap for union-find on an ANN index if k
@@ -163,8 +200,11 @@ export function extendFaceClusters(
  */
 function mergeSimilarPeople(
   people: MutablePerson[],
-  identityThreshold: number,
+  identityMergeThreshold: number,
+  identityLargeClusterMergeThreshold: number,
+  identityLargeClusterMinFaces: number,
   perceptualThreshold: number,
+  onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
 ): void {
   for (;;) {
     let bestI = -1;
@@ -182,9 +222,43 @@ function mergeSimilarPeople(
         ) {
           continue;
         }
-        const threshold =
-          a.embeddingKind === "identity" ? identityThreshold : perceptualThreshold;
+        const sharedAssetCount = a.assetIds.reduce(
+          (count, assetId) => count + Number(b.assetIdSet.has(assetId)),
+          0,
+        );
+        const largeIdentityPair =
+          a.embeddingKind === "identity" &&
+          a.faceCount >= identityLargeClusterMinFaces &&
+          b.faceCount >= identityLargeClusterMinFaces;
+        const threshold = a.embeddingKind === "identity"
+          ? largeIdentityPair
+            ? identityLargeClusterMergeThreshold
+            : identityMergeThreshold
+          : perceptualThreshold;
         const similarity = cosine(a.centroid, b.centroid);
+        const smallerFaceCount = Math.min(a.faceCount, b.faceCount);
+        const largerFaceCount = Math.max(a.faceCount, b.faceCount);
+        const overlapRatio =
+          sharedAssetCount /
+          Math.max(1, Math.min(a.assetIdSet.size, b.assetIdSet.size));
+        const supportedOverlapDuplicate =
+          similarity >= OVERLAP_TOLERANT_IDENTITY_SIMILARITY &&
+          a.faceCount >= identityLargeClusterMinFaces &&
+          b.faceCount >= identityLargeClusterMinFaces;
+        const sparseDuplicate =
+          similarity >= SPARSE_DUPLICATE_SIMILARITY &&
+          overlapRatio >= SPARSE_DUPLICATE_OVERLAP_RATIO &&
+          smallerFaceCount >= SPARSE_DUPLICATE_MIN_FACES &&
+          smallerFaceCount <= SPARSE_DUPLICATE_MAX_FACES &&
+          largerFaceCount >= identityLargeClusterMinFaces;
+        if (
+          a.embeddingKind === "identity" &&
+          sharedAssetCount > 0 &&
+          !supportedOverlapDuplicate &&
+          !sparseDuplicate
+        ) {
+          continue;
+        }
         if (similarity >= threshold && similarity > bestSimilarity) {
           bestSimilarity = similarity;
           bestI = i;
@@ -212,6 +286,7 @@ function mergeSimilarPeople(
         survivor.assetIds.push(assetId);
       }
     }
+    onMerge?.(absorbed.id, survivor.id);
     people.splice(bestJ, 1);
   }
 }

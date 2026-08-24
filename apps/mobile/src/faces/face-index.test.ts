@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { DEFAULT_FACE_INDEX_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, scanFaceAssets } from "./face-index.ts";
+import { DEFAULT_FACE_INDEX_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, dedupeFaceBoxes, dedupeFaceObservations, scanFaceAssets } from "./face-index.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -59,6 +59,26 @@ const boxB = { x: 70, y: 10, width: 40, height: 40 };
     query.assetIdsForPerson("missing").length === 0,
     "unknown people should return an empty asset list",
   );
+}
+
+{
+  const boxes = dedupeFaceBoxes([
+    boxA,
+    { x: 12, y: 11, width: 39, height: 39 },
+    { x: 19, y: 19, width: 60, height: 60 },
+    boxB,
+  ]);
+  assert(boxes.length === 2, "same-center boxes at different scales are removed but a neighboring face remains");
+}
+
+{
+  const duplicate = { assetId: "same-photo", embedding: [1, 0], embeddingKind: "identity" as const };
+  const cleaned = dedupeFaceObservations([
+    duplicate,
+    { ...duplicate, embedding: [0.78, 0.626] },
+    { ...duplicate, embedding: [0.68, 0.733] },
+  ]);
+  assert(cleaned.length === 2, "same-photo identity repeats are removed without dropping a genuine co-face");
 }
 
 {
