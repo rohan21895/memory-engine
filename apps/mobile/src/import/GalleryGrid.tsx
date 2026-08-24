@@ -343,6 +343,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
+          style={styles.albumScroll}
           contentContainerStyle={styles.albumRow}
         >
           {albums.map((a) => {
@@ -451,8 +452,10 @@ const styles = StyleSheet.create({
   chipOn: { backgroundColor: C.gold },
   chipText: { color: C.muted, fontSize: 13 },
   chipTextOn: { color: "#1a1712", fontWeight: "600" },
-  albumRow: { gap: 8, paddingHorizontal: 16, paddingBottom: 8 },
+  albumScroll: { flexGrow: 0 },
+  albumRow: { alignItems: "center", gap: 8, paddingHorizontal: 16, paddingBottom: 8 },
   albumChip: {
+    alignSelf: "center",
     backgroundColor: C.chip,
     borderRadius: 16,
     paddingHorizontal: 14,
