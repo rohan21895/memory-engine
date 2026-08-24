@@ -2,12 +2,14 @@ import { decode as decodeJpeg } from "jpeg-js";
 
 // Explicit extensions keep this pure module importable by Node's TS test runner.
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { clusterFaces } from "./face-cluster.ts";
+import { DEFAULT_PERCEPTUAL_THRESHOLD, clusterFaces } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { detectFaces, isFaceDetectionAvailable, type FaceBox } from "./face-detector.ts";
-import type { FaceObservation, Person } from "./types";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { embedFaceIdentity } from "../ml/facenet.ts";
+import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;
 const INDEX_FILENAME = "face-index.json";
 const PAGE_SIZE = 100;
 const SCAN_BATCH_SIZE = 8;
@@ -18,12 +20,9 @@ const FACE_PADDING_SCALE = 1.3;
 const BASE64_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/**
- * Conservative for perceptual fingerprints: synthetic calibration keeps
- * cosine~0.94 near variants together while splitting cosine~0.8 examples.
- * This is intentionally stricter than the core's ArcFace-oriented default.
- */
-export const DEFAULT_FACE_INDEX_THRESHOLD = 0.92;
+/** ArcFace/MobileFaceNet-space cosine threshold for high-precision identity. */
+export const DEFAULT_FACE_INDEX_THRESHOLD = 0.5;
+export const PERCEPTUAL_FACE_INDEX_THRESHOLD = DEFAULT_PERCEPTUAL_THRESHOLD;
 
 export type FaceIndexPerson = {
   id: string;
@@ -56,7 +55,12 @@ export type FaceScanDependencies = {
     asset: FaceScanAsset,
     imageUri: string,
     box: FaceBox,
-  ) => Promise<number[]>;
+  ) => Promise<FaceEmbedding>;
+};
+
+export type FaceEmbedding = {
+  embedding: number[];
+  kind: FaceEmbeddingKind;
 };
 
 export type FacePeopleQuery = {
@@ -113,7 +117,8 @@ function validObservation(value: unknown): value is FaceObservation {
   return (
     isRecord(value) &&
     typeof value.assetId === "string" &&
-    validEmbedding(value.embedding)
+    validEmbedding(value.embedding) &&
+    (value.embeddingKind === "identity" || value.embeddingKind === "perceptual")
   );
 }
 
@@ -126,7 +131,8 @@ function validPerson(value: unknown): value is Person {
     value.faceCount >= 0 &&
     Array.isArray(value.assetIds) &&
     value.assetIds.every((assetId) => typeof assetId === "string") &&
-    validEmbedding(value.centroid)
+    validEmbedding(value.centroid) &&
+    (value.embeddingKind === "identity" || value.embeddingKind === "perceptual")
   );
 }
 
@@ -235,7 +241,10 @@ function peopleFromObservations(
   observations: FaceObservation[],
   threshold = DEFAULT_FACE_INDEX_THRESHOLD,
 ): Person[] {
-  return clusterFaces(observations, { threshold: safeThreshold(threshold) });
+  return clusterFaces(observations, {
+    threshold: safeThreshold(threshold),
+    perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
+  });
 }
 
 function summariesForPeople(people: Person[]): FaceIndexPerson[] {
@@ -296,13 +305,20 @@ export async function scanFaceAssets(
           const observations: FaceObservation[] = [];
           for (const box of boxes) {
             try {
-              const embedding = await dependencies.embedFace(
+              const result = await dependencies.embedFace(
                 asset,
                 imageUri,
                 box,
               );
-              if (validEmbedding(embedding)) {
-                observations.push({ assetId: asset.id, embedding });
+              if (
+                validEmbedding(result.embedding) &&
+                (result.kind === "identity" || result.kind === "perceptual")
+              ) {
+                observations.push({
+                  assetId: asset.id,
+                  embedding: result.embedding,
+                  embeddingKind: result.kind,
+                });
               }
             } catch {
               // One unreadable crop must not stop other faces or assets.
@@ -501,6 +517,22 @@ async function createPerceptualFaceEmbedding(
   return fingerprintPixels(decoded.data, decoded.width, decoded.height);
 }
 
+/** Uses identity-grade MobileFaceNet first, then the legacy visual fallback. */
+async function createFaceEmbedding(
+  asset: FaceScanAsset,
+  imageUri: string,
+  box: FaceBox,
+): Promise<FaceEmbedding> {
+  const identity = await embedFaceIdentity(asset, imageUri, box);
+  if (identity && validEmbedding(identity)) {
+    return { embedding: identity, kind: "identity" };
+  }
+  return {
+    embedding: await createPerceptualFaceEmbedding(asset, imageUri, box),
+    kind: "perceptual",
+  };
+}
+
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -559,7 +591,7 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
         const observations = await scanFaceAssets(pending, {
           isDetectionAvailable: () => true,
           detectFaces,
-          embedFace: createPerceptualFaceEmbedding,
+          embedFace: createFaceEmbedding,
         });
         index.observations.push(...observations);
         for (const asset of pending) {

@@ -1,6 +1,9 @@
+export type FaceEmbeddingKind = "identity" | "perceptual";
+
 export type FaceObservation = {
   assetId: string;
   embedding: number[];
+  embeddingKind: FaceEmbeddingKind;
 };
 
 export type Person = {
@@ -8,4 +11,5 @@ export type Person = {
   faceCount: number;
   assetIds: string[];
   centroid: number[];
+  embeddingKind: FaceEmbeddingKind;
 };

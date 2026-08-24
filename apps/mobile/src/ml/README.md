@@ -1,23 +1,19 @@
 # On-device model boundary
 
-`getModel()` currently returns a deterministic, dependency-free JavaScript
-stub. It produces a fixed-length, normalized pseudo-embedding and a plausible
-face count from the image URI, which lets import, selection, and review flows
-run before model assets and the native runtime are available.
+The general `getModel()` compatibility boundary retains a deterministic
+JavaScript fallback. Production selection augments it with three guarded,
+lazy, New-Architecture TFLite paths:
 
-## CL-1 swap plan
+- `movenet.ts`: 17-point body pose for coverage diversity;
+- `tinyclip.ts`: semantic image embeddings and offline zero-shot axes;
+- `facenet.ts`: MobileFaceNet identity embeddings for person clustering.
 
-The real implementation will continue to implement `OnDeviceModel`, so callers
-will not change. It will:
+Every path returns neutral or `undefined` on native, model, image, or tensor
+failure, so `buildAlbum()` always retains deterministic fallback signals.
 
-1. `import { InferenceSession } from "onnxruntime-react-native"`.
-2. Load quantized SigLIP2 and YuNet ONNX models from bundled app assets.
-3. Decode and preprocess each image for SigLIP2 at 384px using the mean and
-   standard-deviation values defined in Claude's model card.
-4. Run SigLIP2 to produce the image embedding and YuNet to produce the detected
-   face count.
-5. Return both values as the existing `ModelResult` shape.
+## Legacy ONNX note
 
-CX-4 intentionally does not add `onnxruntime-react-native`, model assets, native
-configuration, or prebuild output. CL-1 supplies the versioned models and exact
-pre/post-processing contract before the runtime is wired.
+`onnxruntime-react-native` remains outside the evaluated runtime path because
+its module initialization is incompatible with this Expo 57 / React Native
+0.86 New-Architecture build. Native perception uses
+`react-native-fast-tflite` and ML Kit instead.

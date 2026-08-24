@@ -6,7 +6,9 @@ Last updated: 2026-08-24
 
 Photeo has a working, TypeScript-clean Expo 57 Android flow, a coverage-first
 album planner, on-device MoveNet body-pose inference, and MIT-licensed TinyCLIP
-semantic embeddings with six zero-shot expression axes. The standalone release
+semantic embeddings with six zero-shot expression axes. MobileFaceNet now adds
+real 192-dimensional face-identity embeddings for the People filter and the
+planner's people floor, with a guarded perceptual fallback. The standalone release
 APK was built, installed on device `177fc81a`, and driven through a real
 four-photo Pick → Making → Review → Done flow without a crash. The finished
 album contained two pages after deterministic near-duplicate collapsing.
@@ -46,12 +48,17 @@ album contained two pages after deterministic near-duplicate collapsing.
   embrace-context, and screenshot/document evidence. The text encoder does not
   ship. TinyCLIP loading and inference are serialized and fail back to the
   perceptual embedding without interrupting album creation.
+- MobileFaceNet runs on every ML Kit face crop and L2-normalizes its 192-d
+  output for cosine identity clustering at `0.5`. Identity and fallback
+  perceptual embeddings are tagged and never mixed; the fallback retains its
+  conservative `0.92` threshold. Face-index v2 invalidates the old perceptual
+  cache and rescans crash-safely.
 
 ## Verification
 
 - `npx tsc --noEmit -p tsconfig.json`: clean.
 - `node --test src/selection/*.test.ts src/faces/*.test.ts src/ml/*.test.ts`:
-  nine test modules green.
+  ten test modules green.
 - Release APK: built successfully with bundled JavaScript and native TFLite /
   Nitro code, then installed on `177fc81a` (CPH2649).
 - APK contains the exact verified MoveNet artifact; extracting its packaged
@@ -70,7 +77,7 @@ album contained two pages after deterministic near-duplicate collapsing.
 | `react-native-fast-tflite` | [mrousavy/react-native-fast-tflite](https://github.com/mrousavy/react-native-fast-tflite) | MIT | Yes | Version 3.0.1 with `react-native-nitro-modules` 0.37; CPU delegate by default for broad compatibility. |
 | TinyCLIP ViT-8M/16 Text-3M | [Microsoft TinyCLIP](https://github.com/microsoft/Cream/tree/main/TinyCLIP) / [MIT model card](https://huggingface.co/wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M) | MIT | Yes | Vision-only float32 TFLite, 32 MB; SHA-256 `a1ccb2b874a00c533402ade45beeb392ae8e06a60a6a90829ed26a6796f399e9`. Six offline text axes; JSON SHA-256 `79ed8de61276327f7420787ab4acca316280a7969091fd0e4a672cac4a8da7b8`. |
 | MobileCLIP official weights | Apple ML-MobileCLIP | Research-only model license | No | Explicitly rejected for a commercial product. A permissive SigLIP/OpenCLIP-derived alternative is required, otherwise the perceptual fallback stays. |
-| MobileFaceNet identity weights | Pending verified source | Pending | No | Will not be bundled until weight provenance and commercial permission are both recorded. |
+| MobileFaceNet 192-d identity | [MCarlomagno/FaceRecognitionAuth artifact](https://github.com/MCarlomagno/FaceRecognitionAuth/blob/010f0ee203ddf008665e6ea202118fe9aeb28ad5/assets/mobilefacenet.tflite), derived from the `sirius-ai/MobileFaceNet_TF` lineage | BSD-3-Clause repository; pretrained-weight/data grant not separately documented | Yes | Float32 5.0 MB model; SHA-256 `be4bc7cfc53f7bc336d0f28b1ab92535f618c913a422b683210750f6b5354854`. Input `[1,112,112,3]`; output `[1,192]`. **RELICENSE OR REPLACE BEFORE COMMERCIAL LAUNCH.** |
 
 All native/model calls are lazy and guarded. A missing or incompatible model
 returns neutral signals and preserves the complete album flow.
@@ -110,8 +117,9 @@ adb install -r app/build/outputs/apk/release/app-release.apk
   ImageNet top-1 in its model card). Its expression contrasts are useful ranking
   evidence, not authoritative labels; high-impact gates remain conservative and
   every signal falls back to neutral/perceptual evidence on failure.
-- Face identity clustering still uses perceptual face crops pending verified,
-  permissively licensed MobileFaceNet-class weights.
+- MobileFaceNet identity quality is not yet calibrated on Photeo's own diverse
+  family benchmark. The `0.5` cosine threshold favors precision; individual
+  inference failures safely use the older perceptual crop embedding.
 - Face/head-region sharpness, per-face exposure, and ML Kit head-pose confidence
   tightening remain to be added.
 - Body pose uses a single-person model, so crowded group photos contribute only

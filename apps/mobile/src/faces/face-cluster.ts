@@ -1,6 +1,7 @@
 import type { FaceObservation, Person } from "./types";
 
-const DEFAULT_THRESHOLD = 0.5;
+export const DEFAULT_IDENTITY_THRESHOLD = 0.5;
+export const DEFAULT_PERCEPTUAL_THRESHOLD = 0.92;
 
 export function cosine(a: number[], b: number[]): number {
   if (a.length === 0 || a.length !== b.length) {
@@ -60,11 +61,14 @@ type MutablePerson = Person & { assetIdSet: Set<string> };
  */
 export function clusterFaces(
   observations: FaceObservation[],
-  opts: { threshold?: number } = {},
+  opts: { threshold?: number; perceptualThreshold?: number } = {},
 ): Person[] {
-  const threshold = Number.isFinite(opts.threshold)
+  const identityThreshold = Number.isFinite(opts.threshold)
     ? (opts.threshold as number)
-    : DEFAULT_THRESHOLD;
+    : DEFAULT_IDENTITY_THRESHOLD;
+  const perceptualThreshold = Number.isFinite(opts.perceptualThreshold)
+    ? (opts.perceptualThreshold as number)
+    : DEFAULT_PERCEPTUAL_THRESHOLD;
   const people: MutablePerson[] = [];
 
   for (const observation of observations) {
@@ -74,6 +78,7 @@ export function clusterFaces(
     for (let index = 0; index < people.length; index += 1) {
       const person = people[index];
       if (
+        observation.embeddingKind !== person.embeddingKind ||
         observation.embedding.length === 0 ||
         observation.embedding.length !== person.centroid.length
       ) {
@@ -81,6 +86,10 @@ export function clusterFaces(
       }
 
       const similarity = cosine(observation.embedding, person.centroid);
+      const threshold =
+        observation.embeddingKind === "identity"
+          ? identityThreshold
+          : perceptualThreshold;
       if (similarity >= threshold && similarity > bestSimilarity) {
         bestIndex = index;
         bestSimilarity = similarity;
@@ -93,6 +102,7 @@ export function clusterFaces(
         faceCount: 1,
         assetIds: [observation.assetId],
         centroid: observation.embedding.slice(),
+        embeddingKind: observation.embeddingKind,
         assetIdSet: new Set([observation.assetId]),
       });
       continue;

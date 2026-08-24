@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { DEFAULT_FACE_INDEX_THRESHOLD, createFacePeopleQuery, scanFaceAssets } from "./face-index.ts";
+import { DEFAULT_FACE_INDEX_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, scanFaceAssets } from "./face-index.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -34,7 +34,7 @@ const boxB = { x: 70, y: 10, width: 40, height: 40 };
         if (!embedding) {
           throw new Error("missing mock embedding");
         }
-        return embedding;
+        return { embedding, kind: "identity" };
       },
     },
   );
@@ -63,16 +63,16 @@ const boxB = { x: 70, y: 10, width: 40, height: 40 };
 
 {
   const pair = [
-    { assetId: "base", embedding: [1, 0] },
-    { assetId: "near", embedding: [0.94, 0.341] },
+    { assetId: "base", embedding: [1, 0], embeddingKind: "identity" as const },
+    { assetId: "near", embedding: [0.94, 0.341], embeddingKind: "identity" as const },
   ];
   assert(
     createFacePeopleQuery(pair, 0.9).getPeople().length === 1,
-    "cosine~0.94 synthetic variants should merge below the default",
+    "identity variants should merge when above the requested threshold",
   );
   assert(
     createFacePeopleQuery(pair).getPeople().length === 1,
-    "the calibrated default should merge cosine~0.94 variants",
+    "the MobileFaceNet default should merge cosine~0.94 variants",
   );
   assert(
     createFacePeopleQuery(pair, 0.97).getPeople().length === 2,
@@ -81,14 +81,17 @@ const boxB = { x: 70, y: 10, width: 40, height: 40 };
   assert(
     createFacePeopleQuery([
       pair[0],
-      { assetId: "different", embedding: [0.8, 0.6] },
+      { assetId: "different", embedding: [0.4, 0.9165], embeddingKind: "identity" },
     ]).getPeople().length === 2,
-    "the calibrated default should split cosine~0.8 examples",
+    "the MobileFaceNet default should split examples below cosine 0.5",
   );
   assert(
-    DEFAULT_FACE_INDEX_THRESHOLD > 0.9 &&
-      DEFAULT_FACE_INDEX_THRESHOLD < 0.97,
-    "the default threshold should sit between tested merge/split values",
+    DEFAULT_FACE_INDEX_THRESHOLD === 0.5,
+    "the identity default should use the ArcFace-space cosine calibration",
+  );
+  assert(
+    PERCEPTUAL_FACE_INDEX_THRESHOLD > 0.9,
+    "the fallback must retain its conservative perceptual threshold",
   );
 }
 
@@ -115,6 +118,17 @@ const boxB = { x: 70, y: 10, width: 40, height: 40 };
   assert(
     createFacePeopleQuery(observations).getPeople().length === 0,
     "unavailable detection should expose zero people",
+  );
+}
+
+{
+  const query = createFacePeopleQuery([
+    { assetId: "identity", embedding: [1, 0], embeddingKind: "identity" },
+    { assetId: "fallback", embedding: [1, 0], embeddingKind: "perceptual" },
+  ]);
+  assert(
+    query.getPeople().length === 2,
+    "query projection must not merge identity and fallback observations",
   );
 }
 

@@ -18,7 +18,7 @@
 - Bundled text axes: `tinyclip-text-axes.json`
 - Text-axis SHA-256: `79ed8de61276327f7420787ab4acca316280a7969091fd0e4a672cac4a8da7b8`
 
-The image branch was extracted from the MIT ONNX export (`pixel_values` →
+The image branch was extracted from the MIT ONNX export (`pixel_values` to
 `image_embeds`), fixed to `[1,3,224,224]`, and converted with `onnx2tf` to a
 float32 `[1,224,224,3]` TFLite graph. Its output was checked against the ONNX
 source at cosine similarity 1.0. The smaller float16 conversion was rejected
@@ -28,3 +28,18 @@ The text encoder is not shipped. Six positive/negative prompt ensembles were
 embedded offline and averaged into the JSON sidecar: aesthetic, composition,
 clean frame / bystander, sleeping / awake, embrace context, and screenshot /
 document. Runtime inference therefore processes images only.
+
+## MobileFaceNet 192-d face identity
+
+- Source artifact: [`MCarlomagno/FaceRecognitionAuth`](https://github.com/MCarlomagno/FaceRecognitionAuth/blob/010f0ee203ddf008665e6ea202118fe9aeb28ad5/assets/mobilefacenet.tflite)
+- Architecture/training implementation lineage: [`sirius-ai/MobileFaceNet_TF`](https://github.com/sirius-ai/MobileFaceNet_TF)
+- Repository license: BSD-3-Clause for the distributed artifact; upstream implementation is Apache-2.0
+- Commercial status: **RELICENSE OR REPLACE BEFORE COMMERCIAL LAUNCH** because the pretrained weight and training-dataset grant is not separately documented
+- Bundled file: `mobilefacenet-192-float32.tflite`
+- SHA-256: `be4bc7cfc53f7bc336d0f28b1ab92535f618c913a422b683210750f6b5354854`
+- Tensor contract: float32 `[1,112,112,3]` input, float32 `[1,192]` identity embedding output
+
+The runtime uses the artifact's published `(channel - 128) / 128`
+preprocessing and L2-normalizes every output before cosine clustering. The
+MobileFaceNet lineage reports 99.4%+ LFW verification accuracy, but Photeo's
+own family-library threshold still requires broader calibration before launch.

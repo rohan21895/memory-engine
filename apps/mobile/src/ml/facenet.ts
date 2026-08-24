@@ -1,0 +1,239 @@
+import { decode as decodeJpeg } from "jpeg-js";
+
+import type { FaceBox } from "../faces/face-detector";
+
+const INPUT_SIZE = 112;
+const EMBEDDING_SIZE = 192;
+const FACE_PADDING_SCALE = 1.3;
+const BASE64_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+export type FaceImageAsset = {
+  width: number;
+  height: number;
+};
+
+type TensorflowModel = {
+  inputs: Array<{ dataType: string; shape: number[] }>;
+  outputs: Array<{ dataType: string; shape: number[] }>;
+  run(inputs: ArrayBuffer[]): Promise<ArrayBuffer[]>;
+};
+
+let modelPromise: Promise<TensorflowModel | undefined> | undefined;
+let inferenceQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Crops one ML Kit face and returns its L2-normalized MobileFaceNet identity
+ * embedding. Model loading, image manipulation, decoding, and inference are
+ * lazy and guarded; callers receive undefined and can use a neutral fallback.
+ */
+export async function embedFaceIdentity(
+  asset: FaceImageAsset,
+  imageUri: string,
+  box: FaceBox,
+): Promise<number[] | undefined> {
+  const job = inferenceQueue.then(async () => {
+    try {
+      const model = await loadModel();
+      if (!model || !isExpectedModel(model)) return undefined;
+      const input = await faceFloatTensor(asset, imageUri, box);
+      const outputs = await model.run([input.buffer as ArrayBuffer]);
+      return parseFaceEmbeddingOutput(outputs[0]);
+    } catch {
+      return undefined;
+    }
+  });
+
+  inferenceQueue = job.then(
+    () => undefined,
+    () => undefined,
+  );
+  return job;
+}
+
+async function loadModel(): Promise<TensorflowModel | undefined> {
+  if (!modelPromise) {
+    modelPromise = (async () => {
+      try {
+        const { loadTensorflowModel } = await import(
+          "react-native-fast-tflite"
+        );
+        // Static require is required so Metro packages the graph in the APK.
+        const source = require("../../assets/models/mobilefacenet-192-float32.tflite");
+        return (await loadTensorflowModel(source, [])) as TensorflowModel;
+      } catch {
+        return undefined;
+      }
+    })();
+  }
+  return modelPromise;
+}
+
+function isExpectedModel(model: TensorflowModel): boolean {
+  const input = model.inputs[0];
+  const output = model.outputs[0];
+  return (
+    input?.dataType === "float32" &&
+    input.shape.join("x") === `1x${INPUT_SIZE}x${INPUT_SIZE}x3` &&
+    output?.dataType === "float32" &&
+    output.shape.reduce((product, value) => product * value, 1) ===
+      EMBEDDING_SIZE
+  );
+}
+
+async function faceFloatTensor(
+  asset: FaceImageAsset,
+  imageUri: string,
+  box: FaceBox,
+): Promise<Float32Array> {
+  const imageManipulator = await import("expo-image-manipulator");
+  const face = await imageManipulator.manipulateAsync(
+    imageUri,
+    [
+      { crop: squareFaceCrop(asset, box) },
+      { resize: { width: INPUT_SIZE, height: INPUT_SIZE } },
+    ],
+    {
+      base64: true,
+      compress: 0.95,
+      format: imageManipulator.SaveFormat.JPEG,
+    },
+  );
+  if (!face.base64) {
+    throw new Error("MobileFaceNet preprocessing returned no pixels.");
+  }
+
+  const decoded = decodeJpeg(decodeBase64(face.base64), {
+    useTArray: true,
+    formatAsRGBA: true,
+    tolerantDecoding: true,
+    maxResolutionInMP: 1,
+    maxMemoryUsageInMB: 8,
+  });
+  if (decoded.width !== INPUT_SIZE || decoded.height !== INPUT_SIZE) {
+    throw new Error("MobileFaceNet preprocessing returned the wrong image size.");
+  }
+  return normalizeFacePixels(decoded.data, decoded.width, decoded.height);
+}
+
+/** Makes a padded square crop and shifts it inside the source image bounds. */
+export function squareFaceCrop(
+  asset: FaceImageAsset,
+  box: FaceBox,
+  scale = FACE_PADDING_SCALE,
+): { originX: number; originY: number; width: number; height: number } {
+  const values = [asset.width, asset.height, box.x, box.y, box.width, box.height, scale];
+  if (
+    values.some((value) => !Number.isFinite(value)) ||
+    asset.width < 1 ||
+    asset.height < 1 ||
+    box.width <= 0 ||
+    box.height <= 0 ||
+    scale <= 0
+  ) {
+    throw new Error("Face crop dimensions must be finite and positive.");
+  }
+
+  const side = Math.max(
+    1,
+    Math.min(
+      Math.floor(asset.width),
+      Math.floor(asset.height),
+      Math.ceil(Math.max(box.width, box.height) * scale),
+    ),
+  );
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
+  const originX = clampInteger(
+    Math.round(centerX - side / 2),
+    0,
+    Math.floor(asset.width) - side,
+  );
+  const originY = clampInteger(
+    Math.round(centerY - side / 2),
+    0,
+    Math.floor(asset.height) - side,
+  );
+  return { originX, originY, width: side, height: side };
+}
+
+/** Converts RGBA pixels to the model's RGB float range, (channel - 128) / 128. */
+export function normalizeFacePixels(
+  rgba: Uint8Array,
+  width: number,
+  height: number,
+): Float32Array {
+  const pixelCount = width * height;
+  if (
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width < 1 ||
+    height < 1 ||
+    rgba.length < pixelCount * 4
+  ) {
+    throw new Error("RGBA buffer is incomplete.");
+  }
+
+  const values = new Float32Array(pixelCount * 3);
+  for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+    const source = pixel * 4;
+    const target = pixel * 3;
+    values[target] = (rgba[source] - 128) / 128;
+    values[target + 1] = (rgba[source + 1] - 128) / 128;
+    values[target + 2] = (rgba[source + 2] - 128) / 128;
+  }
+  return values;
+}
+
+export function parseFaceEmbeddingOutput(
+  output: ArrayBuffer | undefined,
+): number[] | undefined {
+  if (
+    !output ||
+    output.byteLength < EMBEDDING_SIZE * Float32Array.BYTES_PER_ELEMENT
+  ) {
+    return undefined;
+  }
+  const embedding = Array.from(
+    new Float32Array(output, 0, EMBEDDING_SIZE),
+  );
+  if (embedding.some((value) => !Number.isFinite(value))) return undefined;
+  const magnitude = Math.sqrt(
+    embedding.reduce((sum, value) => sum + value * value, 0),
+  );
+  if (!Number.isFinite(magnitude) || magnitude <= Number.EPSILON) {
+    return undefined;
+  }
+  return embedding.map((value) => value / magnitude);
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const encoded = value.replace(/^data:[^,]*,/u, "").replace(/\s/gu, "");
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  const bytes = new Uint8Array(
+    Math.max(0, Math.floor((encoded.length * 3) / 4) - padding),
+  );
+  let accumulator = 0;
+  let availableBits = 0;
+  let byteIndex = 0;
+  for (const character of encoded) {
+    if (character === "=") break;
+    const digit = BASE64_ALPHABET.indexOf(character);
+    if (digit < 0) throw new Error("Invalid base64 face data.");
+    accumulator = (accumulator << 6) | digit;
+    availableBits += 6;
+    if (availableBits >= 8) {
+      availableBits -= 8;
+      bytes[byteIndex++] = (accumulator >>> availableBits) & 0xff;
+      accumulator &= availableBits === 0 ? 0 : (1 << availableBits) - 1;
+    }
+  }
+  if (byteIndex !== bytes.length || bytes.length === 0) {
+    throw new Error("Incomplete base64 face data.");
+  }
+  return bytes;
+}
