@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { BackHandler, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
   DateFilterPanel,
@@ -59,7 +58,6 @@ export function FilterScreen({
   peopleAvailable,
   peopleLoadingText,
 }: FilterScreenProps) {
-  const insets = useSafeAreaInsets();
   const [openSection, setOpenSection] = useState<SectionKey>("face");
   const [selection, setSelection] = useState<FilterSelection>(initialSelection);
   const [photoCount, setPhotoCount] = useState<number | null>(null);
@@ -96,7 +94,7 @@ export function FilterScreen({
       <ScrollView
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingTop: Math.max(insets.top, StatusBar.currentHeight ?? 0) + spacing.sm },
+          { paddingTop: (StatusBar.currentHeight ?? 0) + spacing.sm },
         ]}
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
@@ -139,7 +137,7 @@ export function FilterScreen({
         </View>
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
+      <View style={[styles.footer, { paddingBottom: spacing.xl }]}>
         <View style={styles.secondaryAction}>
           <SecondaryButton
             accessibilityHint="Removes the face, location, and date filters"
