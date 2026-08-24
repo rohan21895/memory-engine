@@ -21,6 +21,19 @@ type TensorflowModel = {
 
 let modelPromise: Promise<TensorflowModel | undefined> | undefined;
 let inferenceQueue: Promise<void> = Promise.resolve();
+let loadDiagnosticWritten = false;
+let inferenceDiagnosticWritten = false;
+
+function tensorSummary(model: TensorflowModel): string {
+  const describe = (tensor: { dataType: string; shape: number[] }) =>
+    `${tensor.dataType}[${tensor.shape.join("x")}]`;
+  return `inputs=${model.inputs.map(describe).join(",")} outputs=${model.outputs.map(describe).join(",")}`;
+}
+
+function safeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/(?:content|file):\/\/\S+/gu, "<local-uri>").slice(0, 240);
+}
 
 /**
  * Crops one ML Kit face and returns its L2-normalized MobileFaceNet identity
@@ -35,11 +48,26 @@ export async function embedFaceIdentity(
   const job = inferenceQueue.then(async () => {
     try {
       const model = await loadModel();
-      if (!model || !isExpectedModel(model)) return undefined;
+      if (!model || !isExpectedModel(model)) {
+        if (!inferenceDiagnosticWritten) {
+          inferenceDiagnosticWritten = true;
+          console.warn("[PhoteoFaceNet] identity inference unavailable; using perceptual fallback");
+        }
+        return undefined;
+      }
       const input = await faceFloatTensor(asset, imageUri, box);
       const outputs = await model.run([input.buffer as ArrayBuffer]);
-      return parseFaceEmbeddingOutput(outputs[0]);
-    } catch {
+      const embedding = parseFaceEmbeddingOutput(outputs[0]);
+      if (!inferenceDiagnosticWritten) {
+        inferenceDiagnosticWritten = true;
+        console.warn(`[PhoteoFaceNet] identity inference ${embedding ? "active" : "returned invalid output"}`);
+      }
+      return embedding;
+    } catch (error) {
+      if (!inferenceDiagnosticWritten) {
+        inferenceDiagnosticWritten = true;
+        console.warn(`[PhoteoFaceNet] inference failed: ${safeErrorMessage(error)}`);
+      }
       return undefined;
     }
   });
@@ -60,13 +88,28 @@ async function loadModel(): Promise<TensorflowModel | undefined> {
         );
         // Static require is required so Metro packages the graph in the APK.
         const source = require("../../assets/models/mobilefacenet-192-float32.tflite");
-        return (await loadTensorflowModel(source, [])) as TensorflowModel;
-      } catch {
+        const model = (await loadTensorflowModel(source, [])) as TensorflowModel;
+        if (!loadDiagnosticWritten) {
+          loadDiagnosticWritten = true;
+          console.warn(`[PhoteoFaceNet] loaded ${tensorSummary(model)} expected=${isExpectedModel(model)}`);
+        }
+        return model;
+      } catch (error) {
+        if (!loadDiagnosticWritten) {
+          loadDiagnosticWritten = true;
+          console.warn(`[PhoteoFaceNet] load failed: ${safeErrorMessage(error)}`);
+        }
         return undefined;
       }
     })();
   }
   return modelPromise;
+}
+
+/** Loads and validates the bundled graph without reading any user photo. */
+export async function probeFaceIdentityModel(): Promise<boolean> {
+  const model = await loadModel();
+  return model !== undefined && isExpectedModel(model);
 }
 
 function isExpectedModel(model: TensorflowModel): boolean {

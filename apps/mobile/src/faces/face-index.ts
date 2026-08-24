@@ -9,7 +9,9 @@ import { detectFaces, isFaceDetectionAvailable, type FaceBox } from "./face-dete
 import { embedFaceIdentity } from "../ml/facenet.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
-const INDEX_VERSION = 3;
+// v4 invalidates v3's perceptual-only checkpoints so assets scanned before the
+// bundled MobileFaceNet runtime landed are re-embedded once with identity data.
+const INDEX_VERSION = 4;
 const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
@@ -41,6 +43,8 @@ export type FaceIndexPerson = {
 };
 
 export type FaceIndexStatus = {
+  identityObservations: number;
+  perceptualObservations: number;
   scanned: number;
   total: number;
   people: number;
@@ -110,6 +114,26 @@ function emptyIndex(): PersistedFaceIndex {
 let index = emptyIndex();
 let activeBuild: Promise<void> | null = null;
 let hydration: Promise<void> | null = null;
+
+function observationCounts(): Pick<
+  FaceIndexStatus,
+  "identityObservations" | "perceptualObservations"
+> {
+  const identityObservations = index.observations.filter(
+    (observation) => observation.embeddingKind === "identity",
+  ).length;
+  return {
+    identityObservations,
+    perceptualObservations: index.observations.length - identityObservations,
+  };
+}
+
+function logEmbeddingPath(context: string): void {
+  const counts = observationCounts();
+  console.warn(
+    `[PhoteoFaceIndex] ${context} identity=${counts.identityObservations} perceptual=${counts.perceptualObservations}`,
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -784,6 +808,7 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
     index.scanComplete = true;
     index.total = seenCount();
     await persistFaceIndex();
+    logEmbeddingPath("scan complete");
     opts.onProgress?.(index.total, index.total);
   } catch {
     await persistFaceIndex();
@@ -826,6 +851,7 @@ export function personIdsForAsset(assetId: string): string[] {
 
 export function faceIndexStatus(): FaceIndexStatus {
   return {
+    ...observationCounts(),
     scanned: Math.min(seenCount(), index.total),
     total: index.total,
     people: index.people.length,
