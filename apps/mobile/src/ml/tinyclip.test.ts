@@ -1,11 +1,5 @@
 // @ts-expect-error Node requires the extension; Metro resolves it too.
-import {
-  centerCropTransform,
-  normalizeClipPixels,
-  parseEmbeddingOutput,
-  semanticSignalsWithAxes,
-  type TextAxes,
-} from "./tinyclip.ts";
+import { centerCropTransform, normalizeClipPixels, parseEmbeddingOutput, semanticSignalsWithAxes, type TextAxes } from "./tinyclip.ts";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(`TinyCLIP self-check failed: ${message}`);
