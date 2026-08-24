@@ -1,4 +1,4 @@
-import { FlashList } from "@shopify/flash-list";
+import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { Image } from "expo-image";
 import * as MediaLibrary from "expo-media-library/legacy";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -33,6 +33,8 @@ const PAGE = 150;
 const COLS = 3;
 const GAP = 3;
 const SELECT_ALL_CAP = 3000;
+const EDGE = 96; // px zone at top/bottom of the grid that triggers auto-scroll
+const AUTO_STEP = 30; // px per tick while auto-scrolling
 
 type Props = {
   onConfirm: (photos: PickedPhoto[]) => void;
@@ -42,15 +44,13 @@ type Props = {
 type DatePreset = "all" | "week" | "month" | "year";
 const DATE_PRESETS: { key: DatePreset; label: string }[] = [
   { key: "all", label: "All" },
-  { key: "week", label: "This week" },
-  { key: "month", label: "This month" },
-  { key: "year", label: "This year" },
+  { key: "week", label: "Week" },
+  { key: "month", label: "Month" },
+  { key: "year", label: "Year" },
 ];
 
 type AlbumChip = { id: string | null; title: string; count: number };
 
-// expo-media-library hands back asset.uri as `file:///storage/…`, which Android
-// 13+ scoped storage BLOCKS — use the MediaStore content:// URI (Glide-readable).
 function contentUri(assetId: string): string {
   return `content://media/external/images/media/${assetId}`;
 }
@@ -75,9 +75,9 @@ function createdAfterFor(preset: DatePreset): number | undefined {
   return undefined;
 }
 
-// Our own picker: full-library grid, filter by date/album, slide-to-select
-// (long-press then drag), and select-all — none of which the OS/Google pickers
-// allow. Reads MediaStore directly via full-access permission.
+// Our own picker: full-library grid, filter by date/album, and slide-to-select
+// with edge auto-scroll (long-press then drag to a screen edge keeps scrolling
+// and selecting until you lift). Reads MediaStore directly.
 export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const { width } = useWindowDimensions();
   const cell = Math.floor((width - GAP * (COLS - 1)) / COLS);
@@ -96,8 +96,10 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const hasNext = useRef(true);
   const loadingMore = useRef(false);
   const scrollY = useRef(0);
+  const gridHeight = useRef(0);
   const assetsRef = useRef<MediaLibrary.Asset[]>([]);
   assetsRef.current = assets;
+  const listRef = useRef<FlashListRef<MediaLibrary.Asset>>(null);
 
   const queryOpts = useCallback(
     (): MediaLibrary.AssetsOptions => ({
@@ -135,7 +137,6 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     loadingMore.current = false;
   }, [queryOpts]);
 
-  // permission + albums, once
   useEffect(() => {
     (async () => {
       const perm = await MediaLibrary.requestPermissionsAsync();
@@ -143,20 +144,17 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         setStatus("denied");
         return;
       }
-      const found = await MediaLibrary.getAlbumsAsync({
-        includeSmartAlbums: true,
-      });
+      const found = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: true });
       const chips: AlbumChip[] = found
         .filter((a) => (a.assetCount ?? 0) > 0)
         .sort((a, b) => (b.assetCount ?? 0) - (a.assetCount ?? 0))
         .slice(0, 24)
         .map((a) => ({ id: a.id, title: a.title, count: a.assetCount ?? 0 }));
-      setAlbums([{ id: null, title: "All photos", count: 0 }, ...chips]);
+      setAlbums([{ id: null, title: "All", count: 0 }, ...chips]);
       setStatus("ready");
     })();
   }, []);
 
-  // reload when filters change (after ready)
   useEffect(() => {
     if (status !== "ready") return;
     void reload();
@@ -193,10 +191,13 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     });
   }, []);
 
-  // ---- slide-to-select (long-press then drag) ----
+  // ---------- slide-to-select with edge auto-scroll ----------
   const dragAnchor = useRef<number | null>(null);
   const dragMode = useRef<"add" | "remove">("add");
   const dragSnapshot = useRef<Set<string>>(new Set());
+  const lastPointer = useRef({ x: 0, y: 0 });
+  const autoDir = useRef(0);
+  const autoTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const indexAt = useCallback(
     (x: number, y: number): number | null => {
@@ -228,6 +229,35 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     setSelected(next);
   }, []);
 
+  const stopAuto = useCallback(() => {
+    if (autoTimer.current) {
+      clearInterval(autoTimer.current);
+      autoTimer.current = null;
+    }
+    autoDir.current = 0;
+  }, []);
+
+  const tick = useCallback(() => {
+    const dir = autoDir.current;
+    if (dir === 0 || dragAnchor.current === null) return;
+    const next = Math.max(0, scrollY.current + AUTO_STEP * dir);
+    listRef.current?.scrollToOffset({ offset: next, animated: false });
+    scrollY.current = next;
+    if (dir > 0 && hasNext.current) void loadMore();
+    const i = indexAt(lastPointer.current.x, lastPointer.current.y);
+    if (i !== null) applyDrag(i);
+  }, [indexAt, applyDrag, loadMore]);
+
+  const startAuto = useCallback(() => {
+    if (!autoTimer.current) autoTimer.current = setInterval(tick, 16);
+  }, [tick]);
+
+  const updateAutoDir = useCallback((y: number) => {
+    if (y > gridHeight.current - EDGE) autoDir.current = 1;
+    else if (y < EDGE) autoDir.current = -1;
+    else autoDir.current = 0;
+  }, []);
+
   const beginDrag = useCallback(
     (x: number, y: number) => {
       const i = indexAt(x, y);
@@ -251,21 +281,33 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     [indexAt, applyDrag],
   );
 
+  useEffect(() => () => stopAuto(), [stopAuto]);
+
   const pan = useMemo(
     () =>
       Gesture.Pan()
         .runOnJS(true)
         .activateAfterLongPress(180)
         .maxPointers(1)
-        .onStart((e) => beginDrag(e.x, e.y))
-        .onUpdate((e) => updateDrag(e.x, e.y))
+        .onStart((e) => {
+          lastPointer.current = { x: e.x, y: e.y };
+          beginDrag(e.x, e.y);
+          startAuto();
+        })
+        .onUpdate((e) => {
+          lastPointer.current = { x: e.x, y: e.y };
+          updateDrag(e.x, e.y);
+          updateAutoDir(e.y);
+        })
         .onEnd(() => {
+          stopAuto();
           dragAnchor.current = null;
         })
         .onFinalize(() => {
+          stopAuto();
           dragAnchor.current = null;
         }),
-    [beginDrag, updateDrag],
+    [beginDrag, updateDrag, updateAutoDir, startAuto, stopAuto],
   );
 
   const orderMap = useMemo(() => {
@@ -315,61 +357,15 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
 
   return (
     <GestureHandlerRootView style={styles.root}>
+      {/* compact header: back · count · actions */}
       <View style={styles.header}>
         <Pressable onPress={onBack} hitSlop={12}>
           <Text style={styles.back}>‹ Back</Text>
         </Pressable>
-        <Text style={styles.title}>Your photos</Text>
-        <Text style={styles.count}>{count} selected</Text>
-      </View>
-
-      {/* date filter */}
-      <View style={styles.filterRow}>
-        {DATE_PRESETS.map((p) => (
-          <Pressable
-            key={p.key}
-            onPress={() => setDatePreset(p.key)}
-            style={[styles.chip, datePreset === p.key && styles.chipOn]}
-          >
-            <Text style={[styles.chipText, datePreset === p.key && styles.chipTextOn]}>
-              {p.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-
-      {/* album filter */}
-      {albums.length > 1 ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.albumScroll}
-          contentContainerStyle={styles.albumRow}
-        >
-          {albums.map((a) => {
-            const on = albumId === a.id;
-            return (
-              <Pressable
-                key={a.id ?? "all"}
-                onPress={() => setAlbumId(a.id)}
-                style={[styles.albumChip, on && styles.chipOn]}
-              >
-                <Text style={[styles.chipText, on && styles.chipTextOn]}>
-                  {a.title}
-                  {a.count ? ` · ${a.count}` : ""}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-      ) : null}
-
-      {/* actions */}
-      <View style={styles.actions}>
-        <Text style={styles.hint}>Long-press + drag to sweep-select</Text>
-        <View style={styles.actionBtns}>
+        <Text style={styles.count}>{count ? `${count} selected` : "Your photos"}</Text>
+        <View style={styles.headerActions}>
           <Pressable onPress={selectAll} hitSlop={8} disabled={busy}>
-            <Text style={styles.action}>{busy ? "…" : "Select all"}</Text>
+            <Text style={styles.action}>{busy ? "…" : "All"}</Text>
           </Pressable>
           {count > 0 ? (
             <Pressable onPress={() => setSelected(new Set())} hitSlop={8}>
@@ -378,6 +374,43 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
           ) : null}
         </View>
       </View>
+
+      {/* single compact filter row: date presets · albums */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.filterScroll}
+        contentContainerStyle={styles.filterRow}
+      >
+        {DATE_PRESETS.map((p) => {
+          const on = datePreset === p.key;
+          return (
+            <Pressable
+              key={p.key}
+              onPress={() => setDatePreset(p.key)}
+              style={[styles.chip, on && styles.chipOn]}
+            >
+              <Text style={[styles.chipText, on && styles.chipTextOn]}>{p.label}</Text>
+            </Pressable>
+          );
+        })}
+        {albums.length > 1 ? <View style={styles.divider} /> : null}
+        {albums.map((a) => {
+          const on = albumId === a.id;
+          return (
+            <Pressable
+              key={a.id ?? "all"}
+              onPress={() => setAlbumId(a.id)}
+              style={[styles.chip, on && styles.chipOn]}
+            >
+              <Text style={[styles.chipText, on && styles.chipTextOn]}>
+                {a.title}
+                {a.count ? ` ${a.count}` : ""}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
 
       {status === "loading" ? (
         <View style={styles.center}>
@@ -392,8 +425,14 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         </View>
       ) : (
         <GestureDetector gesture={pan}>
-          <View style={styles.gridWrap}>
+          <View
+            style={styles.gridWrap}
+            onLayout={(e) => {
+              gridHeight.current = e.nativeEvent.layout.height;
+            }}
+          >
             <FlashList
+              ref={listRef}
               data={assets}
               renderItem={renderItem}
               keyExtractor={(item) => item.id}
@@ -430,47 +469,27 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingHorizontal: 18,
-    paddingTop: 58,
-    paddingBottom: 10,
-  },
-  back: { color: C.gold, fontSize: 16 },
-  title: { color: C.text, fontSize: 16 },
-  count: { color: C.muted, fontSize: 13 },
-  filterRow: {
-    flexDirection: "row",
-    gap: 8,
-    paddingHorizontal: 16,
     paddingBottom: 8,
+    paddingHorizontal: 18,
+    paddingTop: 52,
   },
+  back: { color: C.gold, fontSize: 15 },
+  count: { color: C.text, fontSize: 14 },
+  headerActions: { flexDirection: "row", gap: 16 },
+  action: { color: C.gold, fontSize: 14 },
+  filterScroll: { flexGrow: 0, maxHeight: 46 },
+  filterRow: { alignItems: "center", gap: 7, paddingHorizontal: 14, paddingBottom: 8 },
   chip: {
-    backgroundColor: C.chip,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-  },
-  chipOn: { backgroundColor: C.gold },
-  chipText: { color: C.muted, fontSize: 13 },
-  chipTextOn: { color: "#1a1712", fontWeight: "600" },
-  albumScroll: { flexGrow: 0 },
-  albumRow: { alignItems: "center", gap: 8, paddingHorizontal: 16, paddingBottom: 8 },
-  albumChip: {
     alignSelf: "center",
     backgroundColor: C.chip,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
+    borderRadius: 15,
+    paddingHorizontal: 13,
+    paddingVertical: 6,
   },
-  actions: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingBottom: 8,
-    paddingHorizontal: 18,
-  },
-  hint: { color: C.muted, fontSize: 11.5 },
-  actionBtns: { flexDirection: "row", gap: 18 },
-  action: { color: C.gold, fontSize: 14 },
+  chipOn: { backgroundColor: C.gold },
+  chipText: { color: C.muted, fontSize: 12.5 },
+  chipTextOn: { color: "#1a1712", fontWeight: "600" },
+  divider: { alignSelf: "center", backgroundColor: C.line, height: 20, width: 1 },
   center: { alignItems: "center", flex: 1, justifyContent: "center", padding: 32 },
   denied: { color: C.muted, fontSize: 15, lineHeight: 22, textAlign: "center" },
   gridWrap: { flex: 1 },
