@@ -3,6 +3,12 @@ export type FaceBox = {
   y: number;
   width: number;
   height: number;
+  // Classification probabilities (0..1) when ML Kit classification is on;
+  // undefined when the model didn't report them. Used by selection quality,
+  // ignored by identity clustering (which only needs the box).
+  leftEyeOpen?: number;
+  rightEyeOpen?: number;
+  smiling?: number;
 };
 
 // Imperative surface of @infinitered/react-native-mlkit-face-detection's
@@ -12,7 +18,12 @@ type NativeFrame = {
   origin?: { x?: unknown; y?: unknown };
   size?: { x?: unknown; y?: unknown };
 };
-type NativeFace = { frame?: NativeFrame };
+type NativeFace = {
+  frame?: NativeFrame;
+  leftEyeOpenProbability?: unknown;
+  rightEyeOpenProbability?: unknown;
+  smilingProbability?: unknown;
+};
 type NativeResult = { faces?: unknown } | unknown[];
 type NativeDetector = {
   initialize: (options?: unknown) => unknown;
@@ -26,10 +37,18 @@ const DETECTOR_OPTIONS = {
   performanceMode: "accurate",
   landmarkMode: false,
   contourMode: false,
-  classificationMode: false,
+  // On: ML Kit reports eyes-open + smiling probabilities, which selection uses
+  // to reject blinks and prefer smiles.
+  classificationMode: true,
   minFaceSize: 0.08,
   isTrackingEnabled: false,
 };
+
+function prob(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
 
 let moduleLoaded: NativeModule | null | undefined;
 let detector: NativeDetector | null = null;
@@ -156,7 +175,17 @@ export async function detectFaces(imageUri: string): Promise<FaceBox[]> {
       ) {
         return [];
       }
-      return [{ x, y, width, height }];
+      return [
+        {
+          x,
+          y,
+          width,
+          height,
+          leftEyeOpen: prob(face.leftEyeOpenProbability),
+          rightEyeOpen: prob(face.rightEyeOpenProbability),
+          smiling: prob(face.smilingProbability),
+        },
+      ];
     });
   } catch {
     return [];
