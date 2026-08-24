@@ -31,9 +31,8 @@ import {
   copy,
   EmptyState,
   ErrorState,
-  FilterSheet,
-  type FilterSection,
-  type FilterSectionKey,
+  FilterScreen,
+  type FilterSelection,
   fonts,
   HintBanner,
   LoadingState,
@@ -49,8 +48,10 @@ import {
   buildIndex,
   getCities,
   getCountries,
+  getMonths,
   loadIndex,
   placeKeyForAsset,
+  type MonthSummary,
   type PlaceSummary,
 } from "./photo-index";
 
@@ -68,7 +69,8 @@ type Props = {
   onBack: () => void;
 };
 
-type DatePreset = "all" | "week" | "month" | "year";
+type RelativeDatePreset = "all" | "week" | "month" | "year";
+type DatePreset = RelativeDatePreset | `month:${string}`;
 const DATE_PRESETS: { key: DatePreset; label: string }[] = [
   { key: "all", label: copy.filters.anyDate },
   { key: "week", label: copy.filters.week },
@@ -99,13 +101,33 @@ function toPicked(asset: MediaLibrary.Asset): PickedPhoto {
   };
 }
 
-function createdAfterFor(preset: DatePreset): number | undefined {
+function dateBoundsFor(preset: DatePreset): {
+  createdAfter?: number;
+  createdBefore?: number;
+} {
   const now = new Date();
-  if (preset === "week") return now.getTime() - 7 * 24 * 60 * 60 * 1000;
+  if (preset === "week") {
+    return { createdAfter: now.getTime() - 7 * 24 * 60 * 60 * 1000 };
+  }
   if (preset === "month")
-    return new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-  if (preset === "year") return new Date(now.getFullYear(), 0, 1).getTime();
-  return undefined;
+    return { createdAfter: new Date(now.getFullYear(), now.getMonth(), 1).getTime() };
+  if (preset === "year") {
+    return { createdAfter: new Date(now.getFullYear(), 0, 1).getTime() };
+  }
+  if (preset.startsWith("month:")) {
+    const match = /^(\d{4})-(\d{2})$/.exec(preset.slice("month:".length));
+    if (match) {
+      const year = Number(match[1]);
+      const monthIndex = Number(match[2]) - 1;
+      if (monthIndex >= 0 && monthIndex <= 11) {
+        return {
+          createdAfter: new Date(year, monthIndex, 1).getTime(),
+          createdBefore: new Date(year, monthIndex + 1, 1).getTime() - 1,
+        };
+      }
+    }
+  }
+  return {};
 }
 
 type PhotoTileProps = {
@@ -176,6 +198,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const [albumId, setAlbumId] = useState<string | null>(null);
   const [countries, setCountries] = useState<PlaceSummary[]>([]);
   const [cities, setCities] = useState<PlaceSummary[]>([]);
+  const [months, setMonths] = useState<MonthSummary[]>([]);
   // One active location filter at a time; id is prefixed "city:" or "country:".
   const [locId, setLocId] = useState<string | null>(null);
   const [indexPct, setIndexPct] = useState<number | null>(null);
@@ -226,12 +249,15 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const seenAssets = useRef<Map<string, MediaLibrary.Asset>>(new Map());
 
   const queryOpts = useCallback(
-    (): MediaLibrary.AssetsOptions => ({
-      mediaType: [MediaLibrary.MediaType.photo],
-      sortBy: [MediaLibrary.SortBy.creationTime],
-      createdAfter: createdAfterFor(datePreset),
-      ...(albumId ? { album: albumId } : {}),
-    }),
+    (): MediaLibrary.AssetsOptions => {
+      const bounds = dateBoundsFor(datePreset);
+      return {
+        mediaType: [MediaLibrary.MediaType.photo],
+        sortBy: [MediaLibrary.SortBy.creationTime],
+        ...bounds,
+        ...(albumId ? { album: albumId } : {}),
+      };
+    },
     [datePreset, albumId],
   );
 
@@ -310,6 +336,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
       const refreshPlaces = () => {
         setCountries(getCountries());
         setCities(getCities());
+        setMonths(getMonths());
       };
       await loadIndex();
       refreshPlaces();
@@ -550,99 +577,79 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const activeFilterCount =
     Number(datePreset !== "all") + Number(albumId !== null) + Number(locId !== null) + Number(personId !== null);
 
-  const filterSections = useMemo<FilterSection[]>(() => {
-    const sections: FilterSection[] = [
-      {
-        key: "date",
-        title: copy.filters.date,
-        selectedId: datePreset,
-        groups: [{
-          options: DATE_PRESETS.map((preset) => ({ id: preset.key, label: preset.label })),
-        }],
-      },
-      {
-        key: "album",
-        title: copy.filters.album,
-        selectedId: albumId ?? "__any_album",
-        groups: [{
-          options: [
-            { id: "__any_album", label: copy.filters.anyAlbum },
-            ...albums.filter((album) => album.id !== null).map((album) => ({
-              id: album.id as string,
-              label: album.title,
-              detail: copy.filters.photoCount(album.count),
-            })),
-          ],
-        }],
-      },
-      {
-        key: "place",
-        title: copy.filters.place,
-        selectedId: locId ?? "__any_place",
-        groups: [
-          { options: [{ id: "__any_place", label: copy.filters.anyPlace }] },
-          {
-            title: copy.filters.countries,
-            options: countries.map((place) => ({
-              id: place.id,
-              label: place.name,
-              detail: copy.filters.photoCount(place.count),
-            })),
-          },
-          {
-            title: copy.filters.cities,
-            options: cities.map((place) => ({
-              id: place.id,
-              label: place.name,
-              detail: copy.filters.photoCount(place.count),
-            })),
-          },
-        ],
-        loadingText: indexing
-          ? copy.filters.scanningPlaces(indexPct === null ? undefined : Math.round(indexPct * 100))
-          : undefined,
-      },
-    ];
+  const filterPeople = useMemo(
+    () => people.map((person, index) => ({
+      faceCount: person.faceCount,
+      id: person.id,
+      imageUri: person.faceThumbUri ?? contentUri(person.coverAssetId),
+      label: copy.filters.personName(index),
+      photoCount: person.assetIds.length,
+    })),
+    [people],
+  );
+  const filterCountries = useMemo(
+    () => countries.map((place) => ({ id: place.id, label: place.name, photoCount: place.count })),
+    [countries],
+  );
+  const filterCities = useMemo(
+    () => cities.map((place) => ({ id: place.id, label: place.name, photoCount: place.count })),
+    [cities],
+  );
+  const filterMonths = useMemo(
+    () => months.map((month) => ({
+      detail: copy.filters.photoCount(month.count),
+      id: `month:${month.id}`,
+      label: month.label,
+    })),
+    [months],
+  );
 
-    if (peopleAvailable) {
-      sections.push({
-        key: "person",
-        title: copy.filters.person,
-        selectedId: personId ?? "__any_person",
-        groups: [{
-          options: [
-            { id: "__any_person", label: copy.filters.anyPerson },
-            ...people.map((person, index) => ({
-              id: person.id,
-              imageUri: contentUri(person.coverAssetId),
-              label: copy.filters.personName(index),
-              detail: copy.filters.photoCount(person.assetIds.length),
-            })),
-          ],
-        }],
-        loadingText: peopleIndexing
-          ? copy.filters.scanningPeople(
-              peopleIndexPct === null ? undefined : Math.round(peopleIndexPct * 100),
-            )
-          : undefined,
-      });
+  const countFilterPhotos = useCallback(async (selection: FilterSelection): Promise<number> => {
+    try {
+      const pendingPlaceSet = selection.locationId
+        ? new Set(
+            selection.locationId.startsWith("country:")
+              ? assetIdsForCountry(selection.locationId)
+              : assetIdsForCity(selection.locationId),
+          )
+        : null;
+      const pendingPersonSet = selection.personId
+        ? new Set(assetIdsForPerson(selection.personId))
+        : null;
+      const pendingVisibleSet = pendingPlaceSet
+        ? pendingPersonSet
+          ? new Set([...pendingPlaceSet].filter((id) => pendingPersonSet.has(id)))
+          : pendingPlaceSet
+        : pendingPersonSet;
+
+      if (selection.dateId === "all" && albumId === null && pendingVisibleSet) {
+        return pendingVisibleSet.size;
+      }
+
+      const bounds = dateBoundsFor(selection.dateId as DatePreset);
+      const options: MediaLibrary.AssetsOptions = {
+        first: pendingVisibleSet ? 500 : 1,
+        mediaType: [MediaLibrary.MediaType.photo],
+        sortBy: [MediaLibrary.SortBy.creationTime],
+        ...bounds,
+        ...(albumId ? { album: albumId } : {}),
+      };
+      let page = await MediaLibrary.getAssetsAsync(options);
+      if (!pendingVisibleSet) return page.totalCount;
+
+      let matching = page.assets.filter((asset) => pendingVisibleSet.has(asset.id)).length;
+      let guard = 0;
+      while (page.hasNextPage && guard < BURST_PAGE_CAP) {
+        guard += 1;
+        page = await MediaLibrary.getAssetsAsync({ ...options, after: page.endCursor });
+        matching += page.assets.filter((asset) => pendingVisibleSet.has(asset.id)).length;
+        if (page.assets.length === 0) break;
+      }
+      return matching;
+    } catch {
+      return assets.length;
     }
-    return sections;
-  }, [
-    albumId,
-    albums,
-    cities,
-    countries,
-    datePreset,
-    indexPct,
-    indexing,
-    locId,
-    people,
-    peopleAvailable,
-    peopleIndexPct,
-    peopleIndexing,
-    personId,
-  ]);
+  }, [albumId, assets.length]);
 
   const clearFilters = useCallback(() => {
     setDatePreset("all");
@@ -652,15 +659,42 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     setFilterVisible(false);
   }, []);
 
-  const selectFilter = useCallback((section: FilterSectionKey, id: string) => {
-    if (section === "date") setDatePreset(id as DatePreset);
-    if (section === "album") setAlbumId(id === "__any_album" ? null : id);
-    if (section === "place") setLocId(id === "__any_place" ? null : id);
-    if (section === "person") setPersonId(id === "__any_person" ? null : id);
+  const applyFilters = useCallback((selection: FilterSelection) => {
+    setDatePreset(selection.dateId as DatePreset);
+    setLocId(selection.locationId);
+    setPersonId(selection.personId);
     setFilterVisible(false);
   }, []);
 
   const clearSelection = useCallback(() => setSelected(new Set()), []);
+
+  if (filterVisible) {
+    return (
+      <FilterScreen
+        cities={filterCities}
+        countries={filterCountries}
+        countPhotos={countFilterPhotos}
+        dateLoadingText={indexing
+          ? `Scanning dates…${indexPct === null ? "" : ` ${Math.round(indexPct * 100)}%`}`
+          : undefined}
+        datePresets={DATE_PRESETS.map((preset) => ({ id: preset.key, label: preset.label }))}
+        initialSelection={{ dateId: datePreset, locationId: locId, personId }}
+        locationLoadingText={indexing
+          ? copy.filters.scanningPlaces(indexPct === null ? undefined : Math.round(indexPct * 100))
+          : undefined}
+        months={filterMonths}
+        onApply={applyFilters}
+        onBack={() => setFilterVisible(false)}
+        people={filterPeople}
+        peopleAvailable={peopleAvailable}
+        peopleLoadingText={peopleIndexing
+          ? copy.filters.scanningPeople(
+              peopleIndexPct === null ? undefined : Math.round(peopleIndexPct * 100),
+            )
+          : undefined}
+      />
+    );
+  }
 
   return (
     <GestureHandlerRootView style={styles.root}>
@@ -788,14 +822,6 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
           onPress={confirm}
         />
       </View>
-
-      <FilterSheet
-        onClear={clearFilters}
-        onClose={() => setFilterVisible(false)}
-        onSelect={selectFilter}
-        sections={filterSections}
-        visible={filterVisible}
-      />
     </GestureHandlerRootView>
   );
 }
