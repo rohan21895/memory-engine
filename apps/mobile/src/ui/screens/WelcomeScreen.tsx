@@ -1,9 +1,14 @@
 import { ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 
-import { copy } from "../copy";
-import { fonts } from "../fonts";
-import { colors, layout, spacing, typeScale } from "../tokens";
 import { PrimaryButton } from "../components/PrimaryButton";
+import { fonts } from "../fonts";
+import { colors, layout, radii, spacing, typeScale } from "../tokens";
+
+const steps = [
+  "Pick a few photos — or all of them",
+  "Photeo finds the best shots",
+  "Watch, print, or share your album",
+];
 
 export function WelcomeScreen({ onContinue }: { onContinue: () => void }) {
   return (
@@ -14,55 +19,61 @@ export function WelcomeScreen({ onContinue }: { onContinue: () => void }) {
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.top}>
-          <Text style={styles.trust}>{copy.trustCue}</Text>
-          <View accessible accessibilityLabel={copy.appName} style={styles.monogram}>
-            <Text style={styles.monogramText}>P</Text>
-          </View>
+        <View style={styles.mark}>
+          <View style={styles.markLight} />
+          <View style={styles.markPaper} />
         </View>
-        <View style={styles.main}>
-          <Text style={styles.eyebrow}>{copy.welcome.eyebrow}</Text>
-          <Text accessibilityRole="header" style={styles.title}>{copy.welcome.title}</Text>
-          <Text style={styles.helper}>{copy.welcome.helper}</Text>
+        <View style={styles.intro}>
+          <Text accessibilityRole="header" style={styles.title}>Albums,{`\n`}made for you.</Text>
+          <Text style={styles.helper}>
+            Photeo looks through your photos and builds a beautiful album on its own.
+          </Text>
         </View>
-        <View style={styles.footer}>
-          <PrimaryButton
-            accessibilityHint={copy.welcome.actionHint}
-            label={copy.welcome.action}
-            onPress={onContinue}
-          />
-          <Text style={styles.privacy}>{copy.privacyShort}</Text>
+        <View style={styles.steps}>
+          {steps.map((step, index) => (
+            <View key={step} style={styles.step}>
+              <View style={styles.stepNumber}><Text style={styles.stepNumberText}>{index + 1}</Text></View>
+              <Text style={styles.stepText}>{step}</Text>
+            </View>
+          ))}
         </View>
+        <View style={styles.flex} />
+        <View style={styles.privacy}>
+          <View style={styles.privacyDot} />
+          <Text style={styles.privacyText}>Your photos never leave your phone. Nothing is uploaded.</Text>
+        </View>
+        <PrimaryButton
+          accessibilityHint="Continues to Photeo setup"
+          label="Get started"
+          onPress={onContinue}
+        />
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  eyebrow: { color: colors.gold, fontFamily: fonts.body, fontWeight: "600", ...typeScale.eyebrow },
-  footer: { gap: spacing.md },
-  helper: { color: colors.muted, fontFamily: fonts.body, maxWidth: 560, ...typeScale.body },
-  main: { gap: spacing.md, paddingVertical: spacing.xxl },
-  monogram: {
-    alignItems: "center",
-    borderColor: colors.gold,
-    borderRadius: 27,
-    borderWidth: 1,
-    height: 54,
-    justifyContent: "center",
-    width: 54,
-  },
-  monogramText: { color: colors.gold, fontFamily: fonts.display, fontSize: 29, lineHeight: 34 },
-  privacy: { color: colors.muted, fontFamily: fonts.body, textAlign: "center", ...typeScale.small },
+  flex: { flex: 1, minHeight: spacing.lg },
+  helper: { color: colors.muted, fontFamily: fonts.regular, fontSize: 16.5, lineHeight: 25 },
+  intro: { gap: spacing.sm },
+  mark: { backgroundColor: "#d9a184", borderCurve: "continuous", borderRadius: 34, height: 120, overflow: "hidden", width: 120 },
+  markLight: { backgroundColor: "#f2d9c6", height: 72, left: -10, position: "absolute", top: -8, transform: [{ rotate: "-12deg" }], width: 150 },
+  markPaper: { backgroundColor: colors.panel, borderCurve: "continuous", borderRadius: radii.md, height: 52, left: 34, position: "absolute", top: 34, width: 52 },
+  privacy: { alignItems: "center", backgroundColor: colors.quietSurface, borderCurve: "continuous", borderRadius: radii.md, flexDirection: "row", gap: spacing.sm, padding: 14 },
+  privacyDot: { backgroundColor: colors.success, borderRadius: 5, height: 9, width: 9 },
+  privacyText: { color: "#4c463d", flex: 1, fontFamily: fonts.regular, fontSize: 13.5, lineHeight: 19 },
   root: { backgroundColor: colors.background, flex: 1 },
   scroll: {
     flexGrow: 1,
-    justifyContent: "space-between",
+    gap: spacing.md,
     paddingBottom: spacing.xl,
-    paddingHorizontal: layout.screenPadding,
-    paddingTop: (StatusBar.currentHeight ?? 24) + spacing.lg,
+    paddingHorizontal: layout.screenPadding + 6,
+    paddingTop: (StatusBar.currentHeight ?? 24) + spacing.xl,
   },
-  title: { color: colors.text, fontFamily: fonts.display, maxWidth: 600, ...typeScale.display },
-  top: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
-  trust: { color: colors.gold, fontFamily: fonts.body, fontWeight: "600", ...typeScale.eyebrow },
+  step: { alignItems: "center", flexDirection: "row", gap: 14 },
+  stepNumber: { alignItems: "center", backgroundColor: colors.panelRaised, borderRadius: 18, height: 36, justifyContent: "center", width: 36 },
+  stepNumberText: { color: colors.gold, fontFamily: fonts.extraBold, fontSize: 15 },
+  stepText: { color: colors.text, flex: 1, fontFamily: fonts.medium, fontSize: 15.5, lineHeight: 21 },
+  steps: { gap: 14, paddingTop: spacing.sm },
+  title: { color: colors.text, fontFamily: fonts.extraBold, ...typeScale.display },
 });

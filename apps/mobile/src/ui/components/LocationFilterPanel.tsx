@@ -20,6 +20,7 @@ export type LocationFilterPanelProps = {
   onSelect: (locationId: string | null) => void;
   onToggle: () => void;
   selectedLocationId: string | null;
+  showHeading?: boolean;
 };
 
 function PlaceRow({
@@ -59,6 +60,7 @@ export function LocationFilterPanel({
   onSelect,
   onToggle,
   selectedLocationId,
+  showHeading = true,
 }: LocationFilterPanelProps) {
   const [query, setQuery] = useState("");
   const allPlaces = [...countries, ...cities];
@@ -76,7 +78,7 @@ export function LocationFilterPanel({
 
   return (
     <View style={styles.section}>
-      <Pressable
+      {showHeading ? <Pressable
         accessibilityHint={expanded ? "Location choices are open" : "Opens location choices"}
         accessibilityLabel={`Location filter. ${selected?.label ?? "Any place"}`}
         accessibilityRole="button"
@@ -90,7 +92,7 @@ export function LocationFilterPanel({
           <Text style={styles.summary}>{selected?.label ?? "Any place"}</Text>
         </View>
         <Text accessibilityElementsHidden style={styles.chevron}>{expanded ? "⌃" : "⌄"}</Text>
-      </Pressable>
+      </Pressable> : null}
 
       {expanded ? (
         <View accessibilityRole="radiogroup" style={styles.content}>

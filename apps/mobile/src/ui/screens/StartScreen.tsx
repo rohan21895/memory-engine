@@ -70,7 +70,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: layout.screenPadding,
     paddingTop: (StatusBar.currentHeight ?? 24) + spacing.xxl,
   },
-  tile: { aspectRatio: 1, borderCurve: "continuous", borderRadius: radii.sm, flex: 1 },
+  tile: { aspectRatio: 1, borderCurve: "continuous", borderRadius: radii.sm, width: "31.8%" },
   tileCool: { backgroundColor: "#c9d3dd" },
   tileWarm: { backgroundColor: "#e2cdb8" },
   tiles: { flexDirection: "row", flexWrap: "wrap", gap: 6 },

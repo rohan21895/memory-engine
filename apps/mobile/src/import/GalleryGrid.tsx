@@ -34,10 +34,8 @@ import {
   FilterScreen,
   type FilterSelection,
   fonts,
-  HintBanner,
   LoadingState,
   PrimaryButton,
-  ScreenHeader,
   spacing,
   typeScale,
 } from "../ui";
@@ -70,7 +68,7 @@ type Props = {
 };
 
 type RelativeDatePreset = "all" | "week" | "month" | "year";
-type DatePreset = RelativeDatePreset | `month:${string}`;
+type DatePreset = RelativeDatePreset | `month:${string}` | `year:${string}`;
 const DATE_PRESETS: { key: DatePreset; label: string }[] = [
   { key: "all", label: copy.filters.anyDate },
   { key: "week", label: copy.filters.week },
@@ -127,6 +125,15 @@ function dateBoundsFor(preset: DatePreset): {
       }
     }
   }
+  if (preset.startsWith("year:")) {
+    const year = Number(preset.slice("year:".length));
+    if (Number.isInteger(year) && year >= 1970 && year <= 9999) {
+      return {
+        createdAfter: new Date(year, 0, 1).getTime(),
+        createdBefore: new Date(year + 1, 0, 1).getTime() - 1,
+      };
+    }
+  }
   return {};
 }
 
@@ -172,11 +179,6 @@ const PhotoTile = memo(function PhotoTile({
           {selected ? "✓" : ""}
         </Text>
       </View>
-      {selected ? (
-        <View style={styles.orderBadge}>
-          <Text style={styles.orderText}>{order}</Text>
-        </View>
-      ) : null}
     </Pressable>
   );
 });
@@ -208,7 +210,6 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const [peopleIndexPct, setPeopleIndexPct] = useState<number | null>(null);
   const [peopleIndexing, setPeopleIndexing] = useState(false);
   const [filterVisible, setFilterVisible] = useState(false);
-  const [showTip, setShowTip] = useState(true);
   const [busy, setBusy] = useState(false);
   const [reloading, setReloading] = useState(false);
   const peopleAvailable = useMemo(() => isFaceDetectionAvailable(), []);
@@ -700,21 +701,34 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     <GestureHandlerRootView style={styles.root}>
       <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <View style={styles.header}>
-        <ScreenHeader
-          backHint={copy.picker.backHint}
-          compact
-          helper={copy.picker.helper}
-          onBack={onBack}
-          step={1}
-          title={copy.picker.title}
-        />
-        {showTip ? (
-          <HintBanner
-            dismissLabel={copy.picker.dismissTip}
-            onDismiss={() => setShowTip(false)}
-            text={copy.picker.tip}
-          />
-        ) : null}
+        <View style={styles.topRow}>
+          <Pressable
+            accessibilityHint={copy.picker.backHint}
+            accessibilityRole="button"
+            onPress={onBack}
+            style={({ pressed }) => [styles.topAction, pressed ? styles.toolPressed : null]}
+          >
+            <Text style={styles.cancelLabel}>Cancel</Text>
+          </Pressable>
+          <View style={styles.steps}>
+            <Text style={styles.stepActive}>Pick</Text><Text style={styles.stepArrow}>→</Text>
+            <Text style={styles.stepIdle}>Review</Text><Text style={styles.stepArrow}>→</Text>
+            <Text style={styles.stepIdle}>Done</Text>
+          </View>
+          <Pressable
+            accessibilityHint={copy.picker.selectAllHint}
+            accessibilityLabel={copy.picker.selectAll}
+            accessibilityRole="button"
+            accessibilityState={{ busy, disabled: busy }}
+            disabled={busy}
+            onPress={() => void selectAll()}
+            style={({ pressed }) => [styles.topAction, pressed ? styles.toolPressed : null]}
+          >
+            <Text style={styles.textActionLabel}>{busy ? "Selecting…" : copy.picker.selectAll}</Text>
+          </Pressable>
+        </View>
+        <Text accessibilityRole="header" style={styles.title}>{copy.picker.title}</Text>
+        <Text style={styles.helper}>{copy.picker.helper}</Text>
         <View style={styles.toolbar}>
           <Pressable
             accessibilityHint={copy.picker.filterHint}
@@ -723,38 +737,16 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
             onPress={() => setFilterVisible(true)}
             style={({ pressed }) => [styles.toolButton, pressed ? styles.toolPressed : null]}
           >
-            <Text style={styles.filterIcon}>≡</Text>
-            <View>
-              <Text style={styles.toolLabel}>{copy.picker.filter}</Text>
-              {activeFilterCount > 0 ? (
-                <Text style={styles.toolDetail}>{copy.picker.filtersApplied(activeFilterCount)}</Text>
-              ) : null}
-            </View>
+            <Text style={styles.toolLabel}>{copy.picker.filter}</Text>
+            <Text style={activeFilterCount > 0 ? styles.toolDetail : styles.toolSummary}>
+              {activeFilterCount > 0 ? copy.picker.filtersApplied(activeFilterCount) : "All photos  ›"}
+            </Text>
           </Pressable>
-          <View style={styles.selectionActions}>
-            <Pressable
-              accessibilityHint={copy.picker.selectAllHint}
-              accessibilityLabel={copy.picker.selectAll}
-              accessibilityRole="button"
-              accessibilityState={{ busy, disabled: busy }}
-              disabled={busy}
-              onPress={() => void selectAll()}
-              style={({ pressed }) => [styles.textAction, pressed ? styles.toolPressed : null]}
-            >
-              <Text style={styles.textActionLabel}>{busy ? copy.picker.busy : copy.picker.selectAll}</Text>
+          {count > 0 ? (
+            <Pressable accessibilityRole="button" onPress={clearSelection} style={styles.clearSelection}>
+              <Text style={styles.clearSelectionText}>Clear picks</Text>
             </Pressable>
-            {count > 0 ? (
-              <Pressable
-                accessibilityHint={copy.picker.clearHint}
-                accessibilityLabel={copy.picker.clear}
-                accessibilityRole="button"
-                onPress={clearSelection}
-                style={({ pressed }) => [styles.textAction, pressed ? styles.toolPressed : null]}
-              >
-                <Text style={styles.textActionLabel}>{copy.picker.clear}</Text>
-              </Pressable>
-            ) : null}
-          </View>
+          ) : null}
         </View>
       </View>
 
@@ -812,9 +804,6 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
       )}
 
       <View style={styles.footer}>
-        <Text accessibilityLiveRegion="polite" style={styles.footerCount}>
-          {count > 0 ? copy.picker.selected(count) : copy.picker.chooseOne}
-        </Text>
         <PrimaryButton
           accessibilityHint={copy.picker.nextHint}
           disabled={count === 0}
@@ -829,29 +818,40 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   header: {
-    gap: spacing.sm,
-    paddingBottom: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingTop: (StatusBar.currentHeight ?? 24) + spacing.sm,
+    gap: spacing.xs,
+    paddingBottom: spacing.xs,
+    paddingHorizontal: 18,
+    paddingTop: (StatusBar.currentHeight ?? 24) + spacing.xs,
   },
-  toolbar: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
+  cancelLabel: { color: colors.muted, fontFamily: fonts.semibold, ...typeScale.small },
+  clearSelection: { alignSelf: "flex-end", minHeight: 30, paddingHorizontal: spacing.xs },
+  clearSelectionText: { color: colors.muted, fontFamily: fonts.semibold, ...typeScale.eyebrow },
+  helper: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14.5, lineHeight: 21 },
+  stepActive: { color: colors.gold, fontFamily: fonts.bold, fontSize: 12.5 },
+  stepArrow: { color: "#cbc4b8", fontFamily: fonts.bold, fontSize: 12.5 },
+  stepIdle: { color: "#b3aba0", fontFamily: fonts.bold, fontSize: 12.5 },
+  steps: { alignItems: "center", flexDirection: "row", gap: 6 },
+  title: { color: colors.text, fontFamily: fonts.extraBold, fontSize: 27, letterSpacing: -0.8, lineHeight: 32, paddingTop: spacing.xxs },
+  toolbar: { alignItems: "center", flexDirection: "row", gap: spacing.xs },
+  topAction: { alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 72 },
+  topRow: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
   toolButton: {
     alignItems: "center",
+    backgroundColor: colors.panel,
     borderColor: colors.hairline,
-    borderRadius: 10,
+    borderRadius: 24,
     borderWidth: 1,
+    flex: 1,
     flexDirection: "row",
-    gap: spacing.xs,
+    justifyContent: "space-between",
     minHeight: 48,
-    paddingHorizontal: spacing.sm,
+    paddingHorizontal: spacing.md,
   },
-  toolDetail: { color: colors.gold, fontFamily: fonts.body, ...typeScale.small },
-  filterIcon: { color: colors.gold, fontFamily: fonts.body, fontSize: 23, lineHeight: 25 },
-  toolLabel: { color: colors.text, fontFamily: fonts.body, fontWeight: "700", ...typeScale.label },
+  toolDetail: { color: colors.gold, fontFamily: fonts.semibold, ...typeScale.small },
+  toolLabel: { color: colors.text, fontFamily: fonts.semibold, ...typeScale.label },
+  toolSummary: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   toolPressed: { opacity: 0.58 },
-  selectionActions: { alignItems: "center", flexDirection: "row", gap: spacing.xs },
-  textAction: { justifyContent: "center", minHeight: 48, paddingHorizontal: spacing.xs },
-  textActionLabel: { color: colors.gold, fontFamily: fonts.body, ...typeScale.label },
+  textActionLabel: { color: colors.gold, fontFamily: fonts.semibold, ...typeScale.small },
   gridWrap: { flex: 1 },
   list: { paddingHorizontal: 0 },
   tile: { marginBottom: GAP, position: "relative" },
@@ -870,41 +870,24 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "rgba(20, 19, 17, 0.74)",
     borderColor: colors.text,
-    borderRadius: 16,
+    borderRadius: 12,
     borderWidth: 2,
-    height: 32,
+    height: 24,
     justifyContent: "center",
     position: "absolute",
     right: 7,
     top: 7,
-    width: 32,
+    width: 24,
   },
   checkBadgeOn: { backgroundColor: colors.gold, borderColor: colors.gold },
-  checkText: { color: colors.text, fontFamily: fonts.body, fontSize: 19, fontWeight: "700", lineHeight: 22 },
-  checkTextOn: { color: colors.ink },
-  orderBadge: {
-    alignItems: "center",
-    backgroundColor: colors.panel,
-    borderColor: colors.gold,
-    borderRadius: 12,
-    borderWidth: 1,
-    bottom: 7,
-    height: 24,
-    justifyContent: "center",
-    minWidth: 24,
-    paddingHorizontal: 5,
-    position: "absolute",
-    right: 7,
-  },
-  orderText: { color: colors.gold, fontFamily: fonts.body, fontSize: 14, fontWeight: "700" },
+  checkText: { color: colors.onAccent, fontFamily: fonts.bold, fontSize: 14, lineHeight: 16 },
+  checkTextOn: { color: colors.onAccent },
   footer: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.background,
     borderTopColor: colors.hairline,
     borderTopWidth: 1,
-    gap: spacing.xs,
     paddingBottom: spacing.lg,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
   },
-  footerCount: { color: colors.muted, fontFamily: fonts.body, textAlign: "center", ...typeScale.label },
 });

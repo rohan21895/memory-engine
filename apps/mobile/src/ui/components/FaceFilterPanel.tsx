@@ -23,6 +23,7 @@ export type FaceFilterPanelProps = {
   people: FaceFilterOption[];
   peopleAvailable: boolean;
   selectedPersonId: string | null;
+  showHeading?: boolean;
 };
 
 export function FaceFilterPanel({
@@ -33,6 +34,7 @@ export function FaceFilterPanel({
   people,
   peopleAvailable,
   selectedPersonId,
+  showHeading = true,
 }: FaceFilterPanelProps) {
   const [query, setQuery] = useState("");
   const selected = people.find((person) => person.id === selectedPersonId);
@@ -49,7 +51,7 @@ export function FaceFilterPanel({
 
   return (
     <View style={styles.section}>
-      <Pressable
+      {showHeading ? <Pressable
         accessibilityHint={expanded ? "Face choices are open" : "Opens face choices"}
         accessibilityLabel={`Face filter. ${selected ? selected.label : "Anyone"}`}
         accessibilityRole="button"
@@ -65,7 +67,7 @@ export function FaceFilterPanel({
           </Text>
         </View>
         <Text accessibilityElementsHidden style={styles.chevron}>{expanded ? "⌃" : "⌄"}</Text>
-      </Pressable>
+      </Pressable> : null}
 
       {expanded ? (
         <View style={styles.content}>
