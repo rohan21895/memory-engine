@@ -2,7 +2,7 @@ import { decode as decodeJpeg } from "jpeg-js";
 
 // Explicit extensions keep this pure module importable by Node's TS test runner.
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_PERCEPTUAL_THRESHOLD, clusterFaces } from "./face-cluster.ts";
+import { DEFAULT_PERCEPTUAL_THRESHOLD, clusterFaces, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { detectFaces, isFaceDetectionAvailable, type FaceBox } from "./face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -546,6 +546,13 @@ function rebuildPeople(threshold: number): void {
   index.people = peopleFromObservations(index.observations, index.threshold);
 }
 
+function appendPeople(observations: FaceObservation[]): void {
+  index.people = extendFaceClusters(index.people, observations, {
+    threshold: index.threshold,
+    perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
+  });
+}
+
 async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
   try {
     await loadFaceIndex();
@@ -594,6 +601,7 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
           embedFace: createFaceEmbedding,
         });
         index.observations.push(...observations);
+        appendPeople(observations);
         for (const asset of pending) {
           index.processedAssetIds[asset.id] = true;
         }

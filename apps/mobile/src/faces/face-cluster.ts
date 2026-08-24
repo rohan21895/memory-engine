@@ -52,6 +52,11 @@ export function updateCentroid(
 
 type MutablePerson = Person & { assetIdSet: Set<string> };
 
+type ClusterOptions = {
+  threshold?: number;
+  perceptualThreshold?: number;
+};
+
 /**
  * Greedy online clustering against each existing centroid.
  *
@@ -61,7 +66,19 @@ type MutablePerson = Person & { assetIdSet: Set<string> };
  */
 export function clusterFaces(
   observations: FaceObservation[],
-  opts: { threshold?: number; perceptualThreshold?: number } = {},
+  opts: ClusterOptions = {},
+): Person[] {
+  return extendFaceClusters([], observations, opts);
+}
+
+/**
+ * Adds one resumable scan batch to existing clusters without waiting for the
+ * complete photo library. Existing ids remain stable and all inputs are copied.
+ */
+export function extendFaceClusters(
+  existing: Person[],
+  observations: FaceObservation[],
+  opts: ClusterOptions = {},
 ): Person[] {
   const identityThreshold = Number.isFinite(opts.threshold)
     ? (opts.threshold as number)
@@ -69,7 +86,12 @@ export function clusterFaces(
   const perceptualThreshold = Number.isFinite(opts.perceptualThreshold)
     ? (opts.perceptualThreshold as number)
     : DEFAULT_PERCEPTUAL_THRESHOLD;
-  const people: MutablePerson[] = [];
+  const people: MutablePerson[] = existing.map((person) => ({
+    ...person,
+    assetIds: person.assetIds.slice(),
+    centroid: person.centroid.slice(),
+    assetIdSet: new Set(person.assetIds),
+  }));
 
   for (const observation of observations) {
     let bestIndex = -1;

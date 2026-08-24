@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { clusterFaces } from "./face-cluster.ts";
+import { clusterFaces, extendFaceClusters } from "./face-cluster.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -44,6 +44,20 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 assert(clusterFaces([]).length === 0, "empty input should return an empty array");
+
+{
+  const firstBatch = clusterFaces([
+    { assetId: "photo-a", embedding: [1, 0], embeddingKind: "identity" },
+  ]);
+  const people = extendFaceClusters(firstBatch, [
+    { assetId: "photo-b", embedding: [0.9, 0.1], embeddingKind: "identity" },
+    { assetId: "photo-c", embedding: [0, 1], embeddingKind: "identity" },
+  ]);
+  assert(people.length === 2, "incremental batches should extend existing clusters");
+  assert(people[0].id === "person-1", "existing person ids must remain stable");
+  assert(people[0].faceCount === 2, "the incremental match updates the centroid cluster");
+  assert(people[1].id === "person-2", "new people receive deterministic ids");
+}
 
 {
   const people = clusterFaces([
