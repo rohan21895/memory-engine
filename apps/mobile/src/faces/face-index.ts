@@ -29,6 +29,12 @@ export type FaceIndexPerson = {
   faceCount: number;
   coverAssetId: string;
   assetIds: string[];
+  /**
+   * Persisted circular face-crop thumbnail (file:// or data: URI) for the Face
+   * filter avatars. Optional: undefined until the face index has cropped one;
+   * the UI falls back to `coverAssetId`'s full-frame content URI.
+   */
+  faceThumbUri?: string;
 };
 
 export type FaceIndexStatus = {
