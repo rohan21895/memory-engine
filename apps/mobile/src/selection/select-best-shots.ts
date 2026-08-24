@@ -1,20 +1,94 @@
 import type { PickedPhoto } from "../import/picked-photo";
 
+// @ts-expect-error Node requires the extension; Metro resolves this path too.
+import { bestSmile, significantFaces, worstEyesOpen } from "./quality-signals.ts";
+import type { Category, QualitySignals } from "./quality-signals";
 import type { AlbumData, Alt, Pool, Selected } from "./types";
 
 const NEAR_DUPLICATE_COSINE = 0.92;
 const LUMA_FEATURE_COUNT = 64;
+const SIGNIFICANT_FACE_AREA = 0.005;
+const ALL_EYES_OPEN_THRESHOLD = 0.5;
+const BLINK_REJECTION_THRESHOLD = 0.35;
+const SMILE_TIE_BAND = 0.02;
+
+type CategoryWeights = {
+  sharpness: number;
+  resolution: number;
+  eyesOpen: number;
+  smile: number;
+  exposure: number;
+  clipping: number;
+  cutFacePenalty: number;
+};
+
+/**
+ * Portraits prioritize face expression; detail/scene frames prioritize pixels.
+ * Group shots retain a strong eye-open term while allowing more face-edge risk.
+ */
+const CATEGORY_WEIGHTS: Record<Category, CategoryWeights> = {
+  portrait: {
+    sharpness: 0.38,
+    resolution: 0.05,
+    eyesOpen: 0.25,
+    smile: 0.12,
+    exposure: 0.1,
+    clipping: 0.1,
+    cutFacePenalty: 0.22,
+  },
+  couple: {
+    sharpness: 0.36,
+    resolution: 0.05,
+    eyesOpen: 0.27,
+    smile: 0.12,
+    exposure: 0.1,
+    clipping: 0.1,
+    cutFacePenalty: 0.18,
+  },
+  group: {
+    sharpness: 0.42,
+    resolution: 0.08,
+    eyesOpen: 0.24,
+    smile: 0.05,
+    exposure: 0.11,
+    clipping: 0.1,
+    cutFacePenalty: 0.1,
+  },
+  detail: {
+    sharpness: 0.58,
+    resolution: 0.16,
+    eyesOpen: 0,
+    smile: 0,
+    exposure: 0.13,
+    clipping: 0.13,
+    cutFacePenalty: 0.05,
+  },
+  scene: {
+    sharpness: 0.55,
+    resolution: 0.18,
+    eyesOpen: 0,
+    smile: 0,
+    exposure: 0.14,
+    clipping: 0.13,
+    cutFacePenalty: 0.03,
+  },
+};
 
 type AnalyzedPhoto = PickedPhoto & {
   embedding?: unknown;
+  analysis?: QualitySignals;
 };
 
 type Candidate = {
-  photo: PickedPhoto;
+  photo: AnalyzedPhoto;
   inputIndex: number;
   embedding?: number[];
+  analysis?: QualitySignals;
   quality: number;
   detailScore?: number;
+  sharpness?: number;
+  eyesOpen?: number;
+  smile?: number;
   pixels: number;
 };
 
@@ -26,6 +100,8 @@ type Take = {
 type RankedTake = {
   take: Take;
   winner: Candidate;
+  blinkGateEnabled: boolean;
+  blinkRejectedIds: Set<string>;
 };
 
 /**
@@ -33,11 +109,17 @@ type RankedTake = {
  * only on-device image signals and source metadata.
  */
 export function selectBestShots(
-  photos: PickedPhoto[],
+  photos: AnalyzedPhoto[],
   opts: { count: number },
 ): AlbumData {
   const candidates = buildCandidates(photos);
-  const requestedCount = normalizeCount(opts.count, candidates.length > 0);
+  const eligibleCandidates = candidates.filter(
+    (candidate) => !candidate.analysis?.isScreenshotOrDocument,
+  );
+  const requestedCount = normalizeCount(
+    opts.count,
+    eligibleCandidates.length > 0,
+  );
 
   if (candidates.length === 0) {
     return {
@@ -47,7 +129,7 @@ export function selectBestShots(
     };
   }
 
-  const rankedTakes = buildTakes(candidates)
+  const rankedTakes = buildTakes(eligibleCandidates)
     .map(rankTake)
     .sort(compareRankedTakes);
   const chosenTakes = rankedTakes.slice(
@@ -71,25 +153,25 @@ export function selectBestShots(
     }
   }
 
-  const selected: Selected[] = chosenTakes.map(
-    ({ take, winner }, index) => ({
-      media_id: winner.photo.id,
-      page: index + 1,
-      chosen_because: chosenReasons(winner, take.candidates.length),
-      alternatives: alternativesFor(take, winner),
-    }),
-  );
+  const selected: Selected[] = chosenTakes.map((rankedTake, index) => ({
+    media_id: rankedTake.winner.photo.id,
+    page: index + 1,
+    chosen_because: chosenReasons(rankedTake.winner, rankedTake.take),
+    alternatives: alternativesFor(rankedTake),
+  }));
 
   const pool: Pool[] = candidates
     .filter((candidate) => !selectedIds.has(candidate.photo.id))
     .map((candidate) => ({
       media_id: candidate.photo.id,
       quality: roundScore(candidate.quality),
-      reasons: poolReasons(
-        candidate,
-        takeByMediaId.get(candidate.photo.id),
-        selectedTakeByMediaId.has(candidate.photo.id),
-      ),
+      reasons: candidate.analysis?.isScreenshotOrDocument
+        ? ["Screenshot excluded from automatic album selection."]
+        : poolReasons(
+            candidate,
+            takeByMediaId.get(candidate.photo.id),
+            selectedTakeByMediaId.has(candidate.photo.id),
+          ),
     }));
 
   return {
@@ -102,7 +184,7 @@ export function selectBestShots(
   };
 }
 
-function buildCandidates(photos: PickedPhoto[]): Candidate[] {
+function buildCandidates(photos: AnalyzedPhoto[]): Candidate[] {
   const seenIds = new Set<string>();
   const candidates: Candidate[] = [];
 
@@ -115,12 +197,32 @@ function buildCandidates(photos: PickedPhoto[]): Candidate[] {
     const embedding = readEmbedding(photo);
     const detailScore = thumbnailDetailScore(embedding);
     const pixels = sourcePixels(photo);
+    const analysis = photo.analysis;
+    const faces = analysis
+      ? significantFaces(analysis.faces, SIGNIFICANT_FACE_AREA)
+      : [];
+    const eyesOpen = analysis ? worstEyesOpen(faces) : undefined;
+    const smile = analysis ? bestSmile(faces) : undefined;
+    const sharpness = unitSignal(analysis?.sharpness);
     candidates.push({
       photo,
       inputIndex,
       embedding,
-      quality: qualityScore(detailScore, pixels),
+      analysis,
+      quality: analysis
+        ? enhancedQualityScore({
+            analysis,
+            detailScore,
+            sharpness,
+            eyesOpen,
+            smile,
+            pixels,
+          })
+        : legacyQualityScore(detailScore, pixels),
       detailScore,
+      sharpness,
+      eyesOpen,
+      smile,
       pixels,
     });
   });
@@ -154,17 +256,53 @@ function buildTakes(candidates: Candidate[]): Take[] {
 }
 
 function rankTake(take: Take): RankedTake {
-  const winner = [...take.candidates].sort(compareCandidates)[0];
-  return { take, winner };
+  const blinkGateEnabled = take.candidates.some(
+    (candidate) =>
+      candidate.eyesOpen !== undefined &&
+      candidate.eyesOpen >= ALL_EYES_OPEN_THRESHOLD,
+  );
+  const blinkRejectedIds = new Set(
+    blinkGateEnabled
+      ? take.candidates
+          .filter(
+            (candidate) =>
+              candidate.eyesOpen !== undefined &&
+              candidate.eyesOpen < BLINK_REJECTION_THRESHOLD,
+          )
+          .map((candidate) => candidate.photo.id)
+      : [],
+  );
+  const eligible = take.candidates.filter(
+    (candidate) => !blinkRejectedIds.has(candidate.photo.id),
+  );
+  const winner = [...eligible].sort(compareCandidates)[0];
+  return { take, winner, blinkGateEnabled, blinkRejectedIds };
 }
 
 function compareCandidates(left: Candidate, right: Candidate): number {
+  const smileDifference = smileTieBreak(left, right);
   return (
+    smileDifference ||
     right.quality - left.quality ||
     right.pixels - left.pixels ||
     left.inputIndex - right.inputIndex ||
     left.photo.id.localeCompare(right.photo.id)
   );
+}
+
+function smileTieBreak(left: Candidate, right: Candidate): number {
+  if (
+    !isSmileCategory(left.analysis?.category) ||
+    !isSmileCategory(right.analysis?.category) ||
+    left.smile === undefined ||
+    right.smile === undefined ||
+    Math.round(left.quality / SMILE_TIE_BAND) !==
+      Math.round(right.quality / SMILE_TIE_BAND)
+  ) {
+    return 0;
+  }
+
+  return right.smile - left.smile;
 }
 
 function compareRankedTakes(left: RankedTake, right: RankedTake): number {
@@ -174,21 +312,82 @@ function compareRankedTakes(left: RankedTake, right: RankedTake): number {
   );
 }
 
-function alternativesFor(take: Take, winner: Candidate): Alt[] {
+function alternativesFor(rankedTake: RankedTake): Alt[] {
+  const { take, winner } = rankedTake;
   return take.candidates
     .filter((candidate) => candidate.photo.id !== winner.photo.id)
     .sort(compareCandidates)
     .map((candidate) => ({
       media_id: candidate.photo.id,
-      not_chosen_because: [
-        `Near-duplicate of the chosen frame (cosine similarity ${formatSimilarity(
-          cosineSimilarity(candidate.embedding, winner.embedding),
-        )}).`,
-      ],
+      not_chosen_because: candidateNotChosenReasons(
+        candidate,
+        winner,
+        rankedTake,
+      ),
     }));
 }
 
-function chosenReasons(winner: Candidate, takeSize: number): string[] {
+function chosenReasons(winner: Candidate, take: Take): string[] {
+  if (!winner.analysis) {
+    return legacyChosenReasons(winner, take.candidates.length);
+  }
+
+  const reasons: string[] = [];
+  const summary: string[] = [];
+  if (
+    winner.eyesOpen !== undefined &&
+    winner.eyesOpen >= ALL_EYES_OPEN_THRESHOLD
+  ) {
+    summary.push("all known significant faces have open eyes");
+  }
+  if (
+    take.candidates.length > 1 &&
+    winner.sharpness !== undefined &&
+    isSharpest(winner, take.candidates)
+  ) {
+    summary.push(`sharpest of ${take.candidates.length} near-duplicates`);
+  }
+
+  if (take.candidates.length > 1) {
+    reasons.push(
+      summary.length > 0
+        ? `${capitalize(summary.join("; "))}.`
+        : `Highest ${winner.analysis.category}-weighted quality among ${take.candidates.length} near-duplicate frames.`,
+    );
+  } else {
+    reasons.push(
+      "Selected from a distinct visual take to keep the album varied.",
+    );
+  }
+
+  if (winner.sharpness !== undefined) {
+    reasons.push(`Pixel sharpness: ${formatPercent(winner.sharpness)}.`);
+  } else if (winner.detailScore !== undefined) {
+    reasons.push(
+      `No pixel sharpness was available; thumbnail contrast/detail proxy: ${formatPercent(winner.detailScore)}.`,
+    );
+  }
+  if (winner.eyesOpen !== undefined) {
+    reasons.push(
+      `Worst known significant-face eye-open signal: ${formatPercent(winner.eyesOpen)}.`,
+    );
+  }
+  if (isSmileCategory(winner.analysis.category) && winner.smile !== undefined) {
+    reasons.push(`Best smile signal: ${formatPercent(winner.smile)}.`);
+  }
+  if (winner.analysis.anyFaceCutAtEdge) {
+    reasons.push(
+      `A face touches the frame edge; the ${winner.analysis.category} cut-face penalty was applied.`,
+    );
+  }
+  if (winner.pixels > 0) {
+    reasons.push(`${(winner.pixels / 1_000_000).toFixed(1)} MP source resolution.`);
+  }
+
+  return reasons;
+}
+
+function legacyChosenReasons(winner: Candidate, takeSize: number): string[] {
   const reasons = [
     takeSize > 1
       ? `Strongest thumbnail-detail proxy among ${takeSize} near-duplicate frames.`
@@ -209,6 +408,50 @@ function chosenReasons(winner: Candidate, takeSize: number): string[] {
   return reasons;
 }
 
+function candidateNotChosenReasons(
+  candidate: Candidate,
+  winner: Candidate,
+  rankedTake: RankedTake,
+): string[] {
+  if (!candidate.analysis && !winner.analysis) {
+    return [legacyNearDuplicateReason(candidate, winner)];
+  }
+
+  const reasons: string[] = [];
+  if (rankedTake.blinkRejectedIds.has(candidate.photo.id)) {
+    reasons.push(
+      `Rejected: subject blinking (${formatPercent(candidate.eyesOpen ?? 0)} eye-open, below the ${formatPercent(BLINK_REJECTION_THRESHOLD)} gate).`,
+    );
+  }
+  if (
+    candidate.analysis?.anyFaceCutAtEdge &&
+    !winner.analysis?.anyFaceCutAtEdge
+  ) {
+    reasons.push("Rejected: face cut at frame edge.");
+  }
+  if (
+    candidate.sharpness !== undefined &&
+    winner.sharpness !== undefined &&
+    candidate.sharpness + 0.01 < winner.sharpness
+  ) {
+    reasons.push(
+      `Rejected: blurrier than the chosen frame (${formatPercent(candidate.sharpness)} vs ${formatPercent(winner.sharpness)} sharpness).`,
+    );
+  }
+  if (
+    isSmileCategory(candidate.analysis?.category) &&
+    candidate.smile !== undefined &&
+    winner.smile !== undefined &&
+    candidate.smile + 0.05 < winner.smile
+  ) {
+    reasons.push(
+      `Lower smile signal than the chosen frame (${formatPercent(candidate.smile)} vs ${formatPercent(winner.smile)}).`,
+    );
+  }
+  reasons.push(legacyNearDuplicateReason(candidate, winner));
+  return reasons;
+}
+
 function poolReasons(
   candidate: Candidate,
   rankedTake: RankedTake | undefined,
@@ -218,12 +461,45 @@ function poolReasons(
     return ["No valid take information was available for this frame."];
   }
 
+  if (!candidate.analysis && !rankedTake.winner.analysis) {
+    return legacyPoolReasons(candidate, rankedTake, selectedTake);
+  }
+
   if (selectedTake) {
-    return [
-      `Near-duplicate of the chosen frame (cosine similarity ${formatSimilarity(
-        cosineSimilarity(candidate.embedding, rankedTake.winner.embedding),
-      )}).`,
-    ];
+    return candidateNotChosenReasons(
+      candidate,
+      rankedTake.winner,
+      rankedTake,
+    );
+  }
+
+  const reasons: string[] = [];
+  if (candidate.photo.id !== rankedTake.winner.photo.id) {
+    reasons.push(
+      ...candidateNotChosenReasons(candidate, rankedTake.winner, rankedTake),
+    );
+    reasons.push(
+      "The album target was already filled with stronger frames from distinct takes.",
+    );
+    return reasons;
+  }
+
+  if (candidate.analysis?.anyFaceCutAtEdge) {
+    reasons.push("A face cut at the frame edge lowered this frame's quality.");
+  }
+  reasons.push(
+    "The album target was already filled with stronger frames from distinct takes.",
+  );
+  return reasons;
+}
+
+function legacyPoolReasons(
+  candidate: Candidate,
+  rankedTake: RankedTake,
+  selectedTake: boolean,
+): string[] {
+  if (selectedTake) {
+    return [legacyNearDuplicateReason(candidate, rankedTake.winner)];
   }
 
   if (candidate.photo.id !== rankedTake.winner.photo.id) {
@@ -238,8 +514,17 @@ function poolReasons(
   ];
 }
 
-function readEmbedding(photo: PickedPhoto): number[] | undefined {
-  const raw = (photo as AnalyzedPhoto).embedding;
+function legacyNearDuplicateReason(
+  candidate: Candidate,
+  winner: Candidate,
+): string {
+  return `Near-duplicate of the chosen frame (cosine similarity ${formatSimilarity(
+    cosineSimilarity(candidate.embedding, winner.embedding),
+  )}).`;
+}
+
+function readEmbedding(photo: AnalyzedPhoto): number[] | undefined {
+  const raw = photo.embedding;
   if (!Array.isArray(raw) || raw.length === 0) {
     return undefined;
   }
@@ -296,8 +581,11 @@ function sourcePixels(photo: PickedPhoto): number {
   return width !== undefined && height !== undefined ? width * height : 0;
 }
 
-function qualityScore(detailScore: number | undefined, pixels: number): number {
-  const resolutionScore = pixels > 0 ? clamp01(Math.sqrt(pixels / 12_000_000)) : undefined;
+function legacyQualityScore(
+  detailScore: number | undefined,
+  pixels: number,
+): number {
+  const resolutionScore = resolutionQuality(pixels);
 
   if (detailScore !== undefined && resolutionScore !== undefined) {
     return clamp01(detailScore * 0.85 + resolutionScore * 0.15);
@@ -309,6 +597,80 @@ function qualityScore(detailScore: number | undefined, pixels: number): number {
     return 0.25 + resolutionScore * 0.5;
   }
   return 0.5;
+}
+
+function enhancedQualityScore(input: {
+  analysis: QualitySignals;
+  detailScore: number | undefined;
+  sharpness: number | undefined;
+  eyesOpen: number | undefined;
+  smile: number | undefined;
+  pixels: number;
+}): number {
+  const { analysis, detailScore, sharpness, eyesOpen, smile, pixels } = input;
+  const weights = CATEGORY_WEIGHTS[analysis.category];
+  const components: Array<[number, number | undefined]> = [
+    [weights.sharpness, sharpness ?? detailScore],
+    [weights.resolution, resolutionQuality(pixels)],
+    [weights.eyesOpen, eyesOpen],
+    [weights.smile, smile],
+    [weights.exposure, exposureQuality(unitSignal(analysis.exposure))],
+    [weights.clipping, inverseSignal(analysis.clippedFraction)],
+  ];
+  let weightedTotal = 0;
+  let availableWeight = 0;
+
+  for (const [weight, value] of components) {
+    if (weight > 0 && value !== undefined) {
+      weightedTotal += weight * value;
+      availableWeight += weight;
+    }
+  }
+
+  if (availableWeight === 0) {
+    return legacyQualityScore(detailScore, pixels);
+  }
+
+  const cutAtEdge =
+    analysis.anyFaceCutAtEdge || analysis.faces.some((face) => face.cutAtEdge);
+  const cutPenalty = cutAtEdge ? weights.cutFacePenalty : 0;
+  return clamp01(weightedTotal / availableWeight - cutPenalty);
+}
+
+function resolutionQuality(pixels: number): number | undefined {
+  return pixels > 0 ? clamp01(Math.sqrt(pixels / 12_000_000)) : undefined;
+}
+
+function exposureQuality(exposure: number | undefined): number | undefined {
+  return exposure === undefined
+    ? undefined
+    : clamp01(1 - Math.abs(exposure - 0.5) * 2);
+}
+
+function inverseSignal(value: number | undefined): number | undefined {
+  const signal = unitSignal(value);
+  return signal === undefined ? undefined : 1 - signal;
+}
+
+function unitSignal(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? clamp01(value)
+    : undefined;
+}
+
+function isSharpest(winner: Candidate, candidates: Candidate[]): boolean {
+  if (winner.sharpness === undefined) {
+    return false;
+  }
+  return candidates.every(
+    (candidate) =>
+      candidate.sharpness === undefined ||
+      candidate.sharpness <= winner.sharpness! + Number.EPSILON,
+  );
+}
+
+function isSmileCategory(category: Category | undefined): boolean {
+  return category === "portrait" || category === "couple";
 }
 
 function positiveNumber(value: number | undefined): number | undefined {
@@ -338,6 +700,14 @@ function albumId(photos: PickedPhoto[], count: number): string {
 
 function formatSimilarity(similarity: number): string {
   return clamp01(similarity).toFixed(3);
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(clamp01(value) * 100)}%`;
+}
+
+function capitalize(value: string): string {
+  return value.length > 0 ? value[0].toUpperCase() + value.slice(1) : value;
 }
 
 function clamp01(value: number): number {
