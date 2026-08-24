@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BackHandler, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { FaceMatchMode } from "../../faces/face-filter";
 import type { DateFilterOption } from "../components/DateFilterPanel";
@@ -79,6 +80,7 @@ export function FilterScreen({
   peopleAvailable,
   peopleLoadingText,
 }: FilterScreenProps) {
+  const insets = useSafeAreaInsets();
   const [selection, setSelection] = useState<FilterSelection>(initialSelection);
   const [photoCount, setPhotoCount] = useState<number | null>(null);
   const [faceVisible, setFaceVisible] = useState(false);
@@ -199,7 +201,7 @@ export function FilterScreen({
         </View>
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: Math.max(spacing.lg, insets.bottom + spacing.sm) }]}>
         <View style={styles.clear}><SecondaryButton accessibilityHint="Removes every filter" label="Clear all" onPress={clearAll} /></View>
         <View style={styles.apply}><PrimaryButton accessibilityHint="Applies these filters" busy={photoCount === null} label={countLabel} onPress={() => onApply(selection)} /></View>
       </View>

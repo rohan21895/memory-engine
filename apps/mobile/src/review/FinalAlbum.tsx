@@ -1,6 +1,7 @@
 import { Image } from "expo-image";
 import { useState } from "react";
 import { Pressable, StatusBar, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, fonts, spacing, typeScale } from "../ui";
 
@@ -37,11 +38,12 @@ export default function FinalAlbum({
   onTitleChange?: (title: string) => void;
   title?: string;
 }) {
+  const insets = useSafeAreaInsets();
   const [draftTitle, setDraftTitle] = useState(title);
   const updateTitle = (next: string) => setDraftTitle(next);
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { paddingBottom: Math.max(spacing.lg, insets.bottom + spacing.sm) }]}>
       <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <Pressable accessibilityLabel="Back to review" accessibilityRole="button" onPress={onBack} style={styles.back}>
         <Text style={styles.backText}>‹</Text>

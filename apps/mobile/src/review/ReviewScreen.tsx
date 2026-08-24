@@ -1,6 +1,7 @@
 import { Image } from "expo-image";
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
   colors,
@@ -66,6 +67,7 @@ export default function ReviewScreen({
   onBack?: () => void;
   onFinalize?: (photos: { media_id: string; uri: string; page: number }[]) => void;
 }) {
+  const insets = useSafeAreaInsets();
   const [swaps, setSwaps] = useState<Swaps>({});
   const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [added, setAdded] = useState<Set<string>>(new Set());
@@ -224,7 +226,7 @@ export default function ReviewScreen({
         ) : null}
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: Math.max(spacing.lg, insets.bottom + spacing.sm) }]}>
         <PrimaryButton
           accessibilityHint={copy.review.makeHint}
           disabled={gridItems.length === 0}
