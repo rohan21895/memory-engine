@@ -122,8 +122,24 @@ Build + install + validate after each model lands. Commit each.
   `onFinalize`, `PickedPhoto`, `ReviewData`) stable.
 - Every native/model call guarded → degrade to neutral, never crash (onnxruntime lesson).
 - Public repo: no media, no secrets, no `.env` in commits, no absolute home paths in code.
-- Prefer model licenses that are commercially usable (MoveNet Apache-2.0,
-  MobileFaceNet/MobileCLIP — check and record licenses in APP-STATUS.md; prefer
-  Apache/MIT; avoid non-commercial weights).
+- **LICENSE POLICY — OWNER OVERRIDE 2026-08-24:** this is NOT a commercial product
+  yet (personal use / testing), so **bundle the BEST-QUALITY model available for
+  each task regardless of license** — pick accuracy first. Research-only /
+  non-commercial weights ARE allowed for now. The ONLY requirement: record each
+  model's real license in `APP-STATUS.md` under a clearly labelled **"RELICENSE
+  BEFORE COMMERCIAL LAUNCH"** list, so the owner can swap or license them when the
+  app goes commercial. (This supersedes the earlier "avoid non-commercial weights"
+  guidance.)
+
+## Phase 4 — Real face identity (MobileFaceNet), do this now
+Bundle a real face-identity embedder — **MobileFaceNet / ArcFace-style .tflite**
+(pick the best-accuracy small model; research weights are fine per the override
+above) via `react-native-fast-tflite`. Crop each detected face (ML Kit box), embed
+it, and **upgrade `src/faces/face-cluster.ts` from the perceptual fingerprint to
+real identity embeddings** (cosine threshold ~0.5 for ArcFace-space). This makes
+the People filter and the planner's people-floor trustworthy (group the same
+person across photos reliably). Guarded/lazy as always — degrade to the perceptual
+fallback if the model can't load. Record the model source + license in APP-STATUS's
+RELICENSE list. Build, install, and verify people-grouping on the phone.
 - If a model won't run on this stack, degrade gracefully and record it — don't
   block the whole app on one model. The Phase-1 algorithm must work regardless.
