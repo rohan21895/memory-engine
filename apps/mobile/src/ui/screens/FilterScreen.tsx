@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BackHandler, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 
+import type { FaceMatchMode } from "../../faces/face-filter";
 import type { DateFilterOption } from "../components/DateFilterPanel";
 import { FaceFilterModal } from "../components/FaceFilterModal";
 import type { FaceFilterOption } from "../components/FaceFilterPanel";
@@ -14,8 +15,9 @@ import { colors, layout, radii, spacing, typeScale } from "../tokens";
 
 export type FilterSelection = {
   dateId: string;
+  faceMatchMode: FaceMatchMode;
   locationId: string | null;
-  personId: string | null;
+  personIds: string[];
 };
 
 export type FilterScreenProps = {
@@ -106,7 +108,7 @@ export function FilterScreen({
       });
   }, [countPhotos, selection]);
 
-  const selectedPerson = people.find((person) => person.id === selection.personId);
+  const selectedPeople = people.filter((person) => selection.personIds.includes(person.id));
   const places = [...countries, ...cities];
   const selectedPlace = places.find((place) => place.id === selection.locationId);
   const allDates = [...datePresets, ...months];
@@ -126,7 +128,7 @@ export function FilterScreen({
       ? [{ id: "all", label: "All time" }, ...yearOptions]
       : datePresets.filter((option) => ["all", "week", "month"].includes(option.id));
 
-  const clearAll = () => setSelection({ dateId: "all", locationId: null, personId: null });
+  const clearAll = () => setSelection({ dateId: "all", faceMatchMode: "any", locationId: null, personIds: [] });
   const countLabel = photoCount === null ? "Show photos" : `Show ${copy.filters.photoCount(photoCount)}`;
 
   return (
@@ -141,11 +143,17 @@ export function FilterScreen({
 
         <View style={styles.rows}>
           <ChoiceRow
-            detail={selectedPerson ? copy.filters.photoCount(selectedPerson.photoCount) : "Everyone in your photos"}
+            detail={selectedPeople.length === 0
+              ? "Everyone in your photos"
+              : selectedPeople.length === 1
+                ? copy.filters.photoCount(selectedPeople[0].photoCount)
+                : selection.faceMatchMode === "all"
+                  ? "Together in the same photo"
+                  : "In any of their photos"}
             icon="●"
             kind="Face"
             onPress={() => setFaceVisible(true)}
-            value={selectedPerson?.label ?? "Anyone"}
+            value={selectedPeople.length === 0 ? "Anyone" : selectedPeople.length === 1 ? selectedPeople[0].label : `${selectedPeople.length} people`}
           />
           <ChoiceRow
             detail={selectedPlace ? copy.filters.photoCount(selectedPlace.photoCount) : "Everywhere you’ve been"}
@@ -198,11 +206,19 @@ export function FilterScreen({
 
       <FaceFilterModal
         loadingText={peopleLoadingText}
+        matchMode={selection.faceMatchMode}
         onClose={() => setFaceVisible(false)}
-        onSelect={(personId) => setSelection((current) => ({ ...current, personId }))}
+        onMatchModeChange={(faceMatchMode) => setSelection((current) => ({ ...current, faceMatchMode }))}
+        onSelect={(personId) => setSelection((current) => {
+          if (personId === null) return { ...current, faceMatchMode: "any", personIds: [] };
+          const personIds = current.personIds.includes(personId)
+            ? current.personIds.filter((id) => id !== personId)
+            : current.personIds.concat(personId);
+          return { ...current, personIds };
+        })}
         people={people}
         peopleAvailable={peopleAvailable}
-        selectedPersonId={selection.personId}
+        selectedPersonIds={selection.personIds}
         visible={faceVisible}
       />
       <LocationFilterModal

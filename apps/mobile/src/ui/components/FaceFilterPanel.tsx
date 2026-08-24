@@ -1,5 +1,5 @@
 import { Image } from "expo-image";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { copy } from "../copy";
@@ -18,26 +18,30 @@ export type FaceFilterOption = {
 export type FaceFilterPanelProps = {
   expanded: boolean;
   loadingText?: string;
+  modeControl?: ReactNode;
   onSelect: (personId: string | null) => void;
   onToggle: () => void;
   people: FaceFilterOption[];
   peopleAvailable: boolean;
-  selectedPersonId: string | null;
+  selectedPersonIds: readonly string[];
   showHeading?: boolean;
+  selectionHint?: string;
 };
 
 export function FaceFilterPanel({
   expanded,
   loadingText,
+  modeControl,
   onSelect,
   onToggle,
   people,
   peopleAvailable,
-  selectedPersonId,
+  selectedPersonIds,
   showHeading = true,
+  selectionHint,
 }: FaceFilterPanelProps) {
   const [query, setQuery] = useState("");
-  const selected = people.find((person) => person.id === selectedPersonId);
+  const selected = people.filter((person) => selectedPersonIds.includes(person.id));
   const filteredPeople = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     if (!needle) return people;
@@ -53,7 +57,7 @@ export function FaceFilterPanel({
     <View style={styles.section}>
       {showHeading ? <Pressable
         accessibilityHint={expanded ? "Face choices are open" : "Opens face choices"}
-        accessibilityLabel={`Face filter. ${selected ? selected.label : "Anyone"}`}
+        accessibilityLabel={`Face filter. ${selected.length > 0 ? `${selected.length} selected` : "Anyone"}`}
         accessibilityRole="button"
         accessibilityState={{ expanded }}
         onPress={onToggle}
@@ -63,7 +67,7 @@ export function FaceFilterPanel({
         <View style={styles.headingCopy}>
           <Text accessibilityRole="header" style={styles.title}>Face</Text>
           <Text style={styles.summary}>
-            {selected ? `${selected.label} · ${copy.filters.photoCount(selected.photoCount)}` : "Anyone"}
+            {selected.length === 1 ? `${selected[0].label} · ${copy.filters.photoCount(selected[0].photoCount)}` : selected.length > 1 ? `${selected.length} people` : "Anyone"}
           </Text>
         </View>
         <Text accessibilityElementsHidden style={styles.chevron}>{expanded ? "⌃" : "⌄"}</Text>
@@ -80,30 +84,33 @@ export function FaceFilterPanel({
           <Pressable
             accessibilityHint="Removes the face filter"
             accessibilityLabel="Anyone"
-            accessibilityRole="radio"
-            accessibilityState={{ checked: selectedPersonId === null }}
+            accessibilityRole="button"
+            accessibilityState={{ selected: selectedPersonIds.length === 0 }}
             onPress={() => onSelect(null)}
             style={({ pressed }) => [
               styles.anyRow,
-              selectedPersonId === null ? styles.anyRowSelected : null,
+              selectedPersonIds.length === 0 ? styles.anyRowSelected : null,
               pressed ? styles.pressed : null,
             ]}
           >
-            <Text style={[styles.anyLabel, selectedPersonId === null ? styles.selectedText : null]}>
+            <Text style={[styles.anyLabel, selectedPersonIds.length === 0 ? styles.selectedText : null]}>
               Anyone
             </Text>
-            <Text style={styles.check}>{selectedPersonId === null ? "✓" : ""}</Text>
+            <Text style={styles.check}>{selectedPersonIds.length === 0 ? "✓" : ""}</Text>
           </Pressable>
 
+          {modeControl}
+          {selectionHint ? <Text style={styles.selectionHint}>{selectionHint}</Text> : null}
+
           {filteredPeople.length > 0 ? (
-            <View accessibilityRole="radiogroup" style={styles.grid}>
+            <View style={styles.grid}>
               {filteredPeople.map((person) => {
-                const isSelected = person.id === selectedPersonId;
+                const isSelected = selectedPersonIds.includes(person.id);
                 return (
                   <Pressable
                     accessibilityHint={`${person.label}. ${isSelected ? "Selected" : "Not selected"}`}
                     accessibilityLabel={`${person.label}. ${copy.filters.photoCount(person.photoCount)}`}
-                    accessibilityRole="radio"
+                    accessibilityRole="checkbox"
                     accessibilityState={{ checked: isSelected }}
                     key={person.id}
                     onPress={() => onSelect(person.id)}
@@ -189,6 +196,7 @@ const styles = StyleSheet.create({
   photoCount: { color: colors.muted, fontFamily: fonts.body, fontVariant: ["tabular-nums"], ...typeScale.small },
   pressed: { opacity: 0.62 },
   scanning: { color: colors.muted, fontFamily: fonts.body, ...typeScale.small },
+  selectionHint: { color: colors.muted, fontFamily: fonts.body, ...typeScale.small },
   section: {
     ...continuousRadius(radii.lg),
     backgroundColor: colors.panel,

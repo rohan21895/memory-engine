@@ -2,27 +2,31 @@ import { Modal, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 
 
 import { fonts } from "../fonts";
 import { colors, layout, spacing, typeScale } from "../tokens";
+import type { FaceMatchMode } from "../../faces/face-filter";
 import { FaceFilterPanel, type FaceFilterOption } from "./FaceFilterPanel";
 import { PrimaryButton } from "./PrimaryButton";
 
 export function FaceFilterModal({
   loadingText,
+  matchMode,
   onClose,
+  onMatchModeChange,
   onSelect,
   people,
   peopleAvailable,
-  selectedPersonId,
+  selectedPersonIds,
   visible,
 }: {
   loadingText?: string;
+  matchMode: FaceMatchMode;
   onClose: () => void;
+  onMatchModeChange: (mode: FaceMatchMode) => void;
   onSelect: (personId: string | null) => void;
   people: FaceFilterOption[];
   peopleAvailable: boolean;
-  selectedPersonId: string | null;
+  selectedPersonIds: readonly string[];
   visible: boolean;
 }) {
-  const selected = people.find((person) => person.id === selectedPersonId);
   return (
     <Modal animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet" visible={visible}>
       <View accessibilityViewIsModal style={styles.root}>
@@ -30,7 +34,7 @@ export function FaceFilterModal({
         <View style={styles.header}>
           <View>
             <Text accessibilityRole="header" style={styles.title}>Choose a person</Text>
-            <Text style={styles.helper}>Pick one person, or choose anyone.</Text>
+            <Text style={styles.helper}>Choose anyone, or pick several people.</Text>
           </View>
           <Pressable accessibilityLabel="Close person filter" accessibilityRole="button" onPress={onClose} style={styles.close}>
             <Text style={styles.closeText}>✕</Text>
@@ -40,18 +44,34 @@ export function FaceFilterModal({
           <FaceFilterPanel
             expanded
             loadingText={loadingText}
+            modeControl={(
+              <View style={styles.segmented}>
+                {([
+                  ["any", "In any of their photos"],
+                  ["all", "Together in the same photo"],
+                ] as const).map(([mode, label]) => {
+                  const active = matchMode === mode;
+                  return (
+                    <Pressable accessibilityRole="tab" accessibilityState={{ selected: active }} key={mode} onPress={() => onMatchModeChange(mode)} style={[styles.segment, active ? styles.segmentActive : null]}>
+                      <Text style={[styles.segmentText, active ? styles.segmentTextActive : null]}>{label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
             onSelect={onSelect}
             onToggle={() => undefined}
             people={people}
             peopleAvailable={peopleAvailable}
-            selectedPersonId={selectedPersonId}
+            selectedPersonIds={selectedPersonIds}
+            selectionHint="Pick as many people as you like. Tap a face again to remove it."
             showHeading={false}
           />
         </ScrollView>
         <View style={styles.footer}>
           <PrimaryButton
             accessibilityHint="Applies the person filter"
-            label={selected ? `Done · ${selected.label}` : "Done · Anyone"}
+            label={selectedPersonIds.length > 0 ? `Done · ${selectedPersonIds.length} ${selectedPersonIds.length === 1 ? "person" : "people"}` : "Done · Anyone"}
             onPress={onClose}
           />
         </View>
@@ -68,5 +88,10 @@ const styles = StyleSheet.create({
   header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingBottom: spacing.md, paddingHorizontal: layout.screenPadding, paddingTop: (StatusBar.currentHeight ?? 24) + spacing.md },
   helper: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   root: { backgroundColor: colors.panel, flex: 1 },
+  segment: { alignItems: "center", borderRadius: 10, flex: 1, justifyContent: "center", minHeight: 44, paddingHorizontal: spacing.xs },
+  segmentActive: { backgroundColor: colors.panel, borderColor: colors.gold, borderWidth: 1 },
+  segmented: { backgroundColor: "#f0eee8", borderRadius: 13, flexDirection: "row", gap: 4, padding: 4 },
+  segmentText: { color: colors.muted, fontFamily: fonts.bold, fontSize: 13, lineHeight: 17, textAlign: "center" },
+  segmentTextActive: { color: colors.gold },
   title: { color: colors.text, fontFamily: fonts.extraBold, ...typeScale.subtitle },
 });

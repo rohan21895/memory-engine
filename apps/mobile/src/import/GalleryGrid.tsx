@@ -25,6 +25,7 @@ import {
   personIdsForAsset,
   type FaceIndexPerson,
 } from "../faces/face-index";
+import { combinePersonAssetIds, type FaceMatchMode } from "../faces/face-filter";
 import {
   colors,
   copy,
@@ -205,7 +206,8 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const [indexPct, setIndexPct] = useState<number | null>(null);
   const [indexing, setIndexing] = useState(false);
   const [people, setPeople] = useState<FaceIndexPerson[]>([]);
-  const [personId, setPersonId] = useState<string | null>(null);
+  const [personIds, setPersonIds] = useState<string[]>([]);
+  const [faceMatchMode, setFaceMatchMode] = useState<FaceMatchMode>("any");
   const [filterVisible, setFilterVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [reloading, setReloading] = useState(false);
@@ -230,9 +232,8 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     return new Set(ids);
   }, [locId]);
   const personSet = useMemo(() => {
-    if (!personId) return null;
-    return new Set(assetIdsForPerson(personId));
-  }, [personId]);
+    return combinePersonAssetIds(personIds, faceMatchMode, assetIdsForPerson);
+  }, [faceMatchMode, personIds]);
 
   const visibleSet = useMemo(() => {
     if (!placeSet) return personSet;
@@ -364,7 +365,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   useEffect(() => {
     if (status !== "ready") return;
     void reload();
-  }, [status, datePreset, albumId, locId, personId, reload]);
+  }, [status, datePreset, albumId, locId, personIds, faceMatchMode, reload]);
 
   useEffect(() => {
     const m = seenAssets.current;
@@ -562,7 +563,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
 
   const count = selected.size;
   const activeFilterCount =
-    Number(datePreset !== "all") + Number(albumId !== null) + Number(locId !== null) + Number(personId !== null);
+    Number(datePreset !== "all") + Number(albumId !== null) + Number(locId !== null) + Number(personIds.length > 0);
 
   const filterPeople = useMemo(
     () => people.map((person, index) => ({
@@ -600,9 +601,11 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
               : assetIdsForCity(selection.locationId),
           )
         : null;
-      const pendingPersonSet = selection.personId
-        ? new Set(assetIdsForPerson(selection.personId))
-        : null;
+      const pendingPersonSet = combinePersonAssetIds(
+        selection.personIds,
+        selection.faceMatchMode,
+        assetIdsForPerson,
+      );
       const pendingVisibleSet = pendingPlaceSet
         ? pendingPersonSet
           ? new Set([...pendingPlaceSet].filter((id) => pendingPersonSet.has(id)))
@@ -642,14 +645,16 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     setDatePreset("all");
     setAlbumId(null);
     setLocId(null);
-    setPersonId(null);
+    setPersonIds([]);
+    setFaceMatchMode("any");
     setFilterVisible(false);
   }, []);
 
   const applyFilters = useCallback((selection: FilterSelection) => {
     setDatePreset(selection.dateId as DatePreset);
     setLocId(selection.locationId);
-    setPersonId(selection.personId);
+    setPersonIds(selection.personIds);
+    setFaceMatchMode(selection.faceMatchMode);
     setFilterVisible(false);
   }, []);
 
@@ -665,7 +670,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
           ? `Scanning dates…${indexPct === null ? "" : ` ${Math.round(indexPct * 100)}%`}`
           : undefined}
         datePresets={DATE_PRESETS.map((preset) => ({ id: preset.key, label: preset.label }))}
-        initialSelection={{ dateId: datePreset, locationId: locId, personId }}
+        initialSelection={{ dateId: datePreset, faceMatchMode, locationId: locId, personIds }}
         locationLoadingText={indexing
           ? copy.filters.scanningPlaces(indexPct === null ? undefined : Math.round(indexPct * 100))
           : undefined}
