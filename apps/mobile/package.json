@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@infinitered/react-native-mlkit-core": "^6.0.0",
+    "@infinitered/react-native-mlkit-face-detection": "^6.0.0",
     "@react-native-google-signin/google-signin": "^16.1.4",
     "@shopify/flash-list": "2.0.2",
     "expo": "~57.0.15",
