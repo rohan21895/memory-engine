@@ -40,7 +40,8 @@
         {
           "photosPermission": "Photeo reads your photos on this device to find your best shots. Nothing leaves the phone."
         }
-      ]
+      ],
+      "react-native-fast-tflite"
     ],
     "ios": {
       "supportsTablet": true,

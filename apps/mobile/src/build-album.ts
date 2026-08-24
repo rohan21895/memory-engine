@@ -3,6 +3,7 @@
 import { detectFaces, type FaceBox } from "./faces/face-detector";
 import type { PickedPhoto } from "./import/picked-photo";
 import { getModel } from "./ml";
+import { detectBodyPose } from "./ml/movenet";
 import type {
   ReviewAlternative,
   ReviewData,
@@ -10,6 +11,7 @@ import type {
   ReviewSelected,
 } from "./review/mock-data";
 import { measureImageQuality } from "./selection/image-quality";
+import { clusterPoses, makePose } from "./selection/pose";
 import {
   classifyCategory,
   isScreenshotOrDocument,
@@ -113,14 +115,37 @@ export async function buildAlbum(
   count = 24,
 ): Promise<ReviewData> {
   const model = getModel();
-  const enriched = await mapLimit(photos, ANALYZE_CONCURRENCY, async (photo) => {
-    const [result, boxes, quality] = await Promise.all([
+  const analyzed = await mapLimit(photos, ANALYZE_CONCURRENCY, async (photo) => {
+    const [result, boxes, quality, detectedPose] = await Promise.all([
       model.run(photo.uri),
       detectFaces(photo.uri).catch(() => [] as FaceBox[]),
       measureImageQuality(photo.uri).catch(() => ({})),
+      detectBodyPose(photo.uri),
     ]);
     return {
+      photo,
+      result,
+      boxes,
+      quality,
+      pose: detectedPose
+        ? makePose(detectedPose.keypoints, detectedPose.scores)
+        : undefined,
+    };
+  });
+
+  const poseLabels = clusterPoses(
+    analyzed
+      .map(({ photo, pose }) => [photo.id, pose] as const)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  ).labels;
+  const enriched = analyzed.map(({ photo, result, boxes, quality }) => {
+    const poseLabel = poseLabels.get(photo.id);
+    return {
       ...photo,
+      poseCluster:
+        poseLabel !== undefined && poseLabel >= 0
+          ? `movenet:${poseLabel}`
+          : photo.poseCluster,
       faces: result.faces,
       embedding: result.embedding,
       analysis: analyzePhoto(photo, boxes, quality),
