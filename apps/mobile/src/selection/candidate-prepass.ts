@@ -3,8 +3,11 @@ import type { MeasuredImageQuality } from "./image-quality";
 
 /** Normal-sized picks keep the existing all-photo analysis path unchanged. */
 export const CANDIDATE_PREPASS_THRESHOLD = 500;
-/** Bound the native face/pose/semantic work for unusually large selections. */
-export const HEAVY_ANALYSIS_CANDIDATE_LIMIT = 400;
+/**
+ * Measured on the beta Android device: the two TFLite runtimes serialize their
+ * queues, so 64 is the largest safe deep-analysis pool inside the time budget.
+ */
+export const HEAVY_ANALYSIS_CANDIDATE_LIMIT = 64;
 
 export type ProbedCandidate = {
   photo: PickedPhoto;

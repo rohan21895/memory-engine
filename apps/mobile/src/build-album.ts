@@ -20,6 +20,11 @@ import {
   HEAVY_ANALYSIS_CANDIDATE_LIMIT,
   type ProbedCandidate,
 } from "./selection/candidate-prepass";
+import {
+  prepareCandidateAnalysisProxy,
+  probeCandidateQuality,
+  removeCandidateAnalysisProxy,
+} from "./selection/candidate-quality-probe";
 import { measureImageQuality } from "./selection/image-quality";
 import { clusterPoses, makePose } from "./selection/pose";
 import {
@@ -37,10 +42,10 @@ const EDGE_FRACTION = 0.01;
 // concurrency so a large pick set can't spawn hundreds of native ops at once.
 // ponytail: fixed batch of 6; make adaptive only if build time becomes a problem.
 const ANALYZE_CONCURRENCY = 6;
-// The 64 px probe is substantially smaller than any model input. A little
+// The 32 px platform thumbnail is substantially smaller than any model input. A little
 // extra concurrency keeps large library screening I/O-bound without allowing
 // hundreds of image-manipulator operations to accumulate.
-const PREPASS_CONCURRENCY = 10;
+const PREPASS_CONCURRENCY = 32;
 const MAX_PREPASS_PROGRESS_UPDATES = 200;
 
 export type BuildAlbumProgress = {
@@ -132,9 +137,11 @@ function analyzePhoto(
   photo: PickedPhoto,
   boxes: FaceBox[],
   quality: { sharpness?: number; exposure?: number; clippedFraction?: number },
+  analysisWidth = photo.width,
+  analysisHeight = photo.height,
 ): QualitySignals {
-  const width = photo.width;
-  const height = photo.height;
+  const width = analysisWidth;
+  const height = analysisHeight;
   const haveDims =
     typeof width === "number" &&
     typeof height === "number" &&
@@ -177,8 +184,8 @@ function analyzePhoto(
     anyFaceCutAtEdge: faces.some((face) => face.cutAtEdge),
     isScreenshotOrDocument: isScreenshotOrDocument({
       filename: photo.filename,
-      width,
-      height,
+      width: photo.width,
+      height: photo.height,
     }),
     category: classifyCategory(faces.length, largestFaceAreaRatio),
   };
@@ -222,7 +229,7 @@ export async function buildAlbum(
       PREPASS_CONCURRENCY,
       async (photo): Promise<ProbedCandidate> => ({
         photo,
-        quality: await measureImageQuality(photo.uri).catch(() => ({})),
+        quality: await probeCandidateQuality(photo.uri),
       }),
       {
         signal: options.signal,
@@ -264,26 +271,56 @@ export async function buildAlbum(
     quality: probedQuality,
   }) => {
     throwIfCancelled(options.signal);
-    const [result, boxes, quality, detectedPose, semantic] = await Promise.all([
-      model.run(photo.uri),
-      detectFaces(photo.uri).catch(() => [] as FaceBox[]),
-      probedQuality
-        ? Promise.resolve(probedQuality)
-        : measureImageQuality(photo.uri).catch(() => ({})),
-      detectBodyPose(photo.uri),
-      analyzeSemanticImage(photo.uri, photo.width, photo.height),
-    ]);
-    throwIfCancelled(options.signal);
-    return {
-      photo,
-      result,
-      boxes,
-      quality,
-      pose: detectedPose
-        ? makePose(detectedPose.keypoints, detectedPose.scores)
-        : undefined,
-      semantic,
-    };
+    const proxy = capEngaged
+      ? await prepareCandidateAnalysisProxy(photo.uri)
+      : undefined;
+    try {
+      throwIfCancelled(options.signal);
+      // A failed large-photo proxy is treated like any guarded native failure;
+      // do not fall back to decoding the original and risk the Java heap.
+      if (capEngaged && !proxy) {
+        return {
+          photo,
+          result: { embedding: [], faces: 0 },
+          boxes: [] as FaceBox[],
+          quality: probedQuality ?? {},
+          pose: undefined,
+          semantic: undefined,
+          analysisWidth: photo.width,
+          analysisHeight: photo.height,
+        };
+      }
+
+      const analysisUri = proxy?.uri ?? photo.uri;
+      const analysisWidth = proxy?.width ?? photo.width;
+      const analysisHeight = proxy?.height ?? photo.height;
+      const [result, boxes, quality, detectedPose, semantic] = await Promise.all([
+        capEngaged
+          ? Promise.resolve({ embedding: [], faces: 0 })
+          : model.run(analysisUri),
+        detectFaces(analysisUri).catch(() => [] as FaceBox[]),
+        probedQuality
+          ? Promise.resolve(probedQuality)
+          : measureImageQuality(analysisUri).catch(() => ({})),
+        detectBodyPose(analysisUri),
+        analyzeSemanticImage(analysisUri, analysisWidth, analysisHeight),
+      ]);
+      throwIfCancelled(options.signal);
+      return {
+        photo,
+        result,
+        boxes,
+        quality,
+        pose: detectedPose
+          ? makePose(detectedPose.keypoints, detectedPose.scores)
+          : undefined,
+        semantic,
+        analysisWidth,
+        analysisHeight,
+      };
+    } finally {
+      await removeCandidateAnalysisProxy(proxy);
+    }
   }, {
     signal: options.signal,
     onComplete: (done) => {
@@ -305,9 +342,23 @@ export async function buildAlbum(
       .sort(([left], [right]) => left.localeCompare(right)),
   ).labels;
   const enriched = analyzed.map(
-    ({ photo, result, boxes, quality, semantic }) => {
+    ({
+      photo,
+      result,
+      boxes,
+      quality,
+      semantic,
+      analysisWidth,
+      analysisHeight,
+    }) => {
     const poseLabel = poseLabels.get(photo.id);
-    const analysis = analyzePhoto(photo, boxes, quality);
+    const analysis = analyzePhoto(
+      photo,
+      boxes,
+      quality,
+      analysisWidth,
+      analysisHeight,
+    );
     return {
       ...photo,
       poseCluster:
