@@ -18,6 +18,15 @@
       "expo-image",
       "expo-asset",
       [
+        "expo-font",
+        {
+          "fonts": [
+            "./assets/fonts/Fraunces.ttf",
+            "./assets/fonts/AtkinsonHyperlegibleNext.ttf"
+          ]
+        }
+      ],
+      [
         "expo-location",
         {
           "locationWhenInUsePermission": "Photeo uses photo locations to group your library by place. Nothing leaves the phone.",

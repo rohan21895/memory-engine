@@ -1,6 +1,18 @@
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
 
+import {
+  colors,
+  copy,
+  EmptyState,
+  fonts,
+  plainAlternativeReason,
+  plainChosenReason,
+  PrimaryButton,
+  ScreenHeader,
+  spacing,
+  typeScale,
+} from "../ui";
 import Lightbox, { type LightboxItem, type LightboxMode } from "./Lightbox";
 import ReviewGrid, { type ReviewGridItem } from "./ReviewGrid";
 import mockReviewData, {
@@ -9,14 +21,6 @@ import mockReviewData, {
   type ReviewMedia,
   type ReviewSelected,
 } from "./mock-data";
-
-const C = {
-  bg: "#141311",
-  line: "#2c2a25",
-  text: "#e8e4dc",
-  muted: "#9a927f",
-  gold: "#c8a24a",
-};
 
 type Swaps = Record<string, string>;
 
@@ -27,10 +31,8 @@ type ViewerState = {
 };
 
 function alternativeCaption(alternative: ReviewAlternative) {
-  const reason = alternative.not_chosen_because[0] ?? "Another strong photo.";
-  return alternative.fits_slot
-    ? reason
-    : `May not fit this slot safely. ${reason}`;
+  const reason = plainAlternativeReason(alternative.not_chosen_because);
+  return alternative.fits_slot ? reason : `${copy.review.notSafe} ${reason}`;
 }
 
 function alternativeItems(selected: ReviewSelected): LightboxItem[] {
@@ -38,13 +40,15 @@ function alternativeItems(selected: ReviewSelected): LightboxItem[] {
     {
       media_id: selected.media_id,
       uri: selected.uri,
-      caption: `Original pick — ${selected.chosen_because[0] ?? "Engine selection."}`,
+      caption: plainChosenReason(selected.chosen_because),
+      rawReasons: selected.chosen_because,
       slot_media_id: selected.media_id,
     },
     ...selected.alternatives.map((alternative) => ({
       media_id: alternative.media_id,
       uri: alternative.uri,
       caption: alternativeCaption(alternative),
+      rawReasons: alternative.not_chosen_because,
       slot_media_id: selected.media_id,
     })),
   ];
@@ -75,6 +79,9 @@ export default function ReviewScreen({
     () =>
       data.selected.map((selected) => {
         const replacementId = swaps[selected.media_id];
+        const replacement = replacementId
+          ? selected.alternatives.find((item) => item.media_id === replacementId)
+          : undefined;
         const shown =
           (replacementId ? mediaById.get(replacementId) : undefined) ?? selected;
         return {
@@ -83,12 +90,13 @@ export default function ReviewScreen({
           uri: shown.uri,
           page: selected.page,
           caption: replacementId
-            ? "Your choice for this page."
-            : (selected.chosen_because[0] ?? "Selected for this page."),
+            ? copy.review.changedReason
+            : plainChosenReason(selected.chosen_because),
+          rawReasons: replacement?.not_chosen_because ?? selected.chosen_because,
           isSwap: Boolean(replacementId),
         };
       }),
-    [mediaById, swaps],
+    [data.selected, mediaById, swaps],
   );
 
   const albumItems = useMemo<LightboxItem[]>(
@@ -96,7 +104,8 @@ export default function ReviewScreen({
       gridItems.map((item) => ({
         media_id: item.media_id,
         uri: item.uri,
-        caption: `Page ${item.page} — ${item.caption}`,
+        caption: item.caption,
+        rawReasons: item.rawReasons,
         slot_media_id: item.slot_media_id,
       })),
     [gridItems],
@@ -116,13 +125,10 @@ export default function ReviewScreen({
 
   const openAlternatives = useCallback(
     (item: LightboxItem) => {
-      const slotMediaId = item.slot_media_id;
       const selected = data.selected.find(
-        (candidate) => candidate.media_id === slotMediaId,
+        (candidate) => candidate.media_id === item.slot_media_id,
       );
-      if (!selected) {
-        return;
-      }
+      if (!selected) return;
 
       const items = alternativeItems(selected);
       const shownId = swaps[selected.media_id] ?? selected.media_id;
@@ -136,15 +142,13 @@ export default function ReviewScreen({
         slotMediaId: selected.media_id,
       });
     },
-    [data, swaps],
+    [data.selected, swaps],
   );
 
   const useThisPhoto = useCallback(
     (item: LightboxItem) => {
       const slotMediaId = viewer?.slotMediaId;
-      if (!slotMediaId) {
-        return;
-      }
+      if (!slotMediaId) return;
 
       setSwaps((current) => {
         if (item.media_id === slotMediaId) {
@@ -159,61 +163,67 @@ export default function ReviewScreen({
     [viewer?.slotMediaId],
   );
 
+  const finalize = useCallback(() => {
+    onFinalize?.(
+      gridItems.map((item) => ({
+        media_id: item.media_id,
+        uri: item.uri,
+        page: item.page,
+      })),
+    );
+  }, [gridItems, onFinalize]);
+
   const swapCount = Object.keys(swaps).length;
 
   return (
     <View style={styles.root}>
-      <StatusBar backgroundColor={C.bg} barStyle="light-content" />
+      <StatusBar backgroundColor={colors.background} barStyle="light-content" />
       <View style={styles.header}>
-        <View style={styles.headingCopy}>
-          {onBack ? (
-            <Pressable accessibilityRole="button" onPress={onBack} hitSlop={12}>
-              <Text style={styles.back}>‹ Back</Text>
+        <ScreenHeader
+          backHint={copy.review.backHint}
+          compact
+          helper={copy.review.helper}
+          onBack={onBack}
+          step={2}
+          title={copy.review.title}
+        />
+        <View style={styles.summaryRow}>
+          <Text style={styles.count}>{copy.review.count(gridItems.length)}</Text>
+          {swapCount > 0 ? (
+            <Pressable
+              accessibilityHint={copy.review.resetHint(swapCount)}
+              accessibilityLabel={copy.review.reset}
+              accessibilityRole="button"
+              onPress={() => setSwaps({})}
+              style={({ pressed }) => [styles.reset, pressed ? styles.pressed : null]}
+            >
+              <Text style={styles.resetText}>{copy.review.reset}</Text>
             </Pressable>
           ) : null}
-          <Text style={styles.eyebrow}>YOUR ALBUM</Text>
-          <Text style={styles.title}>Review the picks</Text>
-          <Text style={styles.subtitle}>
-            {data.selected.length} photos selected · Tap one to browse
-          </Text>
         </View>
-        {swapCount > 0 ? (
-          <Pressable
-            accessibilityLabel={`Reset ${swapCount} photo ${swapCount === 1 ? "change" : "changes"}`}
-            accessibilityRole="button"
-            onPress={() => setSwaps({})}
-            style={({ pressed }) => [styles.reset, pressed && styles.resetPressed]}
-          >
-            <Text style={styles.resetCount}>{swapCount}</Text>
-            <Text style={styles.resetLabel}>RESET</Text>
-          </Pressable>
-        ) : null}
       </View>
 
       <View style={styles.gridWrap}>
-        <ReviewGrid items={gridItems} onPressPhoto={openAlbum} />
+        {gridItems.length > 0 ? (
+          <ReviewGrid items={gridItems} onPressPhoto={openAlbum} />
+        ) : (
+          <EmptyState
+            actionHint={copy.review.backHint}
+            actionLabel={copy.common.goBack}
+            helper={copy.review.emptyHelper}
+            onAction={onBack}
+            title={copy.review.emptyTitle}
+          />
+        )}
       </View>
 
-      {onFinalize ? (
+      {onFinalize && gridItems.length > 0 ? (
         <View style={styles.footer}>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() =>
-              onFinalize(
-                gridItems.map((item) => ({
-                  media_id: item.media_id,
-                  uri: item.uri,
-                  page: item.page,
-                })),
-              )
-            }
-            style={({ pressed }) => [styles.create, pressed && styles.createPressed]}
-          >
-            <Text style={styles.createText}>
-              Create album · {gridItems.length} photo
-              {gridItems.length === 1 ? "" : "s"}
-            </Text>
-          </Pressable>
+          <PrimaryButton
+            accessibilityHint={copy.review.makeHint}
+            label={copy.review.make}
+            onPress={finalize}
+          />
         </View>
       ) : null}
 
@@ -231,48 +241,25 @@ export default function ReviewScreen({
 }
 
 const styles = StyleSheet.create({
-  root: { backgroundColor: C.bg, flex: 1 },
-  gridWrap: { flex: 1 },
+  count: { color: colors.muted, fontFamily: fonts.body, ...typeScale.small },
   footer: {
-    backgroundColor: C.bg,
-    borderTopColor: C.line,
+    backgroundColor: colors.panel,
+    borderTopColor: colors.hairline,
     borderTopWidth: 1,
-    paddingBottom: 30,
-    paddingHorizontal: 20,
-    paddingTop: 14,
+    paddingBottom: spacing.lg,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
   },
-  create: {
-    alignItems: "center",
-    backgroundColor: C.gold,
-    borderRadius: 8,
-    paddingVertical: 15,
-  },
-  createPressed: { opacity: 0.75 },
-  createText: { color: "#1a1712", fontSize: 16, fontWeight: "600" },
+  gridWrap: { flex: 1 },
   header: {
-    alignItems: "flex-end",
-    borderBottomColor: C.line,
-    borderBottomWidth: 1,
-    flexDirection: "row",
-    paddingBottom: 18,
-    paddingHorizontal: 20,
-    paddingTop: (StatusBar.currentHeight ?? 24) + 22,
+    gap: spacing.sm,
+    paddingBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingTop: (StatusBar.currentHeight ?? 24) + spacing.sm,
   },
-  headingCopy: { flex: 1, paddingRight: 12 },
-  back: { color: C.muted, fontSize: 14, marginBottom: 8 },
-  eyebrow: { color: C.gold, fontSize: 10, letterSpacing: 1.8 },
-  title: { color: C.text, fontSize: 28, fontWeight: "400", marginTop: 5 },
-  subtitle: { color: C.muted, fontSize: 13, lineHeight: 18, marginTop: 7 },
-  reset: {
-    alignItems: "center",
-    borderColor: C.gold,
-    borderRadius: 6,
-    borderWidth: 1,
-    minWidth: 54,
-    paddingHorizontal: 8,
-    paddingVertical: 7,
-  },
-  resetPressed: { opacity: 0.65 },
-  resetCount: { color: C.text, fontSize: 15 },
-  resetLabel: { color: C.gold, fontSize: 8, letterSpacing: 1, marginTop: 2 },
+  pressed: { opacity: 0.62 },
+  reset: { justifyContent: "center", minHeight: 48, paddingLeft: spacing.md },
+  resetText: { color: colors.gold, fontFamily: fonts.body, textDecorationLine: "underline", ...typeScale.small },
+  root: { backgroundColor: colors.background, flex: 1 },
+  summaryRow: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
 });
