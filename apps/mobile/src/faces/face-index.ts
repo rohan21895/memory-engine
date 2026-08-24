@@ -311,17 +311,58 @@ function validObservation(value: unknown): value is FaceObservation {
 
 export type FaceQualityTier = "seedable" | "assignable";
 
-/** Two-tier identity gate: poor faces are bridges that join distinct people. */
+/**
+ * Two-tier identity gate. Discarding the worst 10-20% of faces raises
+ * clustering F-score more than any threshold tuning does, because low-quality
+ * faces are the BRIDGES that chain two identities into one tile: a blurry
+ * 30px head lands near everything, so it links whoever it touches.
+ *
+ * Yaw is the sharpest of these. ML Kit only returns the full frontal landmark
+ * set within a modest yaw range; past roughly +/-36 degrees an eye and a mouth
+ * corner disappear, the ArcFace template alignment in ../ml/face-align.ts has
+ * nothing to fit, and the resulting embedding is noise.
+ */
+/** Box short side, in source pixels, required to seed a new person. */
+const SEEDABLE_MIN_FACE_PX = 64;
+/** Box short side as a fraction of the image's min dimension, to seed. */
+const SEEDABLE_MIN_IMAGE_RATIO = 0.04;
+/** Max |yaw| (degrees) that reliably keeps all five landmarks in frame. */
+const SEEDABLE_MAX_YAW_DEGREES = 30;
+/** Assignable faces may join an existing person but never create a tile. */
+const ASSIGNABLE_MIN_FACE_PX = 40;
+const ASSIGNABLE_MIN_IMAGE_RATIO = 0.03;
+/** Past this yaw alignment is impossible, so the face is dropped entirely. */
+const ASSIGNABLE_MAX_YAW_DEGREES = 45;
+
 export function faceQualityTier(
   asset: FaceScanAsset,
   box: FaceBox,
 ): FaceQualityTier | null {
   const shortSide = Math.min(box.width, box.height);
   const imageMin = Math.min(asset.width, asset.height);
-  const imageRatio = imageMin > 0 ? shortSide / imageMin : 0;
-  const yaw = Math.abs(box.headEulerAngleY ?? 0);
-  if (shortSide < 40 || imageRatio < 0.03 || yaw > 45) return null;
-  return shortSide >= 64 && imageRatio >= 0.04 && yaw <= 30
+  if (
+    !Number.isFinite(shortSide) ||
+    !Number.isFinite(imageMin) ||
+    imageMin <= 0
+  ) {
+    return null;
+  }
+  const imageRatio = shortSide / imageMin;
+  // Head angles are optional metadata. A detector build that omits them must
+  // degrade to "unknown pose, judge on size alone" rather than reject the
+  // whole library, so an absent yaw reads as frontal.
+  const reportedYaw = box.headEulerAngleY;
+  const yaw = Number.isFinite(reportedYaw) ? Math.abs(reportedYaw as number) : 0;
+  if (
+    shortSide < ASSIGNABLE_MIN_FACE_PX ||
+    imageRatio < ASSIGNABLE_MIN_IMAGE_RATIO ||
+    yaw > ASSIGNABLE_MAX_YAW_DEGREES
+  ) {
+    return null;
+  }
+  return shortSide >= SEEDABLE_MIN_FACE_PX &&
+    imageRatio >= SEEDABLE_MIN_IMAGE_RATIO &&
+    yaw <= SEEDABLE_MAX_YAW_DEGREES
     ? "seedable"
     : "assignable";
 }

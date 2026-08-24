@@ -1,6 +1,8 @@
 import type { PoseKeypoint } from "../selection/pose";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { createModelCache } from "./model-cache.ts";
 
 const INPUT_SIZE = 192;
 const KEYPOINT_COUNT = 17;
@@ -19,7 +21,7 @@ type TensorflowModel = {
   run(inputs: ArrayBuffer[]): Promise<ArrayBuffer[]>;
 };
 
-let modelPromise: Promise<TensorflowModel | undefined> | undefined;
+const modelCache = createModelCache<TensorflowModel>(loadBodyPoseModel);
 let inferenceQueue: Promise<void> = Promise.resolve();
 
 /**
@@ -32,7 +34,9 @@ export async function detectBodyPose(
 ): Promise<MoveNetResult | undefined> {
   const job = inferenceQueue.then(async () => {
     try {
-      const model = await loadModel();
+      // Acquired inside the queue: it may retire the previous interpreter, and
+      // disposing one while a run is in flight is not safe.
+      const model = await modelCache.acquire();
       if (!model || !isExpectedModel(model)) return undefined;
 
       const input = await imageRgbTensor(imageUri);
@@ -50,24 +54,41 @@ export async function detectBodyPose(
   return job;
 }
 
-async function loadModel(): Promise<TensorflowModel | undefined> {
-  if (!modelPromise) {
-    modelPromise = (async () => {
-      try {
-        const { loadTensorflowModel } = await import(
-          "react-native-fast-tflite"
-        );
-        // Static require is required so Metro includes the model in the APK.
-        const source = await bundledTfliteSource(
-          require("../../assets/models/movenet-singlepose-lightning-int8.tflite") as number,
-        );
-        return (await loadTensorflowModel(source, [])) as TensorflowModel;
-      } catch {
-        return undefined;
-      }
-    })();
+async function loadBodyPoseModel(): Promise<TensorflowModel | undefined> {
+  try {
+    const { loadTensorflowModel } = await import("react-native-fast-tflite");
+    // Static require is required so Metro includes the model in the APK.
+    const source = await bundledTfliteSource(
+      require("../../assets/models/movenet-singlepose-lightning-int8.tflite") as number,
+    );
+    // The empty delegate list means XNNPACK CPU, and it has to stay empty:
+    // fast-tflite 3.0.1 hardcodes GPU delegate options with no serialization
+    // dir (kernel recompile on every cold start) and max_delegated_partitions=1,
+    // and NNAPI is deprecated on Android 15. See ./README.md#delegates.
+    return (await loadTensorflowModel(source, [])) as TensorflowModel;
+  } catch {
+    return undefined;
   }
-  return modelPromise;
+}
+
+/**
+ * Loads and validates the bundled graph without reading any user photo. Runs on
+ * the inference queue because acquiring can retire the previous interpreter.
+ */
+export async function probeBodyPoseModel(): Promise<boolean> {
+  const job = inferenceQueue.then(async () => {
+    try {
+      const model = await modelCache.acquire();
+      return model !== undefined && isExpectedModel(model);
+    } catch {
+      return false;
+    }
+  });
+  inferenceQueue = job.then(
+    () => undefined,
+    () => undefined,
+  );
+  return job;
 }
 
 function isExpectedModel(model: TensorflowModel): boolean {

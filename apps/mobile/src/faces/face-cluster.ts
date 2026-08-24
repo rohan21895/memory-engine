@@ -2,7 +2,28 @@ import type { FaceObservation, Person } from "./types";
 
 export const DEFAULT_IDENTITY_THRESHOLD = 0.5;
 export const DEFAULT_PERCEPTUAL_THRESHOLD = 0.92;
-const SAME_PHOTO_EXCEPTION_SIMILARITY = 0.85;
+
+/**
+ * Same-photo cannot-link escape hatch.
+ *
+ * Two faces detected in ONE photo are almost never the same person, so a shared
+ * asset id is a hard constraint: without it a parent absorbs their child and
+ * siblings collapse into a single tile, which is the worst-looking failure in a
+ * family library. The exception is a face that legitimately appears twice in a
+ * single frame — mirrors, panorama stitches, collages, photos-of-photos — and
+ * those land far above any identity bar. Cosine >= 0.85 (d_cos < 0.15) is that
+ * exception; anything below stays split even when the identity threshold passes.
+ */
+export const SAME_PHOTO_EXCEPTION_SIMILARITY = 0.85;
+
+/** True when two people draw on at least one common photo (a cannot-link). */
+function sharesAsset(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  const [smaller, larger] = a.size <= b.size ? [a, b] : [b, a];
+  for (const assetId of smaller) {
+    if (larger.has(assetId)) return true;
+  }
+  return false;
+}
 
 export function cosine(a: number[], b: number[]): number {
   if (a.length === 0 || a.length !== b.length) {
@@ -124,7 +145,6 @@ export function extendFaceClusters(
       const person = people[index];
       if (
         observation.embeddingKind !== person.embeddingKind ||
-        person.assetIdSet.has(observation.assetId) ||
         observation.embedding.length === 0 ||
         observation.embedding.length !== person.centroid.length
       ) {
@@ -132,6 +152,15 @@ export function extendFaceClusters(
       }
 
       const similarity = cosine(observation.embedding, person.centroid);
+      // Cannot-link: this person already owns a face from this very photo, so
+      // joining would fuse two people who merely posed together. Only the
+      // mirror/panorama exception may cross it.
+      if (
+        person.assetIdSet.has(observation.assetId) &&
+        similarity < SAME_PHOTO_EXCEPTION_SIMILARITY
+      ) {
+        continue;
+      }
       const threshold =
         observation.embeddingKind === "identity"
           ? identityThreshold
@@ -188,10 +217,14 @@ export function extendFaceClusters(
 /**
  * Second pass: greedy online assignment is order-dependent, so one person's
  * faces routinely seed several clusters (a bad-angle first frame the later good
- * frames never match). Repeatedly merge the closest pair of same-kind people
- * above a calibrated centroid bar. Co-occurrence remains a cannot-link unless
- * cosine is above 0.85 (d_cos < 0.15), which covers mirrors and panoramas. The
- * older cluster (lower index) survives, keeping surfaced ids stable.
+ * frames never match). Repeatedly merge the CLOSEST pair of same-kind people
+ * above a calibrated centroid bar — closest-first, not first-found, so the
+ * outcome does not depend on the order people were discovered in. Co-occurrence
+ * stays a cannot-link below SAME_PHOTO_EXCEPTION_SIMILARITY, and the merged
+ * asset set inherits both constraints, so identities cannot be chained through
+ * a bridge cluster. Every round removes exactly one person, so the loop is
+ * bounded by the initial people count. The older cluster (lower index) survives,
+ * keeping surfaced ids stable between runs so the UI does not reshuffle.
  *
  * ponytail: O(k^2) per merge round over k people; fine for the hundreds of
  * people a personal library yields. Swap for union-find on an ANN index if k
@@ -234,18 +267,13 @@ function mergeSimilarPeople(
         if (similarity < threshold || similarity <= bestSimilarity) {
           continue;
         }
-        const smallerAssets =
-          a.assetIdSet.size <= b.assetIdSet.size ? a.assetIdSet : b.assetIdSet;
-        const largerAssets = smallerAssets === a.assetIdSet
-          ? b.assetIdSet
-          : a.assetIdSet;
-        const sharesPhoto = Array.from(smallerAssets).some((assetId) =>
-          largerAssets.has(assetId),
-        );
+        // The union of both asset sets carries the constraint forward, so a
+        // merged cluster inherits every cannot-link of its parts: a bad bridge
+        // face can never chain two identities that co-occur in one photo.
         if (
           a.embeddingKind === "identity" &&
-          sharesPhoto &&
-          similarity <= SAME_PHOTO_EXCEPTION_SIMILARITY
+          similarity < SAME_PHOTO_EXCEPTION_SIMILARITY &&
+          sharesAsset(a.assetIdSet, b.assetIdSet)
         ) {
           continue;
         }

@@ -16,6 +16,7 @@ import {
   GestureDetector,
   GestureHandlerRootView,
 } from "react-native-gesture-handler";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
   assetIdsForPerson,
@@ -65,6 +66,9 @@ const AUTO_STEP = 30; // px per tick while auto-scrolling
 type Props = {
   onConfirm: (photos: PickedPhoto[]) => void;
   onBack: () => void;
+  // Picks handed back in when the user returns here from Review. Back is a
+  // navigation gesture, not a discard, so the picker re-opens on their picks.
+  initialSelection?: PickedPhoto[];
 };
 
 type RelativeDatePreset = "all" | "week" | "month" | "year";
@@ -186,7 +190,8 @@ const PhotoTile = memo(function PhotoTile({
 // Our own picker: full-library grid, filter by date/album, and slide-to-select
 // with edge auto-scroll (long-press then drag to a screen edge keeps scrolling
 // and selecting until you lift). Reads MediaStore directly.
-export default function GalleryGrid({ onConfirm, onBack }: Props) {
+export default function GalleryGrid({ onConfirm, onBack, initialSelection }: Props) {
+  const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const cell = Math.floor((width - GAP * (COLS - 1)) / COLS);
   const rowHeight = cell + GAP;
@@ -194,7 +199,10 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
 
   const [status, setStatus] = useState<"loading" | "denied" | "ready" | "error">("loading");
   const [assets, setAssets] = useState<MediaLibrary.Asset[]>([]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Seeded once from the restored picks; later renders must not clobber edits.
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set((initialSelection ?? []).map((photo) => photo.id)),
+  );
   const [albums, setAlbums] = useState<AlbumChip[]>([]);
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
   const [albumId, setAlbumId] = useState<string | null>(null);
@@ -246,6 +254,14 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   // Every asset we've ever loaded, so a selection made under one filter still
   // resolves to a real asset after the user switches filters and confirms.
   const seenAssets = useRef<Map<string, MediaLibrary.Asset>>(new Map());
+
+  // A restored pick may sit outside the pages this fresh mount has fetched, so
+  // keep the original PickedPhoto as the fallback for confirm().
+  const restoredPicks = useMemo(() => {
+    const map = new Map<string, PickedPhoto>();
+    for (const photo of initialSelection ?? []) map.set(photo.id, photo);
+    return map;
+  }, [initialSelection]);
 
   const queryOpts = useCallback(
     (): MediaLibrary.AssetsOptions => {
@@ -543,9 +559,13 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     for (const id of selected) {
       const a = m.get(id);
       if (a) picked.push(toPicked(a));
+      else {
+        const restored = restoredPicks.get(id);
+        if (restored) picked.push(restored);
+      }
     }
     onConfirm(picked);
-  }, [selected, onConfirm]);
+  }, [selected, onConfirm, restoredPicks]);
 
   const renderItem = useCallback(
     ({ item }: { item: MediaLibrary.Asset }) => (
@@ -790,7 +810,8 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         </GestureDetector>
       )}
 
-      <View style={styles.footer}>
+      {/* Edge-to-edge: lift the CTA clear of the transparent Android nav bar. */}
+      <View style={[styles.footer, { paddingBottom: Math.max(spacing.lg, insets.bottom + spacing.sm) }]}>
         <PrimaryButton
           accessibilityHint={copy.picker.nextHint}
           disabled={count === 0}

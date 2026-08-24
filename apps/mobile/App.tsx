@@ -130,6 +130,12 @@ function PhoteoApp() {
   const [pickedPhotos, setPickedPhotos] = useState<PickedPhoto[]>([]);
   const [savedAlbums, setSavedAlbums] = useState<SavedAlbum[]>([]);
   const [currentAlbumId, setCurrentAlbumId] = useState<string | null>(null);
+  const savedAlbumsRef = useRef(savedAlbums);
+  savedAlbumsRef.current = savedAlbums;
+  // The album this build session has already saved, if any. Held in a ref so a
+  // second finalize (Back from Album Ready, or a double tap) sees it
+  // synchronously and updates that album instead of minting a duplicate.
+  const sessionAlbumId = useRef<string | null>(null);
   const { actionRoute, createStep, familyOpen, libraryRoute, personToName, sharedAlbum, tab } = navigation;
 
   const pushNavigation = useCallback((update: Partial<NavigationState>) => {
@@ -160,20 +166,6 @@ function PhoteoApp() {
     });
   }, [invalidateBuild]);
 
-  const popNavigation = useCallback(() => {
-    if (navigationRef.current.createStep === "building") {
-      cancelBuild();
-      return;
-    }
-    setNavigation(() => navigationHistory.current.pop() ?? ALBUMS_ROOT);
-  }, [cancelBuild]);
-
-  const goToAlbumsRoot = useCallback(() => {
-    invalidateBuild();
-    navigationHistory.current = [];
-    setNavigation(ALBUMS_ROOT);
-  }, [invalidateBuild]);
-
   const closeActionFlow = useCallback(() => {
     setNavigation((current) => {
       let target: NavigationState = { ...current, actionRoute: null };
@@ -185,6 +177,27 @@ function PhoteoApp() {
       return target;
     });
   }, []);
+
+  const popNavigation = useCallback(() => {
+    const current = navigationRef.current;
+    if (current.createStep === "building") {
+      cancelBuild();
+      return;
+    }
+    // The share/print confirmations are terminal: Back means "done", not
+    // "reopen the sheet I just completed".
+    if (current.actionRoute?.screen === "share-sent" || current.actionRoute?.screen === "print-done") {
+      closeActionFlow();
+      return;
+    }
+    setNavigation(() => navigationHistory.current.pop() ?? ALBUMS_ROOT);
+  }, [cancelBuild, closeActionFlow]);
+
+  const goToAlbumsRoot = useCallback(() => {
+    invalidateBuild();
+    navigationHistory.current = [];
+    setNavigation(ALBUMS_ROOT);
+  }, [invalidateBuild]);
 
   useEffect(() => {
     void SecureStore.getItemAsync(WELCOME_SEEN_KEY)
@@ -234,6 +247,12 @@ function PhoteoApp() {
     const controller = new AbortController();
     buildAbort.current = controller;
     const request = ++buildRequest.current;
+    // A new build is a new album: drop the previous session's result so
+    // finalize can't update — or re-render — an album from an earlier build.
+    sessionAlbumId.current = null;
+    setCurrentAlbumId(null);
+    setFinalPhotos(null);
+    setAlbum(null);
     setPickedPhotos(next);
     setBuildProgress({
       done: 0,
@@ -271,30 +290,53 @@ function PhoteoApp() {
       .map((photo) => photo.creationTime)
       .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
     const now = Date.now();
+    // Finalizing twice in one build session is an update, not a new album.
+    // album_id alone can't decide this: it hashes the picked ids, so a genuine
+    // rebuild of the same photos would collide with the earlier album.
+    const existingId = sessionAlbumId.current;
+    const id = existingId ?? `${album.album_id}-${now}`;
+    sessionAlbumId.current = id;
+    const previous = existingId
+      ? savedAlbumsRef.current.find((candidate) => candidate.id === existingId)
+      : undefined;
     const saved: SavedAlbum = {
-      id: `${album.album_id}-${now}`,
-      title: suggestedAlbumTitle(pickedPhotos),
+      id,
+      // Keep any title the user typed on Album Ready before stepping back.
+      title: previous?.title ?? suggestedAlbumTitle(pickedPhotos),
       coverUri: photos[0]?.uri ?? "",
       photoIds: photos.map((photo) => photo.media_id),
       photos,
       reviewData: album,
       dateRange: timestamps.length > 0 ? { start: Math.min(...timestamps), end: Math.max(...timestamps) } : {},
-      createdAt: now,
+      createdAt: previous?.createdAt ?? now,
       updatedAt: now,
     };
     setFinalPhotos(photos);
-    setCurrentAlbumId(saved.id);
+    setCurrentAlbumId(id);
     setSavedAlbums(await saveAlbum(saved));
     pushNavigation({ createStep: "ready" });
   }, [album, pickedPhotos, pushNavigation]);
 
-  const resetCreateFlow = useCallback(() => {
+  // Everything one album creation owns. Cleared on both ends of the flow so a
+  // second album never inherits the first one's picks, build, or saved id.
+  const clearCreateSession = useCallback(() => {
+    invalidateBuild();
+    sessionAlbumId.current = null;
     setAlbum(null);
     setFinalPhotos(null);
     setPickedPhotos([]);
     setCurrentAlbumId(null);
+  }, [invalidateBuild]);
+
+  const startCreateFlow = useCallback(() => {
+    clearCreateSession();
+    pushNavigation({ createStep: "pick" });
+  }, [clearCreateSession, pushNavigation]);
+
+  const resetCreateFlow = useCallback(() => {
+    clearCreateSession();
     goToAlbumsRoot();
-  }, [goToAlbumsRoot]);
+  }, [clearCreateSession, goToAlbumsRoot]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -418,6 +460,7 @@ function PhoteoApp() {
     return (
       <View style={styles.root}>
         <GalleryGrid
+          initialSelection={pickedPhotos}
           onBack={popNavigation}
           onConfirm={(picked) => void processPhotos(picked)}
         />
@@ -477,9 +520,7 @@ function PhoteoApp() {
         {tab === "albums" ? (
           <AlbumsScreen
             albums={savedAlbums}
-            onCreate={() => {
-              pushNavigation({ createStep: "pick" });
-            }}
+            onCreate={startCreateFlow}
             onOpen={(selected) => pushNavigation({ libraryRoute: { albumId: selected.id, screen: "detail" } })}
             onOpenShared={(selected) => pushNavigation({ sharedAlbum: selected })}
           />
