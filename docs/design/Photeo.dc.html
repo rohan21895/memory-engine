@@ -1,0 +1,1282 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#faf8f5;--surf:#fff;--ink:#1a1714;--mut:#6f6a62;--line:#e7e2d9;--acc:#c75c33;--accs:#f9ece5;--r:20px}
+*{box-sizing:border-box}
+body{margin:0;background:#e9e5df;font-family:Figtree,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--acc);text-decoration:none}a:hover{color:#a8481f}
+::-webkit-scrollbar{width:0;height:0}
+@keyframes kb{0%{transform:scale(1.02) translate(0,0);opacity:0}8%{opacity:1}92%{opacity:1}100%{transform:scale(1.18) translate(-1.5%,-1.5%);opacity:1}}
+@keyframes fu{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes brth{0%,100%{transform:scale(1);opacity:.85}50%{transform:scale(1.06);opacity:1}}
+@keyframes shim{0%{background-position:-200px 0}100%{background-position:220px 0}}
+</style>
+</helmet>
+
+<div style="min-height:100vh;display:flex;align-items:flex-start;gap:36px;padding:36px 40px 60px">
+
+  <aside style="width:214px;flex:none;position:sticky;top:36px;display:flex;flex-direction:column;gap:18px">
+    <div>
+      <div style="font-size:22px;font-weight:800;letter-spacing:-.03em;color:#1a1714">Photeo</div>
+      <div style="font-size:12.5px;line-height:1.45;color:#7d766c;margin-top:4px">Private on-device album maker. Android-first, light theme.</div>
+    </div>
+    <sc-for list="{{ rail }}" as="g" hint-placeholder-count="4">
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#a29a8e;padding:0 2px 2px">{{ g.title }}</div>
+        <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="4">
+          <button onClick="{{ it.onClick }}" style="appearance:none;border:1px solid transparent;background:{{ it.bg }};color:{{ it.fg }};text-align:left;font-family:inherit;font-size:12.5px;font-weight:{{ it.fw }};padding:7px 10px;border-radius:9px;cursor:pointer;display:flex;justify-content:space-between;gap:8px" style-hover="background:#dcd7cf">
+            <span>{{ it.label }}</span><span style="opacity:.45;font-variant-numeric:tabular-nums">{{ it.n }}</span>
+          </button>
+        </sc-for>
+      </div>
+    </sc-for>
+  </aside>
+
+  <main style="display:flex;flex-direction:column;gap:14px;align-items:center">
+    <div style="width:393px;padding:0 4px;display:flex;justify-content:space-between;align-items:baseline">
+      <span style="font-size:13px;font-weight:700;color:#3d372f">{{ screenTitle }}</span>
+      <span style="font-size:11.5px;color:#8b8378">{{ screenNote }}</span>
+    </div>
+
+    <div style="width:411px;height:870px;padding:9px;border-radius:46px;background:#2b2621;box-shadow:0 26px 60px rgba(40,32,24,.32),inset 0 0 0 1px rgba(255,255,255,.08);flex:none">
+      <div style="position:relative;width:393px;height:852px;border-radius:38px;overflow:hidden;background:var(--bg);color:var(--ink);--acc:{{ accent }}">
+
+        <div style="position:absolute;top:0;left:0;right:0;height:44px;z-index:40;display:flex;align-items:center;justify-content:space-between;padding:0 22px;font-size:13px;font-weight:600;color:{{ statusFg }};pointer-events:none">
+          <span>9:41</span>
+          <span style="display:flex;gap:5px;align-items:center">
+            <span style="width:16px;height:9px;border:1.5px solid currentColor;border-radius:2px;opacity:.9;display:inline-block"></span>
+            <span style="width:5px;height:9px;background:currentColor;border-radius:1px;display:inline-block"></span>
+          </span>
+        </div>
+
+        <!-- ONBOARDING -->
+        <sc-if value="{{ isWelcome }}" hint-placeholder-val="{{ true }}">
+          <div style="height:100%;display:flex;flex-direction:column;padding:76px 28px 30px;animation:fu .4s ease both">
+            <div style="width:120px;height:120px;border-radius:34px;background:linear-gradient(150deg,#f2d9c6,#d9a184);display:flex;align-items:center;justify-content:center;margin-bottom:34px">
+              <div style="width:52px;height:52px;border-radius:16px;background:#fff;box-shadow:0 6px 16px rgba(90,50,20,.18)"></div>
+            </div>
+            <h1 style="margin:0;font-size:38px;line-height:1.05;letter-spacing:-.035em;font-weight:800">Albums,<br>made for you.</h1>
+            <p style="margin:14px 0 0;font-size:16.5px;line-height:1.5;color:var(--mut);max-width:300px">Photeo looks through your photos and builds a beautiful album on its own.</p>
+            <div style="margin-top:30px;display:flex;flex-direction:column;gap:14px">
+              <sc-for list="{{ steps3 }}" as="s" hint-placeholder-count="3">
+                <div style="display:flex;gap:14px;align-items:center">
+                  <div style="width:36px;height:36px;flex:none;border-radius:50%;background:var(--accs);color:var(--acc);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px">{{ s.n }}</div>
+                  <div style="font-size:15.5px;line-height:1.35;font-weight:500">{{ s.t }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="flex:1"></div>
+            <div style="display:flex;gap:10px;align-items:center;padding:14px 16px;border-radius:16px;background:#f1efe9;margin-bottom:16px">
+              <div style="width:9px;height:9px;border-radius:50%;background:#4a8a5c;flex:none"></div>
+              <div style="font-size:13.5px;line-height:1.4;color:#4c463d">Your photos never leave your phone. Nothing is uploaded.</div>
+            </div>
+            <button onClick="{{ goLogin }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Get started</button>
+          </div>
+        </sc-if>
+
+        <!-- PERMISSION -->
+        <sc-if value="{{ isPerm }}" hint-placeholder-val="{{ true }}">
+          <div style="height:100%;display:flex;flex-direction:column;padding:96px 28px 30px;animation:fu .35s ease both">
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:34px">
+              <sc-for list="{{ permTiles }}" as="t" hint-placeholder-count="6">
+                <div style="aspect-ratio:1;border-radius:10px;background:{{ t.bg }}"></div>
+              </sc-for>
+            </div>
+            <h1 style="margin:0;font-size:30px;line-height:1.12;letter-spacing:-.03em;font-weight:800">Let Photeo see<br>your photos</h1>
+            <p style="margin:14px 0 0;font-size:16px;line-height:1.5;color:var(--mut)">It needs your photo library to pick the good ones. Everything happens on this phone — no internet, no uploads, nothing shared.</p>
+            <div style="flex:1"></div>
+            <button onClick="{{ goAlbums }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer;margin-bottom:10px">Allow access to photos</button>
+            <button onClick="{{ goAlbums }}" style="appearance:none;border:0;background:none;width:100%;height:48px;color:var(--mut);font-family:inherit;font-size:15.5px;font-weight:600;cursor:pointer">Not now</button>
+          </div>
+        </sc-if>
+
+        <!-- ALBUMS HOME -->
+        <sc-if value="{{ isAlbums }}" hint-placeholder-val="{{ true }}">
+          <div style="height:100%;overflow:auto;padding:52px 0 108px">
+            <div style="padding:0 22px 6px;display:flex;justify-content:space-between;align-items:flex-end">
+              <h1 style="margin:0;font-size:32px;letter-spacing:-.03em;font-weight:800">Albums</h1>
+              <div style="width:38px;height:38px;border-radius:50%;background:linear-gradient(140deg,#e6c8b0,#c99b78)"></div>
+            </div>
+            <sc-if value="{{ hasAlbums }}" hint-placeholder-val="{{ true }}">
+              <div>
+                <div style="padding:16px 22px 0">
+                  <button onClick="{{ goPick }}" style="appearance:none;border:0;width:100%;height:60px;border-radius:18px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px">
+                    <span style="font-size:22px;font-weight:500;line-height:1">+</span> Create new album
+                  </button>
+                  <div style="font-size:13px;color:var(--mut);text-align:center;margin-top:9px">Takes about a minute. Stays on your phone.</div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:22px 22px 0">
+                  <sc-for list="{{ albums }}" as="a" hint-placeholder-count="4">
+                    <button onClick="{{ a.onClick }}" style="appearance:none;border:0;padding:0;background:none;text-align:left;cursor:pointer;font-family:inherit">
+                      <div style="aspect-ratio:1;border-radius:16px;background:{{ a.bg }};box-shadow:0 4px 14px rgba(60,45,30,.1)"></div>
+                      <div style="font-size:16px;font-weight:700;margin-top:9px;letter-spacing:-.01em">{{ a.title }}</div>
+                      <div style="font-size:13px;color:var(--mut);margin-top:2px">{{ a.meta }}</div>
+                    </button>
+                  </sc-for>
+                </div>
+                <div style="padding:28px 22px 0">
+                  <div style="display:flex;align-items:baseline;gap:8px">
+                    <span style="font-size:19px;font-weight:800;letter-spacing:-.02em">Shared with you</span>
+                    <span style="font-size:13px;color:var(--mut)">from other Photeo phones</span>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
+                    <sc-for list="{{ sharedAlbums }}" as="a" hint-placeholder-count="2">
+                      <button onClick="{{ a.onClick }}" style="appearance:none;width:100%;border:1px solid var(--line);border-radius:18px;background:var(--surf);padding:12px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:14px;text-align:left">
+                        <div style="width:64px;height:64px;flex:none;border-radius:12px;background:{{ a.bg }}"></div>
+                        <div style="flex:1">
+                          <div style="font-size:16.5px;font-weight:700;letter-spacing:-.01em">{{ a.title }}</div>
+                          <div style="font-size:13.5px;color:var(--mut);margin-top:3px">{{ a.meta }}</div>
+                        </div>
+                        <div style="width:30px;height:30px;flex:none;border-radius:50%;background:{{ a.fromBg }};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff">{{ a.initial }}</div>
+                      </button>
+                    </sc-for>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ noAlbums }}" hint-placeholder-val="{{ false }}">
+              <div style="padding:70px 34px;text-align:center;display:flex;flex-direction:column;align-items:center">
+                <div style="width:96px;height:96px;border-radius:26px;background:#f1efe9;display:flex;align-items:center;justify-content:center;margin-bottom:22px">
+                  <div style="width:40px;height:40px;border-radius:12px;background:#ddd7cc"></div>
+                </div>
+                <div style="font-size:22px;font-weight:800;letter-spacing:-.02em">No albums yet</div>
+                <p style="margin:10px 0 26px;font-size:15.5px;line-height:1.5;color:var(--mut)">Make your first one. Pick a few photos and Photeo does the rest.</p>
+                <button onClick="{{ goPick }}" style="appearance:none;border:0;height:56px;padding:0 30px;border-radius:28px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Create new album</button>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <!-- ALBUM DETAIL -->
+        <sc-if value="{{ isDetail }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;overflow:auto;padding-bottom:40px">
+            <div style="position:relative;height:330px;background:linear-gradient(160deg,#e3cdb4,#b98d68)">
+              <button onClick="{{ goAlbums }}" style="position:absolute;top:52px;left:16px;width:40px;height:40px;border:0;border-radius:50%;background:rgba(255,255,255,.9);font-size:19px;cursor:pointer;font-family:inherit">‹</button>
+              <button onClick="{{ openManage }}" style="position:absolute;top:52px;right:16px;height:40px;padding:0 16px;border:0;border-radius:20px;background:rgba(255,255,255,.9);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">Edit</button>
+              <div style="position:absolute;left:0;right:0;bottom:0;padding:26px 22px;background:linear-gradient(transparent,rgba(35,25,18,.62))">
+                <sc-if value="{{ isShared }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:inline-flex;align-items:center;gap:8px;padding:6px 12px 6px 6px;border-radius:20px;background:rgba(255,255,255,.92);margin-bottom:12px">
+                    <div style="width:26px;height:26px;border-radius:50%;background:{{ sharedByBg }};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff">{{ sharedByInitial }}</div>
+                    <span style="font-size:13px;font-weight:700;color:#1a1714">Shared by {{ sharedBy }}</span>
+                  </div>
+                </sc-if>
+                <div style="font-size:29px;font-weight:800;color:#fff;letter-spacing:-.03em">{{ detailTitleLive }}</div>
+                <div style="font-size:14px;color:rgba(255,255,255,.85);margin-top:4px">{{ detailMeta }}</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:9px;padding:18px 22px 0">
+              <button onClick="{{ goSlideshow }}" style="flex:1;height:52px;border:0;border-radius:26px;background:#efece5;color:#1a1714;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">▸ Play</button>
+              <button onClick="{{ openShare }}" style="flex:1;height:52px;border:0;border-radius:26px;background:#efece5;color:#1a1714;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">Share</button>
+            </div>
+            <div style="padding:12px 22px 4px">
+              <button onClick="{{ goPrint }}" style="appearance:none;width:100%;border:0;border-radius:20px;background:var(--acc);color:#fff;padding:16px 18px;cursor:pointer;font-family:inherit;text-align:left;display:flex;align-items:center;gap:14px;box-shadow:0 8px 22px rgba(120,60,30,.18)">
+                <div style="width:52px;height:64px;flex:none;border-radius:5px;background:linear-gradient(160deg,#f0dcc6,#c99b78);box-shadow:0 3px 10px rgba(0,0,0,.22)"></div>
+                <div style="flex:1">
+                  <div style="font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;opacity:.78">Make it real</div>
+                  <div style="font-size:19px;font-weight:800;letter-spacing:-.02em;margin-top:3px">Print this as a photo book</div>
+                  <div style="font-size:13.5px;opacity:.85;margin-top:3px">Posted to your door · from £28</div>
+                </div>
+                <span style="font-size:24px;opacity:.85">›</span>
+              </button>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:baseline;padding:20px 22px 8px">
+              <span style="font-size:17px;font-weight:700">All {{ detailCount }} photos</span>
+              <span style="font-size:13.5px;color:var(--mut)">Tap a photo to see it big</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:0 3px">
+              <sc-for list="{{ detailTiles }}" as="t" hint-placeholder-count="12">
+                <button onClick="{{ t.onOpen }}" style="appearance:none;border:0;padding:0;aspect-ratio:1;background:{{ t.bg }};cursor:pointer"></button>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- PHOTOS TAB -->
+        <sc-if value="{{ isPhotos }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;overflow:auto;padding:52px 0 108px">
+            <h1 style="margin:0;padding:0 22px;font-size:32px;letter-spacing:-.03em;font-weight:800">Photos</h1>
+            <div style="padding:14px 22px 0">
+              <div style="height:48px;border-radius:24px;background:#f0eee8;display:flex;align-items:center;gap:10px;padding:0 18px;color:#8b8378;font-size:16px">
+                <span style="width:15px;height:15px;border:2px solid currentColor;border-radius:50%;display:inline-block"></span>Search people or places
+              </div>
+            </div>
+            <div style="padding:22px 0 0">
+              <div style="padding:0 22px 10px;display:flex;justify-content:space-between;align-items:baseline">
+                <span style="font-size:17px;font-weight:700">People</span>
+                <span style="font-size:13.5px;color:var(--acc);font-weight:600">See all</span>
+              </div>
+              <div style="display:flex;gap:14px;overflow:auto;padding:2px 22px 4px">
+                <sc-for list="{{ peopleRow }}" as="p" hint-placeholder-count="6">
+                  <button onClick="{{ p.onClick }}" style="flex:none;text-align:center;width:66px;border:0;background:none;padding:0;cursor:pointer;font-family:inherit">
+                    <div style="width:66px;height:66px;border-radius:50%;background:{{ p.bg }};display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:rgba(255,255,255,.92);box-shadow:{{ p.ring }}">{{ p.initial }}</div>
+                    <div style="font-size:12.5px;font-weight:600;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{{ p.fg }}">{{ p.name }}</div>
+                  </button>
+                </sc-for>
+              </div>
+            </div>
+            <div style="padding:24px 0 0">
+              <div style="padding:0 22px 10px;display:flex;justify-content:space-between;align-items:baseline">
+                <span style="font-size:17px;font-weight:700">Places</span>
+                <span style="font-size:13.5px;color:var(--acc);font-weight:600">See all</span>
+              </div>
+              <div style="display:flex;gap:12px;overflow:auto;padding:2px 22px 4px">
+                <sc-for list="{{ placeCards }}" as="c" hint-placeholder-count="4">
+                  <div style="flex:none;width:132px">
+                    <div style="height:92px;border-radius:14px;background:{{ c.bg }}"></div>
+                    <div style="font-size:14.5px;font-weight:700;margin-top:7px">{{ c.name }}</div>
+                    <div style="font-size:12.5px;color:var(--mut)">{{ c.n }}</div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="padding:26px 22px 8px;font-size:17px;font-weight:700">September</div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:0 3px">
+              <sc-for list="{{ libTiles }}" as="t" hint-placeholder-count="18">
+                <div style="aspect-ratio:1;background:{{ t.bg }}"></div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- ACCOUNT -->
+        <sc-if value="{{ isAccount }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;overflow:auto;padding:52px 22px 108px">
+            <h1 style="margin:0;font-size:32px;letter-spacing:-.03em;font-weight:800">Account</h1>
+            <div style="display:flex;gap:16px;align-items:center;margin-top:22px">
+              <div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(140deg,#e6c8b0,#c99b78);display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;color:#fff">M</div>
+              <div>
+                <div style="font-size:21px;font-weight:700;letter-spacing:-.02em">Margaret Hale</div>
+                <div style="font-size:14px;color:var(--mut);margin-top:2px">3,418 photos · 4 albums</div>
+              </div>
+            </div>
+            <div style="margin-top:24px;padding:20px;border-radius:20px;background:#eef2ec;border:1px solid #dde5d9">
+              <div style="display:flex;gap:10px;align-items:center">
+                <div style="width:10px;height:10px;border-radius:50%;background:#4a8a5c"></div>
+                <div style="font-size:16.5px;font-weight:700">Everything stays on your phone</div>
+              </div>
+              <p style="margin:9px 0 0;font-size:14.5px;line-height:1.5;color:#4c5a4c">Photos are never uploaded and albums are made without the internet. Your account is only used to share albums with family.</p>
+            </div>
+            <div style="margin-top:20px;border-radius:20px;background:var(--surf);border:1px solid var(--line);overflow:hidden">
+              <button onClick="{{ goFamily }}" style="appearance:none;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);background:none;display:flex;justify-content:space-between;align-items:center;padding:18px;font-family:inherit;font-size:16px;font-weight:600;cursor:pointer">
+                <span>Your family</span><span style="color:var(--mut);font-weight:500;font-size:15px">3 people ›</span>
+              </button>
+              <sc-for list="{{ acctRows }}" as="r" hint-placeholder-count="4">
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 18px;border-bottom:1px solid var(--line);font-size:16px;font-weight:600">
+                  <span>{{ r.label }}</span><span style="color:var(--mut);font-weight:500;font-size:15px">{{ r.val }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <button onClick="{{ goError }}" style="appearance:none;border:0;background:none;margin-top:18px;color:var(--mut);font-family:inherit;font-size:14px;cursor:pointer">Help &amp; troubleshooting</button>
+            <button onClick="{{ goLogin }}" style="appearance:none;width:100%;height:54px;margin-top:14px;border:1px solid var(--line);border-radius:27px;background:var(--surf);color:#a8481f;font-family:inherit;font-size:16.5px;font-weight:700;cursor:pointer">Sign out</button>
+            <div style="font-size:13px;color:var(--mut);text-align:center;margin-top:9px;line-height:1.45">Signing out only stops album sharing. Your photos and albums stay on this phone.</div>
+          </div>
+        </sc-if>
+
+        <!-- STEP 1 PICK -->
+        <sc-if value="{{ isPick }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column">
+            <div style="padding:52px 18px 10px;background:var(--bg);z-index:5">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <button onClick="{{ goAlbums }}" style="border:0;background:none;font-size:15.5px;font-weight:600;color:var(--mut);font-family:inherit;cursor:pointer;padding:6px 4px">Cancel</button>
+                <div style="display:flex;gap:6px;align-items:center;font-size:12.5px;font-weight:700;letter-spacing:.01em">
+                  <span style="color:var(--acc)">Pick</span><span style="color:#cbc4b8">→</span><span style="color:#b3aba0">Review</span><span style="color:#cbc4b8">→</span><span style="color:#b3aba0">Done</span>
+                </div>
+                <button onClick="{{ selectAll }}" style="border:0;background:none;font-size:15.5px;font-weight:600;color:var(--acc);font-family:inherit;cursor:pointer;padding:6px 4px">Select all</button>
+              </div>
+              <h1 style="margin:12px 0 0;font-size:27px;letter-spacing:-.03em;font-weight:800">Pick your photos</h1>
+              <p style="margin:7px 0 12px;font-size:14.5px;line-height:1.45;color:var(--mut)">Tap the photos you like, or hold and drag across several. Don't worry about picking perfectly — we'll choose the best shots for you.</p>
+              <button onClick="{{ goFilter }}" style="appearance:none;width:100%;height:48px;border:1px solid var(--line);border-radius:24px;background:var(--surf);font-family:inherit;font-size:15.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:0 18px">
+                <span>Filter</span><span style="color:var(--mut);font-weight:500;font-size:14.5px">{{ filterSummary }}</span>
+              </button>
+            </div>
+            <div style="flex:1;overflow:auto;padding:8px 3px 120px">
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:3px">
+                <sc-for list="{{ gridTiles }}" as="t" hint-placeholder-count="24">
+                  <button onClick="{{ t.onClick }}" onMouseDown="{{ t.onDown }}" onMouseEnter="{{ t.onEnter }}" onMouseUp="{{ endDrag }}" style="position:relative;padding:0;border:0;aspect-ratio:1;background:{{ t.bg }};cursor:pointer">
+                    <span style="position:absolute;inset:0;background:{{ t.veil }}"></span>
+                    <span style="position:absolute;top:7px;right:7px;width:24px;height:24px;border-radius:50%;border:2px solid rgba(255,255,255,.9);background:{{ t.dot }};color:#fff;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1">{{ t.check }}</span>
+                  </button>
+                </sc-for>
+              </div>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;padding:14px 18px 26px;background:linear-gradient(rgba(250,248,245,0),var(--bg) 38%)">
+              <button onClick="{{ goBuilding }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:{{ nextBg }};color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">{{ nextLabel }}</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- FILTER -->
+        <sc-if value="{{ isFilter }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column">
+            <div style="padding:52px 22px 4px">
+              <button onClick="{{ goPick }}" style="border:0;background:none;font-size:15.5px;font-weight:600;color:var(--mut);font-family:inherit;cursor:pointer;padding:6px 0">‹ Back</button>
+              <h1 style="margin:10px 0 0;font-size:28px;letter-spacing:-.03em;font-weight:800">Filter your photos</h1>
+              <p style="margin:7px 0 0;font-size:14.5px;color:var(--mut)">Narrow things down, or leave it as it is.</p>
+            </div>
+            <div style="flex:1;overflow:auto;padding:18px 18px 120px;display:flex;flex-direction:column;gap:12px">
+              <sc-for list="{{ filterRows }}" as="f" hint-placeholder-count="2">
+                <button onClick="{{ f.onClick }}" style="appearance:none;text-align:left;width:100%;border:1px solid var(--line);border-radius:var(--r);background:var(--surf);padding:18px 18px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:14px">
+                  <div style="width:46px;height:46px;flex:none;border-radius:14px;background:{{ f.icbg }};display:flex;align-items:center;justify-content:center">
+                    <div style="width:{{ f.icw }};height:{{ f.icw }};border-radius:{{ f.icr }};background:{{ f.icfg }}"></div>
+                  </div>
+                  <div style="flex:1">
+                    <div style="font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#a29a8e">{{ f.kind }}</div>
+                    <div style="font-size:18px;font-weight:700;margin-top:3px;letter-spacing:-.015em">{{ f.value }}</div>
+                    <div style="font-size:13.5px;color:var(--mut);margin-top:2px">{{ f.count }}</div>
+                  </div>
+                  <span style="font-size:22px;color:#c4bcb0">›</span>
+                </button>
+              </sc-for>
+              <div style="border:1px solid var(--line);border-radius:var(--r);background:var(--surf);padding:18px">
+                <div style="font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#a29a8e">Date</div>
+                <div style="font-size:18px;font-weight:700;margin:3px 0 12px;letter-spacing:-.015em">{{ dateValue }}</div>
+                <div style="display:flex;gap:6px;padding:4px;background:#f0eee8;border-radius:13px;margin-bottom:14px">
+                  <sc-for list="{{ dateModes }}" as="m" hint-placeholder-count="3">
+                    <button onClick="{{ m.onClick }}" style="flex:1;height:40px;border:1px solid {{ m.bd }};border-radius:10px;background:{{ m.bg }};color:{{ m.fg }};font-family:inherit;font-size:14px;font-weight:700;cursor:pointer">{{ m.label }}</button>
+                  </sc-for>
+                </div>
+                <sc-if value="{{ isDateExact }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;gap:10px">
+                    <div style="flex:1">
+                      <div style="font-size:12.5px;color:var(--mut);margin-bottom:5px">From</div>
+                      <div style="height:50px;border:1px solid var(--line);border-radius:13px;display:flex;align-items:center;padding:0 14px;font-size:15.5px;font-weight:600">12 Sep 2026</div>
+                    </div>
+                    <div style="flex:1">
+                      <div style="font-size:12.5px;color:var(--mut);margin-bottom:5px">To</div>
+                      <div style="height:50px;border:1px solid var(--line);border-radius:13px;display:flex;align-items:center;padding:0 14px;font-size:15.5px;font-weight:600">19 Sep 2026</div>
+                    </div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ isDateMonth }}" hint-placeholder-val="{{ true }}">
+                  <div style="display:flex;flex-wrap:wrap;gap:8px">
+                    <sc-for list="{{ dateChips }}" as="d" hint-placeholder-count="6">
+                      <button onClick="{{ d.onClick }}" style="appearance:none;border:1px solid {{ d.bd }};background:{{ d.bg }};color:{{ d.fg }};height:40px;padding:0 16px;border-radius:20px;font-family:inherit;font-size:14.5px;font-weight:600;cursor:pointer">{{ d.label }}</button>
+                    </sc-for>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ isDateYear }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;flex-wrap:wrap;gap:8px">
+                    <sc-for list="{{ yearChips }}" as="d" hint-placeholder-count="5">
+                      <button onClick="{{ d.onClick }}" style="appearance:none;border:1px solid {{ d.bd }};background:{{ d.bg }};color:{{ d.fg }};height:40px;padding:0 16px;border-radius:20px;font-family:inherit;font-size:14.5px;font-weight:600;cursor:pointer">{{ d.label }}</button>
+                    </sc-for>
+                  </div>
+                </sc-if>
+              </div>
+              <sc-if value="{{ noMatch }}" hint-placeholder-val="{{ false }}">
+                <div style="text-align:center;padding:26px 20px;border-radius:var(--r);background:#f4f1ea">
+                  <div style="font-size:17px;font-weight:700">No photos match</div>
+                  <p style="margin:7px 0 0;font-size:14.5px;line-height:1.45;color:var(--mut)">Try a different person or place, or clear the filters.</p>
+                </div>
+              </sc-if>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;padding:12px 18px 26px;background:linear-gradient(rgba(250,248,245,0),var(--bg) 34%);display:flex;gap:10px">
+              <button onClick="{{ clearAll }}" style="appearance:none;flex:none;width:112px;height:56px;border:1px solid var(--line);border-radius:28px;background:var(--surf);font-family:inherit;font-size:15.5px;font-weight:600;cursor:pointer">Clear all</button>
+              <button onClick="{{ goPick }}" style="appearance:none;flex:1;border:0;height:56px;border-radius:28px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Show {{ matchCount }} photos</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- BUILDING -->
+        <sc-if value="{{ isBuilding }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 34px;text-align:center">
+            <div style="width:132px;height:132px;border-radius:38px;background:linear-gradient(150deg,#f2d9c6,#d9a184);animation:brth 2.6s ease-in-out infinite;margin-bottom:34px"></div>
+            <div style="font-size:26px;font-weight:800;letter-spacing:-.025em">Finding your best shots</div>
+            <div style="font-size:16px;color:var(--mut);margin-top:10px;min-height:48px;line-height:1.4">{{ buildMsg }}</div>
+            <div style="width:100%;height:8px;border-radius:4px;background:#eae5dc;overflow:hidden;margin-top:14px">
+              <div style="height:100%;border-radius:4px;background:var(--acc);width:{{ pctW }};transition:width .3s linear"></div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:26px;font-size:13.5px;color:#5d7a62">
+              <span style="width:8px;height:8px;border-radius:50%;background:#4a8a5c"></span>All on your phone
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- REVIEW -->
+        <sc-if value="{{ isReview }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column">
+            <div style="padding:52px 22px 10px">
+              <div style="display:flex;gap:6px;align-items:center;font-size:12.5px;font-weight:700;justify-content:center">
+                <span style="color:#b3aba0">Pick</span><span style="color:#cbc4b8">→</span><span style="color:var(--acc)">Review</span><span style="color:#cbc4b8">→</span><span style="color:#b3aba0">Done</span>
+              </div>
+              <h1 style="margin:12px 0 0;font-size:27px;letter-spacing:-.03em;font-weight:800">{{ reviewCountTitle }}</h1>
+              <p style="margin:7px 0 0;font-size:14.5px;line-height:1.45;color:var(--mut)">Tap a photo to see it big. “See other shots” swaps it, ✕ takes it out of the album.</p>
+            </div>
+            <div style="flex:1;overflow:auto;padding:10px 18px 120px">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <sc-for list="{{ reviewItems }}" as="r" hint-placeholder-count="8">
+                  <div style="display:flex;flex-direction:column;gap:7px">
+                    <button onClick="{{ r.onClick }}" style="appearance:none;border:0;padding:0;background:none;cursor:pointer;font-family:inherit;position:relative">
+                      <div style="aspect-ratio:1;border-radius:14px;background:{{ r.bg }}"></div>
+                      <span style="position:absolute;bottom:8px;right:8px;width:28px;height:28px;border-radius:50%;background:rgba(20,15,10,.5);color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center">⤡</span>
+                    </button>
+                    <div style="font-size:13px;line-height:1.35;color:var(--mut);min-height:36px">{{ r.reason }}</div>
+                    <div style="display:flex;gap:6px;margin-top:auto">
+                      <button onClick="{{ r.onSwap }}" style="appearance:none;flex:1;border:1px solid var(--line);background:var(--surf);border-radius:18px;height:36px;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;color:#1a1714">See other shots</button>
+                      <button onClick="{{ r.onRemove }}" style="appearance:none;flex:none;width:44px;border:1px solid var(--line);background:var(--surf);border-radius:18px;height:36px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;color:#a8481f">✕</button>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="margin-top:28px">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+                  <div style="font-size:18px;font-weight:800;letter-spacing:-.02em">Good shots that missed out</div>
+                  <button onClick="{{ goMissed }}" style="appearance:none;border:0;background:none;font-family:inherit;font-size:14px;font-weight:700;color:var(--acc);cursor:pointer;flex:none">See all {{ missedCount }}</button>
+                </div>
+                <div style="font-size:13.5px;color:var(--mut);margin-top:4px;line-height:1.4">Strong photos we left out to keep the album varied. Add any you want back in.</div>
+                <div style="display:flex;gap:12px;overflow:auto;margin-top:14px;padding-bottom:4px">
+                  <sc-for list="{{ missed }}" as="m" hint-placeholder-count="6">
+                    <div style="flex:none;width:132px">
+                      <button onClick="{{ m.onOpen }}" style="appearance:none;border:0;padding:0;background:none;cursor:pointer;width:100%;position:relative">
+                        <div style="height:132px;border-radius:14px;background:{{ m.bg }}"></div>
+                        <span style="position:absolute;bottom:7px;left:7px;padding:3px 7px;border-radius:9px;background:rgba(20,15,10,.5);color:#fff;font-size:10.5px;font-weight:700">Full screen</span>
+                      </button>
+                      <div style="font-size:12.5px;line-height:1.35;color:var(--mut);margin-top:7px;min-height:34px">{{ m.note }}</div>
+                      <button onClick="{{ m.onAdd }}" style="appearance:none;width:100%;margin-top:7px;height:36px;border:1px solid {{ m.bd }};border-radius:18px;background:{{ m.bg2 }};color:{{ m.fg }};font-family:inherit;font-size:13.5px;font-weight:700;cursor:pointer">{{ m.action }}</button>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;padding:14px 18px 26px;background:linear-gradient(rgba(250,248,245,0),var(--bg) 38%)">
+              <button onClick="{{ goReady }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Make my album</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- ALBUM READY -->
+        <sc-if value="{{ isReady }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column;padding:76px 28px 30px;animation:fu .4s ease both">
+            <div style="width:100%;aspect-ratio:1;border-radius:24px;background:linear-gradient(160deg,#e3cdb4,#b98d68);box-shadow:0 18px 40px rgba(90,60,30,.2)"></div>
+            <div style="margin-top:26px;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--acc)">Album ready</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+              <input value="{{ albumTitle }}" onChange="{{ onTitleChange }}" style="flex:1;min-width:0;border:0;border-bottom:2px solid {{ titleBd }};outline:0;background:none;font-family:inherit;font-size:28px;font-weight:800;letter-spacing:-.03em;color:#1a1714;padding:2px 0" />
+              <span style="font-size:12.5px;font-weight:700;color:var(--mut);flex:none">Edit</span>
+            </div>
+            <div style="font-size:13.5px;color:var(--mut);margin-top:6px">We suggested this name. Tap it to change it.</div>
+            <div style="font-size:15px;color:var(--mut);margin-top:8px">{{ readyMeta }}</div>
+            <div style="flex:1"></div>
+            <div style="display:flex;gap:10px">
+              <button onClick="{{ goSlideshow }}" style="flex:1;height:52px;border:0;border-radius:26px;background:#efece5;color:#1a1714;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">▸ Play album</button>
+              <button onClick="{{ goDetail }}" style="flex:1;height:52px;border:0;border-radius:26px;background:#efece5;color:#1a1714;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">Open album</button>
+            </div>
+            <button onClick="{{ goPrint }}" style="appearance:none;width:100%;border:0;border-radius:20px;background:var(--acc);color:#fff;padding:16px 18px;cursor:pointer;font-family:inherit;text-align:left;display:flex;align-items:center;gap:14px;margin-top:20px;margin-bottom:10px;box-shadow:0 8px 22px rgba(120,60,30,.18)">
+              <div style="width:46px;height:58px;flex:none;border-radius:5px;background:linear-gradient(160deg,#f0dcc6,#c99b78);box-shadow:0 3px 10px rgba(0,0,0,.22)"></div>
+              <div style="flex:1">
+                <div style="font-size:18px;font-weight:800;letter-spacing:-.02em">Print it as a photo book</div>
+                <div style="font-size:13.5px;opacity:.85;margin-top:3px">Posted to your door · from £28</div>
+              </div>
+              <span style="font-size:24px;opacity:.85">›</span>
+            </button>
+            <div style="display:flex;gap:10px">
+              <button onClick="{{ openShare }}" style="flex:1;height:52px;border:1px solid var(--line);border-radius:26px;background:var(--surf);font-family:inherit;font-size:15.5px;font-weight:600;cursor:pointer">Share</button>
+              <button onClick="{{ goAlbums }}" style="flex:1;height:52px;border:1px solid var(--line);border-radius:26px;background:var(--surf);font-family:inherit;font-size:15.5px;font-weight:600;cursor:pointer">Done</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- SLIDESHOW -->
+        <sc-if value="{{ isShow }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;position:relative;background:#171310;overflow:hidden">
+            {{ slideEl }}
+            <div style="position:absolute;inset:0;background:linear-gradient(transparent 55%,rgba(15,11,8,.72))"></div>
+            <button onClick="{{ goDetail }}" style="position:absolute;top:52px;left:16px;width:40px;height:40px;border:0;border-radius:50%;background:rgba(255,255,255,.22);color:#fff;font-size:19px;cursor:pointer;font-family:inherit">‹</button>
+            <div style="position:absolute;left:0;right:0;bottom:0;padding:0 22px 40px;color:#fff">
+              <div style="font-size:26px;font-weight:800;letter-spacing:-.03em">{{ slideTitle }}</div>
+              <div style="font-size:14px;color:rgba(255,255,255,.78);margin-top:4px">{{ slideSub }}</div>
+              <div style="display:flex;gap:4px;margin-top:18px">
+                <sc-for list="{{ slideDots }}" as="d" hint-placeholder-count="6">
+                  <div style="flex:1;height:3px;border-radius:2px;background:{{ d.bg }}"></div>
+                </sc-for>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;margin-top:20px">
+                <button onClick="{{ slidePrev }}" style="width:52px;height:52px;border:0;border-radius:50%;background:rgba(255,255,255,.16);color:#fff;font-size:18px;cursor:pointer;font-family:inherit">‹</button>
+                <button onClick="{{ togglePlay }}" style="flex:1;height:52px;border:0;border-radius:26px;background:rgba(255,255,255,.92);color:#1a1714;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">{{ playLabel }}</button>
+                <button onClick="{{ slideNext }}" style="width:52px;height:52px;border:0;border-radius:50%;background:rgba(255,255,255,.16);color:#fff;font-size:18px;cursor:pointer;font-family:inherit">›</button>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:12px">
+                <sc-for list="{{ speeds }}" as="sp" hint-placeholder-count="3">
+                  <button onClick="{{ sp.onClick }}" style="flex:1;height:40px;border:1px solid {{ sp.bd }};border-radius:20px;background:{{ sp.bg }};color:{{ sp.fg }};font-family:inherit;font-size:13.5px;font-weight:700;cursor:pointer">{{ sp.label }}</button>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- ERROR -->
+        <sc-if value="{{ isError }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 34px;text-align:center">
+            <div style="width:88px;height:88px;border-radius:26px;background:#f6ece7;display:flex;align-items:center;justify-content:center;margin-bottom:24px">
+              <div style="width:32px;height:32px;border-radius:10px;background:#e0a389"></div>
+            </div>
+            <div style="font-size:24px;font-weight:800;letter-spacing:-.025em">That didn't finish</div>
+            <p style="margin:11px 0 26px;font-size:16px;line-height:1.5;color:var(--mut)">Your photos are safe and nothing was lost. We can pick up where we left off.</p>
+            <button onClick="{{ goBuilding }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Try again</button>
+            <button onClick="{{ goAlbums }}" style="appearance:none;border:0;background:none;height:50px;color:var(--mut);font-family:inherit;font-size:15.5px;font-weight:600;cursor:pointer">Back to albums</button>
+          </div>
+        </sc-if>
+
+        <!-- LOGIN -->
+        <sc-if value="{{ isLogin }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column;padding:86px 28px 30px;animation:fu .35s ease both">
+            <div style="width:64px;height:64px;border-radius:20px;background:linear-gradient(150deg,#f2d9c6,#d9a184);margin-bottom:26px"></div>
+            <h1 style="margin:0;font-size:30px;line-height:1.1;letter-spacing:-.03em;font-weight:800">Sign in to Photeo</h1>
+            <p style="margin:12px 0 0;font-size:15.5px;line-height:1.5;color:var(--mut)">Only so family can share albums with you. Your photos still stay on this phone.</p>
+            <div style="display:flex;gap:6px;margin-top:24px;padding:4px;background:#f0eee8;border-radius:14px">
+              <sc-for list="{{ authTabs }}" as="t" hint-placeholder-count="2">
+                <button onClick="{{ t.onClick }}" style="flex:1;height:44px;border:0;border-radius:11px;background:{{ t.bg }};color:{{ t.fg }};font-family:inherit;font-size:15.5px;font-weight:700;cursor:pointer">{{ t.label }}</button>
+              </sc-for>
+            </div>
+            <div style="margin-top:14px;height:58px;border:2px solid {{ authBd }};border-radius:16px;background:var(--surf);display:flex;align-items:center;padding:0 16px">
+              <input value="{{ authVal }}" onChange="{{ onAuthChange }}" placeholder="{{ authPlaceholder }}" style="flex:1;border:0;outline:0;background:none;font-family:inherit;font-size:18px;font-weight:600;color:#1a1714;min-width:0" />
+            </div>
+            <div style="font-size:13.5px;color:var(--mut);margin-top:10px;line-height:1.45">We'll text or email you a 6-digit code. No password to remember.</div>
+            <div style="flex:1"></div>
+            <button onClick="{{ goPermission }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:{{ authBtnBg }};color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Send me a code</button>
+            <button onClick="{{ goPermission }}" style="appearance:none;border:0;background:none;width:100%;height:48px;color:var(--mut);font-family:inherit;font-size:15.5px;font-weight:600;cursor:pointer">Use Photeo without an account</button>
+          </div>
+        </sc-if>
+
+        <!-- PRINT: ORDER A HARD COPY -->
+        <sc-if value="{{ isPrint }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column">
+            <div style="padding:52px 22px 0">
+              <button onClick="{{ goDetail }}" style="border:0;background:none;font-size:15.5px;font-weight:600;color:var(--mut);font-family:inherit;cursor:pointer;padding:6px 0">‹ Back</button>
+              <h1 style="margin:10px 0 0;font-size:28px;letter-spacing:-.03em;font-weight:800">Print this album</h1>
+              <p style="margin:7px 0 0;font-size:15px;line-height:1.45;color:var(--mut)">A real photo book, printed and posted to you. Your photos are sent to the printer only for this order.</p>
+            </div>
+            <div style="flex:1;overflow:auto;padding:18px 18px 150px;display:flex;flex-direction:column;gap:12px">
+              <sc-for list="{{ printSizes }}" as="p" hint-placeholder-count="3">
+                <button onClick="{{ p.onClick }}" style="appearance:none;text-align:left;width:100%;border:2px solid {{ p.bd }};border-radius:var(--r);background:{{ p.bg }};padding:16px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:14px">
+                  <div style="width:{{ p.w }};height:56px;flex:none;border-radius:6px;background:linear-gradient(160deg,#e3cdb4,#b98d68)"></div>
+                  <div style="flex:1">
+                    <div style="font-size:17.5px;font-weight:700;letter-spacing:-.015em">{{ p.name }}</div>
+                    <div style="font-size:13.5px;color:var(--mut);margin-top:2px">{{ p.desc }}</div>
+                  </div>
+                  <div style="font-size:18px;font-weight:800;color:{{ p.fg }}">{{ p.price }}</div>
+                </button>
+              </sc-for>
+              <div style="border:1px solid var(--line);border-radius:var(--r);background:var(--surf);overflow:hidden">
+                <sc-for list="{{ printRows }}" as="r" hint-placeholder-count="3">
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line);font-size:15.5px">
+                    <span style="font-weight:600">{{ r.label }}</span>
+                    <span style="color:var(--mut);text-align:right">{{ r.val }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="display:flex;gap:10px;align-items:flex-start;padding:14px 16px;border-radius:16px;background:#f1efe9">
+                <div style="width:9px;height:9px;border-radius:50%;background:#4a8a5c;flex:none;margin-top:6px"></div>
+                <div style="font-size:13.5px;line-height:1.45;color:#4c463d">Nothing else is uploaded. Only the 24 photos in this album go to the printer, and only once.</div>
+              </div>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;padding:14px 18px 26px;background:var(--bg);border-top:1px solid var(--line)">
+              <button onClick="{{ goPreview }}" style="appearance:none;width:100%;height:52px;border:1px solid var(--line);border-radius:26px;background:var(--surf);font-family:inherit;font-size:15.5px;font-weight:700;cursor:pointer;margin-bottom:10px">See how the book will look</button>
+              <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
+                <span style="font-size:15px;color:var(--mut)">Total with delivery</span>
+                <span style="font-size:23px;font-weight:800;letter-spacing:-.02em">{{ printTotal }}</span>
+              </div>
+              <button onClick="{{ goPrintDone }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Pay {{ printTotal }} and order</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- PRINT ORDERED -->
+        <sc-if value="{{ isPrintDone }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column;padding:96px 30px 30px;text-align:center;align-items:center;animation:fu .4s ease both">
+            <div style="width:104px;height:104px;border-radius:50%;background:#eaf0ec;display:flex;align-items:center;justify-content:center;margin-bottom:26px">
+              <div style="width:34px;height:34px;border-radius:50%;background:#4a8a5c"></div>
+            </div>
+            <div style="font-size:27px;font-weight:800;letter-spacing:-.025em">Your book is on its way</div>
+            <p style="margin:11px 0 0;font-size:16px;line-height:1.5;color:var(--mut)">Rome, in September · {{ printPick }}<br>Paid {{ printTotal }}. Arrives in about 7 days.</p>
+            <div style="margin-top:26px;width:100%;border:1px solid var(--line);border-radius:var(--r);background:var(--surf);padding:18px;text-align:left">
+              <div style="font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#a29a8e">Delivering to</div>
+              <div style="font-size:16.5px;font-weight:600;margin-top:5px;line-height:1.4">Margaret Hale<br>14 Orchard Road, Bristol BS1 4TR</div>
+            </div>
+            <div style="flex:1"></div>
+            <button onClick="{{ goDetail }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Back to album</button>
+          </div>
+        </sc-if>
+
+        <!-- SHARE SENT -->
+        <sc-if value="{{ isShareDone }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column;padding:96px 30px 30px;text-align:center;align-items:center;animation:fu .4s ease both">
+            <div style="display:flex;gap:-10px;margin-bottom:26px">
+              <sc-for list="{{ sharedWith }}" as="p" hint-placeholder-count="2">
+                <div style="width:74px;height:74px;border-radius:50%;background:{{ p.bg }};display:flex;align-items:center;justify-content:center;font-size:25px;font-weight:700;color:rgba(255,255,255,.92);box-shadow:0 0 0 4px var(--bg);margin-left:-10px">{{ p.initial }}</div>
+              </sc-for>
+            </div>
+            <div style="font-size:27px;font-weight:800;letter-spacing:-.025em">Album sent</div>
+            <p style="margin:11px 0 0;font-size:16px;line-height:1.5;color:var(--mut)">{{ shareNames }} will find “Rome, in September” in their Photeo albums. It stays between your phones.</p>
+            <div style="flex:1"></div>
+            <button onClick="{{ goDetail }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Back to album</button>
+          </div>
+        </sc-if>
+
+        <!-- SHARE SHEET -->
+        <sc-if value="{{ sheetShare }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:0;z-index:60;background:rgba(30,24,18,.42)">
+            <div onClick="{{ closeSheet }}" style="height:220px"></div>
+            <div style="position:absolute;left:0;right:0;bottom:0;top:220px;background:var(--surf);border-radius:26px 26px 0 0;display:flex;flex-direction:column;animation:fu .28s ease both">
+              <div style="padding:14px 22px 0">
+                <div style="width:42px;height:4px;border-radius:2px;background:#ddd7cc;margin:0 auto 14px"></div>
+                <div style="font-size:21px;font-weight:800;letter-spacing:-.02em">Share with</div>
+                <div style="font-size:14.5px;color:var(--mut);margin-top:4px">They'll see the album in their own Photeo app. Only people you choose.</div>
+              </div>
+              <div style="flex:1;overflow:auto;padding:8px 22px 10px">
+                <sc-for list="{{ shareGroups }}" as="gr" hint-placeholder-count="2">
+                  <div style="padding-top:12px">
+                    <div style="display:flex;justify-content:space-between;align-items:baseline">
+                      <span style="font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#a29a8e">{{ gr.title }}</span>
+                      <span style="font-size:12.5px;color:var(--mut)">{{ gr.note }}</span>
+                    </div>
+                    <sc-for list="{{ gr.items }}" as="c" hint-placeholder-count="3">
+                      <button onClick="{{ c.onClick }}" style="appearance:none;width:100%;border:0;border-bottom:1px solid var(--line);background:none;padding:13px 2px;font-family:inherit;cursor:pointer;display:flex;align-items:center;gap:14px;text-align:left">
+                        <div style="width:52px;height:52px;flex:none;border-radius:50%;background:{{ c.bg }};display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:700;color:rgba(255,255,255,.92)">{{ c.initial }}</div>
+                        <div style="flex:1">
+                          <div style="font-size:16.5px;font-weight:700">{{ c.name }}</div>
+                          <div style="font-size:13.5px;color:{{ c.subFg }};margin-top:1px">{{ c.sub }}</div>
+                        </div>
+                        <div style="width:26px;height:26px;border-radius:50%;border:2px solid {{ c.bd }};background:{{ c.dot }};color:#fff;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;flex:none">{{ c.check }}</div>
+                      </button>
+                    </sc-for>
+                  </div>
+                </sc-for>
+                <div style="margin-top:20px;border:1px solid var(--line);border-radius:18px;background:#faf8f5;padding:16px">
+                  <div style="font-size:16.5px;font-weight:700;letter-spacing:-.01em">Invite someone new</div>
+                  <div style="font-size:13.5px;color:var(--mut);margin-top:3px;line-height:1.4">Enter their email or phone number. They'll get a link to install Photeo and this album will be waiting.</div>
+                  <div style="margin-top:12px;height:52px;border:2px solid {{ inviteBd }};border-radius:14px;background:#fff;display:flex;align-items:center;padding:0 14px">
+                    <input value="{{ inviteVal }}" onChange="{{ onInviteChange }}" placeholder="Email or phone number" style="flex:1;border:0;outline:0;background:none;font-family:inherit;font-size:16px;font-weight:600;color:#1a1714;min-width:0" />
+                  </div>
+                  <button onClick="{{ toggleFamily }}" style="appearance:none;width:100%;border:0;background:none;padding:12px 0 2px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:11px;text-align:left">
+                    <div style="width:26px;height:26px;flex:none;border-radius:8px;border:2px solid {{ famBd }};background:{{ famBg }};color:#fff;font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center">{{ famCheck }}</div>
+                    <div style="font-size:15px;font-weight:600;line-height:1.3">Add them to my family<div style="font-size:13px;font-weight:500;color:var(--mut)">Family can see every album you share</div></div>
+                  </button>
+                  <button onClick="{{ sendInvite }}" style="appearance:none;border:0;width:100%;height:50px;border-radius:25px;background:{{ inviteBtnBg }};color:{{ inviteBtnFg }};font-family:inherit;font-size:16px;font-weight:700;cursor:pointer;margin-top:12px">{{ inviteBtnLabel }}</button>
+                </div>
+              </div>
+              <div style="padding:12px 22px 26px;border-top:1px solid var(--line)">
+                <button onClick="{{ sendShare }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:{{ shareBg }};color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">{{ shareLabel }}</button>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- NAME A PERSON -->
+        <sc-if value="{{ isName }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column">
+            <div style="padding:52px 22px 0">
+              <button onClick="{{ goBackFromName }}" style="border:0;background:none;font-size:15.5px;font-weight:600;color:var(--mut);font-family:inherit;cursor:pointer;padding:6px 0">‹ Back</button>
+            </div>
+            <div style="flex:1;overflow:auto;padding:8px 26px 26px;text-align:center">
+              <div style="width:112px;height:112px;margin:6px auto 0;border-radius:50%;background:{{ nameBg }};display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:700;color:rgba(255,255,255,.92)">{{ nameInitial }}</div>
+              <h1 style="margin:20px 0 0;font-size:27px;letter-spacing:-.03em;font-weight:800">Who is this?</h1>
+              <p style="margin:8px 0 0;font-size:15.5px;line-height:1.45;color:var(--mut)">Add a name and you'll be able to find their photos anytime. The name stays on your phone.</p>
+              <div style="margin-top:22px;display:flex;align-items:center;gap:10px;height:58px;border:2px solid {{ nameFieldBd }};border-radius:16px;background:var(--surf);padding:0 16px">
+                <input value="{{ nameVal }}" onChange="{{ onNameChange }}" placeholder="Name" style="flex:1;border:0;outline:0;background:none;font-family:inherit;font-size:19px;font-weight:600;color:#1a1714;min-width:0" />
+                <sc-if value="{{ hasName }}" hint-placeholder-val="{{ false }}">
+                  <button onClick="{{ clearName }}" style="border:0;background:#f0eee8;width:30px;height:30px;border-radius:50%;font-size:14px;cursor:pointer;font-family:inherit;flex:none">✕</button>
+                </sc-if>
+              </div>
+              <div style="font-size:13px;color:var(--mut);margin-top:10px">{{ nameCount }} photos of this person</div>
+              <div style="text-align:left;margin-top:24px">
+                <div style="font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#a29a8e">How are they related to you?</div>
+                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
+                  <sc-for list="{{ relations }}" as="n" hint-placeholder-count="6">
+                    <button onClick="{{ n.onClick }}" style="appearance:none;border:1px solid {{ n.bd }};background:{{ n.bg }};color:{{ n.fg }};height:44px;padding:0 18px;border-radius:22px;font-family:inherit;font-size:15.5px;font-weight:600;cursor:pointer">{{ n.label }}</button>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="text-align:left;margin-top:24px">
+                <div style="font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#a29a8e">Their photos</div>
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:10px">
+                  <sc-for list="{{ nameTiles }}" as="t" hint-placeholder-count="8">
+                    <div style="aspect-ratio:1;border-radius:9px;background:{{ t.bg }}"></div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+            <div style="padding:12px 22px 26px;background:var(--bg);border-top:1px solid var(--line)">
+              <button onClick="{{ saveName }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:{{ saveBg }};color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Save name</button>
+              <button onClick="{{ goBackFromName }}" style="appearance:none;border:0;background:none;width:100%;height:46px;color:var(--mut);font-family:inherit;font-size:15px;font-weight:600;cursor:pointer">Skip for now</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- MANAGE ALBUM SHEET -->
+        <sc-if value="{{ sheetManage }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:0;z-index:60;background:rgba(30,24,18,.42)">
+            <div onClick="{{ closeSheet }}" style="height:400px"></div>
+            <div style="position:absolute;left:0;right:0;bottom:0;background:var(--surf);border-radius:26px 26px 0 0;padding:14px 22px 28px;animation:fu .28s ease both">
+              <div style="width:42px;height:4px;border-radius:2px;background:#ddd7cc;margin:0 auto 14px"></div>
+              <div style="font-size:21px;font-weight:800;letter-spacing:-.02em">Edit this album</div>
+              <div style="font-size:13px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#a29a8e;margin-top:18px">Album name</div>
+              <div style="margin-top:8px;height:54px;border:2px solid var(--acc);border-radius:14px;background:#fff;display:flex;align-items:center;padding:0 14px">
+                <input value="{{ albumTitle }}" onChange="{{ onTitleChange }}" style="flex:1;border:0;outline:0;background:none;font-family:inherit;font-size:17px;font-weight:700;color:#1a1714;min-width:0" />
+              </div>
+              <button onClick="{{ closeSheet }}" style="appearance:none;border:0;width:100%;height:54px;border-radius:27px;background:var(--acc);color:#fff;font-family:inherit;font-size:16.5px;font-weight:700;cursor:pointer;margin-top:16px">Save name</button>
+              <button onClick="{{ askDelete }}" style="appearance:none;width:100%;height:54px;margin-top:10px;border:1px solid var(--line);border-radius:27px;background:var(--surf);color:#a8481f;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">Delete album</button>
+              <div style="font-size:13px;color:var(--mut);text-align:center;margin-top:9px;line-height:1.45">Deleting the album keeps every photo in your library.</div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- DELETE CONFIRM -->
+        <sc-if value="{{ sheetDelete }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:0;z-index:70;background:rgba(30,24,18,.5);display:flex;align-items:center;justify-content:center;padding:30px">
+            <div style="background:var(--surf);border-radius:22px;padding:26px 22px;text-align:center;animation:fu .22s ease both">
+              <div style="font-size:20px;font-weight:800;letter-spacing:-.02em">Delete this album?</div>
+              <p style="margin:9px 0 20px;font-size:15px;line-height:1.45;color:var(--mut)">The album goes away. All {{ detailCount }} photos stay in your library.</p>
+              <button onClick="{{ confirmDelete }}" style="appearance:none;border:0;width:100%;height:52px;border-radius:26px;background:#a8481f;color:#fff;font-family:inherit;font-size:16.5px;font-weight:700;cursor:pointer">Yes, delete it</button>
+              <button onClick="{{ closeSheet }}" style="appearance:none;border:0;background:none;width:100%;height:48px;color:var(--mut);font-family:inherit;font-size:15.5px;font-weight:700;cursor:pointer">Keep the album</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- NO PEOPLE FOUND YET -->
+        <sc-if value="{{ isNoPeople }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;overflow:auto;padding:52px 22px 108px">
+            <h1 style="margin:0;font-size:32px;letter-spacing:-.03em;font-weight:800">Photos</h1>
+            <div style="padding:14px 0 0">
+              <div style="height:48px;border-radius:24px;background:#f0eee8;display:flex;align-items:center;gap:10px;padding:0 18px;color:#8b8378;font-size:16px">
+                <span style="width:15px;height:15px;border:2px solid currentColor;border-radius:50%;display:inline-block"></span>Search people or places
+              </div>
+            </div>
+            <div style="margin-top:24px;border:1px solid var(--line);border-radius:var(--r);background:var(--surf);padding:26px 22px;text-align:center">
+              <div style="width:78px;height:78px;border-radius:50%;background:#f1efe9;margin:0 auto 18px;display:flex;align-items:center;justify-content:center">
+                <div style="width:30px;height:30px;border-radius:50%;background:#ddd7cc"></div>
+              </div>
+              <div style="font-size:19px;font-weight:800;letter-spacing:-.02em">No people found yet</div>
+              <p style="margin:9px 0 0;font-size:14.5px;line-height:1.5;color:var(--mut)">Photeo is still looking through your photos for faces. It takes a few minutes the first time, and it all happens on this phone.</p>
+              <button onClick="{{ goScanning }}" style="appearance:none;border:1px solid var(--line);background:var(--surf);height:46px;padding:0 20px;border-radius:23px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer;margin-top:18px">See what it's doing</button>
+            </div>
+            <div style="margin-top:26px;font-size:17px;font-weight:700">September</div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin-top:8px">
+              <sc-for list="{{ libTiles }}" as="t" hint-placeholder-count="12">
+                <div style="aspect-ratio:1;background:{{ t.bg }}"></div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- SCANNING / FIRST-RUN LIBRARY -->
+        <sc-if value="{{ isScanning }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column;padding:52px 22px 108px">
+            <h1 style="margin:0;font-size:32px;letter-spacing:-.03em;font-weight:800">Photos</h1>
+            <div style="margin-top:22px;border:1px solid var(--line);border-radius:var(--r);background:var(--surf);padding:20px">
+              <div style="font-size:18px;font-weight:700;letter-spacing:-.015em">Getting to know your photos</div>
+              <p style="margin:7px 0 16px;font-size:14.5px;line-height:1.45;color:var(--mut)">First time only. You can keep using the app while this happens.</p>
+              <div style="display:flex;flex-direction:column;gap:14px">
+                <sc-for list="{{ scanRows }}" as="r" hint-placeholder-count="3">
+                  <div style="display:flex;gap:12px;align-items:center">
+                    <div style="width:12px;height:12px;flex:none;border-radius:50%;background:{{ r.dot }}"></div>
+                    <div style="flex:1">
+                      <div style="font-size:15.5px;font-weight:700;color:{{ r.fg }}">{{ r.label }}</div>
+                      <div style="font-size:13.5px;color:var(--mut);margin-top:1px">{{ r.sub }}</div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="margin-top:16px;display:flex;gap:10px;align-items:center;padding:14px 16px;border-radius:16px;background:#f1efe9">
+              <div style="width:9px;height:9px;border-radius:50%;background:#4a8a5c;flex:none"></div>
+              <div style="font-size:13.5px;line-height:1.4;color:#4c463d">All of this happens on your phone. Nothing is uploaded.</div>
+            </div>
+            <div style="margin-top:22px;display:grid;grid-template-columns:repeat(3,1fr);gap:3px">
+              <sc-for list="{{ libTiles }}" as="t" hint-placeholder-count="9">
+                <div style="aspect-ratio:1;background:{{ t.bg }};opacity:.5"></div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- PRINT PREVIEW -->
+        <sc-if value="{{ isPreview }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column;background:#efece5">
+            <div style="padding:52px 18px 4px;background:var(--bg)">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <button onClick="{{ goPrint }}" style="border:0;background:none;font-size:15.5px;font-weight:600;color:var(--mut);font-family:inherit;cursor:pointer;padding:6px 4px">‹ Print</button>
+                <span style="font-size:13.5px;font-weight:600;color:var(--mut)">{{ pagePos }}</span>
+              </div>
+              <h1 style="margin:8px 0 10px;padding:0 4px;font-size:24px;letter-spacing:-.03em;font-weight:800">How your book will look</h1>
+            </div>
+            <div style="flex:1;overflow:auto;padding:16px 18px 24px;display:flex;flex-direction:column;gap:18px">
+              <sc-for list="{{ pages }}" as="p" hint-placeholder-count="4">
+                <div style="background:#fff;border-radius:4px;box-shadow:0 6px 18px rgba(60,45,30,.14);padding:14px;display:flex;flex-direction:column;gap:10px">
+                  <div style="display:flex;gap:8px">
+                    <div style="flex:{{ p.f1 }};aspect-ratio:1;border-radius:2px;background:{{ p.a }}"></div>
+                    <div style="flex:{{ p.f2 }};aspect-ratio:1;border-radius:2px;background:{{ p.b }}"></div>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;align-items:baseline">
+                    <span style="font-size:12.5px;font-weight:600;color:#8b8378">{{ p.label }}</span>
+                    <span style="font-size:12.5px;color:#a29a8e">{{ p.n }}</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="padding:12px 18px 26px;background:var(--bg);border-top:1px solid var(--line)">
+              <button onClick="{{ goPrintDone }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:var(--acc);color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">Looks good — pay {{ printTotal }}</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- MISSED PHOTOS · ALL -->
+        <sc-if value="{{ isMissedAll }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column">
+            <div style="padding:52px 18px 8px">
+              <button onClick="{{ backToReview }}" style="border:0;background:none;font-size:15.5px;font-weight:600;color:var(--mut);font-family:inherit;cursor:pointer;padding:6px 4px">‹ Review</button>
+              <h1 style="margin:8px 0 0;padding:0 4px;font-size:26px;letter-spacing:-.03em;font-weight:800">Good shots that missed out</h1>
+              <p style="margin:6px 0 0;padding:0 4px;font-size:14.5px;line-height:1.45;color:var(--mut)">{{ missedCount }} photos. Tap one to see it big, or tick it to put it in the album.</p>
+            </div>
+            <div style="flex:1;overflow:auto;padding:10px 3px 120px">
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:3px">
+                <sc-for list="{{ missedAll }}" as="m" hint-placeholder-count="24">
+                  <div style="position:relative">
+                    <button onClick="{{ m.onOpen }}" style="appearance:none;border:0;padding:0;width:100%;aspect-ratio:1;background:{{ m.bg }};cursor:pointer"></button>
+                    <button onClick="{{ m.onAdd }}" style="position:absolute;top:6px;right:6px;width:30px;height:30px;border-radius:50%;border:2px solid rgba(255,255,255,.9);background:{{ m.dot }};color:#fff;font-size:15px;font-weight:800;display:flex;align-items:center;justify-content:center;cursor:pointer;font-family:inherit;padding:0">{{ m.check }}</button>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="position:absolute;left:0;right:0;bottom:0;padding:14px 18px 26px;background:linear-gradient(rgba(250,248,245,0),var(--bg) 38%)">
+              <button onClick="{{ backToReview }}" style="appearance:none;border:0;width:100%;height:56px;border-radius:28px;background:{{ addBg }};color:#fff;font-family:inherit;font-size:17px;font-weight:700;cursor:pointer">{{ addLabel }}</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- FAMILY -->
+        <sc-if value="{{ isFamily }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column">
+            <div style="padding:52px 22px 0">
+              <button onClick="{{ goAccount }}" style="border:0;background:none;font-size:15.5px;font-weight:600;color:var(--mut);font-family:inherit;cursor:pointer;padding:6px 0">‹ Account</button>
+              <h1 style="margin:10px 0 0;font-size:28px;letter-spacing:-.03em;font-weight:800">Your family</h1>
+              <p style="margin:7px 0 0;font-size:15px;line-height:1.45;color:var(--mut)">Family can see the albums you share with them. They can't see the rest of your photos.</p>
+            </div>
+            <div style="flex:1;overflow:auto;padding:18px 18px 30px;display:flex;flex-direction:column;gap:12px">
+              <div style="border:1px solid var(--line);border-radius:var(--r);background:var(--surf);overflow:hidden">
+                <sc-for list="{{ familyMembers }}" as="m" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid var(--line)">
+                    <div style="width:52px;height:52px;flex:none;border-radius:50%;background:{{ m.bg }};display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:700;color:rgba(255,255,255,.92)">{{ m.initial }}</div>
+                    <div style="flex:1">
+                      <div style="font-size:16.5px;font-weight:700">{{ m.name }}</div>
+                      <div style="font-size:13.5px;color:{{ m.subFg }};margin-top:2px">{{ m.sub }}</div>
+                    </div>
+                    <button onClick="{{ m.onRemove }}" style="appearance:none;border:1px solid var(--line);background:var(--surf);height:38px;padding:0 14px;border-radius:19px;font-family:inherit;font-size:13.5px;font-weight:700;color:{{ m.actionFg }};cursor:pointer">{{ m.action }}</button>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="border:1px solid var(--line);border-radius:var(--r);background:var(--surf);padding:18px">
+                <div style="font-size:17px;font-weight:700;letter-spacing:-.01em">Invite someone to your family</div>
+                <div style="font-size:13.5px;color:var(--mut);margin-top:4px;line-height:1.4">Email or phone number. They'll get a link to install Photeo.</div>
+                <div style="margin-top:12px;height:52px;border:2px solid {{ inviteBd }};border-radius:14px;background:#fff;display:flex;align-items:center;padding:0 14px">
+                  <input value="{{ inviteVal }}" onChange="{{ onInviteChange }}" placeholder="Email or phone number" style="flex:1;border:0;outline:0;background:none;font-family:inherit;font-size:16px;font-weight:600;color:#1a1714;min-width:0" />
+                </div>
+                <button onClick="{{ sendInvite }}" style="appearance:none;border:0;width:100%;height:52px;border-radius:26px;background:{{ inviteBtnBg }};color:{{ inviteBtnFg }};font-family:inherit;font-size:16px;font-weight:700;cursor:pointer;margin-top:12px">Send invite</button>
+              </div>
+              <div style="display:flex;gap:10px;align-items:flex-start;padding:14px 16px;border-radius:16px;background:#f1efe9">
+                <div style="width:9px;height:9px;border-radius:50%;background:#4a8a5c;flex:none;margin-top:6px"></div>
+                <div style="font-size:13.5px;line-height:1.45;color:#4c463d">Removing someone stops future sharing. Albums they already have stay on their phone.</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- FULL-SIZE VIEWER -->
+        <sc-if value="{{ isViewer }}" hint-placeholder-val="{{ false }}">
+          <div style="height:100%;display:flex;flex-direction:column;background:#171310">
+            <div style="padding:52px 18px 0;display:flex;justify-content:space-between;align-items:center">
+              <button onClick="{{ viewerBack }}" style="width:40px;height:40px;border:0;border-radius:50%;background:rgba(255,255,255,.16);color:#fff;font-size:19px;cursor:pointer;font-family:inherit">‹</button>
+              <div style="font-size:14px;font-weight:600;color:rgba(255,255,255,.75)">{{ viewerPos }}</div>
+              <div style="width:40px"></div>
+            </div>
+            <div style="flex:1;display:flex;align-items:center;padding:16px 12px">
+              <div style="width:100%;aspect-ratio:1;border-radius:10px;background:{{ viewerBg }}"></div>
+            </div>
+            <div style="padding:0 22px 26px">
+              <div style="font-size:15px;color:rgba(255,255,255,.82);line-height:1.45">{{ viewerReason }}</div>
+              <sc-if value="{{ viewerCanRemove }}" hint-placeholder-val="{{ true }}">
+                <button onClick="{{ viewerRemove }}" style="appearance:none;border:0;background:none;padding:10px 0 0;font-family:inherit;font-size:14.5px;font-weight:700;color:#f0a58a;cursor:pointer">Remove from album</button>
+              </sc-if>
+              <div style="display:flex;gap:10px;margin-top:16px">
+                <button onClick="{{ viewerPrev }}" style="width:56px;height:52px;border:0;border-radius:26px;background:rgba(255,255,255,.14);color:#fff;font-family:inherit;font-size:18px;cursor:pointer">‹</button>
+                <button onClick="{{ viewerAction }}" style="flex:1;height:52px;border:0;border-radius:26px;background:var(--acc);color:#fff;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">{{ viewerActionLabel }}</button>
+                <button onClick="{{ viewerNext }}" style="width:56px;height:52px;border:0;border-radius:26px;background:rgba(255,255,255,.14);color:#fff;font-family:inherit;font-size:18px;cursor:pointer">›</button>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- FACE MODAL -->
+        <sc-if value="{{ sheetFace }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:0;z-index:60;background:rgba(30,24,18,.42)">
+            <div onClick="{{ closeSheet }}" style="height:180px"></div>
+            <div style="position:absolute;left:0;right:0;bottom:0;top:180px;background:var(--surf);border-radius:26px 26px 0 0;display:flex;flex-direction:column;animation:fu .28s ease both">
+              <div style="padding:14px 22px 0;display:flex;flex-direction:column;gap:12px">
+                <div style="width:42px;height:4px;border-radius:2px;background:#ddd7cc;align-self:center"></div>
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div style="font-size:21px;font-weight:800;letter-spacing:-.02em">Choose a person</div>
+                  <button onClick="{{ closeSheet }}" style="border:0;background:#f0eee8;width:34px;height:34px;border-radius:50%;font-size:16px;cursor:pointer;font-family:inherit">✕</button>
+                </div>
+                <div style="height:46px;border-radius:23px;background:#f0eee8;display:flex;align-items:center;gap:10px;padding:0 16px;color:#8b8378;font-size:15.5px">
+                  <span style="width:14px;height:14px;border:2px solid currentColor;border-radius:50%"></span>Search faces
+                </div>
+                <button onClick="{{ pickAnyone }}" style="appearance:none;text-align:left;border:1px solid {{ anyoneBd }};background:{{ anyoneBg }};border-radius:14px;padding:14px 16px;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">Anyone <span style="font-weight:500;color:var(--mut);font-size:14px">· 3,418 photos</span></button>
+                <div style="display:flex;gap:6px;padding:4px;background:#f0eee8;border-radius:13px">
+                  <sc-for list="{{ faceModes }}" as="m" hint-placeholder-count="2">
+                    <button onClick="{{ m.onClick }}" style="flex:1;height:42px;border:1px solid {{ m.bd }};border-radius:10px;background:{{ m.bg }};color:{{ m.fg }};font-family:inherit;font-size:13.5px;font-weight:700;cursor:pointer;line-height:1.2;padding:0 8px">{{ m.label }}</button>
+                  </sc-for>
+                </div>
+                <div style="font-size:13px;color:var(--mut);line-height:1.4">Pick as many people as you like. Tap a face again to remove it.</div>
+              </div>
+              <div style="flex:1;overflow:auto;padding:16px 22px 30px;display:grid;grid-template-columns:repeat(3,1fr);gap:18px 12px">
+                <sc-for list="{{ people }}" as="p" hint-placeholder-count="9">
+                  <button onClick="{{ p.onClick }}" style="appearance:none;border:0;background:none;padding:0;cursor:pointer;font-family:inherit;text-align:center">
+                    <div style="width:82px;height:82px;margin:0 auto;border-radius:50%;background:{{ p.bg }};display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;color:rgba(255,255,255,.92);box-shadow:{{ p.ring }}">{{ p.initial }}</div>
+                    <div style="font-size:14px;font-weight:700;margin-top:8px">{{ p.name }}</div>
+                    <div style="font-size:12.5px;color:var(--mut)">{{ p.n }} photos</div>
+                  </button>
+                </sc-for>
+              </div>
+              <div style="padding:12px 22px 26px;border-top:1px solid var(--line)">
+                <button onClick="{{ closeSheet }}" style="appearance:none;border:0;width:100%;height:54px;border-radius:27px;background:var(--acc);color:#fff;font-family:inherit;font-size:16.5px;font-weight:700;cursor:pointer">{{ faceDoneLabel }}</button>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- LOCATION MODAL -->
+        <sc-if value="{{ sheetLoc }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:0;z-index:60;background:rgba(30,24,18,.42)">
+            <div onClick="{{ closeSheet }}" style="height:180px"></div>
+            <div style="position:absolute;left:0;right:0;bottom:0;top:180px;background:var(--surf);border-radius:26px 26px 0 0;display:flex;flex-direction:column;animation:fu .28s ease both">
+              <div style="padding:14px 22px 0;display:flex;flex-direction:column;gap:12px">
+                <div style="width:42px;height:4px;border-radius:2px;background:#ddd7cc;align-self:center"></div>
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div style="font-size:21px;font-weight:800;letter-spacing:-.02em">Choose a place</div>
+                  <button onClick="{{ closeSheet }}" style="border:0;background:#f0eee8;width:34px;height:34px;border-radius:50%;font-size:16px;cursor:pointer;font-family:inherit">✕</button>
+                </div>
+                <div style="height:46px;border-radius:23px;background:#f0eee8;display:flex;align-items:center;gap:10px;padding:0 16px;color:#8b8378;font-size:15.5px">
+                  <span style="width:14px;height:14px;border:2px solid currentColor;border-radius:50%"></span>Search places
+                </div>
+                <button onClick="{{ pickAnyplace }}" style="appearance:none;text-align:left;border:1px solid {{ anyplaceBd }};background:{{ anyplaceBg }};border-radius:14px;padding:14px 16px;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">Any place</button>
+              </div>
+              <div style="flex:1;overflow:auto;padding:8px 22px 30px">
+                <sc-for list="{{ placeGroups }}" as="g" hint-placeholder-count="2">
+                  <div style="padding-top:14px">
+                    <div style="font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#a29a8e;padding-bottom:4px">{{ g.title }}</div>
+                    <sc-for list="{{ g.items }}" as="p" hint-placeholder-count="3">
+                      <button onClick="{{ p.onClick }}" style="appearance:none;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);background:none;padding:15px 2px;font-family:inherit;cursor:pointer;display:flex;justify-content:space-between;align-items:center">
+                        <span style="font-size:16.5px;font-weight:{{ p.fw }};color:{{ p.fg }}">{{ p.name }}</span>
+                        <span style="font-size:14px;color:var(--mut)">{{ p.n }}</span>
+                      </button>
+                    </sc-for>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- SWAP SHEET -->
+        <sc-if value="{{ sheetSwap }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;inset:0;z-index:60;background:rgba(30,24,18,.42)">
+            <div onClick="{{ closeSheet }}" style="height:120px"></div>
+            <div style="position:absolute;left:0;right:0;bottom:0;top:120px;background:var(--surf);border-radius:26px 26px 0 0;display:flex;flex-direction:column;animation:fu .28s ease both">
+              <div style="padding:14px 22px 0">
+                <div style="width:42px;height:4px;border-radius:2px;background:#ddd7cc;margin:0 auto 14px"></div>
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div style="font-size:21px;font-weight:800;letter-spacing:-.02em">Other shots of this moment</div>
+                  <button onClick="{{ closeSheet }}" style="border:0;background:#f0eee8;width:34px;height:34px;border-radius:50%;font-size:16px;cursor:pointer;font-family:inherit;flex:none">✕</button>
+                </div>
+                <div style="font-size:14.5px;color:var(--mut);margin-top:5px">{{ altCount }} shots taken seconds apart. We chose the sharpest. Tap to pick, or open one full screen.</div>
+              </div>
+              <div style="flex:1;overflow:auto;padding:16px 22px 10px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px 10px;align-content:start">
+                <sc-for list="{{ alternates }}" as="a" hint-placeholder-count="9">
+                  <div style="display:flex;flex-direction:column;gap:6px">
+                    <button onClick="{{ a.onClick }}" style="appearance:none;border:0;padding:0;background:none;cursor:pointer;font-family:inherit;position:relative">
+                      <div style="aspect-ratio:1;border-radius:12px;background:{{ a.bg }};box-shadow:{{ a.ring }}"></div>
+                      <span style="position:absolute;bottom:6px;left:6px;padding:3px 7px;border-radius:9px;background:rgba(20,15,10,.5);color:#fff;font-size:10.5px;font-weight:700">Full screen</span>
+                    </button>
+                    <button onClick="{{ a.onPick }}" style="appearance:none;border:0;background:none;padding:0;text-align:left;font-family:inherit;font-size:11.5px;line-height:1.3;color:var(--mut);cursor:pointer;display:flex;gap:5px;align-items:flex-start">
+                      <span style="width:15px;height:15px;flex:none;border-radius:50%;border:1.5px solid {{ a.tickBd }};background:{{ a.tickBg }};color:#fff;font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center;margin-top:1px">{{ a.tick }}</span>
+                      <span>{{ a.note }}</span>
+                    </button>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="padding:12px 22px 26px;border-top:1px solid var(--line);display:flex;gap:10px">
+                <button onClick="{{ openViewer }}" style="appearance:none;flex:none;width:118px;height:54px;border:1px solid var(--line);border-radius:27px;background:var(--surf);font-family:inherit;font-size:15px;font-weight:700;cursor:pointer">Full screen</button>
+                <button onClick="{{ closeSheet }}" style="appearance:none;border:0;flex:1;height:54px;border-radius:27px;background:var(--acc);color:#fff;font-family:inherit;font-size:16.5px;font-weight:700;cursor:pointer">Use this photo</button>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- TAB BAR -->
+        <sc-if value="{{ showTabs }}" hint-placeholder-val="{{ true }}">
+          <div style="position:absolute;left:0;right:0;bottom:0;height:88px;background:rgba(250,248,245,.96);border-top:1px solid var(--line);display:flex;padding:0 12px 18px;z-index:30">
+            <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="3">
+              <button onClick="{{ t.onClick }}" style="flex:1;border:0;background:none;cursor:pointer;font-family:inherit;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:6px;padding-bottom:6px;color:{{ t.fg }}">
+                <div style="width:22px;height:22px;border-radius:{{ t.r }};border:2.5px solid currentColor;background:{{ t.fill }}"></div>
+                <span style="font-size:11.5px;font-weight:700;letter-spacing:.01em">{{ t.label }}</span>
+              </button>
+            </sc-for>
+          </div>
+        </sc-if>
+
+      </div>
+    </div>
+
+    <div style="width:393px;font-size:12px;line-height:1.5;color:#7d766c;padding:2px 4px 0">{{ screenHint }}</div>
+  </main>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;accentColor&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#c75c33&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;#c75c33&quot;,&quot;#2f6f5e&quot;,&quot;#8a5a9c&quot;,&quot;#b5893a&quot;],&quot;section&quot;:&quot;Theme&quot;}}">
+const G = ['linear-gradient(140deg,#cdd6c6,#9fb195)','linear-gradient(140deg,#e2cdb8,#c39d77)','linear-gradient(140deg,#c9d3dd,#9aa9bb)','linear-gradient(140deg,#e6d3cd,#c49e96)','linear-gradient(140deg,#d9d5c4,#b3ad93)','linear-gradient(140deg,#cfc6d6,#a294b0)','linear-gradient(140deg,#e8dcc6,#cbb68d)','linear-gradient(140deg,#c4d2cf,#94aaa6)','linear-gradient(140deg,#ded0d9,#b79cae)','linear-gradient(140deg,#d6ddd0,#aab99f)'];
+const g = i => G[i % G.length];
+const PEOPLE = [['Anna',412],['David',388],['Ellie',274],['Joe',163],['Lena',131],['Sam',96],['Nina',74],['Theo',52],['Rosa',31]];
+const PLACES = [['Countries',[['Italy',214],['Japan',188],['United States',1043]]],['Cities',[['Rome',96],['Florence',62],['Kyoto',74],['Portland',210]]]];
+const REASONS = ['Sharpest shot of this moment','Kept so everyone\u2019s included','A different angle to keep the album varied','Best light of the afternoon','Only photo from the walk to the river','Everyone looking at the camera','Wider shot to set the scene','Clearest of the four near-identical ones'];
+const BUILD = ['Looking through 3,418 photos\u2026','Grouping photos by moment and place\u2026','Finding the people in your photos\u2026','Setting aside blurry and repeated shots\u2026','Choosing the sharpest of each moment\u2026','Putting your album in order\u2026'];
+
+class Component extends DCLogic {
+  state = { screen:'welcome', tab:'albums', sel:{}, face:null, place:null, date:'All time', sheet:null, pct:0, msg:0, slide:0, empty:false, printSize:'Large', albumTitle:'Rome, in September', shareSel:{}, sharedFrom:null, removed:[], resent:[], altPick:0, addSel:{}, viewSrc:'review', viewCount:8, removedPhotos:[], playing:true, speed:3400, dragging:false, dragAdd:true, authMode:'Phone', authVal:'', inviteVal:'', inviteFamily:true, faces:[], faceMode:'any', dateMode:'Month', relation:null, viewIdx:0, naming:null, nameVal:'', names:{}, from:'photos' };
+
+  go(screen, extra) { this.stopTimers(); this.setState(Object.assign({screen, sheet:null}, extra||{})); if (screen==='building') this.startBuild(); if (screen==='show') this.startShow(); }
+  stopTimers() { clearInterval(this.tb); clearInterval(this.ts); }
+  componentWillUnmount() { this.stopTimers(); }
+  startBuild() {
+    this.setState({pct:0, msg:0});
+    this.tb = setInterval(() => {
+      const p = Math.min(100, this.state.pct + 2.2);
+      if (p >= 100) { clearInterval(this.tb); this.setState({pct:100}); setTimeout(()=>this.setState({screen:'review'}), 420); }
+      else this.setState({pct:p, msg:Math.min(BUILD.length-1, Math.floor(p/17))});
+    }, 90);
+  }
+  startShow() { this.setState({slide:0, playing:true}); this.ts = setInterval(()=>this.setState(st=>({slide:(st.slide+1)%6})), this.state.speed||3400); }
+  restartShow() { clearInterval(this.ts); if(this.state.playing) this.ts = setInterval(()=>this.setState(st=>({slide:(st.slide+1)%6})), this.state.speed||3400); }
+  toggle(i) { this.setState(s => { const sel = Object.assign({}, s.sel); if (sel[i]) delete sel[i]; else sel[i]=1; return {sel}; }); }
+
+  renderVals() {
+    const s = this.state, accent = this.props.accentColor || '#c75c33';
+    const selCount = Object.keys(s.sel).length;
+    const nav = k => () => this.go(k);
+    const rail = [
+      {title:'Start', items:[['Onboarding','welcome'],['Sign in','login'],['Photo permission','perm']]},
+      {title:'Tabs', items:[['Albums (home)','albums'],['Albums — empty','albumsEmpty'],['Album detail','detail'],['Edit album sheet','manage'],['Photos library','photos'],['Photos · first scan','scanning'],['Photos · no people yet','nopeople'],['Name a person','name'],['Your family','family'],['Account','account']]},
+      {title:'Create flow', items:[['1 · Pick photos','pick'],['Filter · three rows','filter'],['Face modal','face'],['Location modal','loc'],['2 · Building','building'],['3 · Review','review'],['Full-size view','viewer'],['Missed shots · all','missedAll'],['Swap sheet','swap'],['Album ready','ready'],['Slideshow','show']]},
+      {title:'Print & share', items:[['Print · order a book','print'],['Print preview','preview'],['Print ordered','printDone'],['Share sheet','share'],['Album sent','shareDone']]},
+      {title:'States', items:[['Error / recovery','error']]}
+    ].map(gr => ({title:gr.title, items:gr.items.map(([label,k]) => {
+      const active = k===s.screen || (k==='albumsEmpty'&&s.screen==='albums'&&s.empty) || (k==='face'&&s.sheet==='face') || (k==='loc'&&s.sheet==='loc') || (k==='swap'&&s.sheet==='swap') || (k==='share'&&s.sheet==='share') || (k==='manage'&&s.sheet==='manage');
+      return {label, n:'', bg:active?'#fff':'transparent', fg:active?'#1a1714':'#5f584f', fw:active?'700':'500',
+        onClick:()=>{ if(k==='albumsEmpty') this.setState({screen:'albums',tab:'albums',empty:true,sheet:null});
+          else if(k==='face'||k==='loc'||k==='swap'||k==='share'||k==='manage') this.setState({screen:(k==='swap'?'review':(k==='share'||k==='manage')?'detail':'filter'),sheet:k});
+          else if(k==='scanning'||k==='nopeople') this.setState({empty:false, screen:k, tab:'photos', sheet:null, sharedFrom:null});
+          else { this.setState({empty:false}); this.go(k, k==='albums'||k==='photos'||k==='account'?{tab:k, sharedFrom:null}:{sharedFrom:null}); } }};
+    })}));
+
+    const tiles = n => Array.from({length:n}, (_,i)=>({bg:g(i+3)}));
+    const grid = Array.from({length:27}, (_,i)=>{ const on = !!s.sel[i]; return {bg:g(i), veil:on?'rgba(199,92,51,.22)':'transparent', dot:on?accent:'rgba(0,0,0,.18)', check:on?'✓':'', onClick:()=>this.toggle(i), onDown:()=>this.setState({dragging:true, dragAdd:!s.sel[i]}, ()=>this.toggle(i)), onEnter:()=>{ if(s.dragging) this.setState(st=>{ const sel=Object.assign({},st.sel); if(st.dragAdd) sel[i]=1; else delete sel[i]; return {sel}; }); }}; });
+    const openName = (key, count, from) => () => this.setState({screen:'name', from:from||s.screen, sheet:null, naming:{key, count}, nameVal:s.names[key]||''});
+    const UNNAMED = [['u1',37],['u2',22]];
+    const named = PEOPLE.map(([name,n],i)=>({name:s.names[name]||name, n, initial:(s.names[name]||name)[0], bg:g(i+1), ring: s.faces.indexOf(name)>=0?'0 0 0 3px '+accent+', 0 0 0 6px #fff':'none', fg:'#1a1714', onClick:()=>this.setState(st=>({faces: st.faces.indexOf(name)>=0 ? st.faces.filter(x=>x!==name) : st.faces.concat([name])}))}));
+    const unnamed = UNNAMED.map(([key,n],i)=>({name:s.names[key]||'Add name', n, initial:s.names[key]?s.names[key][0]:'?', bg:g(i+6), ring:'none', fg:s.names[key]?'#1a1714':accent, onClick:openName(key, n)}));
+    const people = named.concat(unnamed);
+    const peopleRow = unnamed.concat(named).map(p=>Object.assign({}, p, {onClick: p.onClick}));
+    const placeGroups = PLACES.map(([title,items])=>({title, items:items.map(([name,n])=>({name, n:n+' photos', fw:s.place===name?'800':'600', fg:s.place===name?accent:'#1a1714', onClick:()=>this.setState({place:name, sheet:null})}))}));
+    const dates = ['All time','September','August','July','June','May'].map(label=>{ const on = s.date===label; return {label, bg:on?accent:'#fff', fg:on?'#fff':'#1a1714', bd:on?accent:'#e7e2d9', onClick:()=>this.setState({date:label})}; });
+    const matchCount = s.faces.length || s.place ? (s.faceMode==='same' && s.faces.length>1 ? 46 : 268) : 3418;
+    const faceLabel = s.faces.length===0 ? 'Anyone' : s.faces.length===1 ? s.faces[0] : s.faces.length+' people';
+
+    const filterRows = [
+      {kind:'Face', value:faceLabel, count:s.faces.length?(s.faceMode==='same'?'Together in the same photo':'In any of their photos'):'Everyone in your photos', icbg:'#f4ece4', icfg:'#d1a184', icw:'22px', icr:'50%', onClick:()=>this.setState({sheet:'face'})},
+      {kind:'Location', value:s.place||'Any place', count:s.place?'268 photos':'Everywhere you\u2019ve been', icbg:'#eaf0ec', icfg:'#8fae98', icw:'20px', icr:'4px', onClick:()=>this.setState({sheet:'loc'})}
+    ];
+
+    const reviewItems = Array.from({length:8},(_,i)=>i).filter(i=>s.removedPhotos.indexOf(i)<0).map(i=>({bg:g(i+2), reason:REASONS[i], onClick:()=>this.setState({screen:'viewer', viewIdx:i, viewSrc:'review', viewCount:8}), onSwap:()=>this.setState({sheet:'swap'}), onRemove:()=>this.setState(st=>({removedPhotos:st.removedPhotos.concat([i])}))}));
+    const ALT = ['Chosen · sharpest','A blink','Slightly softer','Head turned away','Nearly identical','Camera shake','Better smile, softer focus','Someone walked past','Half a second later','Darker exposure'];
+    const alternates = ALT.map((note,i)=>{ const on=s.altPick===i; return {bg:g(i+2), note, ring:on?'0 0 0 3px '+accent:'none', tick:on?'✓':'', tickBd:on?accent:'#c4bcb0', tickBg:on?accent:'transparent', onClick:()=>this.setState({screen:'viewer', viewIdx:i, viewSrc:'alt', viewCount:ALT.length, sheet:null}), onPick:()=>this.setState({altPick:i})}; });
+    const MISSNOTE = ['Also sharp — very similar to one we kept','Lovely light, slightly off-centre','Same moment, wider view','Everyone’s looking away','Second-best of this moment','Nice detail shot','Duplicate angle','Slightly tilted horizon'];
+    const missedList = Array.from({length:24}, (_,i)=>{ const on=!!s.addSel[i]; return {bg:g(i+7), note:MISSNOTE[i%MISSNOTE.length], action:on?'Added':'Add to album', bd:on?accent:'#e7e2d9', bg2:on?'#f9ece5':'#fff', fg:on?accent:'#1a1714', dot:on?accent:'rgba(0,0,0,.18)', check:on?'✓':'', onAdd:()=>this.setState(st=>{const a=Object.assign({},st.addSel); if(a[i]) delete a[i]; else a[i]=1; return {addSel:a};}), onOpen:()=>this.setState({screen:'viewer', viewIdx:i, viewSrc:'missed', viewCount:24, sheet:null})}; });
+    const addCount = Object.keys(s.addSel).length;
+
+    const titles = {welcome:'Onboarding',login:'Sign in',perm:'Photo permission',albums:s.empty?'Albums — empty state':'Albums (home)',detail:'Album detail',photos:'Photos library',scanning:'Photos · first scan',nopeople:'Photos · no people yet',name:'Name a person',family:'Your family',account:'Account',pick:'Create · 1 Pick',filter:'Create · Filter',building:'Create · 2 Building',review:'Create · 3 Review',ready:'Album ready',viewer:'Review · full size',missedAll:'Review · all missed shots',show:'Slideshow',print:'Print · order a book',preview:'Print · book preview',printDone:'Print ordered',shareDone:'Album sent',error:'Error state'};
+    const hints = {
+      welcome:'Three plain steps, privacy promise above the button. One action per screen.',
+      login:'Account exists only for sharing between phones — code by phone or email, no password, and skippable.',
+      perm:'Explains the why before the system dialog. “Not now” is always available.',
+      albums:'Create is the only primary action; albums read as a photo book shelf.',
+      detail:'Play / Print / Share, then the full grid. Albums shared with you carry a “Shared by” chip on the cover.',
+      family:'Family is the sharing list: members, pending invites, and one place to invite or remove. Reached from Account.',
+      nopeople:'Empty state for the People row before any faces are grouped — explains the wait, links to the scan.',
+      scanning:'First-run scanning state — places done, faces in progress, moments queued. Library still browsable underneath.',
+      name:'Reached by tapping an unnamed face (“?”) in the People row, or a person in the Face modal. Name, suggestions, their photos, Save.',
+      photos:'Browsing only — People and Places rows are the search entry points.',
+      account:'No sign-in. The on-device promise restated in plain words.',
+      pick:'Live count on the primary button; tap or hold-and-drag to select. Filter is a single quiet entry.',
+      filter:'Face · Location · Date are always visible as three separate cards. Face and Location open sheets so nothing gets buried.',
+      building:'Warm, plain-language status. Privacy restated at the bottom.',
+      review:'A reason under every photo. Tap to swap for another shot of the same moment.',
+      ready:'The payoff. The album name is editable right here, and it saves to Albums automatically.',
+      show:'Ken Burns drift with crossfades — plus pause, step, and speed controls.',
+      missedAll:'All 24 near-misses in one grid — tick to add, tap to view full screen.',
+      viewer:'Full-size view with the reason it was picked, and a direct way into the other shots of that moment.',
+      print:'Print means a real photo book, paid for and posted. Size, paper, delivery, one price, one button.',
+      preview:'Page-by-page preview of the printed book before paying — spreads, cover, page numbers.',
+      printDone:'Receipt-style confirmation with the delivery address and arrival window.',
+      shareDone:'Sent to other Photeo users — the album lands in their Albums tab, not in a link or a chat app.',
+      error:'Calm recovery. Nothing lost, one way forward.'
+    };
+    const sheetTitle = s.sheet==='face'?' · Face modal':s.sheet==='loc'?' · Location modal':s.sheet==='swap'?' · Swap sheet':'';
+
+    return {
+      accent, rail,
+      screenTitle:(titles[s.screen]||'')+sheetTitle,
+      screenNote:'393 × 852',
+      screenHint:hints[s.screen]||'',
+      statusFg: s.screen==='show' ? '#fff' : '#1a1714',
+      isWelcome:s.screen==='welcome', isPerm:s.screen==='perm', isAlbums:s.screen==='albums', isDetail:s.screen==='detail',
+      isPhotos:s.screen==='photos', isAccount:s.screen==='account', isPick:s.screen==='pick', isFilter:s.screen==='filter',
+      isBuilding:s.screen==='building', isReview:s.screen==='review', isReady:s.screen==='ready', isShow:s.screen==='show', isError:s.screen==='error',
+      hasAlbums:!s.empty, noAlbums:s.empty,
+      showTabs:['albums','photos','account','scanning','nopeople'].indexOf(s.screen)>=0,
+      tabs:[['Photos','photos'],['Albums','albums'],['Account','account']].map(([label,k],i)=>({label, fg:s.tab===k?accent:'#8b8378', r:i===0?'6px':i===1?'7px':'50%', fill:s.tab===k?'currentColor':'transparent', onClick:()=>{this.setState({empty:false});this.go(k,{tab:k});}})),
+      steps3:[{n:'1',t:'Pick a few photos — or all of them'},{n:'2',t:'Photeo finds the best shots'},{n:'3',t:'Watch, print, or share your album'}],
+      detailTiles:Array.from({length:12},(_,i)=>({bg:g(i+3), onOpen:()=>this.setState({screen:'viewer', viewIdx:i, viewSrc:'album', viewCount:12})})),
+      detailCount:s.sharedFrom?(s.sharedFrom==='David'?19:42):24,
+      permTiles:tiles(6), libTiles:tiles(18),
+      albums:[['Rome, in September','24 photos · Sep 2026'],['Sunday at the lake','16 photos · Aug 2026'],['Ellie turns six','31 photos · Jun 2026'],['Kyoto, spring','28 photos · Apr 2026']].map(([title,meta],i)=>({title, meta, bg:g(i+1), onClick:()=>this.go('detail',{sharedFrom:null})})),
+      isName:s.screen==='name',
+      nameBg: g((s.naming&&s.naming.key==='u2')?7:6),
+      nameInitial: s.nameVal ? s.nameVal[0].toUpperCase() : '?',
+      nameVal: s.nameVal, hasName: !!s.nameVal,
+      nameFieldBd: s.nameVal ? accent : '#e7e2d9',
+      nameCount: s.naming ? s.naming.count : 37,
+      saveBg: s.nameVal ? accent : '#c9c1b6',
+      onNameChange:(e)=>this.setState({nameVal:e.target.value}),
+      clearName:()=>this.setState({nameVal:''}),
+      nameSuggest:['Rosa','Maggie','Uncle Pete','Someone else'].map(label=>{ const on = s.nameVal===label; return {label, bg:on?accent:'#fff', fg:on?'#fff':'#1a1714', bd:on?accent:'#e7e2d9', onClick:()=>this.setState({nameVal:label==='Someone else'?'':label})}; }),
+      relations:['Family','Daughter','Son','Grandchild','Partner','Brother','Sister','Friend','Neighbour'].map(label=>{ const on = s.relation===label; return {label, bg:on?accent:'#fff', fg:on?'#fff':'#1a1714', bd:on?accent:'#e7e2d9', onClick:()=>this.setState({relation:label})}; }),
+      nameTiles:Array.from({length:8},(_,i)=>({bg:g(i+6)})),
+      saveName:()=>{ if(!s.nameVal||!s.naming) return; const names=Object.assign({},s.names); names[s.naming.key]=s.nameVal; this.setState({names}); this.go(s.from||'photos', {tab:'photos'}); },
+      goBackFromName:()=>this.go(s.from||'photos', {tab:'photos'}),
+      isLogin:s.screen==='login',
+      authTabs:['Phone','Email'].map(label=>{ const on=s.authMode===label; return {label, bg:on?'#fff':'transparent', fg:on?accent:'#6f6a62', onClick:()=>this.setState({authMode:label, authVal:''})}; }),
+      authVal:s.authVal, authPlaceholder:s.authMode==='Phone'?'07700 900123':'you@example.com',
+      authBd:s.authVal?accent:'#e7e2d9', authBtnBg:s.authVal?accent:'#c9c1b6',
+      onAuthChange:(e)=>this.setState({authVal:e.target.value}),
+      goLogin:()=>this.go('login'),
+      inviteVal:s.inviteVal, inviteBd:s.inviteVal?accent:'#e7e2d9',
+      onInviteChange:(e)=>this.setState({inviteVal:e.target.value}),
+      inviteBtnBg:s.inviteVal?'#efece5':'#f4f1ea', inviteBtnFg:s.inviteVal?'#1a1714':'#a29a8e',
+      inviteBtnLabel:s.inviteVal?(s.inviteFamily?'Send invite and add to family':'Send invite'):'Send invite',
+      sendInvite:()=>{ if(s.inviteVal) this.setState({inviteVal:''}); },
+      famBd:s.inviteFamily?accent:'#d6cfc4', famBg:s.inviteFamily?accent:'transparent', famCheck:s.inviteFamily?'✓':'',
+      toggleFamily:()=>this.setState({inviteFamily:!s.inviteFamily}),
+      shareGroups:[['Your family','3 people','#3d7a52',[['Ellie','In your family'],['David','In your family'],['Joe','In your family']]],['Other people on Photeo','',null,[['Anna','On Photeo'],['Sam','On Photeo']]]].map(([title,note,fg,items])=>({title,note,items:items.map(([name,sub],i)=>{ const on=!!s.shareSel[name]; return {name,sub,subFg:fg||'#6f6a62',initial:name[0],bg:g(i+1),bd:on?accent:'#d6cfc4',dot:on?accent:'transparent',check:on?'\u2713':'',onClick:()=>this.setState(st=>{const sh=Object.assign({},st.shareSel); if(sh[name]) delete sh[name]; else sh[name]=1; return {shareSel:sh};})}; })})),
+      isFamily:s.screen==='family', goFamily:()=>this.go('family'), goAccount:()=>this.go('account',{tab:'account'}),
+      familyMembers:[['Ellie','Daughter · on Photeo','#3d7a52','Remove'],['David','Son · on Photeo','#3d7a52','Remove'],['Joe','Father · on Photeo','#3d7a52','Remove'],['Rosa','Invited · waiting to join','#6f6a62','Resend']].filter(m=>s.removed.indexOf(m[0])<0).map(([name,sub,subFg,action],i)=>({name, sub:s.resent.indexOf(name)>=0?'Invite sent again just now':sub, subFg, action, actionFg:action==='Remove'?'#a8481f':'#1a1714', initial:name[0], bg:g(i+1), onRemove:()=>this.setState(st=>action==='Remove'?({removed:st.removed.concat([name])}):({resent:st.resent.concat([name])}))})),
+      isShared:s.sharedFrom!==null,
+      sharedBy:s.sharedFrom||'', sharedByInitial:(s.sharedFrom||'E')[0], sharedByBg:g(2),
+      detailTitle:s.sharedFrom?(s.sharedFrom==='David'?'Grandpa’s 80th':'Ellie’s wedding day'):'Rome, in September',
+      detailTitleLive:s.sharedFrom?(s.sharedFrom==='David'?'Grandpa’s 80th':'Ellie’s wedding day'):s.albumTitle,
+      detailMeta:s.sharedFrom?(s.sharedFrom==='David'?'19 photos · Jul 2026 · Bristol':'42 photos · May 2026 · Bath'):'24 photos · Sep 12–19 · Rome, Italy',
+      albumTitle:s.albumTitle, titleBd:accent,
+      onTitleChange:(e)=>this.setState({albumTitle:e.target.value}),
+      readyMeta:(24-s.removedPhotos.length)+' photos · Saved to your albums',
+      isScanning:s.screen==='scanning',
+      scanRows:[['Places','Found 34 places','done'],['Faces','Looking through 3,418 photos…','busy'],['Moments','Waiting','idle']].map(([label,sub,st])=>({label, sub, dot:st==='done'?'#4a8a5c':st==='busy'?accent:'#d6cfc4', fg:st==='idle'?'#a29a8e':'#1a1714'})),
+      sheetManage:s.sheet==='manage', sheetDelete:s.sheet==='delete',
+      openManage:()=>this.setState({sheet:'manage'}),
+      askDelete:()=>this.setState({sheet:'delete'}),
+      confirmDelete:()=>{ this.setState({sheet:null, empty:true}); this.go('albums',{tab:'albums', empty:true, sharedFrom:null}); },
+      endDrag:()=>this.setState({dragging:false}),
+      isNoPeople:s.screen==='nopeople',
+      isPreview:s.screen==='preview', goPreview:()=>this.go('preview'),
+      pagePos:'8 pages · 24 photos',
+      pages:[[1,1,'Cover · Rome, in September','p1'],[1.4,1,'Arriving','p2–3'],[1,1.4,'The old town','p4–5'],[1,1,'Everyone together','p6–7']].map(([f1,f2,label,n],i)=>({f1, f2, label, n, a:g(i+2), b:g(i+5)})),
+      playLabel: s.playing ? 'Pause' : 'Play',
+      togglePlay: ()=>{ const p=!s.playing; this.setState({playing:p}, ()=>this.restartShow()); },
+      slidePrev: ()=>this.setState({slide:(s.slide+5)%6}),
+      slideNext: ()=>this.setState({slide:(s.slide+1)%6}),
+      speeds:[['Slower',5200],['Normal',3400],['Faster',2000]].map(([label,ms])=>{ const on=s.speed===ms; return {label, bg:on?'rgba(255,255,255,.9)':'transparent', fg:on?'#1a1714':'rgba(255,255,255,.85)', bd:on?'transparent':'rgba(255,255,255,.35)', onClick:()=>this.setState({speed:ms}, ()=>this.restartShow())}; }),
+      isPrint:s.screen==='print', isPrintDone:s.screen==='printDone', isShareDone:s.screen==='shareDone',
+      printSizes:[['Small','20 × 20 cm · softcover','£24','44px'],['Large','28 × 28 cm · hardcover','£39','52px'],['Keepsake','28 × 28 cm · linen cover, gilt edge','£58','58px']].map(([name,desc,price,w])=>{ const on=s.printSize===name; return {name,desc,price,w,bd:on?accent:'#e7e2d9',bg:on?'#fdf6f2':'#fff',fg:on?accent:'#1a1714',onClick:()=>this.setState({printSize:name})}; }),
+      printRows:[{label:'Photos',val:'24 · one per page'},{label:'Paper',val:'Matte, thick'},{label:'Delivery',val:'About 7 days · £4'}],
+      printTotal:{Small:'£28',Large:'£43',Keepsake:'£62'}[s.printSize],
+      printPick:s.printSize,
+      goPrint:()=>this.go('print'), goPrintDone:()=>this.go('printDone'),      openShare:()=>this.setState({sheet:'share'}),
+      sheetShare:s.sheet==='share',
+      contacts:[['Ellie','On Photeo · daughter'],['David','On Photeo · this phone\u2019s contacts'],['Joe','On Photeo'],['Anna','On Photeo'],['Sam','Not on Photeo yet · we\u2019ll invite them']].map(([name,sub],i)=>{ const on=!!s.shareSel[name]; return {name,sub,initial:name[0],bg:g(i+1),bd:on?accent:'#d6cfc4',dot:on?accent:'transparent',check:on?'✓':'',onClick:()=>this.setState(st=>{const sh=Object.assign({},st.shareSel); if(sh[name]) delete sh[name]; else sh[name]=1; return {shareSel:sh};})}; }),
+      shareBg:Object.keys(s.shareSel).length?accent:'#c9c1b6',
+      shareLabel:Object.keys(s.shareSel).length?'Send to '+Object.keys(s.shareSel).length+(Object.keys(s.shareSel).length===1?' person':' people'):'Choose who to send to',
+      sendShare:()=>{ if(Object.keys(s.shareSel).length) this.go('shareDone'); },
+      sharedWith:Object.keys(s.shareSel).map((n,i)=>({initial:n[0],bg:g(i+1)})),
+      shareNames:Object.keys(s.shareSel).join(' and ')||'They',
+      sharedAlbums:[['Ellie\u2019s wedding day','Shared by Ellie · 42 photos','E','Ellie'],['Grandpa\u2019s 80th','Shared by David · 19 photos','D','David']].map(([title,meta,initial,from],i)=>({title,meta,initial,bg:g(i+5),fromBg:g(i+2),onClick:()=>this.go('detail',{sharedFrom:from})})),
+      people, peopleRow, placeGroups, placeCards:[['Rome','96 photos'],['Kyoto','74 photos'],['Portland','210 photos'],['Florence','62 photos']].map(([name,n],i)=>({name, n, bg:g(i+4)})),
+      acctRows:[{label:'Text size',val:'Large'},{label:'Photos on this phone',val:'3,418'},{label:'Backup',val:'Off'},{label:'About Photeo',val:''}],
+      gridTiles:grid, selCount,
+      nextLabel: selCount ? 'Next · '+selCount+' photos' : 'Next · choose some photos',
+      nextBg: selCount ? accent : '#c9c1b6',
+      filterSummary: faceLabel+' · '+(s.place||'Any place'),
+      filterRows, dateValue:s.date, dateChips:dates, matchCount:matchCount.toLocaleString(), noMatch:matchCount===0,
+      anyoneBg: s.faces.length?'#fff':'#f9ece5', anyoneBd: s.faces.length?'#e7e2d9':accent,
+      anyplaceBg: s.place?'#fff':'#f9ece5', anyplaceBd: s.place?'#e7e2d9':accent,
+      clearAll:()=>this.setState({faces:[], place:null, date:'All time', dateMode:'Month'}),
+      pickAnyone:()=>this.setState({faces:[], sheet:null}),
+      faceModes:[['any','In any of their photos'],['same','Together in the same photo']].map(([k,label])=>{ const on=s.faceMode===k; return {label, bg:on?'#fff':'transparent', fg:on?accent:'#6f6a62', bd:on?accent:'transparent', onClick:()=>this.setState({faceMode:k})}; }),
+      faceDoneLabel: s.faces.length? 'Done · '+s.faces.length+(s.faces.length===1?' person':' people') : 'Done',
+      dateModes:['Exact dates','Month','Year'].map(label=>{ const on=s.dateMode===label; return {label, bg:on?'#fff':'transparent', fg:on?accent:'#6f6a62', bd:on?accent:'transparent', onClick:()=>this.setState({dateMode:label, date:label==='Exact dates'?'12–19 Sep 2026':label==='Year'?'2026':'September'})}; }),
+      isDateExact:s.dateMode==='Exact dates', isDateMonth:s.dateMode==='Month', isDateYear:s.dateMode==='Year',
+      yearChips:['2026','2025','2024','2023','Older'].map(label=>{ const on=s.date===label; return {label, bg:on?accent:'#fff', fg:on?'#fff':'#1a1714', bd:on?accent:'#e7e2d9', onClick:()=>this.setState({date:label})}; }),
+      missed:missedList.slice(0,6), missedAll:missedList, missedCount:24, altCount:10,
+      isMissedAll:s.screen==='missedAll', goMissed:()=>this.go('missedAll'),
+      addLabel: addCount ? 'Add '+addCount+(addCount===1?' photo':' photos')+' to the album' : 'Back to the album',
+      addBg: addCount ? accent : '#8f877c',
+      isViewer:s.screen==='viewer',
+      reviewCountTitle:'We picked '+(24-s.removedPhotos.length)+' photos',
+      viewerCanRemove: s.viewSrc==='review',
+      viewerRemove: ()=>this.setState(st=>({removedPhotos:st.removedPhotos.concat([st.viewIdx]), screen:'review'})),
+      viewerBg: s.viewSrc==='missed' ? g(s.viewIdx+7) : s.viewSrc==='album' ? g(s.viewIdx+3) : g(s.viewIdx+2),
+      viewerReason: s.viewSrc==='missed' ? MISSNOTE[s.viewIdx%MISSNOTE.length] : s.viewSrc==='alt' ? ALT[s.viewIdx%ALT.length] : s.viewSrc==='album' ? 'Rome, in September' : REASONS[s.viewIdx%REASONS.length],
+      viewerPos:(s.viewIdx+1)+' of '+s.viewCount,
+      viewerActionLabel: s.viewSrc==='alt' ? 'Use this photo' : s.viewSrc==='missed' ? 'Add to album' : s.viewSrc==='album' ? 'Remove from album' : 'See other shots',
+      viewerAction: s.viewSrc==='alt' ? (()=>this.setState({altPick:s.viewIdx, screen:'review', sheet:null})) : s.viewSrc==='missed' ? (()=>this.setState(st=>{const a=Object.assign({},st.addSel); a[st.viewIdx]=1; return {addSel:a, screen:'missedAll'};})) : s.viewSrc==='album' ? (()=>this.go('detail')) : (()=>this.setState({screen:'review', sheet:'swap'})),
+      viewerBack: ()=>{ if(s.viewSrc==='missed') this.go('missedAll'); else if(s.viewSrc==='alt') this.setState({screen:'review', sheet:'swap'}); else if(s.viewSrc==='album') this.go('detail'); else this.go('review'); },
+      openViewer:()=>this.setState({screen:'viewer', viewIdx:s.altPick, viewSrc:'alt', viewCount:10, sheet:null}), backToReview:()=>this.go('review'),
+      openSwap:()=>this.setState({sheet:'swap'}),
+      viewerPrev:()=>this.setState(st=>({viewIdx:Math.max(0,st.viewIdx-1)})),
+      viewerNext:()=>this.setState(st=>({viewIdx:Math.min(st.viewCount-1,st.viewIdx+1)})),
+      buildMsg:BUILD[s.msg], pctW:s.pct+'%',
+      reviewItems, alternates,
+      slideEl: React.createElement('div',{key:s.slide, style:{position:'absolute',inset:0,background:g(s.slide+1),animation:'kb 4.6s ease-out both'}}),
+      slideTitle:['Rome, in September','The walk to the river','Lunch at the corner table','Everyone together','Late afternoon light','The last morning'][s.slide],
+      slideSub:'Photo '+(s.slide+1)+' of 24',
+      slideDots:Array.from({length:6},(_,i)=>({bg:i<=s.slide?'#fff':'rgba(255,255,255,.32)'})),
+      sheetFace:s.sheet==='face', sheetLoc:s.sheet==='loc', sheetSwap:s.sheet==='swap',
+      closeSheet:()=>this.setState({sheet:null}),
+      pickAnyplace:()=>this.setState({place:null, sheet:null}),
+      selectAll:()=>this.setState({sel:Object.fromEntries(Array.from({length:27},(_,i)=>[i,1]))}),
+      goScanning:()=>this.setState({screen:'scanning', tab:'photos'}),
+      goPermission:nav('perm'), goAlbums:()=>{this.setState({empty:false});this.go('albums',{tab:'albums'});}, goPick:nav('pick'), goFilter:nav('filter'),
+      goBuilding:()=>{ if(selCount) this.go('building'); }, goReady:nav('ready'), goSlideshow:nav('show'), goDetail:()=>this.go('detail',{sharedFrom:(s.screen==='ready'||s.screen==='printDone'||s.screen==='shareDone')?null:s.sharedFrom}), goError:nav('error')
+    };
+  }
+}
+
+</script>
+</body>
+</html>
