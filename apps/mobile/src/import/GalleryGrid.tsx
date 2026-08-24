@@ -1,11 +1,11 @@
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { Image } from "expo-image";
 import * as MediaLibrary from "expo-media-library/legacy";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
+  Linking,
   Pressable,
-  ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -17,6 +17,30 @@ import {
   GestureHandlerRootView,
 } from "react-native-gesture-handler";
 
+import {
+  assetIdsForPerson,
+  buildFaceIndex,
+  getPeople,
+  isFaceDetectionAvailable,
+  loadFaceIndex,
+  type FaceIndexPerson,
+} from "../faces/face-index";
+import {
+  colors,
+  copy,
+  EmptyState,
+  ErrorState,
+  FilterSheet,
+  type FilterSection,
+  type FilterSectionKey,
+  fonts,
+  HintBanner,
+  LoadingState,
+  PrimaryButton,
+  ScreenHeader,
+  spacing,
+  typeScale,
+} from "../ui";
 import type { PickedPhoto } from "./picked-photo";
 import {
   assetIdsForCity,
@@ -27,16 +51,6 @@ import {
   loadIndex,
   type PlaceSummary,
 } from "./photo-index";
-
-const C = {
-  bg: "#141311",
-  panel: "#1c1a17",
-  chip: "#232019",
-  line: "#2c2a25",
-  text: "#e8e4dc",
-  muted: "#9a927f",
-  gold: "#c8a24a",
-};
 
 const PAGE = 150;
 const COLS = 3;
@@ -54,10 +68,10 @@ type Props = {
 
 type DatePreset = "all" | "week" | "month" | "year";
 const DATE_PRESETS: { key: DatePreset; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "week", label: "Week" },
-  { key: "month", label: "Month" },
-  { key: "year", label: "Year" },
+  { key: "all", label: copy.filters.anyDate },
+  { key: "week", label: copy.filters.week },
+  { key: "month", label: copy.filters.month },
+  { key: "year", label: copy.filters.year },
 ];
 
 type AlbumChip = { id: string | null; title: string; count: number };
@@ -86,6 +100,57 @@ function createdAfterFor(preset: DatePreset): number | undefined {
   return undefined;
 }
 
+type PhotoTileProps = {
+  id: string;
+  filename: string;
+  order?: number;
+  size: number;
+  dimmed: boolean;
+  onToggle: (id: string) => void;
+};
+
+const PhotoTile = memo(function PhotoTile({
+  id,
+  filename,
+  order,
+  size,
+  dimmed,
+  onToggle,
+}: PhotoTileProps) {
+  const selected = order !== undefined;
+  const handlePress = useCallback(() => onToggle(id), [id, onToggle]);
+  return (
+    <Pressable
+      accessibilityHint={copy.picker.photoHint}
+      accessibilityLabel={copy.picker.photoLabel(filename, selected, order)}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: selected }}
+      onPress={handlePress}
+      style={[styles.tile, { height: size, width: size }]}
+    >
+      <Image
+        cachePolicy="memory-disk"
+        contentFit="cover"
+        recyclingKey={id}
+        source={contentUri(id)}
+        style={[styles.thumb, dimmed ? styles.thumbDimmed : null]}
+        transition={80}
+      />
+      {selected ? <View style={styles.selectedBorder} /> : null}
+      <View style={[styles.checkBadge, selected ? styles.checkBadgeOn : null]}>
+        <Text style={[styles.checkText, selected ? styles.checkTextOn : null]}>
+          {selected ? "✓" : ""}
+        </Text>
+      </View>
+      {selected ? (
+        <View style={styles.orderBadge}>
+          <Text style={styles.orderText}>{order}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+});
+
 // Our own picker: full-library grid, filter by date/album, and slide-to-select
 // with edge auto-scroll (long-press then drag to a screen edge keeps scrolling
 // and selecting until you lift). Reads MediaStore directly.
@@ -95,7 +160,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const rowHeight = cell + GAP;
   const colWidth = width / COLS;
 
-  const [status, setStatus] = useState<"loading" | "denied" | "ready">("loading");
+  const [status, setStatus] = useState<"loading" | "denied" | "ready" | "error">("loading");
   const [assets, setAssets] = useState<MediaLibrary.Asset[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [albums, setAlbums] = useState<AlbumChip[]>([]);
@@ -107,7 +172,15 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const [locId, setLocId] = useState<string | null>(null);
   const [indexPct, setIndexPct] = useState<number | null>(null);
   const [indexing, setIndexing] = useState(false);
+  const [people, setPeople] = useState<FaceIndexPerson[]>([]);
+  const [personId, setPersonId] = useState<string | null>(null);
+  const [peopleIndexPct, setPeopleIndexPct] = useState<number | null>(null);
+  const [peopleIndexing, setPeopleIndexing] = useState(false);
+  const [filterVisible, setFilterVisible] = useState(false);
+  const [showTip, setShowTip] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const peopleAvailable = useMemo(() => isFaceDetectionAvailable(), []);
 
   const cursor = useRef<string | undefined>(undefined);
   const hasNext = useRef(true);
@@ -127,8 +200,18 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
       : assetIdsForCity(locId);
     return new Set(ids);
   }, [locId]);
-  const placeSetRef = useRef<Set<string> | null>(null);
-  placeSetRef.current = placeSet;
+  const personSet = useMemo(() => {
+    if (!personId) return null;
+    return new Set(assetIdsForPerson(personId));
+  }, [personId]);
+
+  const visibleSet = useMemo(() => {
+    if (!placeSet) return personSet;
+    if (!personSet) return placeSet;
+    return new Set([...placeSet].filter((id) => personSet.has(id)));
+  }, [personSet, placeSet]);
+  const visibleSetRef = useRef<Set<string> | null>(null);
+  visibleSetRef.current = visibleSet;
 
   // Every asset we've ever loaded, so a selection made under one filter still
   // resolves to a real asset after the user switches filters and confirms.
@@ -148,7 +231,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   // this returns after one page; with a sparse place filter it keeps paging
   // (guarded) so the grid actually fills instead of showing a few stragglers.
   const fetchBurst = useCallback(async (): Promise<MediaLibrary.Asset[]> => {
-    const set = placeSetRef.current;
+    const set = visibleSetRef.current;
     const fresh: MediaLibrary.Asset[] = [];
     let guard = 0;
     while (hasNext.current && fresh.length < BURST_TARGET && guard < BURST_PAGE_CAP) {
@@ -171,22 +254,35 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     cursor.current = undefined;
     hasNext.current = true;
     loadingMore.current = true;
+    setReloading(true);
     setAssets([]);
-    const fresh = await fetchBurst();
-    setAssets(fresh);
-    loadingMore.current = false;
+    try {
+      const fresh = await fetchBurst();
+      setAssets(fresh);
+    } catch {
+      setStatus("error");
+    } finally {
+      loadingMore.current = false;
+      setReloading(false);
+    }
   }, [fetchBurst]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore.current || !hasNext.current) return;
     loadingMore.current = true;
-    const fresh = await fetchBurst();
-    if (fresh.length) setAssets((prev) => prev.concat(fresh));
-    loadingMore.current = false;
+    try {
+      const fresh = await fetchBurst();
+      if (fresh.length) setAssets((prev) => prev.concat(fresh));
+    } catch {
+      setStatus("error");
+    } finally {
+      loadingMore.current = false;
+    }
   }, [fetchBurst]);
 
   useEffect(() => {
-    (async () => {
+    void (async () => {
+      try {
       const perm = await MediaLibrary.requestPermissionsAsync();
       if (perm.status !== "granted") {
         setStatus("denied");
@@ -198,7 +294,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         .sort((a, b) => (b.assetCount ?? 0) - (a.assetCount ?? 0))
         .slice(0, 24)
         .map((a) => ({ id: a.id, title: a.title, count: a.assetCount ?? 0 }));
-      setAlbums([{ id: null, title: "All", count: 0 }, ...chips]);
+      setAlbums([{ id: null, title: copy.filters.anyAlbum, count: 0 }, ...chips]);
       setStatus("ready");
 
       // Background location index: hydrate any prior scan, show its places
@@ -220,13 +316,33 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         setIndexPct(null);
         setIndexing(false);
       });
+
+      if (peopleAvailable) {
+        const refreshPeople = () => setPeople(getPeople());
+        await loadFaceIndex();
+        refreshPeople();
+        setPeopleIndexing(true);
+        void buildFaceIndex({
+          onProgress: (done, total) => {
+            refreshPeople();
+            setPeopleIndexPct(total > 0 ? Math.min(1, done / total) : null);
+          },
+        }).finally(() => {
+          refreshPeople();
+          setPeopleIndexPct(null);
+          setPeopleIndexing(false);
+        });
+      }
+      } catch {
+        setStatus("error");
+      }
     })();
-  }, []);
+  }, [peopleAvailable]);
 
   useEffect(() => {
     if (status !== "ready") return;
     void reload();
-  }, [status, datePreset, albumId, locId, reload]);
+  }, [status, datePreset, albumId, locId, personId, reload]);
 
   useEffect(() => {
     const m = seenAssets.current;
@@ -236,7 +352,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const selectAll = useCallback(async () => {
     setBusy(true);
     try {
-      const set = placeSetRef.current;
+      const set = visibleSetRef.current;
       const ids = new Set<string>();
       let after: string | undefined;
       let more = true;
@@ -256,6 +372,8 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         more = page.hasNextPage;
       }
       setSelected(ids);
+    } catch {
+      setStatus("error");
     } finally {
       setBusy(false);
     }
@@ -407,149 +525,223 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   }, [selected, onConfirm]);
 
   const renderItem = useCallback(
-    ({ item }: { item: MediaLibrary.Asset }) => {
-      const order = orderMap.get(item.id);
-      return (
-        <Pressable
-          onPress={() => toggle(item.id)}
-          style={{ width: cell, height: cell, marginBottom: GAP }}
-        >
-          <Image
-            source={contentUri(item.id)}
-            style={styles.thumb}
-            contentFit="cover"
-            recyclingKey={item.id}
-            transition={80}
-          />
-          {order ? (
-            <>
-              <View style={styles.selShade} />
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>{order}</Text>
-              </View>
-            </>
-          ) : (
-            <View style={styles.dot} />
-          )}
-        </Pressable>
-      );
-    },
-    [cell, orderMap, toggle],
+    ({ item }: { item: MediaLibrary.Asset }) => (
+      <PhotoTile
+        dimmed={selected.size > 0 && !selected.has(item.id)}
+        filename={item.filename}
+        id={item.id}
+        onToggle={toggle}
+        order={orderMap.get(item.id)}
+        size={cell}
+      />
+    ),
+    [cell, orderMap, selected, toggle],
   );
 
   const count = selected.size;
+  const activeFilterCount =
+    Number(datePreset !== "all") + Number(albumId !== null) + Number(locId !== null) + Number(personId !== null);
+
+  const filterSections = useMemo<FilterSection[]>(() => {
+    const sections: FilterSection[] = [
+      {
+        key: "date",
+        title: copy.filters.date,
+        selectedId: datePreset,
+        groups: [{
+          options: DATE_PRESETS.map((preset) => ({ id: preset.key, label: preset.label })),
+        }],
+      },
+      {
+        key: "album",
+        title: copy.filters.album,
+        selectedId: albumId ?? "__any_album",
+        groups: [{
+          options: [
+            { id: "__any_album", label: copy.filters.anyAlbum },
+            ...albums.filter((album) => album.id !== null).map((album) => ({
+              id: album.id as string,
+              label: album.title,
+              detail: copy.filters.photoCount(album.count),
+            })),
+          ],
+        }],
+      },
+      {
+        key: "place",
+        title: copy.filters.place,
+        selectedId: locId ?? "__any_place",
+        groups: [
+          { options: [{ id: "__any_place", label: copy.filters.anyPlace }] },
+          {
+            title: copy.filters.countries,
+            options: countries.map((place) => ({
+              id: place.id,
+              label: place.name,
+              detail: copy.filters.photoCount(place.count),
+            })),
+          },
+          {
+            title: copy.filters.cities,
+            options: cities.map((place) => ({
+              id: place.id,
+              label: place.name,
+              detail: copy.filters.photoCount(place.count),
+            })),
+          },
+        ],
+        loadingText: indexing
+          ? copy.filters.scanningPlaces(indexPct === null ? undefined : Math.round(indexPct * 100))
+          : undefined,
+      },
+    ];
+
+    if (peopleAvailable) {
+      sections.push({
+        key: "person",
+        title: copy.filters.person,
+        selectedId: personId ?? "__any_person",
+        groups: [{
+          options: [
+            { id: "__any_person", label: copy.filters.anyPerson },
+            ...people.map((person, index) => ({
+              id: person.id,
+              imageUri: contentUri(person.coverAssetId),
+              label: copy.filters.personName(index),
+              detail: copy.filters.photoCount(person.assetIds.length),
+            })),
+          ],
+        }],
+        loadingText: peopleIndexing
+          ? copy.filters.scanningPeople(
+              peopleIndexPct === null ? undefined : Math.round(peopleIndexPct * 100),
+            )
+          : undefined,
+      });
+    }
+    return sections;
+  }, [
+    albumId,
+    albums,
+    cities,
+    countries,
+    datePreset,
+    indexPct,
+    indexing,
+    locId,
+    people,
+    peopleAvailable,
+    peopleIndexPct,
+    peopleIndexing,
+    personId,
+  ]);
+
+  const clearFilters = useCallback(() => {
+    setDatePreset("all");
+    setAlbumId(null);
+    setLocId(null);
+    setPersonId(null);
+    setFilterVisible(false);
+  }, []);
+
+  const selectFilter = useCallback((section: FilterSectionKey, id: string) => {
+    if (section === "date") setDatePreset(id as DatePreset);
+    if (section === "album") setAlbumId(id === "__any_album" ? null : id);
+    if (section === "place") setLocId(id === "__any_place" ? null : id);
+    if (section === "person") setPersonId(id === "__any_person" ? null : id);
+    setFilterVisible(false);
+  }, []);
+
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
 
   return (
     <GestureHandlerRootView style={styles.root}>
-      {/* compact header: back · count · actions */}
+      <StatusBar backgroundColor={colors.background} barStyle="light-content" />
       <View style={styles.header}>
-        <Pressable onPress={onBack} hitSlop={12}>
-          <Text style={styles.back}>‹ Back</Text>
-        </Pressable>
-        <Text style={styles.count}>{count ? `${count} selected` : "Your photos"}</Text>
-        <View style={styles.headerActions}>
-          <Pressable onPress={selectAll} hitSlop={8} disabled={busy}>
-            <Text style={styles.action}>{busy ? "…" : "All"}</Text>
+        <ScreenHeader
+          backHint={copy.picker.backHint}
+          compact
+          helper={copy.picker.helper}
+          onBack={onBack}
+          step={1}
+          title={copy.picker.title}
+        />
+        {showTip ? (
+          <HintBanner
+            dismissLabel={copy.picker.dismissTip}
+            onDismiss={() => setShowTip(false)}
+            text={copy.picker.tip}
+          />
+        ) : null}
+        <View style={styles.toolbar}>
+          <Pressable
+            accessibilityHint={copy.picker.filterHint}
+            accessibilityLabel={copy.picker.filter}
+            accessibilityRole="button"
+            onPress={() => setFilterVisible(true)}
+            style={({ pressed }) => [styles.toolButton, pressed ? styles.toolPressed : null]}
+          >
+            <Text style={styles.filterIcon}>≡</Text>
+            <View>
+              <Text style={styles.toolLabel}>{copy.picker.filter}</Text>
+              {activeFilterCount > 0 ? (
+                <Text style={styles.toolDetail}>{copy.picker.filtersApplied(activeFilterCount)}</Text>
+              ) : null}
+            </View>
           </Pressable>
-          {count > 0 ? (
-            <Pressable onPress={() => setSelected(new Set())} hitSlop={8}>
-              <Text style={styles.action}>Clear</Text>
+          <View style={styles.selectionActions}>
+            <Pressable
+              accessibilityHint={copy.picker.selectAllHint}
+              accessibilityLabel={copy.picker.selectAll}
+              accessibilityRole="button"
+              accessibilityState={{ busy, disabled: busy }}
+              disabled={busy}
+              onPress={() => void selectAll()}
+              style={({ pressed }) => [styles.textAction, pressed ? styles.toolPressed : null]}
+            >
+              <Text style={styles.textActionLabel}>{busy ? copy.picker.busy : copy.picker.selectAll}</Text>
             </Pressable>
-          ) : null}
+            {count > 0 ? (
+              <Pressable
+                accessibilityHint={copy.picker.clearHint}
+                accessibilityLabel={copy.picker.clear}
+                accessibilityRole="button"
+                onPress={clearSelection}
+                style={({ pressed }) => [styles.textAction, pressed ? styles.toolPressed : null]}
+              >
+                <Text style={styles.textActionLabel}>{copy.picker.clear}</Text>
+              </Pressable>
+            ) : null}
+          </View>
         </View>
       </View>
 
-      {/* single compact filter row: date presets · albums */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.filterScroll}
-        contentContainerStyle={styles.filterRow}
-      >
-        {DATE_PRESETS.map((p) => {
-          const on = datePreset === p.key;
-          return (
-            <Pressable
-              key={p.key}
-              onPress={() => setDatePreset(p.key)}
-              style={[styles.chip, on && styles.chipOn]}
-            >
-              <Text style={[styles.chipText, on && styles.chipTextOn]}>{p.label}</Text>
-            </Pressable>
-          );
-        })}
-        {albums.length > 1 ? <View style={styles.divider} /> : null}
-        {albums.map((a) => {
-          const on = albumId === a.id;
-          return (
-            <Pressable
-              key={a.id ?? "all"}
-              onPress={() => setAlbumId(a.id)}
-              style={[styles.chip, on && styles.chipOn]}
-            >
-              <Text style={[styles.chipText, on && styles.chipTextOn]}>
-                {a.title}
-                {a.count ? ` ${a.count}` : ""}
-              </Text>
-            </Pressable>
-          );
-        })}
-        {countries.length > 0 || cities.length > 0 || indexing ? (
-          <View style={styles.divider} />
-        ) : null}
-        {countries.map((p) => {
-          const on = locId === p.id;
-          return (
-            <Pressable
-              key={p.id}
-              onPress={() => setLocId(on ? null : p.id)}
-              style={[styles.chip, on && styles.chipOn]}
-            >
-              <Text style={[styles.chipText, on && styles.chipTextOn]}>
-                {p.name}
-                {p.count ? ` ${p.count}` : ""}
-              </Text>
-            </Pressable>
-          );
-        })}
-        {countries.length > 0 && cities.length > 0 ? (
-          <View style={styles.divider} />
-        ) : null}
-        {cities.map((p) => {
-          const on = locId === p.id;
-          return (
-            <Pressable
-              key={p.id}
-              onPress={() => setLocId(on ? null : p.id)}
-              style={[styles.chip, on && styles.chipOn]}
-            >
-              <Text style={[styles.chipText, on && styles.chipTextOn]}>
-                {p.name}
-                {p.count ? ` ${p.count}` : ""}
-              </Text>
-            </Pressable>
-          );
-        })}
-        {indexing ? (
-          <View style={styles.chip}>
-            <Text style={styles.chipText}>
-              Finding places{indexPct !== null ? ` ${Math.round(indexPct * 100)}%` : "…"}
-            </Text>
-          </View>
-        ) : null}
-      </ScrollView>
-
-      {status === "loading" ? (
-        <View style={styles.center}>
-          <ActivityIndicator color={C.gold} />
-        </View>
+      {status === "loading" || (reloading && assets.length === 0) ? (
+        <LoadingState helper={copy.picker.loadingHelper} title={copy.picker.loadingTitle} />
       ) : status === "denied" ? (
-        <View style={styles.center}>
-          <Text style={styles.denied}>
-            Photeo needs access to your photos. Grant “Allow all” in Settings and
-            reopen this screen.
-          </Text>
-        </View>
+        <ErrorState
+          actionHint={copy.picker.openSettingsHint}
+          actionLabel={copy.picker.openSettings}
+          helper={copy.picker.permissionHelper}
+          onAction={() => void Linking.openSettings()}
+          title={copy.picker.permissionTitle}
+        />
+      ) : status === "error" ? (
+        <ErrorState
+          actionHint={copy.picker.backHint}
+          actionLabel={copy.common.goBack}
+          helper={copy.picker.errorHelper}
+          onAction={onBack}
+          title={copy.picker.errorTitle}
+        />
+      ) : assets.length === 0 ? (
+        <EmptyState
+          actionHint={activeFilterCount > 0 ? copy.filters.allHint : copy.picker.backHint}
+          actionLabel={activeFilterCount > 0 ? copy.filters.all : copy.common.goBack}
+          helper={copy.picker.emptyHelper}
+          onAction={activeFilterCount > 0 ? clearFilters : onBack}
+          title={copy.picker.emptyTitle}
+        />
       ) : (
         <GestureDetector gesture={pan}>
           <View
@@ -561,6 +753,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
             <FlashList
               ref={listRef}
               data={assets}
+              extraData={selected}
               renderItem={renderItem}
               keyExtractor={(item) => item.id}
               numColumns={COLS}
@@ -576,54 +769,62 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         </GestureDetector>
       )}
 
-      {count > 0 ? (
-        <View style={styles.footer}>
-          <Text style={styles.footerCount}>{count} selected</Text>
-          <Pressable onPress={confirm} style={styles.useBtn}>
-            <Text style={styles.useText}>
-              Use {count} photo{count === 1 ? "" : "s"}
-            </Text>
-          </Pressable>
-        </View>
-      ) : null}
+      <View style={styles.footer}>
+        <Text accessibilityLiveRegion="polite" style={styles.footerCount}>
+          {count > 0 ? copy.picker.selected(count) : copy.picker.chooseOne}
+        </Text>
+        <PrimaryButton
+          accessibilityHint={copy.picker.nextHint}
+          disabled={count === 0}
+          label={copy.picker.next(count)}
+          onPress={confirm}
+        />
+      </View>
+
+      <FilterSheet
+        onClear={clearFilters}
+        onClose={() => setFilterVisible(false)}
+        onSelect={selectFilter}
+        sections={filterSections}
+        visible={filterVisible}
+      />
     </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.bg },
+  root: { flex: 1, backgroundColor: colors.background },
   header: {
+    gap: spacing.sm,
+    paddingBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingTop: (StatusBar.currentHeight ?? 24) + spacing.sm,
+  },
+  toolbar: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
+  toolButton: {
     alignItems: "center",
+    borderColor: colors.hairline,
+    borderRadius: 10,
+    borderWidth: 1,
     flexDirection: "row",
-    justifyContent: "space-between",
-    paddingBottom: 8,
-    paddingHorizontal: 18,
-    paddingTop: 52,
+    gap: spacing.xs,
+    minHeight: 48,
+    paddingHorizontal: spacing.sm,
   },
-  back: { color: C.gold, fontSize: 15 },
-  count: { color: C.text, fontSize: 14 },
-  headerActions: { flexDirection: "row", gap: 16 },
-  action: { color: C.gold, fontSize: 14 },
-  filterScroll: { flexGrow: 0, maxHeight: 46 },
-  filterRow: { alignItems: "center", gap: 7, paddingHorizontal: 14, paddingBottom: 8 },
-  chip: {
-    alignSelf: "center",
-    backgroundColor: C.chip,
-    borderRadius: 15,
-    paddingHorizontal: 13,
-    paddingVertical: 6,
-  },
-  chipOn: { backgroundColor: C.gold },
-  chipText: { color: C.muted, fontSize: 12.5 },
-  chipTextOn: { color: "#1a1712", fontWeight: "600" },
-  divider: { alignSelf: "center", backgroundColor: C.line, height: 20, width: 1 },
-  center: { alignItems: "center", flex: 1, justifyContent: "center", padding: 32 },
-  denied: { color: C.muted, fontSize: 15, lineHeight: 22, textAlign: "center" },
+  toolDetail: { color: colors.gold, fontFamily: fonts.body, ...typeScale.small },
+  filterIcon: { color: colors.gold, fontFamily: fonts.body, fontSize: 23, lineHeight: 25 },
+  toolLabel: { color: colors.text, fontFamily: fonts.body, fontWeight: "700", ...typeScale.label },
+  toolPressed: { opacity: 0.58 },
+  selectionActions: { alignItems: "center", flexDirection: "row", gap: spacing.xs },
+  textAction: { justifyContent: "center", minHeight: 48, paddingHorizontal: spacing.xs },
+  textActionLabel: { color: colors.gold, fontFamily: fonts.body, ...typeScale.label },
   gridWrap: { flex: 1 },
   list: { paddingHorizontal: 0 },
-  thumb: { backgroundColor: C.panel, flex: 1 },
-  selShade: {
-    borderColor: C.gold,
+  tile: { marginBottom: GAP, position: "relative" },
+  thumb: { backgroundColor: colors.panel, flex: 1 },
+  thumbDimmed: { opacity: 0.52 },
+  selectedBorder: {
+    borderColor: colors.gold,
     borderWidth: 3,
     bottom: 0,
     left: 0,
@@ -631,46 +832,45 @@ const styles = StyleSheet.create({
     right: 0,
     top: 0,
   },
-  badge: {
+  checkBadge: {
     alignItems: "center",
-    backgroundColor: C.gold,
-    borderRadius: 11,
-    height: 22,
+    backgroundColor: "rgba(20, 19, 17, 0.74)",
+    borderColor: colors.text,
+    borderRadius: 16,
+    borderWidth: 2,
+    height: 32,
     justifyContent: "center",
-    minWidth: 22,
+    position: "absolute",
+    right: 7,
+    top: 7,
+    width: 32,
+  },
+  checkBadgeOn: { backgroundColor: colors.gold, borderColor: colors.gold },
+  checkText: { color: colors.text, fontFamily: fonts.body, fontSize: 19, fontWeight: "700", lineHeight: 22 },
+  checkTextOn: { color: colors.ink },
+  orderBadge: {
+    alignItems: "center",
+    backgroundColor: colors.panel,
+    borderColor: colors.gold,
+    borderRadius: 12,
+    borderWidth: 1,
+    bottom: 7,
+    height: 24,
+    justifyContent: "center",
+    minWidth: 24,
     paddingHorizontal: 5,
     position: "absolute",
-    right: 5,
-    top: 5,
+    right: 7,
   },
-  badgeText: { color: "#1a1712", fontSize: 12, fontWeight: "700" },
-  dot: {
-    borderColor: "rgba(255,255,255,0.7)",
-    borderRadius: 11,
-    borderWidth: 1.5,
-    height: 22,
-    position: "absolute",
-    right: 5,
-    top: 5,
-    width: 22,
-  },
+  orderText: { color: colors.gold, fontFamily: fonts.body, fontSize: 14, fontWeight: "700" },
   footer: {
-    alignItems: "center",
-    backgroundColor: C.panel,
-    borderTopColor: C.line,
+    backgroundColor: colors.panel,
+    borderTopColor: colors.hairline,
     borderTopWidth: 1,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingBottom: 30,
-    paddingHorizontal: 22,
-    paddingTop: 16,
+    gap: spacing.xs,
+    paddingBottom: spacing.lg,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
   },
-  footerCount: { color: C.muted, fontSize: 14 },
-  useBtn: {
-    backgroundColor: C.gold,
-    borderRadius: 8,
-    paddingHorizontal: 22,
-    paddingVertical: 12,
-  },
-  useText: { color: "#1a1712", fontSize: 15, fontWeight: "600" },
+  footerCount: { color: colors.muted, fontFamily: fonts.body, textAlign: "center", ...typeScale.label },
 });

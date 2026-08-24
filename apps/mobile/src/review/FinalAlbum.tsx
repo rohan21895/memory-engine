@@ -1,15 +1,18 @@
 import { FlashList } from "@shopify/flash-list";
 import { Image } from "expo-image";
+import { memo, useCallback } from "react";
 import { Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
 
-const C = {
-  bg: "#141311",
-  panel: "#1c1a17",
-  line: "#2c2a25",
-  text: "#e8e4dc",
-  muted: "#9a927f",
-  gold: "#c8a24a",
-};
+import {
+  colors,
+  copy,
+  EmptyState,
+  fonts,
+  PrimaryButton,
+  ScreenHeader,
+  spacing,
+  typeScale,
+} from "../ui";
 
 export type FinalPhoto = {
   media_id: string;
@@ -17,9 +20,24 @@ export type FinalPhoto = {
   page: number;
 };
 
-// The finished album: the reviewed, ordered picks presented as full-bleed
-// album pages (one photo per page, page numbers) — the on-phone equivalent of
-// the printed album. This is the terminal screen of the create flow.
+const FinalPage = memo(function FinalPage({ item, index }: { item: FinalPhoto; index: number }) {
+  return (
+    <View accessible accessibilityLabel={copy.final.pageLabel(index + 1)} style={styles.page}>
+      <View style={styles.paper}>
+        <Image
+          cachePolicy="memory-disk"
+          contentFit="cover"
+          recyclingKey={item.media_id}
+          source={item.uri}
+          style={styles.photo}
+          transition={140}
+        />
+        <Text style={styles.pageNo}>{String(index + 1).padStart(2, "0")}</Text>
+      </View>
+    </View>
+  );
+});
+
 export default function FinalAlbum({
   photos,
   onRestart,
@@ -29,96 +47,92 @@ export default function FinalAlbum({
   onRestart: () => void;
   onBack: () => void;
 }) {
+  const renderItem = useCallback(
+    ({ item, index }: { item: FinalPhoto; index: number }) => (
+      <FinalPage index={index} item={item} />
+    ),
+    [],
+  );
+
+  const header = (
+    <View style={styles.header}>
+      <ScreenHeader
+        backHint={copy.final.backHint}
+        compact
+        eyebrow={copy.final.celebration}
+        helper={copy.final.helper(photos.length)}
+        onBack={onBack}
+        step={3}
+        title={copy.final.title}
+      />
+      <View accessible={false} style={styles.celebration}>
+        <Text style={styles.starSmall}>✦</Text>
+        <Text style={styles.starLarge}>✦</Text>
+        <Text style={styles.starSmall}>✦</Text>
+      </View>
+    </View>
+  );
+
   return (
     <View style={styles.root}>
-      <StatusBar backgroundColor={C.bg} barStyle="light-content" />
+      <StatusBar backgroundColor={colors.background} barStyle="light-content" />
       <FlashList
-        data={photos}
-        keyExtractor={(item, i) => `${item.media_id}-${i}`}
-        ListHeaderComponent={
-          <View style={styles.header}>
-            <Pressable onPress={onBack} hitSlop={12}>
-              <Text style={styles.back}>‹ Edit picks</Text>
-            </Pressable>
-            <Text style={styles.eyebrow}>ALBUM CREATED · ON THIS PHONE</Text>
-            <Text style={styles.title}>Your album</Text>
-            <Text style={styles.subtitle}>
-              {photos.length} page{photos.length === 1 ? "" : "s"} · finished on
-              device, nothing uploaded
-            </Text>
-          </View>
-        }
-        renderItem={({ item, index }) => (
-          <View style={styles.page}>
-            <Image
-              source={item.uri}
-              style={styles.photo}
-              contentFit="cover"
-              transition={140}
-              recyclingKey={item.media_id}
-            />
-            <Text style={styles.pageNo}>{String(index + 1).padStart(2, "0")}</Text>
-          </View>
-        )}
-        ListFooterComponent={
-          <View style={styles.footer}>
-            <Pressable
-              onPress={onRestart}
-              style={({ pressed }) => [styles.restart, pressed && styles.pressed]}
-            >
-              <Text style={styles.restartText}>Create another album</Text>
-            </Pressable>
-          </View>
-        }
         contentContainerStyle={styles.list}
+        data={photos}
+        keyExtractor={(item, index) => `${item.media_id}-${index}`}
+        ListEmptyComponent={
+          <EmptyState
+            actionHint={copy.final.restartHint}
+            actionLabel={copy.final.restart}
+            helper={copy.final.emptyHelper}
+            onAction={onRestart}
+            title={copy.final.emptyTitle}
+          />
+        }
+        ListFooterComponent={
+          photos.length > 0 ? (
+            <View style={styles.footer}>
+              <PrimaryButton
+                accessibilityHint={copy.final.restartHint}
+                label={copy.final.restart}
+                onPress={onRestart}
+              />
+              <Text style={styles.privacy}>{copy.trustCue} · {copy.privacyShort}</Text>
+            </View>
+          ) : null
+        }
+        ListHeaderComponent={header}
+        renderItem={renderItem}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { backgroundColor: C.bg, flex: 1 },
-  list: { paddingBottom: 40 },
+  celebration: { alignItems: "center", flexDirection: "row", gap: spacing.lg, justifyContent: "center", paddingTop: spacing.md },
+  footer: { gap: spacing.md, paddingHorizontal: spacing.lg, paddingTop: spacing.lg },
   header: {
-    paddingHorizontal: 22,
-    paddingTop: (StatusBar.currentHeight ?? 24) + 26,
-    paddingBottom: 22,
+    paddingBottom: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingTop: (StatusBar.currentHeight ?? 24) + spacing.sm,
   },
-  back: { color: C.muted, fontSize: 14, marginBottom: 14 },
-  eyebrow: { color: C.gold, fontSize: 10, letterSpacing: 1.8 },
-  title: { color: C.text, fontSize: 34, fontWeight: "400", marginTop: 6 },
-  subtitle: { color: C.muted, fontSize: 13, lineHeight: 19, marginTop: 8 },
-  page: {
-    aspectRatio: 3 / 4,
-    marginBottom: 14,
-    marginHorizontal: 16,
-    position: "relative",
-  },
-  photo: {
-    backgroundColor: C.panel,
-    borderRadius: 6,
-    height: "100%",
-    width: "100%",
-  },
+  list: { paddingBottom: spacing.xl },
+  page: { paddingBottom: spacing.md, paddingHorizontal: spacing.md },
   pageNo: {
-    bottom: 12,
-    color: C.text,
-    fontSize: 12,
-    left: 14,
-    letterSpacing: 1,
-    opacity: 0.85,
+    bottom: spacing.sm,
+    color: colors.text,
+    fontFamily: fonts.body,
+    fontWeight: "700",
+    left: spacing.sm,
     position: "absolute",
-    textShadowColor: "rgba(0,0,0,0.8)",
+    textShadowColor: "rgba(0, 0, 0, 0.82)",
     textShadowRadius: 6,
+    ...typeScale.small,
   },
-  footer: { paddingHorizontal: 22, paddingTop: 18 },
-  restart: {
-    alignItems: "center",
-    borderColor: C.line,
-    borderRadius: 8,
-    borderWidth: 1,
-    paddingVertical: 15,
-  },
-  pressed: { opacity: 0.6 },
-  restartText: { color: C.text, fontSize: 15 },
+  paper: { aspectRatio: 3 / 4, backgroundColor: colors.panel, borderCurve: "continuous", borderRadius: 8, overflow: "hidden" },
+  photo: { height: "100%", width: "100%" },
+  privacy: { color: colors.muted, fontFamily: fonts.body, textAlign: "center", ...typeScale.small },
+  root: { backgroundColor: colors.background, flex: 1 },
+  starLarge: { color: colors.gold, fontSize: 28, lineHeight: 32 },
+  starSmall: { color: colors.gold, fontSize: 16, lineHeight: 20, opacity: 0.7 },
 });
