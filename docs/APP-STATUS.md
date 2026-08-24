@@ -9,9 +9,12 @@ album planner, on-device MoveNet body-pose inference, and MIT-licensed TinyCLIP
 semantic embeddings with six zero-shot expression axes. MobileFaceNet now adds
 real 192-dimensional face-identity embeddings for the People filter and the
 planner's people floor, with a guarded perceptual fallback. The standalone release
-APK was built, installed on device `177fc81a`, and driven through a real
-four-photo Pick → Making → Review → Done flow without a crash. The finished
-album contained two pages after deterministic near-duplicate collapsing.
+APK was rebuilt with all three TFLite graphs and verified byte-for-byte. The
+last pre-Phase-4 release was installed on device `177fc81a` and driven through
+a real four-photo Pick → Making → Review → Done flow without a crash. The phone
+was not visible to ADB or macOS USB discovery during the Phase-4 session, so the
+new APK's install and identity-grouping walkthrough remain the one external
+validation step pending.
 
 ## Shipped on `main`
 
@@ -53,6 +56,10 @@ album contained two pages after deterministic near-duplicate collapsing.
   perceptual embeddings are tagged and never mixed; the fallback retains its
   conservative `0.92` threshold. Face-index v2 invalidates the old perceptual
   cache and rescans crash-safely.
+- People clusters update after every resumable scan batch, so the People filter
+  and planner receive stable person ids without waiting for the whole library
+  scan to finish. A deterministic full rebuild still prunes deleted assets at
+  scan completion.
 
 ## Verification
 
@@ -60,13 +67,18 @@ album contained two pages after deterministic near-duplicate collapsing.
 - `node --test src/selection/*.test.ts src/faces/*.test.ts src/ml/*.test.ts`:
   ten test modules green.
 - Release APK: built successfully with bundled JavaScript and native TFLite /
-  Nitro code, then installed on `177fc81a` (CPH2649).
+  Nitro code. Size `338272394` bytes; SHA-256
+  `b7a62102cc59c3cf1fa9e0cf056ed762eca4bb0778c7393a5114e5ab06cc8105`.
 - APK contains the exact verified MoveNet artifact; extracting its packaged
   resource reproduces the SHA-256 below.
 - The TinyCLIP TFLite output matched its source ONNX embedding at cosine 1.0;
   the APK contains the exact TFLite artifact identified below.
-- On-phone walkthrough: four real photos produced a two-page album through the
-  complete guided flow; no app crash appeared in logcat.
+- APK extraction also reproduces the exact MobileFaceNet SHA-256 below; Metro
+  statically bundled all three TFLite resources.
+- Prior on-phone walkthrough: four real photos produced a two-page album through
+  the complete guided flow; no app crash appeared in logcat. Phase-4 install is
+  pending because `adb devices -l`, ADB mDNS, and macOS USB discovery all showed
+  no connected device during this session.
 
 ## On-device model provenance
 
@@ -81,6 +93,18 @@ album contained two pages after deterministic near-duplicate collapsing.
 
 All native/model calls are lazy and guarded. A missing or incompatible model
 returns neutral signals and preserves the complete album flow.
+
+## RELICENSE BEFORE COMMERCIAL LAUNCH
+
+- **MobileFaceNet 192-d identity:** the bundled artifact is distributed by a
+  BSD-3-Clause repository and traces to the Apache-2.0 MobileFaceNet_TF
+  implementation, but its pretrained-weight and training-dataset grant is not
+  separately documented. License it from a provenance-complete source or
+  replace it before any commercial build.
+- **MoveNet SinglePose Lightning:** Apache-2.0 official TensorFlow model. Keep;
+  no relicensing action is currently required.
+- **TinyCLIP ViT-8M/16 Text-3M:** MIT repository and model-card license. Keep;
+  preserve its notice and verify the weight card again at commercial release.
 
 ## Rebuild
 
@@ -120,6 +144,8 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 - MobileFaceNet identity quality is not yet calibrated on Photeo's own diverse
   family benchmark. The `0.5` cosine threshold favors precision; individual
   inference failures safely use the older perceptual crop embedding.
+- The Phase-4 APK still needs installation on `177fc81a` and a fresh screenshot
+  walkthrough once that device is physically reconnected.
 - Face/head-region sharpness, per-face exposure, and ML Kit head-pose confidence
   tightening remain to be added.
 - Body pose uses a single-person model, so crowded group photos contribute only
