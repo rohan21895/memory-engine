@@ -38,10 +38,7 @@ export default function FinalAlbum({
   title?: string;
 }) {
   const [draftTitle, setDraftTitle] = useState(title);
-  const updateTitle = (next: string) => {
-    setDraftTitle(next);
-    onTitleChange?.(next);
-  };
+  const updateTitle = (next: string) => setDraftTitle(next);
 
   return (
     <View style={styles.root}>
@@ -57,7 +54,11 @@ export default function FinalAlbum({
         <TextInput
           accessibilityLabel="Album title"
           onChangeText={updateTitle}
-          onEndEditing={() => onTitleChange?.(draftTitle.trim() || "My photo album")}
+          onEndEditing={() => {
+            const cleanTitle = draftTitle.trim() || "My photo album";
+            setDraftTitle(cleanTitle);
+            onTitleChange?.(cleanTitle);
+          }}
           placeholder="Album title"
           placeholderTextColor={colors.muted}
           selectTextOnFocus

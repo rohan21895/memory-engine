@@ -13,6 +13,7 @@ import {
   typeScale,
 } from "../ui";
 import Lightbox, { type LightboxItem, type LightboxMode } from "./Lightbox";
+import { SwapSheet } from "./SwapSheet";
 import mockReviewData, {
   type ReviewAlternative,
   type ReviewData,
@@ -69,6 +70,7 @@ export default function ReviewScreen({
   const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [added, setAdded] = useState<Set<string>>(new Set());
   const [viewer, setViewer] = useState<ViewerState | null>(null);
+  const [swapSlot, setSwapSlot] = useState<string | null>(null);
 
   const mediaById = useMemo(() => {
     const entries: ReviewMedia[] = [
@@ -128,12 +130,12 @@ export default function ReviewScreen({
     ? alternativeItems(selectedForViewer)
     : albumItems;
 
-  const openAlternates = useCallback((slotMediaId: string) => {
+  const openAlternatesViewer = useCallback((slotMediaId: string, requestedIndex?: number) => {
     const selected = data.selected.find((item) => item.media_id === slotMediaId);
     if (!selected) return;
     const shownId = swaps[slotMediaId] ?? slotMediaId;
     const items = alternativeItems(selected);
-    const initialIndex = Math.max(0, items.findIndex((item) => item.media_id === shownId));
+    const initialIndex = requestedIndex ?? Math.max(0, items.findIndex((item) => item.media_id === shownId));
     setViewer({ initialIndex, mode: "browse-alternatives", slotMediaId });
   }, [data.selected, swaps]);
 
@@ -176,7 +178,7 @@ export default function ReviewScreen({
                 <Pressable
                   accessibilityRole="button"
                   disabled={item.slot_media_id.startsWith("pool:")}
-                  onPress={() => openAlternates(item.slot_media_id)}
+                  onPress={() => setSwapSlot(item.slot_media_id)}
                   style={({ pressed }) => [styles.swap, pressed ? styles.pressed : null, item.slot_media_id.startsWith("pool:") ? styles.disabled : null]}
                 >
                   <Text numberOfLines={1} style={styles.swapText}>See other shots</Text>
@@ -231,12 +233,29 @@ export default function ReviewScreen({
         />
       </View>
 
+      <SwapSheet
+        currentMediaId={swapSlot ? swaps[swapSlot] ?? swapSlot : ""}
+        onClose={() => setSwapSlot(null)}
+        onOpen={(index) => {
+          if (swapSlot) openAlternatesViewer(swapSlot, index);
+          setSwapSlot(null);
+        }}
+        onPick={(mediaId) => {
+          if (!swapSlot) return;
+          setSwaps((current) => mediaId === swapSlot
+            ? Object.fromEntries(Object.entries(current).filter(([key]) => key !== swapSlot))
+            : { ...current, [swapSlot]: mediaId });
+        }}
+        selected={swapSlot ? data.selected.find((item) => item.media_id === swapSlot) ?? null : null}
+        visible={swapSlot !== null}
+      />
+
       <Lightbox
         initialIndex={viewer?.initialIndex ?? 0}
         items={lightboxItems}
         mode={viewer?.mode ?? "browse-album"}
         onClose={() => setViewer(null)}
-        onOpenAlternatives={(item) => item.slot_media_id && openAlternates(item.slot_media_id)}
+        onOpenAlternatives={(item) => item.slot_media_id && openAlternatesViewer(item.slot_media_id)}
         onUseThisPhoto={useThisPhoto}
         visible={viewer !== null}
       />

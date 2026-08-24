@@ -181,7 +181,9 @@ export async function buildAlbum(
     uri: uri(item.media_id),
     page: item.page,
     chosen_because: item.chosen_because,
-    alternatives: item.alternatives.map<ReviewAlternative>((alt) => ({
+    // The planner ranks every runner-up; the review contract surfaces the four
+    // strongest so the swap sheet stays useful without becoming another grid.
+    alternatives: item.alternatives.slice(0, 4).map<ReviewAlternative>((alt) => ({
       media_id: alt.media_id,
       uri: uri(alt.media_id),
       not_chosen_because: alt.not_chosen_because,

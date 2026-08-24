@@ -20,6 +20,7 @@
     "expo-media-library": "~57.0.4",
     "expo-secure-store": "~57.0.1",
     "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.2",
     "expo-web-browser": "~57.0.2",
     "jpeg-js": "^0.4.4",
     "onnxruntime-react-native": "^1.24.3",
