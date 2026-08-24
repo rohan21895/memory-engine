@@ -37,7 +37,7 @@ export type FilterScreenProps = {
   peopleLoadingText?: string;
 };
 
-type DateMode = "Exact" | "Month" | "Year";
+type DateMode = "Recent" | "Month" | "Year";
 
 function ChoiceRow({
   detail,
@@ -86,7 +86,7 @@ export function FilterScreen({
   const [faceVisible, setFaceVisible] = useState(false);
   const [locationVisible, setLocationVisible] = useState(false);
   const [dateMode, setDateMode] = useState<DateMode>(
-    initialSelection.dateId.startsWith("month:") ? "Month" : initialSelection.dateId.startsWith("year:") || initialSelection.dateId === "year" ? "Year" : "Exact",
+    initialSelection.dateId.startsWith("month:") ? "Month" : initialSelection.dateId.startsWith("year:") || initialSelection.dateId === "year" ? "Year" : "Recent",
   );
   const countRequest = useRef(0);
 
@@ -168,7 +168,7 @@ export function FilterScreen({
             <Text style={styles.kind}>Date</Text>
             <Text style={styles.dateValue}>{selectedDate?.label ?? (selection.dateId.startsWith("year:") ? selection.dateId.slice(5) : "All time")}</Text>
             <View style={styles.segmented}>
-              {(["Exact", "Month", "Year"] as DateMode[]).map((mode) => {
+              {(["Recent", "Month", "Year"] as DateMode[]).map((mode) => {
                 const active = mode === dateMode;
                 return (
                   <Pressable key={mode} onPress={() => setDateMode(mode)} style={[styles.segment, active ? styles.segmentActive : null]}>
@@ -177,12 +177,6 @@ export function FilterScreen({
                 );
               })}
             </View>
-            {dateMode === "Exact" ? (
-              <View style={styles.exactRow}>
-                <View style={styles.exactField}><Text style={styles.exactLabel}>From</Text><Text style={styles.exactValue}>{selection.dateId === "week" ? "7 days ago" : "Any date"}</Text></View>
-                <View style={styles.exactField}><Text style={styles.exactLabel}>To</Text><Text style={styles.exactValue}>{selection.dateId === "all" ? "Any date" : "Today"}</Text></View>
-              </View>
-            ) : null}
             <View style={styles.chips}>
               {dateOptions.map((option) => {
                 const active = option.id === selection.dateId;
@@ -255,10 +249,6 @@ const styles = StyleSheet.create({
   clear: { width: 112 },
   dateCard: { backgroundColor: colors.panel, borderColor: colors.hairline, borderCurve: "continuous", borderRadius: radii.lg, borderWidth: 1, gap: spacing.sm, padding: 18 },
   dateValue: { color: colors.text, fontFamily: fonts.bold, fontSize: 18, letterSpacing: -0.3 },
-  exactField: { flex: 1, gap: spacing.xxs },
-  exactLabel: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.eyebrow },
-  exactRow: { flexDirection: "row", gap: spacing.sm },
-  exactValue: { borderColor: colors.hairline, borderRadius: 13, borderWidth: 1, color: colors.text, fontFamily: fonts.semibold, minHeight: 50, padding: 14, ...typeScale.small },
   footer: { backgroundColor: colors.background, borderTopColor: colors.hairline, borderTopWidth: 1, flexDirection: "row", gap: spacing.sm, paddingBottom: spacing.lg, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   helper: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14.5, lineHeight: 21 },
   kind: { color: "#a29a8e", fontFamily: fonts.bold, textTransform: "uppercase", ...typeScale.eyebrow },

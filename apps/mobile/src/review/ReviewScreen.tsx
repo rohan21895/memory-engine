@@ -206,7 +206,7 @@ export default function ReviewScreen({
 
         {data.pool.length > 0 ? (
           <View style={styles.missedSection}>
-            <View style={styles.missedHeading}><Text style={styles.missedTitle}>Good shots that missed out</Text><Text style={styles.missedCount}>See all {data.pool.length}</Text></View>
+            <View style={styles.missedHeading}><Text style={styles.missedTitle}>Good shots that missed out</Text><Text style={styles.missedCount}>{data.pool.length} available</Text></View>
             <Text style={styles.missedHelper}>Strong photos we left out to keep the album varied. Add any you want back in.</Text>
             <ScrollView horizontal contentContainerStyle={styles.missedRail} showsHorizontalScrollIndicator={false}>
               {data.pool.map((item) => {
