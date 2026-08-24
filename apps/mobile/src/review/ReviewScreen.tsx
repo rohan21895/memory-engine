@@ -64,8 +64,8 @@ export default function ReviewScreen({
   onFinalize,
 }: {
   data: ReviewData;
-  onBack?: () => void;
-  onFinalize?: (photos: { media_id: string; uri: string; page: number }[]) => void;
+  onBack: () => void;
+  onFinalize: (photos: { media_id: string; uri: string; page: number }[]) => void;
 }) {
   const insets = useSafeAreaInsets();
   const [swaps, setSwaps] = useState<Swaps>({});
@@ -163,48 +163,54 @@ export default function ReviewScreen({
         <View style={styles.headingRow}>
           <Pressable accessibilityRole="button" onPress={onBack} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>
           <View style={styles.headingCopy}>
-            <Text accessibilityRole="header" style={styles.title}>{gridItems.length} photos made the cut</Text>
-            <Text style={styles.helper}>Tap a photo to see it big. “See other shots” swaps it, ✕ takes it out.</Text>
+            <Text accessibilityRole="header" style={styles.title}>{gridItems.length > 0 ? `${gridItems.length} photos made the cut` : copy.review.emptyTitle}</Text>
+            <Text style={styles.helper}>{gridItems.length > 0 ? "Tap a photo to see it big. “See other shots” swaps it, ✕ takes it out." : copy.review.emptyHelper}</Text>
           </View>
         </View>
 
-        <View style={styles.grid}>
-          {gridItems.map((item, index) => (
-            <View key={item.slot_media_id} style={styles.card}>
-              <Pressable accessibilityRole="button" onPress={() => setViewer({ initialIndex: index, mode: "browse-album" })}>
-                <Image cachePolicy="memory-disk" contentFit="cover" source={item.uri} style={styles.image} transition={120} />
-                <View style={styles.expand}><Text style={styles.expandText}>⤢</Text></View>
-              </Pressable>
-              <Text numberOfLines={3} style={styles.reason}>{item.caption}</Text>
-              <View style={styles.actions}>
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={item.slot_media_id.startsWith("pool:")}
-                  onPress={() => setSwapSlot(item.slot_media_id)}
-                  style={({ pressed }) => [styles.swap, pressed ? styles.pressed : null, item.slot_media_id.startsWith("pool:") ? styles.disabled : null]}
-                >
-                  <Text numberOfLines={1} style={styles.swapText}>See other shots</Text>
+        {gridItems.length > 0 ? (
+          <View style={styles.grid}>
+            {gridItems.map((item, index) => (
+              <View key={item.slot_media_id} style={styles.card}>
+                <Pressable accessibilityRole="button" onPress={() => setViewer({ initialIndex: index, mode: "browse-album" })}>
+                  <Image cachePolicy="memory-disk" contentFit="cover" source={item.uri} style={styles.image} transition={120} />
+                  <View style={styles.expand}><Text style={styles.expandText}>⤢</Text></View>
                 </Pressable>
-                <Pressable
-                  accessibilityLabel="Remove from album"
-                  accessibilityRole="button"
-                  onPress={() => {
-                    if (item.slot_media_id.startsWith("pool:")) {
-                      setAdded((current) => { const next = new Set(current); next.delete(item.media_id); return next; });
-                    } else {
-                      setRemoved((current) => new Set(current).add(item.slot_media_id));
-                    }
-                  }}
-                  style={({ pressed }) => [styles.remove, pressed ? styles.pressed : null]}
-                >
-                  <Text style={styles.removeText}>✕</Text>
-                </Pressable>
+                <Text numberOfLines={3} style={styles.reason}>{item.caption}</Text>
+                <View style={styles.actions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={item.slot_media_id.startsWith("pool:")}
+                    onPress={() => setSwapSlot(item.slot_media_id)}
+                    style={({ pressed }) => [styles.swap, pressed ? styles.pressed : null, item.slot_media_id.startsWith("pool:") ? styles.disabled : null]}
+                  >
+                    <Text numberOfLines={1} style={styles.swapText}>See other shots</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityLabel="Remove from album"
+                    accessibilityRole="button"
+                    onPress={() => {
+                      if (item.slot_media_id.startsWith("pool:")) {
+                        setAdded((current) => { const next = new Set(current); next.delete(item.media_id); return next; });
+                      } else {
+                        setRemoved((current) => new Set(current).add(item.slot_media_id));
+                      }
+                    }}
+                    style={({ pressed }) => [styles.remove, pressed ? styles.pressed : null]}
+                  >
+                    <Text style={styles.removeText}>✕</Text>
+                  </Pressable>
+                </View>
               </View>
-            </View>
-          ))}
-        </View>
+            ))}
+          </View>
+        ) : (
+          <View style={styles.empty}>
+            <PrimaryButton accessibilityHint={copy.review.backHint} label={copy.review.emptyAction} onPress={onBack} />
+          </View>
+        )}
 
-        {data.pool.length > 0 ? (
+        {gridItems.length > 0 && data.pool.length > 0 ? (
           <View style={styles.missedSection}>
             <View style={styles.missedHeading}><Text style={styles.missedTitle}>Good shots that missed out</Text><Text style={styles.missedCount}>{data.pool.length} available</Text></View>
             <Text style={styles.missedHelper}>Strong photos we left out to keep the album varied. Add any you want back in.</Text>
@@ -226,14 +232,15 @@ export default function ReviewScreen({
         ) : null}
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: Math.max(spacing.lg, insets.bottom + spacing.sm) }]}>
-        <PrimaryButton
-          accessibilityHint={copy.review.makeHint}
-          disabled={gridItems.length === 0}
-          label="Make my album"
-          onPress={() => onFinalize?.(gridItems.map((item) => ({ media_id: item.media_id, page: item.page, uri: item.uri })))}
-        />
-      </View>
+      {gridItems.length > 0 ? (
+        <View style={[styles.footer, { paddingBottom: Math.max(spacing.lg, insets.bottom + spacing.sm) }]}>
+          <PrimaryButton
+            accessibilityHint={copy.review.makeHint}
+            label="Make my album"
+            onPress={() => onFinalize(gridItems.map((item) => ({ media_id: item.media_id, page: item.page, uri: item.uri })))}
+          />
+        </View>
+      ) : null}
 
       <SwapSheet
         currentMediaId={swapSlot ? swaps[swapSlot] ?? swapSlot : ""}
@@ -276,6 +283,7 @@ const styles = StyleSheet.create({
   backText: { color: colors.muted, fontFamily: fonts.regular, fontSize: 26 },
   card: { gap: 7, width: "47.8%" },
   disabled: { opacity: 0.45 },
+  empty: { paddingHorizontal: spacing.md, paddingTop: spacing.xl },
   expand: { alignItems: "center", backgroundColor: "rgba(20,15,10,.5)", borderRadius: 14, bottom: 8, height: 28, justifyContent: "center", position: "absolute", right: 8, width: 28 },
   expandText: { color: colors.onAccent, fontFamily: fonts.bold, fontSize: 13 },
   footer: { backgroundColor: colors.background, borderTopColor: colors.hairline, borderTopWidth: 1, paddingBottom: spacing.lg, paddingHorizontal: spacing.md, paddingTop: spacing.sm },

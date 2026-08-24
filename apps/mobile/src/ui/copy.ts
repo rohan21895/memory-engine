@@ -150,6 +150,7 @@ export const copy = {
     makeHint: "Finishes and saves this album on your phone",
     emptyTitle: "There are no album photos yet",
     emptyHelper: "Go back and pick at least one photo to continue.",
+    emptyAction: "Back to Pick",
     page: (page: number) => `Page ${page}`,
     yourChoice: "Your choice",
     openPhotoHint: "Opens this album photo full screen",
