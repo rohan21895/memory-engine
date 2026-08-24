@@ -102,10 +102,10 @@ export function sharpnessFromPixels(
     return 0;
   }
 
-  const { inside, outside } = laplacianStats(gray, width, height, region);
-  return normalizeSharpness(
-    region ? varianceOf(inside) : varianceOf(combine(inside, outside)),
-  );
+  // `inside` already holds the whole frame when no usable region was given, so
+  // an unusable or off-image box degrades to the frame score rather than to 0.
+  const { inside } = laplacianStats(gray, width, height, region);
+  return normalizeSharpness(varianceOf(inside));
 }
 
 /**

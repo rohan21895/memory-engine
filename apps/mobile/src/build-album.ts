@@ -299,9 +299,15 @@ export async function buildAlbum(
           ? Promise.resolve({ embedding: [], faces: 0 })
           : model.run(analysisUri),
         detectFaces(analysisUri).catch(() => [] as FaceBox[]),
-        probedQuality
-          ? Promise.resolve(probedQuality)
-          : measureImageQuality(analysisUri).catch(() => ({})),
+        // Always measure properly here, even when the prepass already produced a
+        // probedQuality. That probe comes from a 4x3 blurhash decoded to 16x12,
+        // which by construction holds no high frequencies — it reads ~0.05
+        // sharpness no matter how well focused the photo is. It is a fine
+        // ranking prior for choosing candidates, but feeding it onward as the
+        // final quality signal drives every photo under the planner's absolute
+        // quality floor, so large libraries produce an empty album.
+        measureImageQuality(analysisUri)
+          .catch(() => probedQuality ?? {}),
         detectBodyPose(analysisUri),
         analyzeSemanticImage(analysisUri, analysisWidth, analysisHeight),
       ]);

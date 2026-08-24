@@ -2,7 +2,9 @@
 import { exposureFromPixels, sharpnessFromPixels, type MeasuredImageQuality } from "./image-quality.ts";
 
 const PROBE_SIZE = 32;
-const ANALYSIS_PROXY_SIZE = 256;
+// Matches QUALITY_SAMPLE_WIDTH in image-quality.ts: sharpness needs >=512px to
+// discriminate focus at all (at 256 a blurred frame still scores ~4x too high).
+const ANALYSIS_PROXY_SIZE = 512;
 const DECODE_WIDTH = 16;
 const DECODE_HEIGHT = 12;
 const BASE83 =
@@ -12,6 +14,15 @@ const BASE83 =
  * Ask the platform image loader for a genuinely tiny thumbnail before reading
  * pixels. On Android this lets Glide/MediaStore subsample during decode instead
  * of image-manipulator materializing and JPEG-encoding a full source image.
+ *
+ * IMPORTANT: the `sharpness` this returns is a RELATIVE ranking prior, not a
+ * calibrated sharpness, and must never be compared against an absolute floor.
+ * It comes from a 4x3-component blurhash, which by construction holds no high
+ * frequencies at all, so real photos land around 0.04-0.06 no matter how sharp
+ * they are. That is fine for choosing which candidates deserve heavy analysis
+ * (only the ordering is used), but a caller that forwards this value on as the
+ * final quality signal will fail every absolute threshold downstream. Use
+ * `measureImageQuality` for any value that gets thresholded.
  */
 export async function probeCandidateQuality(
   uri: string,

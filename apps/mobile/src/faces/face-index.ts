@@ -29,7 +29,7 @@ const BASE64_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /** ArcFace/MobileFaceNet-space cosine threshold for high-precision identity. */
-export const DEFAULT_FACE_INDEX_THRESHOLD = 0.5;
+export const DEFAULT_FACE_INDEX_THRESHOLD = 0.62;
 export const FACE_INDEX_IDENTITY_MERGE_THRESHOLD = 0.37;
 export const FACE_INDEX_LARGE_CLUSTER_MERGE_THRESHOLD = 0.3;
 export const FACE_INDEX_LARGE_CLUSTER_MIN_FACES = 10;

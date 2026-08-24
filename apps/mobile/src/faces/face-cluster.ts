@@ -1,6 +1,27 @@
 import type { FaceObservation, Person } from "./types";
 
-export const DEFAULT_IDENTITY_THRESHOLD = 0.5;
+/**
+ * Cosine bar for "same person" when assigning an aligned face to an existing
+ * cluster.
+ *
+ * 0.5 was calibrated against UNALIGNED bounding-box crops, whose embeddings were
+ * scattered enough that a loose bar was needed to group anyone at all. Once
+ * 5-point alignment landed, every face moved much closer together and that same
+ * bar collapsed the whole library into a single identity. Verification
+ * thresholds for ArcFace-family embeddings sit near 0.3-0.45, but clustering
+ * must be strictly tighter: assignment errors are transitive, so one bad link
+ * merges two entire people.
+ */
+export const DEFAULT_IDENTITY_THRESHOLD = 0.62;
+
+/**
+ * Cluster-to-cluster merging is the transitive step, so it is tighter still.
+ * A centroid is an average of many faces; two centroids being merely similar is
+ * far weaker evidence than two faces being similar, and a single wrong merge is
+ * unrecoverable for the user (two people permanently fused under one name).
+ */
+export const DEFAULT_MERGE_THRESHOLD = 0.72;
+
 export const DEFAULT_PERCEPTUAL_THRESHOLD = 0.92;
 
 /**
@@ -113,9 +134,12 @@ export function extendFaceClusters(
   const perceptualThreshold = Number.isFinite(opts.perceptualThreshold)
     ? (opts.perceptualThreshold as number)
     : DEFAULT_PERCEPTUAL_THRESHOLD;
+  // Merging must never be looser than assignment: if two faces were too far
+  // apart to join a cluster, two averaged centroids at that distance are weaker
+  // evidence still. So honour an explicit caller threshold and only tighten.
   const identityMergeThreshold = Number.isFinite(opts.identityMergeThreshold)
     ? (opts.identityMergeThreshold as number)
-    : identityThreshold;
+    : Math.max(identityThreshold, DEFAULT_MERGE_THRESHOLD);
   const identityLargeClusterMergeThreshold = Number.isFinite(
     opts.identityLargeClusterMergeThreshold,
   )

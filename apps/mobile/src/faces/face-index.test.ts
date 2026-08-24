@@ -141,8 +141,8 @@ assert(
     "the MobileFaceNet default should split examples below cosine 0.5",
   );
   assert(
-    DEFAULT_FACE_INDEX_THRESHOLD === 0.5,
-    "the identity default should use the ArcFace-space cosine calibration",
+    DEFAULT_FACE_INDEX_THRESHOLD === 0.62,
+    "identity default is the post-alignment calibration (0.5 was for unaligned crops)",
   );
   assert(
     PERCEPTUAL_FACE_INDEX_THRESHOLD > 0.9,
