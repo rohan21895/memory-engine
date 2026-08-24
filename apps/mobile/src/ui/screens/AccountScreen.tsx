@@ -40,7 +40,7 @@ export function AccountScreen({
       </View>
       <View style={styles.privacy}>
         <Text style={styles.privacyTitle}><Text style={styles.dot}>●</Text>  Everything stays on your phone</Text>
-        <Text style={styles.privacyCopy}>Photos are never uploaded and albums are made without the internet. Your account is only used to share albums with family.</Text>
+        <Text style={styles.privacyCopy}>Photos are never uploaded and albums are made without the internet. Account changes never alter your original photos.</Text>
       </View>
       <View style={styles.settings}>
         <SettingRow label="Your family" onPress={onFamily} value="Set up  ›" />
