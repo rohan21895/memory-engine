@@ -40,7 +40,7 @@ export function AccountScreen({
       </View>
       <View style={styles.privacy}>
         <Text style={styles.privacyTitle}><Text style={styles.dot}>●</Text>  Everything stays on your phone</Text>
-        <Text style={styles.privacyCopy}>Photos are never uploaded and albums are made without the internet. Your account is only used to share albums with family.</Text>
+        <Text style={styles.privacyCopy}>Photos are never uploaded and albums are made without the internet. Account changes never alter your original photos.</Text>
       </View>
       <View style={styles.settings}>
         <SettingRow label="Your family" onPress={onFamily} value="Set up  ›" />
@@ -48,9 +48,13 @@ export function AccountScreen({
         <SettingRow label="Album storage" value="On this phone" />
         <SettingRow label="App version" value="1.0.0" />
       </View>
-      <Pressable onPress={onHelp} style={styles.help}><Text style={styles.helpText}>Help & troubleshooting</Text></Pressable>
-      <Pressable accessibilityRole="button" onPress={onSignOut} style={({ pressed }) => [styles.signOut, pressed ? styles.pressed : null]}><Text style={styles.signOutText}>Sign out</Text></Pressable>
-      <Text style={styles.signOutNote}>Signing out only stops album sharing. Your photos and albums stay on this phone.</Text>
+      {onHelp ? <Pressable accessibilityRole="button" onPress={onHelp} style={styles.help}><Text style={styles.helpText}>Help & troubleshooting</Text></Pressable> : null}
+      {onSignOut ? (
+        <>
+          <Pressable accessibilityRole="button" onPress={onSignOut} style={({ pressed }) => [styles.signOut, pressed ? styles.pressed : null]}><Text style={styles.signOutText}>Sign out</Text></Pressable>
+          <Text style={styles.signOutNote}>Your photos and albums stay on this phone after you sign out.</Text>
+        </>
+      ) : null}
     </ScrollView>
   );
 }
