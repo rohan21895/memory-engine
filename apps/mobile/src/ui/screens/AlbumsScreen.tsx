@@ -1,7 +1,8 @@
 import { Image } from "expo-image";
-import { Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 
-import type { SavedAlbum } from "../../albums/album-store";
+import { loadAlbums, type SavedAlbum } from "../../albums/album-store";
 import { PrimaryButton } from "../components/PrimaryButton";
 import { fonts } from "../fonts";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
@@ -34,6 +35,33 @@ export function AlbumsScreen({
   onOpen: (album: SavedAlbum) => void;
   onOpenShared?: (album: SharedAlbumPreview) => void;
 }) {
+  const hydrated = useRef(false);
+  const [shelfAlbums, setShelfAlbums] = useState<SavedAlbum[] | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void loadAlbums()
+      .then((loaded) => {
+        if (!active) return;
+        hydrated.current = true;
+        setShelfAlbums(loaded);
+      })
+      .catch(() => {
+        if (!active) return;
+        hydrated.current = true;
+        setShelfAlbums([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (hydrated.current) setShelfAlbums(albums);
+  }, [albums]);
+
+  const visibleAlbums = shelfAlbums ?? [];
+
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.scroll} contentInsetAdjustmentBehavior="automatic">
@@ -41,9 +69,14 @@ export function AlbumsScreen({
           <Text accessibilityRole="header" style={styles.title}>Albums</Text>
           <View style={styles.avatar}><Text style={styles.avatarText}>P</Text></View>
         </View>
-        {albums.length > 0 ? (
+        {shelfAlbums === null ? (
+          <View accessibilityLiveRegion="polite" style={styles.loading}>
+            <ActivityIndicator color={colors.gold} />
+            <Text style={styles.loadingText}>Loading your albums…</Text>
+          </View>
+        ) : visibleAlbums.length > 0 ? (
           <View style={styles.grid}>
-            {albums.map((album) => (
+            {visibleAlbums.map((album) => (
               <Pressable accessibilityRole="button" key={album.id} onPress={() => onOpen(album)} style={({ pressed }) => [styles.albumCard, pressed ? styles.pressed : null]}>
                 <Image cachePolicy="memory-disk" contentFit="cover" source={album.coverUri} style={styles.cover} transition={120} />
                 <Text numberOfLines={1} style={styles.albumTitle}>{album.title}</Text>
@@ -84,6 +117,8 @@ const styles = StyleSheet.create({
   footer: { backgroundColor: "rgba(250,248,245,0.97)", borderTopColor: colors.hairline, borderTopWidth: 1, bottom: 0, left: 0, paddingBottom: spacing.sm, paddingHorizontal: layout.screenPadding, paddingTop: spacing.sm, position: "absolute", right: 0 },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 14, paddingTop: spacing.md },
   header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingBottom: spacing.xs },
+  loading: { alignItems: "center", gap: spacing.sm, paddingTop: spacing.xxl },
+  loadingText: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   note: { color: colors.muted, fontFamily: fonts.regular, textAlign: "center", ...typeScale.small },
   pressed: { opacity: 0.72, transform: [{ scale: 0.985 }] },
   root: { backgroundColor: colors.background, flex: 1 },
