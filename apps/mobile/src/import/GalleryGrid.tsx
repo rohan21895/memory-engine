@@ -698,7 +698,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
 
   return (
     <GestureHandlerRootView style={styles.root}>
-      <StatusBar backgroundColor={colors.background} barStyle="light-content" />
+      <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <View style={styles.header}>
         <ScreenHeader
           backHint={copy.picker.backHint}

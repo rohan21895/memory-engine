@@ -1,19 +1,22 @@
 import type { TextStyle, ViewStyle } from "react-native";
 
 export const colors = {
-  background: "#141311",
-  panel: "#1c1a17",
-  panelRaised: "#232019",
-  hairline: "#2c2a25",
-  text: "#e8e4dc",
-  muted: "#9a927f",
-  gold: "#c8a24a",
-  goldPressed: "#b5903d",
-  ink: "#18150f",
-  error: "#f0aa94",
-  success: "#9fc49a",
-  scrim: "rgba(9, 8, 6, 0.76)",
-  imageScrim: "rgba(10, 8, 5, 0.34)",
+  background: "#faf8f5",
+  panel: "#ffffff",
+  panelRaised: "#f9ece5",
+  hairline: "#e7e2d9",
+  text: "#1a1714",
+  muted: "#6f6a62",
+  gold: "#c75c33",
+  goldPressed: "#a8481f",
+  ink: "#1a1714",
+  onAccent: "#ffffff",
+  error: "#a8481f",
+  success: "#4a8a5c",
+  privacySurface: "#eef2ec",
+  quietSurface: "#f1efe9",
+  scrim: "rgba(30, 24, 18, 0.42)",
+  imageScrim: "rgba(20, 15, 10, 0.34)",
 } as const;
 
 export const spacing = {
@@ -28,26 +31,26 @@ export const spacing = {
 } as const;
 
 export const radii = {
-  sm: 6,
-  md: 10,
-  lg: 16,
+  sm: 10,
+  md: 16,
+  lg: 20,
   pill: 999,
 } as const;
 
 export const typeScale = {
-  display: { fontSize: 46, lineHeight: 50, letterSpacing: -0.8 },
-  title: { fontSize: 34, lineHeight: 39, letterSpacing: -0.4 },
-  subtitle: { fontSize: 22, lineHeight: 28 },
-  body: { fontSize: 18, lineHeight: 27 },
-  label: { fontSize: 17, lineHeight: 22 },
-  small: { fontSize: 15, lineHeight: 20 },
-  eyebrow: { fontSize: 13, lineHeight: 18, letterSpacing: 1.7 },
+  display: { fontSize: 38, lineHeight: 40, letterSpacing: -1.3 },
+  title: { fontSize: 30, lineHeight: 34, letterSpacing: -0.9 },
+  subtitle: { fontSize: 21, lineHeight: 27, letterSpacing: -0.3 },
+  body: { fontSize: 16, lineHeight: 24 },
+  label: { fontSize: 16, lineHeight: 22 },
+  small: { fontSize: 14, lineHeight: 20 },
+  eyebrow: { fontSize: 12, lineHeight: 17, letterSpacing: 1.1 },
 } satisfies Record<string, TextStyle>;
 
 export const layout = {
   screenPadding: 22,
   minTouchTarget: 48,
-  primaryButtonHeight: 60,
+  primaryButtonHeight: 56,
   maxReadableWidth: 620,
 } as const;
 

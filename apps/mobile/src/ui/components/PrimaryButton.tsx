@@ -35,7 +35,7 @@ export function PrimaryButton({
     >
       {busy ? (
         <View style={styles.busyRow}>
-          <ActivityIndicator color={colors.ink} />
+      <ActivityIndicator color={colors.onAccent} />
           <Text style={styles.label}>{label}</Text>
         </View>
       ) : (
@@ -59,7 +59,7 @@ const styles = StyleSheet.create({
   busyRow: { alignItems: "center", flexDirection: "row", gap: spacing.sm },
   disabled: { opacity: 0.38 },
   label: {
-    color: colors.ink,
+    color: colors.onAccent,
     fontFamily: fonts.body,
     fontWeight: "700",
     textAlign: "center",

@@ -34,7 +34,7 @@ export function BuildingScreen() {
 
   return (
     <View style={styles.root}>
-      <StatusBar backgroundColor={colors.background} barStyle="light-content" />
+      <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <View style={styles.content}>
         <ScreenHeader helper={copy.building.helper} step={1} title={copy.building.title} />
         <View

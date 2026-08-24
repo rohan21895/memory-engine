@@ -1,3 +1,11 @@
+import {
+  Figtree_400Regular,
+  Figtree_500Medium,
+  Figtree_600SemiBold,
+  Figtree_700Bold,
+  Figtree_800ExtraBold,
+  useFonts,
+} from "@expo-google-fonts/figtree";
 import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useState } from "react";
@@ -19,6 +27,13 @@ import { WelcomeScreen } from "./src/ui/screens/WelcomeScreen";
 const WELCOME_SEEN_KEY = "photeo-welcome-seen-v1";
 
 export default function App() {
+  const [fontsLoaded, fontError] = useFonts({
+    Figtree_400Regular,
+    Figtree_500Medium,
+    Figtree_600SemiBold,
+    Figtree_700Bold,
+    Figtree_800ExtraBold,
+  });
   const [welcomeChecked, setWelcomeChecked] = useState(false);
   const [welcomeSeen, setWelcomeSeen] = useState(false);
   const [photos, setPhotos] = useState<PickedPhoto[]>([]);
@@ -96,10 +111,10 @@ export default function App() {
     [googleConfigured, pickGooglePhotos, processPhotos],
   );
 
-  if (!welcomeChecked) {
+  if ((!fontsLoaded && !fontError) || !welcomeChecked) {
     return (
       <View style={styles.root}>
-        <StatusBar style="light" />
+        <StatusBar style="dark" />
         <LoadingState helper={copy.states.safe} title={copy.states.preparing} />
       </View>
     );

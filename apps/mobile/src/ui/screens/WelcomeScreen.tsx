@@ -8,7 +8,7 @@ import { PrimaryButton } from "../components/PrimaryButton";
 export function WelcomeScreen({ onContinue }: { onContinue: () => void }) {
   return (
     <View style={styles.root}>
-      <StatusBar backgroundColor={colors.background} barStyle="light-content" />
+      <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <ScrollView
         contentContainerStyle={styles.scroll}
         contentInsetAdjustmentBehavior="automatic"
@@ -66,4 +66,3 @@ const styles = StyleSheet.create({
   top: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
   trust: { color: colors.gold, fontFamily: fonts.body, fontWeight: "600", ...typeScale.eyebrow },
 });
-

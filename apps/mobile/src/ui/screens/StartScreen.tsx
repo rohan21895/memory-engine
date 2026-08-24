@@ -42,7 +42,7 @@ export function StartScreen({
 
   return (
     <View style={styles.root}>
-      <StatusBar backgroundColor={colors.background} barStyle="light-content" />
+      <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <ScrollView
         contentContainerStyle={styles.scroll}
         contentInsetAdjustmentBehavior="automatic"

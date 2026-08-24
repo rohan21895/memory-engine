@@ -90,7 +90,7 @@ export function FilterScreen({
 
   return (
     <View style={styles.root}>
-      <StatusBar backgroundColor={colors.background} barStyle="light-content" />
+      <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <ScrollView
         contentContainerStyle={[
           styles.scrollContent,

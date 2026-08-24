@@ -10,22 +10,14 @@
       "com.photeo.app",
       "com.googleusercontent.apps.57259320253-m9j92su88vg5naql3405aesbgq7mmo9v"
     ],
-    "userInterfaceStyle": "dark",
-    "backgroundColor": "#141311",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#faf8f5",
     "plugins": [
       "expo-web-browser",
       "expo-secure-store",
       "expo-image",
       "expo-asset",
-      [
         "expo-font",
-        {
-          "fonts": [
-            "./assets/fonts/Fraunces.ttf",
-            "./assets/fonts/AtkinsonHyperlegibleNext.ttf"
-          ]
-        }
-      ],
       [
         "expo-location",
         {
@@ -50,7 +42,7 @@
     "android": {
       "package": "com.photeo.app",
       "adaptiveIcon": {
-        "backgroundColor": "#141311",
+          "backgroundColor": "#faf8f5",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"

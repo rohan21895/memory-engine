@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@expo-google-fonts/figtree": "^0.4.1",
     "@infinitered/react-native-mlkit-core": "^5.0.0",
     "@infinitered/react-native-mlkit-face-detection": "^5.0.0",
     "@react-native-google-signin/google-signin": "^16.1.4",

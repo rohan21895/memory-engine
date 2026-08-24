@@ -177,7 +177,7 @@ export default function ReviewScreen({
 
   return (
     <View style={styles.root}>
-      <StatusBar backgroundColor={colors.background} barStyle="light-content" />
+      <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <View style={styles.header}>
         <ScreenHeader
           backHint={copy.review.backHint}
