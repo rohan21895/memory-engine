@@ -41,51 +41,54 @@ export function AlbumsScreen({
   onOpenShared: (album: SharedAlbumPreview) => void;
 }) {
   return (
-    <ScrollView contentContainerStyle={styles.scroll} contentInsetAdjustmentBehavior="automatic">
-      <View style={styles.header}>
-        <Text accessibilityRole="header" style={styles.title}>Albums</Text>
-        <View style={styles.avatar}><Text style={styles.avatarText}>P</Text></View>
-      </View>
-      {albums.length > 0 ? (
-        <>
-          <PrimaryButton accessibilityHint="Starts the album photo picker" label="＋ Create new album" onPress={onCreate} />
-          <Text style={styles.note}>Takes about a minute. Stays on your phone.</Text>
-          <View style={styles.grid}>
-            {albums.map((album) => (
-              <Pressable accessibilityRole="button" key={album.id} onPress={() => onOpen(album)} style={({ pressed }) => [styles.albumCard, pressed ? styles.pressed : null]}>
-                <Image cachePolicy="memory-disk" contentFit="cover" source={album.coverUri} style={styles.cover} transition={120} />
-                <Text numberOfLines={1} style={styles.albumTitle}>{album.title}</Text>
-                <Text style={styles.albumMeta}>{albumMeta(album)}</Text>
-              </Pressable>
-            ))}
-          </View>
-          <View style={styles.sharedHeading}><Text style={styles.sharedTitle}>Shared with you</Text><Text style={styles.sharedNote}>from other Photeo phones</Text></View>
-          <View style={styles.sharedList}>
-            {sharedAlbumPreviews.map((album) => (
-              <Pressable accessibilityRole="button" key={album.id} onPress={() => onOpenShared(album)} style={({ pressed }) => [styles.sharedCard, pressed ? styles.pressed : null]}>
-                <View style={[styles.sharedCover, { backgroundColor: album.color }]}>
-                  <View style={styles.sharedGlow} />
-                  <Text style={styles.sharedInitial}>{album.sharedBy.slice(0, 1)}</Text>
-                </View>
-                <View style={styles.sharedCopy}>
-                  <Text numberOfLines={1} style={styles.albumTitle}>{album.title}</Text>
-                  <Text style={styles.albumMeta}>Shared by {album.sharedBy} · {album.photoCount} photos</Text>
-                </View>
-                <Text style={styles.chevron}>›</Text>
-              </Pressable>
-            ))}
-          </View>
-        </>
-      ) : (
-        <View style={styles.empty}>
-          <View style={styles.emptyMark}><View style={styles.emptyPaper} /></View>
-          <Text style={styles.emptyTitle}>No albums yet</Text>
-          <Text style={styles.emptyCopy}>Make your first one. Pick a few photos and Photeo does the rest.</Text>
-          <View style={styles.emptyAction}><PrimaryButton accessibilityHint="Starts the album photo picker" label="Create new album" onPress={onCreate} /></View>
+    <View style={styles.root}>
+      <ScrollView contentContainerStyle={styles.scroll} contentInsetAdjustmentBehavior="automatic">
+        <View style={styles.header}>
+          <Text accessibilityRole="header" style={styles.title}>Albums</Text>
+          <View style={styles.avatar}><Text style={styles.avatarText}>P</Text></View>
         </View>
-      )}
-      {message ? <Text accessibilityLiveRegion="polite" style={styles.error}>{message}</Text> : null}
-    </ScrollView>
+        {albums.length > 0 ? (
+          <>
+            <View style={styles.grid}>
+              {albums.map((album) => (
+                <Pressable accessibilityRole="button" key={album.id} onPress={() => onOpen(album)} style={({ pressed }) => [styles.albumCard, pressed ? styles.pressed : null]}>
+                  <Image cachePolicy="memory-disk" contentFit="cover" source={album.coverUri} style={styles.cover} transition={120} />
+                  <Text numberOfLines={1} style={styles.albumTitle}>{album.title}</Text>
+                  <Text style={styles.albumMeta}>{albumMeta(album)}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <View style={styles.sharedHeading}><Text style={styles.sharedTitle}>Shared with you</Text><Text style={styles.sharedNote}>from other Photeo phones</Text></View>
+            <View style={styles.sharedList}>
+              {sharedAlbumPreviews.map((album) => (
+                <Pressable accessibilityRole="button" key={album.id} onPress={() => onOpenShared(album)} style={({ pressed }) => [styles.sharedCard, pressed ? styles.pressed : null]}>
+                  <View style={[styles.sharedCover, { backgroundColor: album.color }]}>
+                    <View style={styles.sharedGlow} />
+                    <Text style={styles.sharedInitial}>{album.sharedBy.slice(0, 1)}</Text>
+                  </View>
+                  <View style={styles.sharedCopy}>
+                    <Text numberOfLines={1} style={styles.albumTitle}>{album.title}</Text>
+                    <Text style={styles.albumMeta}>Shared by {album.sharedBy} · {album.photoCount} photos</Text>
+                  </View>
+                  <Text style={styles.chevron}>›</Text>
+                </Pressable>
+              ))}
+            </View>
+          </>
+        ) : (
+          <View style={styles.empty}>
+            <View style={styles.emptyMark}><View style={styles.emptyPaper} /></View>
+            <Text style={styles.emptyTitle}>No albums yet</Text>
+            <Text style={styles.emptyCopy}>Make your first one. Pick a few photos and Photeo does the rest.</Text>
+          </View>
+        )}
+        {message ? <Text accessibilityLiveRegion="polite" style={styles.error}>{message}</Text> : null}
+      </ScrollView>
+      <View style={styles.footer}>
+        <PrimaryButton accessibilityHint="Starts the album photo picker" label="＋ Create new album" onPress={onCreate} />
+        <Text style={styles.note}>Takes about a minute. Stays on your phone.</Text>
+      </View>
+    </View>
   );
 }
 
@@ -97,17 +100,18 @@ const styles = StyleSheet.create({
   avatarText: { color: colors.onAccent, fontFamily: fonts.bold, ...typeScale.small },
   cover: { aspectRatio: 1, backgroundColor: colors.quietSurface, borderCurve: "continuous", borderRadius: radii.md, width: "100%" },
   empty: { alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.sm, paddingTop: spacing.xxl },
-  emptyAction: { paddingTop: spacing.sm, width: 240 },
   emptyCopy: { color: colors.muted, fontFamily: fonts.regular, textAlign: "center", ...typeScale.body },
   emptyMark: { alignItems: "center", backgroundColor: colors.quietSurface, borderCurve: "continuous", borderRadius: 26, height: 96, justifyContent: "center", width: 96 },
   emptyPaper: { backgroundColor: "#ddd7cc", borderCurve: "continuous", borderRadius: 12, height: 40, width: 40 },
   emptyTitle: { color: colors.text, fontFamily: fonts.extraBold, ...typeScale.subtitle },
   error: { color: colors.error, fontFamily: fonts.medium, textAlign: "center", ...typeScale.small },
+  footer: { backgroundColor: "rgba(250,248,245,0.97)", borderTopColor: colors.hairline, borderTopWidth: 1, bottom: 0, left: 0, paddingBottom: spacing.sm, paddingHorizontal: layout.screenPadding, paddingTop: spacing.sm, position: "absolute", right: 0 },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 14, paddingTop: spacing.md },
   header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingBottom: spacing.xs },
   note: { color: colors.muted, fontFamily: fonts.regular, textAlign: "center", ...typeScale.small },
   pressed: { opacity: 0.72, transform: [{ scale: 0.985 }] },
-  scroll: { paddingBottom: spacing.xxl, paddingHorizontal: layout.screenPadding, paddingTop: (StatusBar.currentHeight ?? 24) + spacing.md },
+  root: { backgroundColor: colors.background, flex: 1 },
+  scroll: { paddingBottom: 126, paddingHorizontal: layout.screenPadding, paddingTop: (StatusBar.currentHeight ?? 24) + spacing.md },
   sharedHeading: { alignItems: "baseline", flexDirection: "row", gap: spacing.xs, paddingTop: spacing.lg },
   sharedList: { gap: spacing.sm, paddingTop: spacing.sm },
   sharedCard: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderRadius: radii.md, borderWidth: 1, flexDirection: "row", gap: spacing.sm, padding: spacing.sm },
