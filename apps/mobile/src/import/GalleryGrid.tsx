@@ -339,9 +339,9 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
       };
       await loadIndex();
       refreshPlaces();
-      setIndexing(true);
       void buildIndex({
         onProgress: (done, total) => {
+          setIndexing(true);
           refreshPlaces();
           setIndexPct(total > 0 ? Math.min(1, done / total) : null);
         },

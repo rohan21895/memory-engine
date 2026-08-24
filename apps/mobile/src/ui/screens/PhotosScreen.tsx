@@ -32,7 +32,6 @@ import {
   loadIndex,
   type PlaceSummary,
 } from "../../import/photo-index";
-import { probeFaceIdentityModel } from "../../ml/facenet";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
@@ -129,13 +128,18 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
           setStatus("denied");
           return;
         }
-        void probeFaceIdentityModel();
         await Promise.all([loadIndex(), loadFaceIndex()]);
         if (!active) return;
         refreshIndexes();
         loadingPage.current = true;
         setStatus("ready");
         void buildIndex({ onProgress: refreshIndexes }).then(refreshIndexes).catch(() => undefined);
+        void buildFaceIndex({
+          onProgress: () => {
+            setScanningPeople(true);
+            setPeople(getPeople());
+          },
+        }).then(() => setPeople(getPeople())).catch(() => undefined).finally(() => setScanningPeople(false));
       } catch {
         if (active) setStatus("error");
       }

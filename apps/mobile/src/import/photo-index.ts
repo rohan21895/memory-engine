@@ -2,6 +2,8 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as Location from "expo-location";
 import * as MediaLibrary from "expo-media-library/legacy";
 
+import { incrementalScanTarget } from "./incremental-index";
+
 const INDEX_VERSION = 2;
 const INDEX_FILENAME = "photo-location-date-index.json";
 const PAGE_SIZE = 200;
@@ -428,8 +430,29 @@ async function runBuild(opts: BuildIndexOptions): Promise<void> {
   try {
     await loadIndex();
 
+    let incrementalTarget: number | null = null;
     if (index.scanComplete) {
-      index.scanGeneration += 1;
+      let head: MediaLibrary.PagedInfo<MediaLibrary.Asset>;
+      try {
+        head = await MediaLibrary.getAssetsAsync({
+          first: PAGE_SIZE,
+          mediaType: [MediaLibrary.MediaType.photo],
+          sortBy: [MediaLibrary.SortBy.creationTime],
+        });
+      } catch {
+        return;
+      }
+      const indexed = Object.keys(index.assets).length;
+      incrementalTarget = incrementalScanTarget(
+        head.totalCount,
+        indexed,
+        head.assets.map((asset) => asset.id),
+        (assetId) => Object.hasOwn(index.assets, assetId),
+      );
+      index.total = head.totalCount;
+      if (incrementalTarget === 0) {
+        return;
+      }
       index.scanComplete = false;
       index.cursor = null;
       await persistIndex();
@@ -437,9 +460,11 @@ async function runBuild(opts: BuildIndexOptions): Promise<void> {
 
     let hasNextPage = true;
     let after = index.cursor ?? undefined;
+    let newlyIndexed = 0;
+    let targetReached = false;
     opts.onProgress?.(seenCount(), index.total);
 
-    while (hasNextPage) {
+    while (hasNextPage && !targetReached) {
       let page: MediaLibrary.PagedInfo<MediaLibrary.Asset>;
       try {
         page = await MediaLibrary.getAssetsAsync({
@@ -456,10 +481,20 @@ async function runBuild(opts: BuildIndexOptions): Promise<void> {
       index.total = page.totalCount;
       for (let start = 0; start < page.assets.length; start += INFO_BATCH_SIZE) {
         const batch = page.assets.slice(start, start + INFO_BATCH_SIZE);
+        newlyIndexed += batch.filter(
+          (asset) => !Object.hasOwn(index.assets, asset.id),
+        ).length;
         await processBatch(batch);
         await persistIndex();
-        opts.onProgress?.(seenCount(), index.total);
+        opts.onProgress?.(Object.keys(index.assets).length, index.total);
         await yieldToEventLoop();
+        if (
+          incrementalTarget !== null &&
+          newlyIndexed >= incrementalTarget
+        ) {
+          targetReached = true;
+          break;
+        }
       }
 
       after = page.endCursor;
@@ -475,9 +510,8 @@ async function runBuild(opts: BuildIndexOptions): Promise<void> {
     rebuildGroupsAfterCompletedScan();
     index.cursor = null;
     index.scanComplete = true;
-    index.total = Object.keys(index.assets).length;
     await persistIndex();
-    opts.onProgress?.(index.total, index.total);
+    opts.onProgress?.(Object.keys(index.assets).length, index.total);
   } catch {
     await persistIndex();
   }

@@ -32,7 +32,9 @@ import {
   type SavedAlbum,
 } from "./src/albums/album-store";
 import { buildAlbum } from "./src/build-album";
+import { buildFaceIndex, loadFaceIndex } from "./src/faces/face-index";
 import GalleryGrid from "./src/import/GalleryGrid";
+import { buildIndex, loadIndex } from "./src/import/photo-index";
 import type { PickedPhoto } from "./src/import/picked-photo";
 import FinalAlbum, { type FinalPhoto } from "./src/review/FinalAlbum";
 import type { ReviewData } from "./src/review/mock-data";
@@ -168,6 +170,15 @@ function PhoteoApp() {
 
   useEffect(() => {
     void loadAlbums().then(setSavedAlbums).catch(() => setSavedAlbums([]));
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      await Promise.all([loadIndex(), loadFaceIndex()]);
+      const permission = await MediaLibrary.getPermissionsAsync();
+      if (permission.status !== "granted") return;
+      await Promise.all([buildIndex(), buildFaceIndex()]);
+    })().catch(() => undefined);
   }, []);
 
   const finishGate = useCallback(() => {

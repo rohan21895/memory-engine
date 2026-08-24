@@ -7,6 +7,8 @@ import { DEFAULT_PERCEPTUAL_THRESHOLD, clusterFaces, cosine, extendFaceClusters 
 import { detectFaces, isFaceDetectionAvailable, type FaceBox } from "./face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { embedFaceIdentity } from "../ml/facenet.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { incrementalScanTarget } from "../import/incremental-index.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
 // v4 invalidates v3's perceptual-only checkpoints so assets scanned before the
@@ -728,19 +730,43 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
       return;
     }
 
+    const mediaLibrary = await import("expo-media-library/legacy");
+    let incrementalTarget: number | null = null;
     if (index.scanComplete) {
+      let head: Awaited<ReturnType<typeof mediaLibrary.getAssetsAsync>>;
+      try {
+        head = await mediaLibrary.getAssetsAsync({
+          first: PAGE_SIZE,
+          mediaType: [mediaLibrary.MediaType.photo],
+          sortBy: [mediaLibrary.SortBy.creationTime],
+        });
+      } catch {
+        return;
+      }
+      const processed = Object.keys(index.processedAssetIds).length;
+      incrementalTarget = incrementalScanTarget(
+        head.totalCount,
+        processed,
+        head.assets.map((asset) => asset.id),
+        (assetId) => Object.hasOwn(index.processedAssetIds, assetId),
+      );
+      index.total = head.totalCount;
+      if (incrementalTarget === 0) {
+        logEmbeddingPath("hydrated");
+        return;
+      }
       index.cursor = null;
       index.scanComplete = false;
-      index.seenAssetIds = {};
       await persistFaceIndex();
     }
 
-    const mediaLibrary = await import("expo-media-library/legacy");
     let after = index.cursor ?? undefined;
     let hasNextPage = true;
+    let newlyProcessed = 0;
+    let targetReached = false;
     opts.onProgress?.(seenCount(), index.total);
 
-    while (hasNextPage) {
+    while (hasNextPage && !targetReached) {
       let page: Awaited<ReturnType<typeof mediaLibrary.getAssetsAsync>>;
       try {
         page = await mediaLibrary.getAssetsAsync({
@@ -760,6 +786,7 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
         const pending = batch.filter(
           (asset) => !Object.hasOwn(index.processedAssetIds, asset.id),
         );
+        newlyProcessed += pending.length;
         const faceCropCandidates: Array<{
           observation: FaceObservation;
           cropUri: string;
@@ -784,6 +811,13 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
         await persistFaceIndex();
         opts.onProgress?.(Math.min(seenCount(), index.total), index.total);
         await yieldToEventLoop();
+        if (
+          incrementalTarget !== null &&
+          newlyProcessed >= incrementalTarget
+        ) {
+          targetReached = true;
+          break;
+        }
       }
 
       after = page.endCursor;
