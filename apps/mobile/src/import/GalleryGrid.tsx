@@ -19,9 +19,11 @@ import {
 
 import type { PickedPhoto } from "./picked-photo";
 import {
-  assetIdsForPlace,
+  assetIdsForCity,
+  assetIdsForCountry,
   buildIndex,
-  getPlaces,
+  getCities,
+  getCountries,
   loadIndex,
   type PlaceSummary,
 } from "./photo-index";
@@ -99,8 +101,10 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const [albums, setAlbums] = useState<AlbumChip[]>([]);
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
   const [albumId, setAlbumId] = useState<string | null>(null);
-  const [places, setPlaces] = useState<PlaceSummary[]>([]);
-  const [placeId, setPlaceId] = useState<string | null>(null);
+  const [countries, setCountries] = useState<PlaceSummary[]>([]);
+  const [cities, setCities] = useState<PlaceSummary[]>([]);
+  // One active location filter at a time; id is prefixed "city:" or "country:".
+  const [locId, setLocId] = useState<string | null>(null);
   const [indexPct, setIndexPct] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -113,12 +117,15 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   assetsRef.current = assets;
   const listRef = useRef<FlashListRef<MediaLibrary.Asset>>(null);
 
-  // Active place filter → set of asset ids. Place isn't a MediaStore query
-  // option, so we filter each fetched page client-side against this set.
-  const placeSet = useMemo(
-    () => (placeId ? new Set(assetIdsForPlace(placeId)) : null),
-    [placeId],
-  );
+  // Active location filter → set of asset ids. Location isn't a MediaStore
+  // query option, so we filter each fetched page client-side against this set.
+  const placeSet = useMemo(() => {
+    if (!locId) return null;
+    const ids = locId.startsWith("country:")
+      ? assetIdsForCountry(locId)
+      : assetIdsForCity(locId);
+    return new Set(ids);
+  }, [locId]);
   const placeSetRef = useRef<Set<string> | null>(null);
   placeSetRef.current = placeSet;
 
@@ -195,15 +202,19 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
 
       // Background location index: hydrate any prior scan, show its places
       // immediately, then keep scanning and refresh the chips as places appear.
+      const refreshPlaces = () => {
+        setCountries(getCountries());
+        setCities(getCities());
+      };
       await loadIndex();
-      setPlaces(getPlaces());
+      refreshPlaces();
       void buildIndex({
         onProgress: (done, total) => {
-          setPlaces(getPlaces());
+          refreshPlaces();
           setIndexPct(total > 0 ? Math.min(1, done / total) : null);
         },
       }).finally(() => {
-        setPlaces(getPlaces());
+        refreshPlaces();
         setIndexPct(null);
       });
     })();
@@ -212,7 +223,7 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   useEffect(() => {
     if (status !== "ready") return;
     void reload();
-  }, [status, datePreset, albumId, placeId, reload]);
+  }, [status, datePreset, albumId, locId, reload]);
 
   useEffect(() => {
     const m = seenAssets.current;
@@ -480,15 +491,33 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
             </Pressable>
           );
         })}
-        {places.length > 0 || indexPct !== null ? (
+        {countries.length > 0 || cities.length > 0 || indexPct !== null ? (
           <View style={styles.divider} />
         ) : null}
-        {places.map((p) => {
-          const on = placeId === p.id;
+        {countries.map((p) => {
+          const on = locId === p.id;
           return (
             <Pressable
               key={p.id}
-              onPress={() => setPlaceId(on ? null : p.id)}
+              onPress={() => setLocId(on ? null : p.id)}
+              style={[styles.chip, on && styles.chipOn]}
+            >
+              <Text style={[styles.chipText, on && styles.chipTextOn]}>
+                {p.name}
+                {p.count ? ` ${p.count}` : ""}
+              </Text>
+            </Pressable>
+          );
+        })}
+        {countries.length > 0 && cities.length > 0 ? (
+          <View style={styles.divider} />
+        ) : null}
+        {cities.map((p) => {
+          const on = locId === p.id;
+          return (
+            <Pressable
+              key={p.id}
+              onPress={() => setLocId(on ? null : p.id)}
               style={[styles.chip, on && styles.chipOn]}
             >
               <Text style={[styles.chipText, on && styles.chipTextOn]}>

@@ -2,12 +2,13 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as Location from "expo-location";
 import * as MediaLibrary from "expo-media-library/legacy";
 
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;
 const INDEX_FILENAME = "photo-location-date-index.json";
 const PAGE_SIZE = 200;
 const INFO_BATCH_SIZE = 20;
 const COORDINATE_DECIMALS = 2;
-const UNKNOWN_PLACE = "Unknown place";
+const UNKNOWN_CITY = "Unknown place";
+const UNKNOWN_COUNTRY = "Unknown country";
 
 const MONTH_NAMES = [
   "January",
@@ -26,11 +27,12 @@ const MONTH_NAMES = [
 
 type AssetIndexEntry = {
   monthId: string | null;
-  placeId: string | null;
+  cityId: string | null;
+  countryId: string | null;
   seenInScan: number;
 };
 
-type PlaceEntry = {
+type GroupEntry = {
   name: string;
   assetIds: string[];
 };
@@ -40,12 +42,17 @@ type MonthEntry = {
   assetIds: string[];
 };
 
+// Resolved place names for a rounded coordinate cell. Cached per cell so the
+// geocoder is called once per ~1km area regardless of how many photos share it.
+type GeoNames = { cityId: string; cityName: string; countryId: string; countryName: string };
+
 type PersistedIndex = {
   version: typeof INDEX_VERSION;
   assets: Record<string, AssetIndexEntry>;
-  places: Record<string, PlaceEntry>;
+  cities: Record<string, GroupEntry>;
+  countries: Record<string, GroupEntry>;
   months: Record<string, MonthEntry>;
-  geocodeCache: Record<string, string>;
+  geocodeCache: Record<string, GeoNames>;
   cursor: string | null;
   scanGeneration: number;
   scanComplete: boolean;
@@ -53,6 +60,8 @@ type PersistedIndex = {
 };
 
 export type PlaceSummary = { id: string; name: string; count: number };
+export type CitySummary = PlaceSummary;
+export type CountrySummary = PlaceSummary;
 export type MonthSummary = { id: string; label: string; count: number };
 export type PhotoIndexStatus = { indexed: number; total: number };
 export type BuildIndexOptions = {
@@ -63,7 +72,8 @@ function emptyIndex(): PersistedIndex {
   return {
     version: INDEX_VERSION,
     assets: {},
-    places: {},
+    cities: {},
+    countries: {},
     months: {},
     geocodeCache: {},
     cursor: null,
@@ -94,7 +104,8 @@ function parseIndex(contents: string): PersistedIndex | null {
       !isRecord(parsed) ||
       parsed.version !== INDEX_VERSION ||
       !isRecord(parsed.assets) ||
-      !isRecord(parsed.places) ||
+      !isRecord(parsed.cities) ||
+      !isRecord(parsed.countries) ||
       !isRecord(parsed.months) ||
       !isRecord(parsed.geocodeCache) ||
       typeof parsed.scanGeneration !== "number" ||
@@ -205,16 +216,36 @@ function coordinateCell(location: {
   };
 }
 
-function bestPlaceName(
+function slug(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+// Resolve a geocoded address into a city-tier name and a country-tier name.
+// City prefers city → subregion → region; country prefers country → isoCode.
+function namesFromAddress(
   address: Awaited<ReturnType<typeof Location.reverseGeocodeAsync>>[number],
-): string {
-  return (
+): GeoNames {
+  const cityName =
     address.city?.trim() ||
     address.subregion?.trim() ||
     address.region?.trim() ||
-    UNKNOWN_PLACE
-  );
+    UNKNOWN_CITY;
+  const countryName =
+    address.country?.trim() || address.isoCountryCode?.trim() || UNKNOWN_COUNTRY;
+  return {
+    cityName,
+    cityId: cityName === UNKNOWN_CITY ? "" : `city:${slug(cityName)}`,
+    countryName,
+    countryId: countryName === UNKNOWN_COUNTRY ? "" : `country:${slug(countryName)}`,
+  };
 }
+
+const UNKNOWN_NAMES: GeoNames = {
+  cityId: "",
+  cityName: UNKNOWN_CITY,
+  countryId: "",
+  countryName: UNKNOWN_COUNTRY,
+};
 
 async function geocodeCell(cell: {
   id: string;
@@ -225,53 +256,64 @@ async function geocodeCell(cell: {
     return;
   }
 
-  let name = UNKNOWN_PLACE;
+  let names = UNKNOWN_NAMES;
   try {
     const addresses = await Location.reverseGeocodeAsync({
       latitude: cell.latitude,
       longitude: cell.longitude,
     });
     if (addresses[0]) {
-      name = bestPlaceName(addresses[0]);
+      names = namesFromAddress(addresses[0]);
     }
   } catch {
-    // Offline or unavailable geocoding still produces a queryable place cell.
+    // Offline or unavailable geocoding still records the cell (as unknown).
   }
-  index.geocodeCache[cell.id] = name;
+  index.geocodeCache[cell.id] = names;
+}
+
+function addToGroup(
+  groups: Record<string, GroupEntry>,
+  id: string,
+  name: string,
+  assetId: string,
+): void {
+  const entry = groups[id] ?? { name, assetIds: [] };
+  if (!entry.assetIds.includes(assetId)) {
+    entry.assetIds.push(assetId);
+  }
+  // Keep the first non-unknown name we saw for the group.
+  if (entry.name.startsWith("Unknown") && !name.startsWith("Unknown")) {
+    entry.name = name;
+  }
+  groups[id] = entry;
 }
 
 function addAssetToIndex(
   asset: MediaLibrary.Asset,
   month: ReturnType<typeof monthForAsset>,
-  placeId: string | null,
+  names: GeoNames | null,
 ): void {
+  const cityId = names?.cityId || null;
+  const countryId = names?.countryId || null;
+
   index.assets[asset.id] = {
     monthId: month?.id ?? null,
-    placeId,
+    cityId,
+    countryId,
     seenInScan: index.scanGeneration,
   };
 
   if (month) {
-    const entry = index.months[month.id] ?? {
-      label: month.label,
-      assetIds: [],
-    };
+    const entry = index.months[month.id] ?? { label: month.label, assetIds: [] };
     if (!entry.assetIds.includes(asset.id)) {
       entry.assetIds.push(asset.id);
     }
     index.months[month.id] = entry;
   }
 
-  if (placeId) {
-    const entry = index.places[placeId] ?? {
-      name: index.geocodeCache[placeId] ?? UNKNOWN_PLACE,
-      assetIds: [],
-    };
-    if (!entry.assetIds.includes(asset.id)) {
-      entry.assetIds.push(asset.id);
-    }
-    index.places[placeId] = entry;
-  }
+  if (cityId && names) addToGroup(index.cities, cityId, names.cityName, asset.id);
+  if (countryId && names)
+    addToGroup(index.countries, countryId, names.countryName, asset.id);
 }
 
 async function processBatch(assets: MediaLibrary.Asset[]): Promise<void> {
@@ -298,7 +340,8 @@ async function processBatch(assets: MediaLibrary.Asset[]): Promise<void> {
   await Promise.all(Array.from(cells.values(), geocodeCell));
 
   for (const { asset, cell } of resolved) {
-    addAssetToIndex(asset, monthForAsset(asset), cell?.id ?? null);
+    const names = cell ? index.geocodeCache[cell.id] ?? null : null;
+    addAssetToIndex(asset, monthForAsset(asset), names);
   }
 
   for (const asset of assets) {
@@ -323,16 +366,20 @@ function rebuildGroupsAfterCompletedScan(): void {
   );
   index.assets = Object.fromEntries(currentAssets);
 
-  const places: Record<string, PlaceEntry> = {};
+  const cities: Record<string, GroupEntry> = {};
+  const countries: Record<string, GroupEntry> = {};
   const months: Record<string, MonthEntry> = {};
   for (const [assetId, asset] of currentAssets) {
-    if (asset.placeId) {
-      const place = places[asset.placeId] ?? {
-        name: index.geocodeCache[asset.placeId] ?? UNKNOWN_PLACE,
-        assetIds: [],
-      };
-      place.assetIds.push(assetId);
-      places[asset.placeId] = place;
+    if (asset.cityId) {
+      addToGroup(cities, asset.cityId, index.cities[asset.cityId]?.name ?? UNKNOWN_CITY, assetId);
+    }
+    if (asset.countryId) {
+      addToGroup(
+        countries,
+        asset.countryId,
+        index.countries[asset.countryId]?.name ?? UNKNOWN_COUNTRY,
+        assetId,
+      );
     }
     if (asset.monthId) {
       const [year, month] = asset.monthId.split("-");
@@ -345,7 +392,8 @@ function rebuildGroupsAfterCompletedScan(): void {
       months[asset.monthId] = monthEntry;
     }
   }
-  index.places = places;
+  index.cities = cities;
+  index.countries = countries;
   index.months = months;
 }
 
@@ -427,18 +475,29 @@ export function buildIndex(opts: BuildIndexOptions = {}): Promise<void> {
   return activeBuild;
 }
 
-export function getPlaces(): PlaceSummary[] {
-  return Object.entries(index.places)
-    .map(([id, place]) => ({
-      id,
-      name: place.name,
-      count: place.assetIds.length,
-    }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+function summaries(groups: Record<string, GroupEntry>): PlaceSummary[] {
+  return Object.entries(groups)
+    .map(([id, group]) => ({ id, name: group.name, count: group.assetIds.length }))
+    .sort(
+      (a, b) =>
+        b.count - a.count || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+    );
 }
 
-export function assetIdsForPlace(placeId: string): string[] {
-  return index.places[placeId]?.assetIds.slice() ?? [];
+export function getCities(): CitySummary[] {
+  return summaries(index.cities);
+}
+
+export function assetIdsForCity(cityId: string): string[] {
+  return index.cities[cityId]?.assetIds.slice() ?? [];
+}
+
+export function getCountries(): CountrySummary[] {
+  return summaries(index.countries);
+}
+
+export function assetIdsForCountry(countryId: string): string[] {
+  return index.countries[countryId]?.assetIds.slice() ?? [];
 }
 
 export function getMonths(): MonthSummary[] {
