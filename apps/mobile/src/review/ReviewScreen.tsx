@@ -14,7 +14,7 @@ import {
 } from "../ui";
 import Lightbox, { type LightboxItem, type LightboxMode } from "./Lightbox";
 import { SwapSheet } from "./SwapSheet";
-import mockReviewData, {
+import {
   type ReviewAlternative,
   type ReviewData,
   type ReviewMedia,
@@ -58,14 +58,14 @@ function alternativeItems(selected: ReviewSelected): LightboxItem[] {
 }
 
 export default function ReviewScreen({
-  data = mockReviewData,
+  data,
   onBack,
   onFinalize,
 }: {
-  data?: ReviewData;
+  data: ReviewData;
   onBack?: () => void;
   onFinalize?: (photos: { media_id: string; uri: string; page: number }[]) => void;
-} = {}) {
+}) {
   const [swaps, setSwaps] = useState<Swaps>({});
   const [removed, setRemoved] = useState<Set<string>>(new Set());
   const [added, setAdded] = useState<Set<string>>(new Set());
