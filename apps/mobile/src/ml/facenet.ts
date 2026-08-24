@@ -1,6 +1,8 @@
 import { decode as decodeJpeg } from "jpeg-js";
 
 import type { FaceBox } from "../faces/face-detector";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { bundledTfliteSource } from "./bundled-tflite.ts";
 
 const INPUT_SIZE = 112;
 const EMBEDDING_SIZE = 192;
@@ -87,7 +89,9 @@ async function loadModel(): Promise<TensorflowModel | undefined> {
           "react-native-fast-tflite"
         );
         // Static require is required so Metro packages the graph in the APK.
-        const source = require("../../assets/models/mobilefacenet-192-float32.tflite");
+        const source = await bundledTfliteSource(
+          require("../../assets/models/mobilefacenet-192-float32.tflite") as number,
+        );
         const model = (await loadTensorflowModel(source, [])) as TensorflowModel;
         if (!loadDiagnosticWritten) {
           loadDiagnosticWritten = true;

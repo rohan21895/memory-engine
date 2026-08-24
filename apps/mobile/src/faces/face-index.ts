@@ -11,9 +11,9 @@ import { embedFaceIdentity } from "../ml/facenet.ts";
 import { incrementalScanTarget } from "../import/incremental-index.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
-// v4 invalidates v3's perceptual-only checkpoints so assets scanned before the
-// bundled MobileFaceNet runtime landed are re-embedded once with identity data.
-const INDEX_VERSION = 4;
+// v5 invalidates perceptual-only checkpoints (including v4 builds affected by
+// fast-tflite's Android bare-resource URI bug) so identity is rebuilt once.
+const INDEX_VERSION = 5;
 const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;

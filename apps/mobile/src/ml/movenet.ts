@@ -1,4 +1,6 @@
 import type { PoseKeypoint } from "../selection/pose";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { bundledTfliteSource } from "./bundled-tflite.ts";
 
 const INPUT_SIZE = 192;
 const KEYPOINT_COUNT = 17;
@@ -56,7 +58,9 @@ async function loadModel(): Promise<TensorflowModel | undefined> {
           "react-native-fast-tflite"
         );
         // Static require is required so Metro includes the model in the APK.
-        const source = require("../../assets/models/movenet-singlepose-lightning-int8.tflite");
+        const source = await bundledTfliteSource(
+          require("../../assets/models/movenet-singlepose-lightning-int8.tflite") as number,
+        );
         return (await loadTensorflowModel(source, [])) as TensorflowModel;
       } catch {
         return undefined;

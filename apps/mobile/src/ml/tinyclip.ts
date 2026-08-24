@@ -1,3 +1,6 @@
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { bundledTfliteSource } from "./bundled-tflite.ts";
+
 const INPUT_SIZE = 224;
 const EMBEDDING_SIZE = 512;
 const BASE64_ALPHABET =
@@ -77,7 +80,9 @@ async function loadModel(): Promise<TensorflowModel | undefined> {
         const { loadTensorflowModel } = await import(
           "react-native-fast-tflite"
         );
-        const source = require("../../assets/models/tinyclip-vit-8m16-image-float32.tflite");
+        const source = await bundledTfliteSource(
+          require("../../assets/models/tinyclip-vit-8m16-image-float32.tflite") as number,
+        );
         return (await loadTensorflowModel(source, [])) as TensorflowModel;
       } catch {
         return undefined;
