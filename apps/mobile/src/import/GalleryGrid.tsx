@@ -18,6 +18,13 @@ import {
 } from "react-native-gesture-handler";
 
 import type { PickedPhoto } from "./picked-photo";
+import {
+  assetIdsForPlace,
+  buildIndex,
+  getPlaces,
+  loadIndex,
+  type PlaceSummary,
+} from "./photo-index";
 
 const C = {
   bg: "#141311",
@@ -33,6 +40,8 @@ const PAGE = 150;
 const COLS = 3;
 const GAP = 3;
 const SELECT_ALL_CAP = 3000;
+const BURST_TARGET = 60; // visible assets to gather per fetch burst
+const BURST_PAGE_CAP = 400; // safety: stop after this many pages in one burst
 const EDGE = 96; // px zone at top/bottom of the grid that triggers auto-scroll
 const AUTO_STEP = 30; // px per tick while auto-scrolling
 
@@ -90,6 +99,9 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   const [albums, setAlbums] = useState<AlbumChip[]>([]);
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
   const [albumId, setAlbumId] = useState<string | null>(null);
+  const [places, setPlaces] = useState<PlaceSummary[]>([]);
+  const [placeId, setPlaceId] = useState<string | null>(null);
+  const [indexPct, setIndexPct] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
   const cursor = useRef<string | undefined>(undefined);
@@ -101,6 +113,19 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   assetsRef.current = assets;
   const listRef = useRef<FlashListRef<MediaLibrary.Asset>>(null);
 
+  // Active place filter → set of asset ids. Place isn't a MediaStore query
+  // option, so we filter each fetched page client-side against this set.
+  const placeSet = useMemo(
+    () => (placeId ? new Set(assetIdsForPlace(placeId)) : null),
+    [placeId],
+  );
+  const placeSetRef = useRef<Set<string> | null>(null);
+  placeSetRef.current = placeSet;
+
+  // Every asset we've ever loaded, so a selection made under one filter still
+  // resolves to a real asset after the user switches filters and confirms.
+  const seenAssets = useRef<Map<string, MediaLibrary.Asset>>(new Map());
+
   const queryOpts = useCallback(
     (): MediaLibrary.AssetsOptions => ({
       mediaType: [MediaLibrary.MediaType.photo],
@@ -111,31 +136,46 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
     [datePreset, albumId],
   );
 
+  // Page until we've gathered ~TARGET visible assets. Without a place filter
+  // this returns after one page; with a sparse place filter it keeps paging
+  // (guarded) so the grid actually fills instead of showing a few stragglers.
+  const fetchBurst = useCallback(async (): Promise<MediaLibrary.Asset[]> => {
+    const set = placeSetRef.current;
+    const fresh: MediaLibrary.Asset[] = [];
+    let guard = 0;
+    while (hasNext.current && fresh.length < BURST_TARGET && guard < BURST_PAGE_CAP) {
+      guard += 1;
+      const page = await MediaLibrary.getAssetsAsync({
+        first: PAGE,
+        after: cursor.current,
+        ...queryOpts(),
+      });
+      cursor.current = page.endCursor;
+      hasNext.current = page.hasNextPage;
+      const batch = set ? page.assets.filter((a) => set.has(a.id)) : page.assets;
+      fresh.push(...batch);
+      if (page.assets.length === 0) break;
+    }
+    return fresh;
+  }, [queryOpts]);
+
   const reload = useCallback(async () => {
     cursor.current = undefined;
     hasNext.current = true;
     loadingMore.current = true;
     setAssets([]);
-    const page = await MediaLibrary.getAssetsAsync({ first: PAGE, ...queryOpts() });
-    cursor.current = page.endCursor;
-    hasNext.current = page.hasNextPage;
-    setAssets(page.assets);
+    const fresh = await fetchBurst();
+    setAssets(fresh);
     loadingMore.current = false;
-  }, [queryOpts]);
+  }, [fetchBurst]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore.current || !hasNext.current) return;
     loadingMore.current = true;
-    const page = await MediaLibrary.getAssetsAsync({
-      first: PAGE,
-      after: cursor.current,
-      ...queryOpts(),
-    });
-    cursor.current = page.endCursor;
-    hasNext.current = page.hasNextPage;
-    setAssets((prev) => prev.concat(page.assets));
+    const fresh = await fetchBurst();
+    if (fresh.length) setAssets((prev) => prev.concat(fresh));
     loadingMore.current = false;
-  }, [queryOpts]);
+  }, [fetchBurst]);
 
   useEffect(() => {
     (async () => {
@@ -152,17 +192,37 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
         .map((a) => ({ id: a.id, title: a.title, count: a.assetCount ?? 0 }));
       setAlbums([{ id: null, title: "All", count: 0 }, ...chips]);
       setStatus("ready");
+
+      // Background location index: hydrate any prior scan, show its places
+      // immediately, then keep scanning and refresh the chips as places appear.
+      await loadIndex();
+      setPlaces(getPlaces());
+      void buildIndex({
+        onProgress: (done, total) => {
+          setPlaces(getPlaces());
+          setIndexPct(total > 0 ? Math.min(1, done / total) : null);
+        },
+      }).finally(() => {
+        setPlaces(getPlaces());
+        setIndexPct(null);
+      });
     })();
   }, []);
 
   useEffect(() => {
     if (status !== "ready") return;
     void reload();
-  }, [status, datePreset, albumId, reload]);
+  }, [status, datePreset, albumId, placeId, reload]);
+
+  useEffect(() => {
+    const m = seenAssets.current;
+    for (const a of assets) m.set(a.id, a);
+  }, [assets]);
 
   const selectAll = useCallback(async () => {
     setBusy(true);
     try {
+      const set = placeSetRef.current;
       const ids = new Set<string>();
       let after: string | undefined;
       let more = true;
@@ -172,7 +232,12 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
           after,
           ...queryOpts(),
         });
-        for (const a of page.assets) ids.add(a.id);
+        for (const a of page.assets) {
+          if (!set || set.has(a.id)) {
+            ids.add(a.id);
+            seenAssets.current.set(a.id, a);
+          }
+        }
         after = page.endCursor;
         more = page.hasNextPage;
       }
@@ -318,9 +383,14 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
   }, [assets, selected]);
 
   const confirm = useCallback(() => {
-    const picked = assets.filter((a) => selected.has(a.id)).map(toPicked);
+    const m = seenAssets.current;
+    const picked: PickedPhoto[] = [];
+    for (const id of selected) {
+      const a = m.get(id);
+      if (a) picked.push(toPicked(a));
+    }
     onConfirm(picked);
-  }, [assets, selected, onConfirm]);
+  }, [selected, onConfirm]);
 
   const renderItem = useCallback(
     ({ item }: { item: MediaLibrary.Asset }) => {
@@ -410,6 +480,31 @@ export default function GalleryGrid({ onConfirm, onBack }: Props) {
             </Pressable>
           );
         })}
+        {places.length > 0 || indexPct !== null ? (
+          <View style={styles.divider} />
+        ) : null}
+        {places.map((p) => {
+          const on = placeId === p.id;
+          return (
+            <Pressable
+              key={p.id}
+              onPress={() => setPlaceId(on ? null : p.id)}
+              style={[styles.chip, on && styles.chipOn]}
+            >
+              <Text style={[styles.chipText, on && styles.chipTextOn]}>
+                {p.name}
+                {p.count ? ` ${p.count}` : ""}
+              </Text>
+            </Pressable>
+          );
+        })}
+        {indexPct !== null ? (
+          <View style={styles.chip}>
+            <Text style={styles.chipText}>
+              Finding places {Math.round(indexPct * 100)}%
+            </Text>
+          </View>
+        ) : null}
       </ScrollView>
 
       {status === "loading" ? (
