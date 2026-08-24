@@ -117,8 +117,8 @@ export const copy = {
         : `Finding places… ${percent}%`,
     scanningPeople: (percent?: number) =>
       percent === undefined
-        ? "Finding people…"
-        : `Finding people… ${percent}%`,
+        ? "Scanning faces…"
+        : `Scanning faces… ${percent}%`,
     noChoices: "No choices found here yet.",
     personName: (index: number) => `Person ${index + 1}`,
     photoCount: (count: number) => `${count} ${plural(count, "photo")}`,
