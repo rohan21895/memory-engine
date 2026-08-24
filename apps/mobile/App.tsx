@@ -6,6 +6,7 @@ import {
   Figtree_800ExtraBold,
   useFonts,
 } from "@expo-google-fonts/figtree";
+import * as MediaLibrary from "expo-media-library/legacy";
 import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useState } from "react";
@@ -13,18 +14,24 @@ import { StyleSheet, View } from "react-native";
 
 import { buildAlbum } from "./src/build-album";
 import GalleryGrid from "./src/import/GalleryGrid";
-import { pickLocalFolder } from "./src/import/folder-picker";
-import { useGooglePhotosPicker } from "./src/import/google-photos";
-import type { PickedPhoto, PhotoSource } from "./src/import/picked-photo";
+import type { PickedPhoto } from "./src/import/picked-photo";
 import FinalAlbum, { type FinalPhoto } from "./src/review/FinalAlbum";
 import type { ReviewData } from "./src/review/mock-data";
 import ReviewScreen from "./src/review/ReviewScreen";
-import { copy, colors, LoadingState } from "./src/ui";
+import { TabBar, type AppTab } from "./src/ui/components/TabBar";
+import { colors, copy, LoadingState } from "./src/ui";
+import { AccountScreen } from "./src/ui/screens/AccountScreen";
+import { AlbumsScreen } from "./src/ui/screens/AlbumsScreen";
 import { BuildingScreen } from "./src/ui/screens/BuildingScreen";
-import { StartScreen, type StartMessage } from "./src/ui/screens/StartScreen";
+import { LoginScreen } from "./src/ui/screens/LoginScreen";
+import { PhotosScreen } from "./src/ui/screens/PhotosScreen";
+import { StartScreen } from "./src/ui/screens/StartScreen";
 import { WelcomeScreen } from "./src/ui/screens/WelcomeScreen";
 
 const WELCOME_SEEN_KEY = "photeo-welcome-seen-v1";
+
+type Gate = "checking" | "welcome" | "login" | "permission" | "ready";
+type CreateStep = "pick" | "building" | "review" | "ready" | null;
 
 export default function App() {
   const [fontsLoaded, fontError] = useFonts({
@@ -34,84 +41,66 @@ export default function App() {
     Figtree_700Bold,
     Figtree_800ExtraBold,
   });
-  const [welcomeChecked, setWelcomeChecked] = useState(false);
-  const [welcomeSeen, setWelcomeSeen] = useState(false);
-  const [photos, setPhotos] = useState<PickedPhoto[]>([]);
+  const [gate, setGate] = useState<Gate>("checking");
+  const [tab, setTab] = useState<AppTab>("albums");
+  const [createStep, setCreateStep] = useState<CreateStep>(null);
   const [album, setAlbum] = useState<ReviewData | null>(null);
   const [finalPhotos, setFinalPhotos] = useState<FinalPhoto[] | null>(null);
-  const [busySource, setBusySource] = useState<PhotoSource | null>(null);
-  const [showGallery, setShowGallery] = useState(false);
-  const [building, setBuilding] = useState(false);
-  const [message, setMessage] = useState<StartMessage | null>(null);
-  const { configured: googleConfigured, pickGooglePhotos } = useGooglePhotosPicker();
+  const [permissionBusy, setPermissionBusy] = useState(false);
+  const [permissionMessage, setPermissionMessage] = useState<string | null>(null);
+  const [buildMessage, setBuildMessage] = useState<string | null>(null);
 
   useEffect(() => {
     void SecureStore.getItemAsync(WELCOME_SEEN_KEY)
-      .then((value) => setWelcomeSeen(value === "yes"))
-      .catch(() => setWelcomeSeen(false))
-      .finally(() => setWelcomeChecked(true));
+      .then((value) => setGate(value === "yes" ? "ready" : "welcome"))
+      .catch(() => setGate("welcome"));
   }, []);
 
-  const finishWelcome = useCallback(() => {
-    setWelcomeSeen(true);
+  const finishGate = useCallback(() => {
+    setGate("ready");
     void SecureStore.setItemAsync(WELCOME_SEEN_KEY, "yes").catch(() => undefined);
   }, []);
 
+  const requestPhotoPermission = useCallback(async () => {
+    setPermissionBusy(true);
+    setPermissionMessage(null);
+    try {
+      const permission = await MediaLibrary.requestPermissionsAsync();
+      if (permission.status === "granted") finishGate();
+      else setPermissionMessage("Photo access wasn’t allowed. You can continue and enable it later.");
+    } catch {
+      setPermissionMessage("We couldn’t open the photo permission. You can continue and try again later.");
+    } finally {
+      setPermissionBusy(false);
+    }
+  }, [finishGate]);
+
   const processPhotos = useCallback(async (next: PickedPhoto[]) => {
-    setPhotos(next);
     if (next.length === 0) {
-      setMessage({ kind: "info", text: copy.start.noPhotos });
+      setCreateStep("pick");
       return;
     }
 
-    setBuilding(true);
-    setMessage(null);
+    setCreateStep("building");
+    setBuildMessage(null);
     try {
-      // The existing local album engine remains the single source of selection decisions.
       const built = await buildAlbum(next);
       setAlbum(built);
+      setCreateStep("review");
     } catch {
-      setMessage({
-        kind: "error",
-        title: copy.start.buildError,
-        text: copy.privacyShort,
-      });
-    } finally {
-      setBuilding(false);
+      setBuildMessage(copy.start.buildError);
+      setCreateStep(null);
     }
   }, []);
 
-  const runPicker = useCallback(
-    async (source: PhotoSource) => {
-      setMessage(null);
-      if (source === "device-gallery") {
-        setShowGallery(true);
-        return;
-      }
-      if (source === "google-photos" && !googleConfigured) {
-        setMessage({ kind: "info", text: copy.start.googleUnavailable });
-        return;
-      }
+  const resetCreateFlow = useCallback(() => {
+    setCreateStep(null);
+    setAlbum(null);
+    setFinalPhotos(null);
+    setTab("albums");
+  }, []);
 
-      setBusySource(source);
-      try {
-        const next =
-          source === "local-folder" ? await pickLocalFolder() : await pickGooglePhotos();
-        await processPhotos(next);
-      } catch {
-        setMessage({
-          kind: "error",
-          title: copy.start.pickerError,
-          text: copy.privacyShort,
-        });
-      } finally {
-        setBusySource(null);
-      }
-    },
-    [googleConfigured, pickGooglePhotos, processPhotos],
-  );
-
-  if ((!fontsLoaded && !fontError) || !welcomeChecked) {
+  if ((!fontsLoaded && !fontError) || gate === "checking") {
     return (
       <View style={styles.root}>
         <StatusBar style="dark" />
@@ -120,60 +109,81 @@ export default function App() {
     );
   }
 
-  if (!welcomeSeen) return <WelcomeScreen onContinue={finishWelcome} />;
+  if (gate === "welcome") {
+    return <WelcomeScreen onContinue={() => setGate("login")} />;
+  }
 
-  if (showGallery) {
+  if (gate === "login") {
+    return <LoginScreen onContinue={() => setGate("permission")} />;
+  }
+
+  if (gate === "permission") {
+    return (
+      <StartScreen
+        busy={permissionBusy}
+        message={permissionMessage}
+        onAllow={() => void requestPhotoPermission()}
+        onSkip={finishGate}
+      />
+    );
+  }
+
+  if (createStep === "pick") {
     return (
       <GalleryGrid
-        onBack={() => setShowGallery(false)}
-        onConfirm={(picked) => {
-          setShowGallery(false);
-          void processPhotos(picked);
-        }}
+        onBack={() => setCreateStep(null)}
+        onConfirm={(picked) => void processPhotos(picked)}
       />
     );
   }
 
-  if (building) return <BuildingScreen />;
+  if (createStep === "building") return <BuildingScreen />;
 
-  if (finalPhotos) {
-    return (
-      <FinalAlbum
-        photos={finalPhotos}
-        onBack={() => setFinalPhotos(null)}
-        onRestart={() => {
-          setFinalPhotos(null);
-          setAlbum(null);
-          setPhotos([]);
-          setMessage(null);
-        }}
-      />
-    );
-  }
-
-  if (album) {
+  if (createStep === "review" && album) {
     return (
       <ReviewScreen
         data={album}
-        onBack={() => setAlbum(null)}
-        onFinalize={(picked) => setFinalPhotos(picked)}
+        onBack={() => setCreateStep(null)}
+        onFinalize={(picked) => {
+          setFinalPhotos(picked);
+          setCreateStep("ready");
+        }}
+      />
+    );
+  }
+
+  if (createStep === "ready" && finalPhotos) {
+    return (
+      <FinalAlbum
+        onBack={() => setCreateStep("review")}
+        onRestart={resetCreateFlow}
+        photos={finalPhotos}
       />
     );
   }
 
   return (
-    <StartScreen
-      busy={busySource !== null}
-      googleConfigured={googleConfigured}
-      message={message}
-      onChooseFolder={() => void runPicker("local-folder")}
-      onChooseGoogle={() => void runPicker("google-photos")}
-      onChoosePhotos={() => void runPicker("device-gallery")}
-      onDismissMessage={() => setMessage(null)}
-    />
+    <View style={styles.root}>
+      <StatusBar style="dark" />
+      <View style={styles.tabContent}>
+        {tab === "albums" ? (
+          <AlbumsScreen
+            message={buildMessage}
+            onCreate={() => {
+              setBuildMessage(null);
+              setCreateStep("pick");
+            }}
+          />
+        ) : null}
+        {tab === "photos" ? <PhotosScreen /> : null}
+        {tab === "account" ? <AccountScreen /> : null}
+      </View>
+      <TabBar activeTab={tab} onChange={setTab} />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { backgroundColor: colors.background, flex: 1 },
+  tabContent: { flex: 1 },
 });
