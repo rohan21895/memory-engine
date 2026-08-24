@@ -4,6 +4,10 @@ import { detectFaces, type FaceBox } from "./faces/face-detector";
 import type { PickedPhoto } from "./import/picked-photo";
 import { getModel } from "./ml";
 import { detectBodyPose } from "./ml/movenet";
+import {
+  analyzeSemanticImage,
+  SEMANTIC_SCREENSHOT_THRESHOLD,
+} from "./ml/tinyclip";
 import type {
   ReviewAlternative,
   ReviewData,
@@ -116,11 +120,12 @@ export async function buildAlbum(
 ): Promise<ReviewData> {
   const model = getModel();
   const analyzed = await mapLimit(photos, ANALYZE_CONCURRENCY, async (photo) => {
-    const [result, boxes, quality, detectedPose] = await Promise.all([
+    const [result, boxes, quality, detectedPose, semantic] = await Promise.all([
       model.run(photo.uri),
       detectFaces(photo.uri).catch(() => [] as FaceBox[]),
       measureImageQuality(photo.uri).catch(() => ({})),
       detectBodyPose(photo.uri),
+      analyzeSemanticImage(photo.uri, photo.width, photo.height),
     ]);
     return {
       photo,
@@ -130,6 +135,7 @@ export async function buildAlbum(
       pose: detectedPose
         ? makePose(detectedPose.keypoints, detectedPose.scores)
         : undefined,
+      semantic,
     };
   });
 
@@ -138,8 +144,10 @@ export async function buildAlbum(
       .map(({ photo, pose }) => [photo.id, pose] as const)
       .sort(([left], [right]) => left.localeCompare(right)),
   ).labels;
-  const enriched = analyzed.map(({ photo, result, boxes, quality }) => {
+  const enriched = analyzed.map(
+    ({ photo, result, boxes, quality, semantic }) => {
     const poseLabel = poseLabels.get(photo.id);
+    const analysis = analyzePhoto(photo, boxes, quality);
     return {
       ...photo,
       poseCluster:
@@ -147,10 +155,19 @@ export async function buildAlbum(
           ? `movenet:${poseLabel}`
           : photo.poseCluster,
       faces: result.faces,
-      embedding: result.embedding,
-      analysis: analyzePhoto(photo, boxes, quality),
+      perceptualEmbedding: result.embedding,
+      embedding: semantic?.embedding ?? result.embedding,
+      semantic,
+      analysis: {
+        ...analysis,
+        isScreenshotOrDocument:
+          analysis.isScreenshotOrDocument ||
+          (semantic?.screenshotDocument ?? 0) >
+            SEMANTIC_SCREENSHOT_THRESHOLD,
+      },
     };
-  });
+    },
+  );
 
   const album: AlbumData = selectBestShots(enriched, {
     count: Math.min(count, Math.max(1, enriched.length)),

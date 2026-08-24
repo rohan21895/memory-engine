@@ -5,7 +5,8 @@ Last updated: 2026-08-24
 ## Current checkpoint
 
 Photeo has a working, TypeScript-clean Expo 57 Android flow, a coverage-first
-album planner, and on-device MoveNet body-pose inference. The standalone release
+album planner, on-device MoveNet body-pose inference, and MIT-licensed TinyCLIP
+semantic embeddings with six zero-shot expression axes. The standalone release
 APK was built, installed on device `177fc81a`, and driven through a real
 four-photo Pick → Making → Review → Done flow without a crash. The finished
 album contained two pages after deterministic near-duplicate collapsing.
@@ -39,6 +40,12 @@ album contained two pages after deterministic near-duplicate collapsing.
   JSI TFLite host. Its 17 COCO keypoints feed the joint-angle math, deterministic
   pose clusters, planner diversity reward, and pose caps. Loading,
   preprocessing, tensor validation, and inference all fail neutral.
+- TinyCLIP ViT-8M/16 replaces perceptual fingerprints when available for visual
+  grouping, redundancy, and moment coverage. Six offline text-embedding
+  contrasts add aesthetic, composition, clean-frame/bystander, sleeping/awake,
+  embrace-context, and screenshot/document evidence. The text encoder does not
+  ship. TinyCLIP loading and inference are serialized and fail back to the
+  perceptual embedding without interrupting album creation.
 
 ## Verification
 
@@ -49,6 +56,8 @@ album contained two pages after deterministic near-duplicate collapsing.
   Nitro code, then installed on `177fc81a` (CPH2649).
 - APK contains the exact verified MoveNet artifact; extracting its packaged
   resource reproduces the SHA-256 below.
+- The TinyCLIP TFLite output matched its source ONNX embedding at cosine 1.0;
+  the APK contains the exact TFLite artifact identified below.
 - On-phone walkthrough: four real photos produced a two-page album through the
   complete guided flow; no app crash appeared in logcat.
 
@@ -59,6 +68,7 @@ album contained two pages after deterministic near-duplicate collapsing.
 | ML Kit face detection | `@infinitered/react-native-mlkit-face-detection` / Google ML Kit | Package and Google SDK terms | Yes | Guarded; failure returns no faces. |
 | MoveNet SinglePose Lightning int8 | [TensorFlow Hub](https://tfhub.dev/google/lite-model/movenet/singlepose/lightning/tflite/int8/4) | Apache-2.0 | Yes | Official 2.8 MB uint8 model; SHA-256 `cd7cc22fa946e5d146a7b98d496853e1923e22828d3972d579973f27f91bb105`. Input `[1,192,192,3]`; output `[1,1,17,3]`. |
 | `react-native-fast-tflite` | [mrousavy/react-native-fast-tflite](https://github.com/mrousavy/react-native-fast-tflite) | MIT | Yes | Version 3.0.1 with `react-native-nitro-modules` 0.37; CPU delegate by default for broad compatibility. |
+| TinyCLIP ViT-8M/16 Text-3M | [Microsoft TinyCLIP](https://github.com/microsoft/Cream/tree/main/TinyCLIP) / [MIT model card](https://huggingface.co/wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M) | MIT | Yes | Vision-only float32 TFLite, 32 MB; SHA-256 `a1ccb2b874a00c533402ade45beeb392ae8e06a60a6a90829ed26a6796f399e9`. Six offline text axes; JSON SHA-256 `79ed8de61276327f7420787ab4acca316280a7969091fd0e4a672cac4a8da7b8`. |
 | MobileCLIP official weights | Apple ML-MobileCLIP | Research-only model license | No | Explicitly rejected for a commercial product. A permissive SigLIP/OpenCLIP-derived alternative is required, otherwise the perceptual fallback stays. |
 | MobileFaceNet identity weights | Pending verified source | Pending | No | Will not be bundled until weight provenance and commercial permission are both recorded. |
 
@@ -96,8 +106,10 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 
 ## Known limits / remaining work
 
-- Semantic embeddings and zero-shot expression axes still use neutral or
-  perceptual fallbacks pending a verified commercially usable model.
+- TinyCLIP is deliberately the smallest published variant (41.1% zero-shot
+  ImageNet top-1 in its model card). Its expression contrasts are useful ranking
+  evidence, not authoritative labels; high-impact gates remain conservative and
+  every signal falls back to neutral/perceptual evidence on failure.
 - Face identity clustering still uses perceptual face crops pending verified,
   permissively licensed MobileFaceNet-class weights.
 - Face/head-region sharpness, per-face exposure, and ML Kit head-pose confidence

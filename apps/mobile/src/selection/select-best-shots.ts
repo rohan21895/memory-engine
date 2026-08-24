@@ -1,4 +1,5 @@
 import type { PickedPhoto } from "../import/picked-photo";
+import type { SemanticSignals } from "../ml/tinyclip";
 
 // @ts-expect-error Node requires the extension; Metro resolves this path too.
 import { planAlbum } from "./album-planner.ts";
@@ -78,6 +79,8 @@ const CATEGORY_WEIGHTS: Record<Category, CategoryWeights> = {
 
 type AnalyzedPhoto = PickedPhoto & {
   embedding?: unknown;
+  perceptualEmbedding?: unknown;
+  semantic?: SemanticSignals;
   analysis?: QualitySignals;
 };
 
@@ -145,8 +148,10 @@ export function selectBestShots(
       capturedAt: rankedTake.winner.photo.creationTime,
       placeKey: rankedTake.winner.photo.placeKey,
       personIds: rankedTake.winner.photo.personIds,
-      embedding: rankedTake.winner.embedding,
-      embeddingSpace: "phone-image-v1",
+        embedding: rankedTake.winner.embedding,
+        embeddingSpace: rankedTake.winner.photo.semantic
+          ? "tinyclip-vit-8m16-yfcc15m-v1"
+          : "phone-perceptual-v1",
       comparisonClass: rankedTake.winner.analysis?.category,
       category: rankedTake.winner.analysis?.category,
       shotGroup: `take:${rankedTake.winner.photo.id}`,
@@ -159,8 +164,16 @@ export function selectBestShots(
       cutFace:
         rankedTake.winner.analysis?.anyFaceCutAtEdge ??
         rankedTake.winner.analysis?.faces.some((face) => face.cutAtEdge),
-      smile: rankedTake.winner.smile,
-      eyesOpen: rankedTake.winner.eyesOpen,
+        smile: rankedTake.winner.smile,
+        eyesOpen: rankedTake.winner.eyesOpen,
+        screenshotDocument:
+          rankedTake.winner.analysis?.isScreenshotOrDocument,
+        aesthetic: rankedTake.winner.photo.semantic?.aesthetic,
+        composed: rankedTake.winner.photo.semantic?.composed,
+        cleanFrame: rankedTake.winner.photo.semantic?.cleanFrame,
+        sleeping: rankedTake.winner.photo.semantic?.sleeping,
+        awake: rankedTake.winner.photo.semantic?.awake,
+        embraceContext: rankedTake.winner.photo.semantic?.embraceContext,
     })),
     Math.min(requestedCount, rankedTakes.length),
     {
@@ -246,7 +259,9 @@ function buildCandidates(photos: AnalyzedPhoto[]): Candidate[] {
     seenIds.add(photo.id);
 
     const embedding = readEmbedding(photo);
-    const detailScore = thumbnailDetailScore(embedding);
+    const detailScore = thumbnailDetailScore(
+      readEmbeddingValue(photo.perceptualEmbedding) ?? embedding,
+    );
     const pixels = sourcePixels(photo);
     const analysis = photo.analysis;
     const faces = analysis
@@ -431,6 +446,11 @@ function chosenReasons(winner: Candidate, take: Take): string[] {
       `A face touches the frame edge; the ${winner.analysis.category} cut-face penalty was applied.`,
     );
   }
+  if (winner.photo.semantic) {
+    reasons.push(
+      "Checked on this phone for composition, context, and visual variety.",
+    );
+  }
   if (winner.pixels > 0) {
     reasons.push(`${(winner.pixels / 1_000_000).toFixed(1)} MP source resolution.`);
   }
@@ -575,7 +595,10 @@ function legacyNearDuplicateReason(
 }
 
 function readEmbedding(photo: AnalyzedPhoto): number[] | undefined {
-  const raw = photo.embedding;
+  return readEmbeddingValue(photo.embedding);
+}
+
+function readEmbeddingValue(raw: unknown): number[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) {
     return undefined;
   }
