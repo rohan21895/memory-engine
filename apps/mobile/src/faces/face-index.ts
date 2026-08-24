@@ -627,6 +627,14 @@ export function assetIdsForPerson(personId: string): string[] {
   );
 }
 
+/** High-confidence local person clusters present in one asset. */
+export function personIdsForAsset(assetId: string): string[] {
+  return index.people
+    .filter((person) => person.assetIds.includes(assetId))
+    .map((person) => person.id)
+    .sort();
+}
+
 export function faceIndexStatus(): FaceIndexStatus {
   return {
     scanned: Math.min(seenCount(), index.total),

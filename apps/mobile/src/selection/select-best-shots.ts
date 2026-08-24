@@ -1,6 +1,8 @@
 import type { PickedPhoto } from "../import/picked-photo";
 
 // @ts-expect-error Node requires the extension; Metro resolves this path too.
+import { planAlbum } from "./album-planner.ts";
+// @ts-expect-error Node requires the extension; Metro resolves this path too.
 import { bestSmile, significantFaces, worstEyesOpen } from "./quality-signals.ts";
 import type { Category, QualitySignals } from "./quality-signals";
 import type { AlbumData, Alt, Pool, Selected } from "./types";
@@ -110,7 +112,11 @@ type RankedTake = {
  */
 export function selectBestShots(
   photos: AnalyzedPhoto[],
-  opts: { count: number },
+  opts: {
+    count: number;
+    pinnedMediaIds?: readonly string[];
+    excludedMediaIds?: readonly string[];
+  },
 ): AlbumData {
   const candidates = buildCandidates(photos);
   const eligibleCandidates = candidates.filter(
@@ -132,10 +138,50 @@ export function selectBestShots(
   const rankedTakes = buildTakes(eligibleCandidates)
     .map(rankTake)
     .sort(compareRankedTakes);
-  const chosenTakes = rankedTakes.slice(
-    0,
+  const plan = planAlbum(
+    rankedTakes.map((rankedTake) => ({
+      mediaId: rankedTake.winner.photo.id,
+      quality: rankedTake.winner.quality,
+      capturedAt: rankedTake.winner.photo.creationTime,
+      placeKey: rankedTake.winner.photo.placeKey,
+      personIds: rankedTake.winner.photo.personIds,
+      embedding: rankedTake.winner.embedding,
+      embeddingSpace: "phone-image-v1",
+      comparisonClass: rankedTake.winner.analysis?.category,
+      category: rankedTake.winner.analysis?.category,
+      shotGroup: `take:${rankedTake.winner.photo.id}`,
+      poseFamily:
+        rankedTake.winner.photo.poseFamily ??
+        `take:${rankedTake.winner.photo.id}`,
+      poseCluster: rankedTake.winner.photo.poseCluster,
+      pinned: rankedTake.winner.photo.pinned,
+      excluded: rankedTake.winner.photo.excluded,
+      cutFace:
+        rankedTake.winner.analysis?.anyFaceCutAtEdge ??
+        rankedTake.winner.analysis?.faces.some((face) => face.cutAtEdge),
+      smile: rankedTake.winner.smile,
+      eyesOpen: rankedTake.winner.eyesOpen,
+    })),
     Math.min(requestedCount, rankedTakes.length),
+    {
+      policy: {
+        pinnedMediaIds: opts.pinnedMediaIds ?? [],
+        excludedMediaIds: opts.excludedMediaIds ?? [],
+        // Preserve the legacy no-analysis import path. Real album builds always
+        // carry quality-v2 measurements and use the desktop 0.35 floor.
+        qualityFloor: rankedTakes.some(({ winner }) => winner.analysis)
+          ? 0.35
+          : 0,
+      },
+    },
   );
+  const takeByWinnerId = new Map(
+    rankedTakes.map((rankedTake) => [rankedTake.winner.photo.id, rankedTake]),
+  );
+  const chosenTakes = plan.selectedIds.flatMap((mediaId) => {
+    const rankedTake = takeByWinnerId.get(mediaId);
+    return rankedTake ? [rankedTake] : [];
+  });
   const selectedIds = new Set(
     chosenTakes.map(({ winner }) => winner.photo.id),
   );
@@ -156,7 +202,12 @@ export function selectBestShots(
   const selected: Selected[] = chosenTakes.map((rankedTake, index) => ({
     media_id: rankedTake.winner.photo.id,
     page: index + 1,
-    chosen_because: chosenReasons(rankedTake.winner, rankedTake.take),
+    chosen_because: [
+      ...chosenReasons(rankedTake.winner, rankedTake.take),
+      ...(rankedTake.winner.analysis
+        ? plan.reasonsByMediaId[rankedTake.winner.photo.id] ?? []
+        : []),
+    ],
     alternatives: alternativesFor(rankedTake),
   }));
 

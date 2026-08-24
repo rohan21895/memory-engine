@@ -537,6 +537,16 @@ export function assetIdsForMonth(id: string): string[] {
   return index.months[id]?.assetIds.slice() ?? [];
 }
 
+/**
+ * Returns the most specific durable place bucket known for an asset.
+ * Unknown locations stay undefined; they must never be folded into day one or
+ * into a real city by the coverage planner.
+ */
+export function placeKeyForAsset(assetId: string): string | undefined {
+  const entry = index.assets[assetId];
+  return entry?.cityId || entry?.countryId || undefined;
+}
+
 export function indexStatus(): PhotoIndexStatus {
   return { indexed: Object.keys(index.assets).length, total: index.total };
 }

@@ -8,6 +8,18 @@ export type PickedPhoto = {
   height?: number;
   mimeType?: string;
   source: PhotoSource;
+  /** Capture time in Unix milliseconds when the source exposes it. */
+  creationTime?: number;
+  /** Stable, local place bucket from the on-device photo index. */
+  placeKey?: string;
+  /** High-confidence local face-cluster ids present in this photo. */
+  personIds?: string[];
+  /** Additive planner controls used by regenerate/swap flows. */
+  pinned?: boolean;
+  excluded?: boolean;
+  /** Populated by the guarded pose runtime when available. */
+  poseCluster?: string;
+  poseFamily?: string;
 };
 
 export class PhotoSourceCancelledError extends Error {

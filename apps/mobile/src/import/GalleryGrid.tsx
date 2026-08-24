@@ -23,6 +23,7 @@ import {
   getPeople,
   isFaceDetectionAvailable,
   loadFaceIndex,
+  personIdsForAsset,
   type FaceIndexPerson,
 } from "../faces/face-index";
 import {
@@ -49,6 +50,7 @@ import {
   getCities,
   getCountries,
   loadIndex,
+  placeKeyForAsset,
   type PlaceSummary,
 } from "./photo-index";
 
@@ -88,6 +90,12 @@ function toPicked(asset: MediaLibrary.Asset): PickedPhoto {
     width: asset.width,
     height: asset.height,
     source: "device-gallery",
+    creationTime:
+      Number.isFinite(asset.creationTime) && asset.creationTime > 0
+        ? asset.creationTime
+        : undefined,
+    placeKey: placeKeyForAsset(asset.id),
+    personIds: personIdsForAsset(asset.id),
   };
 }
 
