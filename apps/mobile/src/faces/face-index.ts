@@ -2,18 +2,19 @@ import { decode as decodeJpeg } from "jpeg-js";
 
 // Explicit extensions keep this pure module importable by Node's TS test runner.
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_PERCEPTUAL_THRESHOLD, clusterFaces, extendFaceClusters } from "./face-cluster.ts";
+import { DEFAULT_PERCEPTUAL_THRESHOLD, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { detectFaces, isFaceDetectionAvailable, type FaceBox } from "./face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { embedFaceIdentity } from "../ml/facenet.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
-const INDEX_VERSION = 2;
+const INDEX_VERSION = 3;
 const INDEX_FILENAME = "face-index.json";
+const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
 const SCAN_BATCH_SIZE = 8;
-const THUMBNAIL_SIZE = 32;
+const FACE_THUMBNAIL_SIZE = 128;
 const LUMA_GRID_SIZE = 8;
 const COLOR_BINS = 4;
 const FACE_PADDING_SCALE = 1.3;
@@ -62,11 +63,13 @@ export type FaceScanDependencies = {
     imageUri: string,
     box: FaceBox,
   ) => Promise<FaceEmbedding>;
+  onFaceCrop?: (observation: FaceObservation, cropUri: string) => void;
 };
 
 export type FaceEmbedding = {
   embedding: number[];
   kind: FaceEmbeddingKind;
+  cropUri?: string;
 };
 
 export type FacePeopleQuery = {
@@ -84,6 +87,7 @@ type PersistedFaceIndex = {
   scanComplete: boolean;
   total: number;
   threshold: number;
+  faceThumbUris: Record<string, string>;
 };
 
 function emptyIndex(): PersistedFaceIndex {
@@ -97,6 +101,7 @@ function emptyIndex(): PersistedFaceIndex {
     scanComplete: false,
     total: 0,
     threshold: DEFAULT_FACE_INDEX_THRESHOLD,
+    faceThumbUris: {},
   };
 }
 
@@ -146,6 +151,13 @@ function trueRecord(value: unknown): value is Record<string, true> {
   return isRecord(value) && Object.values(value).every((entry) => entry === true);
 }
 
+function stringRecord(value: unknown): value is Record<string, string> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every((entry) => typeof entry === "string")
+  );
+}
+
 function parseIndex(contents: string): PersistedFaceIndex | null {
   try {
     const value: unknown = JSON.parse(contents);
@@ -167,7 +179,12 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
     ) {
       return null;
     }
-    return value as PersistedFaceIndex;
+    return {
+      ...(value as Omit<PersistedFaceIndex, "faceThumbUris">),
+      faceThumbUris: stringRecord(value.faceThumbUris)
+        ? value.faceThumbUris
+        : {},
+    };
   } catch {
     return null;
   }
@@ -253,7 +270,10 @@ function peopleFromObservations(
   });
 }
 
-function summariesForPeople(people: Person[]): FaceIndexPerson[] {
+function summariesForPeople(
+  people: Person[],
+  faceThumbUris: Readonly<Record<string, string>> = {},
+): FaceIndexPerson[] {
   return people
     .filter((person) => person.assetIds.length > 0)
     .map((person) => ({
@@ -261,6 +281,9 @@ function summariesForPeople(people: Person[]): FaceIndexPerson[] {
       faceCount: person.faceCount,
       coverAssetId: person.assetIds[0],
       assetIds: person.assetIds.slice(),
+      ...(faceThumbUris[person.id]
+        ? { faceThumbUri: faceThumbUris[person.id] }
+        : {}),
     }))
     .sort(
       (a, b) =>
@@ -274,9 +297,11 @@ function summariesForPeople(people: Person[]): FaceIndexPerson[] {
 export function createFacePeopleQuery(
   observations: FaceObservation[],
   threshold = DEFAULT_FACE_INDEX_THRESHOLD,
+  faceThumbUris: Readonly<Record<string, string>> = {},
 ): FacePeopleQuery {
   const summaries = summariesForPeople(
     peopleFromObservations(observations, threshold),
+    faceThumbUris,
   );
   const byId = new Map(summaries.map((person) => [person.id, person]));
   return {
@@ -320,11 +345,19 @@ export async function scanFaceAssets(
                 validEmbedding(result.embedding) &&
                 (result.kind === "identity" || result.kind === "perceptual")
               ) {
-                observations.push({
+                const observation: FaceObservation = {
                   assetId: asset.id,
                   embedding: result.embedding,
                   embeddingKind: result.kind,
-                });
+                };
+                observations.push(observation);
+                if (result.cropUri) {
+                  try {
+                    dependencies.onFaceCrop?.(observation, result.cropUri);
+                  } catch {
+                    // Thumbnail bookkeeping is optional scan metadata.
+                  }
+                }
               }
             } catch {
               // One unreadable crop must not stop other faces or assets.
@@ -355,30 +388,42 @@ function paddedCrop(
     throw new Error("Face crop requires source image dimensions.");
   }
 
+  if (
+    !Number.isFinite(box.x) ||
+    !Number.isFinite(box.y) ||
+    !Number.isFinite(box.width) ||
+    !Number.isFinite(box.height) ||
+    box.width <= 0 ||
+    box.height <= 0
+  ) {
+    throw new Error("Face crop requires a finite positive box.");
+  }
+
+  const assetWidth = Math.floor(asset.width);
+  const assetHeight = Math.floor(asset.height);
+  const side = Math.max(
+    1,
+    Math.min(
+      assetWidth,
+      assetHeight,
+      Math.ceil(Math.max(box.width, box.height) * FACE_PADDING_SCALE),
+    ),
+  );
   const centerX = box.x + box.width / 2;
   const centerY = box.y + box.height / 2;
-  const paddedWidth = Math.min(asset.width, box.width * FACE_PADDING_SCALE);
-  const paddedHeight = Math.min(asset.height, box.height * FACE_PADDING_SCALE);
-  const left = Math.max(0, Math.min(asset.width, centerX - paddedWidth / 2));
-  const top = Math.max(0, Math.min(asset.height, centerY - paddedHeight / 2));
-  const right = Math.max(
-    left,
-    Math.min(asset.width, centerX + paddedWidth / 2),
+  const originX = Math.max(
+    0,
+    Math.min(assetWidth - side, Math.round(centerX - side / 2)),
   );
-  const bottom = Math.max(
-    top,
-    Math.min(asset.height, centerY + paddedHeight / 2),
+  const originY = Math.max(
+    0,
+    Math.min(assetHeight - side, Math.round(centerY - side / 2)),
   );
-  const originX = Math.floor(left);
-  const originY = Math.floor(top);
-  const width = Math.max(1, Math.ceil(right) - originX);
-  const height = Math.max(1, Math.ceil(bottom) - originY);
-
   return {
     originX,
     originY,
-    width: Math.min(width, asset.width - originX),
-    height: Math.min(height, asset.height - originY),
+    width: side,
+    height: side,
   };
 }
 
@@ -489,17 +534,27 @@ function decodeBase64(value: string): Uint8Array {
  * Interim perceptual fingerprint, not an identity-grade face embedding.
  * Upgrade this isolated helper to ArcFace/AdaFace when a safe runtime lands.
  */
-async function createPerceptualFaceEmbedding(
+type PreparedFaceCrop = {
+  uri: string;
+  base64: string;
+};
+
+async function prepareFaceCrop(
   asset: FaceScanAsset,
   imageUri: string,
   box: FaceBox,
-): Promise<number[]> {
+): Promise<PreparedFaceCrop> {
   const imageManipulator = await import("expo-image-manipulator");
   const thumbnail = await imageManipulator.manipulateAsync(
     imageUri,
     [
       { crop: paddedCrop(asset, box) },
-      { resize: { width: THUMBNAIL_SIZE, height: THUMBNAIL_SIZE } },
+      {
+        resize: {
+          width: FACE_THUMBNAIL_SIZE,
+          height: FACE_THUMBNAIL_SIZE,
+        },
+      },
     ],
     {
       base64: true,
@@ -510,7 +565,11 @@ async function createPerceptualFaceEmbedding(
   if (!thumbnail.base64) {
     throw new Error("Image manipulator returned no face pixels.");
   }
-  const decoded = decodeJpeg(decodeBase64(thumbnail.base64), {
+  return { uri: thumbnail.uri, base64: thumbnail.base64 };
+}
+
+function createPerceptualFaceEmbedding(crop: PreparedFaceCrop): number[] {
+  const decoded = decodeJpeg(decodeBase64(crop.base64), {
     useTArray: true,
     formatAsRGBA: true,
     tolerantDecoding: true,
@@ -529,14 +588,88 @@ async function createFaceEmbedding(
   imageUri: string,
   box: FaceBox,
 ): Promise<FaceEmbedding> {
-  const identity = await embedFaceIdentity(asset, imageUri, box);
+  const crop = await prepareFaceCrop(asset, imageUri, box);
+  const identity = await embedFaceIdentity(
+    { width: FACE_THUMBNAIL_SIZE, height: FACE_THUMBNAIL_SIZE },
+    crop.uri,
+    {
+      x: 0,
+      y: 0,
+      width: FACE_THUMBNAIL_SIZE,
+      height: FACE_THUMBNAIL_SIZE,
+    },
+  );
   if (identity && validEmbedding(identity)) {
-    return { embedding: identity, kind: "identity" };
+    return { embedding: identity, kind: "identity", cropUri: crop.uri };
   }
   return {
-    embedding: await createPerceptualFaceEmbedding(asset, imageUri, box),
+    embedding: createPerceptualFaceEmbedding(crop),
     kind: "perceptual",
+    cropUri: crop.uri,
   };
+}
+
+function personIdForObservation(
+  observation: FaceObservation,
+): string | undefined {
+  const threshold =
+    observation.embeddingKind === "identity"
+      ? index.threshold
+      : PERCEPTUAL_FACE_INDEX_THRESHOLD;
+  let bestId: string | undefined;
+  let bestSimilarity = Number.NEGATIVE_INFINITY;
+  for (const person of index.people) {
+    if (
+      person.embeddingKind !== observation.embeddingKind ||
+      !person.assetIds.includes(observation.assetId)
+    ) {
+      continue;
+    }
+    const similarity = cosine(observation.embedding, person.centroid);
+    if (similarity >= threshold && similarity > bestSimilarity) {
+      bestId = person.id;
+      bestSimilarity = similarity;
+    }
+  }
+  return bestId;
+}
+
+async function persistCoverFaceThumbs(
+  candidates: Array<{ observation: FaceObservation; cropUri: string }>,
+): Promise<void> {
+  try {
+    const fileSystem = await fileSystemModule();
+    if (!fileSystem.documentDirectory) {
+      return;
+    }
+    const directoryUri = `${fileSystem.documentDirectory}${FACE_THUMB_DIRECTORY}`;
+    await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
+    for (const candidate of candidates) {
+      try {
+        const personId = personIdForObservation(candidate.observation);
+        const person = index.people.find((entry) => entry.id === personId);
+        if (
+          !personId ||
+          !person ||
+          index.faceThumbUris[personId] ||
+          person.assetIds[0] !== candidate.observation.assetId
+        ) {
+          continue;
+        }
+        const destination = `${directoryUri}/${encodeURIComponent(personId)}.jpg`;
+        await fileSystem.deleteAsync(destination, { idempotent: true });
+        await fileSystem.copyAsync({
+          from: candidate.cropUri,
+          to: destination,
+        });
+        index.faceThumbUris[personId] = destination;
+      } catch {
+        // A missing cache crop or filesystem failure must not stop the scan.
+      }
+    }
+  } catch {
+    // Face avatars are optional; full-frame cover images remain available.
+  }
 }
 
 function yieldToEventLoop(): Promise<void> {
@@ -601,13 +734,21 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
         const pending = batch.filter(
           (asset) => !Object.hasOwn(index.processedAssetIds, asset.id),
         );
+        const faceCropCandidates: Array<{
+          observation: FaceObservation;
+          cropUri: string;
+        }> = [];
         const observations = await scanFaceAssets(pending, {
           isDetectionAvailable: () => true,
           detectFaces,
           embedFace: createFaceEmbedding,
+          onFaceCrop: (observation, cropUri) => {
+            faceCropCandidates.push({ observation, cropUri });
+          },
         });
         index.observations.push(...observations);
         appendPeople(observations);
+        await persistCoverFaceThumbs(faceCropCandidates);
         for (const asset of pending) {
           index.processedAssetIds[asset.id] = true;
         }
@@ -664,7 +805,7 @@ export function buildFaceIndex(
 }
 
 export function getPeople(): FaceIndexPerson[] {
-  return summariesForPeople(index.people);
+  return summariesForPeople(index.people, index.faceThumbUris);
 }
 
 export function assetIdsForPerson(personId: string): string[] {
