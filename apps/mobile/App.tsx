@@ -31,7 +31,7 @@ import {
   saveAlbum,
   type SavedAlbum,
 } from "./src/albums/album-store";
-import { buildAlbum } from "./src/build-album";
+import { buildAlbum, type BuildAlbumProgress } from "./src/build-album";
 import { buildFaceIndex, loadFaceIndex } from "./src/faces/face-index";
 import GalleryGrid from "./src/import/GalleryGrid";
 import { buildIndex, loadIndex } from "./src/import/photo-index";
@@ -117,6 +117,12 @@ function PhoteoApp() {
   const navigationRef = useRef(navigation);
   navigationRef.current = navigation;
   const buildRequest = useRef(0);
+  const buildAbort = useRef<AbortController | null>(null);
+  const [buildProgress, setBuildProgress] = useState<BuildAlbumProgress>({
+    done: 0,
+    total: 1,
+    phase: "Preparing your photos",
+  });
   const [album, setAlbum] = useState<ReviewData | null>(null);
   const [finalPhotos, setFinalPhotos] = useState<FinalPhoto[] | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
@@ -137,18 +143,36 @@ function PhoteoApp() {
     setNavigation((current) => ({ ...current, ...update }));
   }, []);
 
-  const popNavigation = useCallback(() => {
-    setNavigation((current) => {
-      if (current.createStep === "building") buildRequest.current += 1;
-      return navigationHistory.current.pop() ?? ALBUMS_ROOT;
-    });
+  const invalidateBuild = useCallback(() => {
+    buildRequest.current += 1;
+    buildAbort.current?.abort();
+    buildAbort.current = null;
   }, []);
 
+  const cancelBuild = useCallback(() => {
+    invalidateBuild();
+    setNavigation((current) => {
+      while (navigationHistory.current.length > 0) {
+        const candidate = navigationHistory.current.pop()!;
+        if (candidate.createStep === "pick") return candidate;
+      }
+      return { ...current, createStep: "pick" };
+    });
+  }, [invalidateBuild]);
+
+  const popNavigation = useCallback(() => {
+    if (navigationRef.current.createStep === "building") {
+      cancelBuild();
+      return;
+    }
+    setNavigation(() => navigationHistory.current.pop() ?? ALBUMS_ROOT);
+  }, [cancelBuild]);
+
   const goToAlbumsRoot = useCallback(() => {
-    buildRequest.current += 1;
+    invalidateBuild();
     navigationHistory.current = [];
     setNavigation(ALBUMS_ROOT);
-  }, []);
+  }, [invalidateBuild]);
 
   const closeActionFlow = useCallback(() => {
     setNavigation((current) => {
@@ -206,16 +230,38 @@ function PhoteoApp() {
       return;
     }
 
+    buildAbort.current?.abort();
+    const controller = new AbortController();
+    buildAbort.current = controller;
     const request = ++buildRequest.current;
     setPickedPhotos(next);
+    setBuildProgress({
+      done: 0,
+      total: Math.max(1, next.length + 1),
+      phase: `Looking at 0 of ${next.length.toLocaleString()} photos`,
+    });
     pushNavigation({ createStep: "building" });
     try {
-      const built = await buildAlbum(next);
+      const built = await buildAlbum(next, 24, {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (request === buildRequest.current && !controller.signal.aborted) {
+            setBuildProgress(progress);
+          }
+        },
+      });
       if (request !== buildRequest.current) return;
       setAlbum(built);
       replaceNavigation({ createStep: "review" });
     } catch {
-      if (request === buildRequest.current) replaceNavigation({ createStep: "error" });
+      if (
+        request === buildRequest.current &&
+        !controller.signal.aborted
+      ) {
+        replaceNavigation({ createStep: "error" });
+      }
+    } finally {
+      if (buildAbort.current === controller) buildAbort.current = null;
     }
   }, [pushNavigation, replaceNavigation]);
 
@@ -368,16 +414,24 @@ function PhoteoApp() {
     );
   }
 
-  if (createStep === "pick") {
+  if (createStep === "pick" || createStep === "building") {
     return (
-      <GalleryGrid
-        onBack={popNavigation}
-        onConfirm={(picked) => void processPhotos(picked)}
-      />
+      <View style={styles.root}>
+        <GalleryGrid
+          onBack={popNavigation}
+          onConfirm={(picked) => void processPhotos(picked)}
+        />
+        {createStep === "building" ? (
+          <View style={styles.buildOverlay}>
+            <BuildingScreen
+              onCancel={cancelBuild}
+              progress={buildProgress}
+            />
+          </View>
+        ) : null}
+      </View>
     );
   }
-
-  if (createStep === "building") return <BuildingScreen />;
 
   if (createStep === "error") {
     return <BuildErrorScreen onBack={resetCreateFlow} onRetry={() => void processPhotos(pickedPhotos)} />;
@@ -449,6 +503,7 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  buildOverlay: { bottom: 0, left: 0, position: "absolute", right: 0, top: 0 },
   root: { backgroundColor: colors.background, flex: 1 },
   tabContent: { flex: 1 },
 });
