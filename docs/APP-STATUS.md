@@ -1,6 +1,6 @@
 # Photeo mobile app status
 
-Last updated: 2026-08-24
+Last updated: 2026-08-25
 
 ## Current checkpoint
 
@@ -9,6 +9,12 @@ The finalized 26-screen light visual design is implemented in `apps/mobile` on `
 The release APK was built, installed, and exercised on Android device `177fc81a`. A real nine-photo selection completed as a five-photo album, persisted, reopened, and survived an APK reinstall. Share, print preview, family, shared-album, manage, and delete-confirmation routes rendered without a crash. No original photo was modified or uploaded.
 
 ## Shipped
+
+- Android hardware and predictive Back now follow the custom shell history: sheets close first, Filter/Review return to Pick, tabs return to Albums, and only Albums root exits.
+- Albums keeps the primary create action pinned above the tab bar while its shelf scrolls independently.
+- Photos pages the complete granted MediaStore photo library and renders it month-grouped; people, places, and search are optional filters rather than the data source.
+- The face picker now matches the design source with search, Anyone reset, Any/All mode tabs, multi-select rings, removal hint, and union/intersection filtering semantics.
+- Face, place, and date indexes hydrate before rendering and checkpoint processed asset IDs. Relaunch shows persisted results immediately and scans only unseen assets.
 
 - Warm cream, white, ink, terracotta, privacy-green visual system with Figtree weights 400–800 and dark status-bar content.
 - First-run onboarding, optional account screen, and guarded photo-permission gate.
@@ -42,6 +48,10 @@ These screens are deliberately usable previews and contain `TODO(owner): needs b
 - Gradle `assembleRelease`: pass.
 - Final install using `adb -s 177fc81a install -r`: `Success`.
 - Final process stayed foregrounded while switching Albums → Photos → Account; no React Native fatal, Android fatal, ANR, or input-dispatch timeout appeared in filtered logcat.
+- Device Back verification covered face modal → Filter, Filter → Pick, Review → Pick, Photos/Account → Albums, and Albums root → Android.
+- Device face-filter verification covered search, Anyone, multi-select/remove, both Any/All tabs, and the `2 people` summary.
+- Device model diagnostics reported `float32[1x112x112x3]` input, `float32[1x192]` output, `expected=true`, identity inference active, and identity observations with zero perceptual fallbacks.
+- Relaunch hydrated persisted people immediately and resumed from the saved unseen-asset checkpoint; the unchanged-complete-index path is covered by the incremental-index self-check.
 - APK: `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`
 - APK size: `338404116` bytes.
 - APK SHA-256: `ef956a587185c9d66d5b43e158406dd00ad9d0e311c66c2c2209b4410e9835ee`.
@@ -76,7 +86,13 @@ adb -s 177fc81a install -r app/build/outputs/apk/release/app-release.apk
 
 ## Known limits
 
-- MobileFaceNet identity clustering still needs product-specific calibration and model-license review before commercial launch.
+- MobileFaceNet model-license review and broader product-library calibration remain required before commercial launch.
 - Large face scans are resumable and explicit, but remain CPU intensive while running.
 - TinyCLIP expression scores are ranking evidence, not authoritative labels; failures remain neutral or use the guarded perceptual fallback.
 - MoveNet is single-person, so crowded group photos only contribute the most prominent detected body pose.
+
+## 2026-08-25 face-model diagnosis and repair
+
+The packaged MobileFaceNet graph was present in the APK, but `react-native-fast-tflite` received Android's bare raw-resource name (`assets_models_mobilefacenet192float32`) and passed it to `java.net.URL`, producing `MalformedURLException: no protocol`. `src/ml/bundled-tflite.ts` now uses `expo-asset` to materialize MobileFaceNet, MoveNet, and TinyCLIP to guarded local `file://` URIs before loading them.
+
+Once identity inference was active, device evidence exposed two separate duplicate sources: order-dependent cluster splits and repeated ML Kit detections at different box scales. The index now rejects same-photo online assignments, suppresses overlapping/same-center boxes before inference, deduplicates same-photo observations, performs constrained agglomerative merging with calibrated large/sparse-cluster rules, allocates collision-free monotonic person IDs, binds face crops to their exact assignments, and withholds low-support satellites from the People UI until they have meaningful evidence. Anonymous diagnostics report only counts, shapes, cluster IDs, similarities, and shared-counts—never media paths or filenames.
