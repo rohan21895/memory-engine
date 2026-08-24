@@ -9,8 +9,8 @@ import {
 import * as MediaLibrary from "expo-media-library/legacy";
 import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BackHandler, StyleSheet, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AlbumDetailScreen } from "./src/albums/AlbumDetailScreen";
@@ -63,6 +63,38 @@ type AlbumActionRoute =
   | { albumId: string; origin: ActionOrigin; screen: "print-preview" | "print-done"; size: string; total: number }
   | null;
 
+type NavigationState = {
+  tab: AppTab;
+  createStep: CreateStep;
+  libraryRoute: LibraryRoute;
+  actionRoute: AlbumActionRoute;
+  familyOpen: boolean;
+  personToName: NamePersonTarget | null;
+  sharedAlbum: SharedAlbumPreview | null;
+};
+
+const ALBUMS_ROOT: NavigationState = {
+  tab: "albums",
+  createStep: null,
+  libraryRoute: null,
+  actionRoute: null,
+  familyOpen: false,
+  personToName: null,
+  sharedAlbum: null,
+};
+
+function isAlbumsRoot(navigation: NavigationState): boolean {
+  return (
+    navigation.tab === "albums" &&
+    navigation.createStep === null &&
+    navigation.libraryRoute === null &&
+    navigation.actionRoute === null &&
+    !navigation.familyOpen &&
+    navigation.personToName === null &&
+    navigation.sharedAlbum === null
+  );
+}
+
 function suggestedAlbumTitle(photos: PickedPhoto[]) {
   const timestamp = photos.map((photo) => photo.creationTime).find((value): value is number => typeof value === "number" && Number.isFinite(value));
   if (!timestamp) return "My photo album";
@@ -78,8 +110,11 @@ function PhoteoApp() {
     Figtree_800ExtraBold,
   });
   const [gate, setGate] = useState<Gate>("checking");
-  const [tab, setTab] = useState<AppTab>("albums");
-  const [createStep, setCreateStep] = useState<CreateStep>(null);
+  const [navigation, setNavigation] = useState<NavigationState>(ALBUMS_ROOT);
+  const navigationHistory = useRef<NavigationState[]>([]);
+  const navigationRef = useRef(navigation);
+  navigationRef.current = navigation;
+  const buildRequest = useRef(0);
   const [album, setAlbum] = useState<ReviewData | null>(null);
   const [finalPhotos, setFinalPhotos] = useState<FinalPhoto[] | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
@@ -87,11 +122,43 @@ function PhoteoApp() {
   const [pickedPhotos, setPickedPhotos] = useState<PickedPhoto[]>([]);
   const [savedAlbums, setSavedAlbums] = useState<SavedAlbum[]>([]);
   const [currentAlbumId, setCurrentAlbumId] = useState<string | null>(null);
-  const [libraryRoute, setLibraryRoute] = useState<LibraryRoute>(null);
-  const [actionRoute, setActionRoute] = useState<AlbumActionRoute>(null);
-  const [familyOpen, setFamilyOpen] = useState(false);
-  const [personToName, setPersonToName] = useState<NamePersonTarget | null>(null);
-  const [sharedAlbum, setSharedAlbum] = useState<SharedAlbumPreview | null>(null);
+  const { actionRoute, createStep, familyOpen, libraryRoute, personToName, sharedAlbum, tab } = navigation;
+
+  const pushNavigation = useCallback((update: Partial<NavigationState>) => {
+    setNavigation((current) => {
+      navigationHistory.current.push(current);
+      return { ...current, ...update };
+    });
+  }, []);
+
+  const replaceNavigation = useCallback((update: Partial<NavigationState>) => {
+    setNavigation((current) => ({ ...current, ...update }));
+  }, []);
+
+  const popNavigation = useCallback(() => {
+    setNavigation((current) => {
+      if (current.createStep === "building") buildRequest.current += 1;
+      return navigationHistory.current.pop() ?? ALBUMS_ROOT;
+    });
+  }, []);
+
+  const goToAlbumsRoot = useCallback(() => {
+    buildRequest.current += 1;
+    navigationHistory.current = [];
+    setNavigation(ALBUMS_ROOT);
+  }, []);
+
+  const closeActionFlow = useCallback(() => {
+    setNavigation((current) => {
+      let target: NavigationState = { ...current, actionRoute: null };
+      while (navigationHistory.current.length > 0) {
+        const candidate = navigationHistory.current.pop()!;
+        target = candidate;
+        if (candidate.actionRoute === null) break;
+      }
+      return target;
+    });
+  }, []);
 
   useEffect(() => {
     void SecureStore.getItemAsync(WELCOME_SEEN_KEY)
@@ -124,20 +191,22 @@ function PhoteoApp() {
 
   const processPhotos = useCallback(async (next: PickedPhoto[]) => {
     if (next.length === 0) {
-      setCreateStep("pick");
+      replaceNavigation({ createStep: "pick" });
       return;
     }
 
+    const request = ++buildRequest.current;
     setPickedPhotos(next);
-    setCreateStep("building");
+    pushNavigation({ createStep: "building" });
     try {
       const built = await buildAlbum(next);
+      if (request !== buildRequest.current) return;
       setAlbum(built);
-      setCreateStep("review");
+      replaceNavigation({ createStep: "review" });
     } catch {
-      setCreateStep("error");
+      if (request === buildRequest.current) replaceNavigation({ createStep: "error" });
     }
-  }, []);
+  }, [pushNavigation, replaceNavigation]);
 
   const finalizeAlbum = useCallback(async (photos: FinalPhoto[]) => {
     if (!album || photos.length === 0) return;
@@ -159,18 +228,49 @@ function PhoteoApp() {
     setFinalPhotos(photos);
     setCurrentAlbumId(saved.id);
     setSavedAlbums(await saveAlbum(saved));
-    setCreateStep("ready");
-  }, [album, pickedPhotos]);
+    pushNavigation({ createStep: "ready" });
+  }, [album, pickedPhotos, pushNavigation]);
 
   const resetCreateFlow = useCallback(() => {
-    setCreateStep(null);
     setAlbum(null);
     setFinalPhotos(null);
     setPickedPhotos([]);
     setCurrentAlbumId(null);
-    setActionRoute(null);
-    setTab("albums");
-  }, []);
+    goToAlbumsRoot();
+  }, [goToAlbumsRoot]);
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (gate === "checking") return true;
+      if (gate === "permission") {
+        setGate("login");
+        return true;
+      }
+      if (gate === "login") {
+        setGate("welcome");
+        return true;
+      }
+      if (gate === "welcome") return true;
+
+      const current = navigationRef.current;
+      if (isAlbumsRoot(current)) return false;
+      if (
+        current.tab !== "albums" &&
+        current.createStep === null &&
+        current.libraryRoute === null &&
+        current.actionRoute === null &&
+        !current.familyOpen &&
+        current.personToName === null &&
+        current.sharedAlbum === null
+      ) {
+        goToAlbumsRoot();
+      } else {
+        popNavigation();
+      }
+      return true;
+    });
+    return () => subscription.remove();
+  }, [gate, goToAlbumsRoot, popNavigation]);
 
   const currentAlbum = currentAlbumId
     ? savedAlbums.find((candidate) => candidate.id === currentAlbumId) ?? null
@@ -210,49 +310,49 @@ function PhoteoApp() {
     );
   }
 
-  if (familyOpen) return <FamilyScreen onBack={() => setFamilyOpen(false)} />;
+  if (familyOpen) return <FamilyScreen onBack={popNavigation} />;
 
-  if (personToName) return <NamePersonScreen onBack={() => setPersonToName(null)} person={personToName} />;
+  if (personToName) return <NamePersonScreen onBack={popNavigation} person={personToName} />;
 
-  if (sharedAlbum) return <SharedAlbumScreen album={sharedAlbum} onBack={() => setSharedAlbum(null)} onShare={() => undefined} />;
+  if (sharedAlbum) return <SharedAlbumScreen album={sharedAlbum} onBack={popNavigation} onShare={() => undefined} />;
 
   if (actionRoute && actionAlbum) {
     if (actionRoute.screen === "manage") {
-      return <ManageAlbumSheet album={actionAlbum} onBack={() => setActionRoute(null)} onDelete={() => setActionRoute({ ...actionRoute, screen: "delete" })} onRename={(title) => { void renameAlbum(actionAlbum.id, title).then((next) => { setSavedAlbums(next); setActionRoute(null); }).catch(() => setActionRoute(null)); }} />;
+      return <ManageAlbumSheet album={actionAlbum} onBack={popNavigation} onDelete={() => pushNavigation({ actionRoute: { ...actionRoute, screen: "delete" } })} onRename={(title) => { void renameAlbum(actionAlbum.id, title).then((next) => { setSavedAlbums(next); closeActionFlow(); }).catch(closeActionFlow); }} />;
     }
     if (actionRoute.screen === "delete") {
-      return <DeleteAlbumScreen albumTitle={actionAlbum.title} onBack={() => setActionRoute({ ...actionRoute, screen: "manage" })} onDelete={() => { void deleteAlbum(actionAlbum.id).then((next) => { setSavedAlbums(next); setActionRoute(null); setLibraryRoute(null); resetCreateFlow(); }).catch(() => setActionRoute(null)); }} />;
+      return <DeleteAlbumScreen albumTitle={actionAlbum.title} onBack={popNavigation} onDelete={() => { void deleteAlbum(actionAlbum.id).then((next) => { setSavedAlbums(next); resetCreateFlow(); }).catch(closeActionFlow); }} />;
     }
     if (actionRoute.screen === "share") {
-      return <ShareSheet albumTitle={actionAlbum.title} onBack={() => setActionRoute(null)} onSent={(names) => setActionRoute({ ...actionRoute, names, screen: "share-sent" })} />;
+      return <ShareSheet albumTitle={actionAlbum.title} onBack={popNavigation} onSent={(names) => pushNavigation({ actionRoute: { ...actionRoute, names, screen: "share-sent" } })} />;
     }
     if (actionRoute.screen === "share-sent") {
-      return <ShareSentScreen albumTitle={actionAlbum.title} names={actionRoute.names} onDone={() => setActionRoute(null)} />;
+      return <ShareSentScreen albumTitle={actionAlbum.title} names={actionRoute.names} onDone={closeActionFlow} />;
     }
     if (actionRoute.screen === "print") {
-      return <PrintOrderScreen album={actionAlbum} onBack={() => setActionRoute(null)} onOrdered={(size, total) => setActionRoute({ ...actionRoute, screen: "print-done", size, total })} onPreview={(size, total) => setActionRoute({ ...actionRoute, screen: "print-preview", size, total })} />;
+      return <PrintOrderScreen album={actionAlbum} onBack={popNavigation} onOrdered={(size, total) => pushNavigation({ actionRoute: { ...actionRoute, screen: "print-done", size, total } })} onPreview={(size, total) => pushNavigation({ actionRoute: { ...actionRoute, screen: "print-preview", size, total } })} />;
     }
     if (actionRoute.screen === "print-preview") {
-      return <PrintPreviewScreen album={actionAlbum} onBack={() => setActionRoute({ albumId: actionAlbum.id, origin: actionRoute.origin, screen: "print" })} onContinue={() => setActionRoute({ ...actionRoute, screen: "print-done" })} size={actionRoute.size} total={actionRoute.total} />;
+      return <PrintPreviewScreen album={actionAlbum} onBack={popNavigation} onContinue={() => pushNavigation({ actionRoute: { ...actionRoute, screen: "print-done" } })} size={actionRoute.size} total={actionRoute.total} />;
     }
     if (actionRoute.screen === "print-done") {
-      return <PrintOrderedScreen albumTitle={actionAlbum.title} onDone={() => setActionRoute(null)} size={actionRoute.size} total={actionRoute.total} />;
+      return <PrintOrderedScreen albumTitle={actionAlbum.title} onDone={closeActionFlow} size={actionRoute.size} total={actionRoute.total} />;
     }
   }
 
   if (libraryRoute?.screen === "slideshow" && routedAlbum) {
-    return <Slideshow album={routedAlbum} onBack={() => setLibraryRoute({ albumId: routedAlbum.id, screen: "detail" })} />;
+    return <Slideshow album={routedAlbum} onBack={popNavigation} />;
   }
 
   if (libraryRoute?.screen === "detail" && routedAlbum) {
     return (
       <AlbumDetailScreen
         album={routedAlbum}
-        onBack={() => setLibraryRoute(null)}
-        onManage={() => setActionRoute({ albumId: routedAlbum.id, origin: "detail", screen: "manage" })}
-        onPlay={() => setLibraryRoute({ albumId: routedAlbum.id, screen: "slideshow" })}
-        onPrint={() => setActionRoute({ albumId: routedAlbum.id, origin: "detail", screen: "print" })}
-        onShare={() => setActionRoute({ albumId: routedAlbum.id, origin: "detail", screen: "share" })}
+        onBack={popNavigation}
+        onManage={() => pushNavigation({ actionRoute: { albumId: routedAlbum.id, origin: "detail", screen: "manage" } })}
+        onPlay={() => pushNavigation({ libraryRoute: { albumId: routedAlbum.id, screen: "slideshow" } })}
+        onPrint={() => pushNavigation({ actionRoute: { albumId: routedAlbum.id, origin: "detail", screen: "print" } })}
+        onShare={() => pushNavigation({ actionRoute: { albumId: routedAlbum.id, origin: "detail", screen: "share" } })}
       />
     );
   }
@@ -260,7 +360,7 @@ function PhoteoApp() {
   if (createStep === "pick") {
     return (
       <GalleryGrid
-        onBack={() => setCreateStep(null)}
+        onBack={popNavigation}
         onConfirm={(picked) => void processPhotos(picked)}
       />
     );
@@ -276,7 +376,7 @@ function PhoteoApp() {
     return (
       <ReviewScreen
         data={album}
-        onBack={() => setCreateStep(null)}
+        onBack={popNavigation}
         onFinalize={(picked) => void finalizeAlbum(picked)}
       />
     );
@@ -285,19 +385,17 @@ function PhoteoApp() {
   if (createStep === "ready" && finalPhotos && currentAlbum) {
     return (
       <FinalAlbum
-        onBack={() => setCreateStep("review")}
+        onBack={popNavigation}
         onDone={resetCreateFlow}
         onOpen={() => {
-          setCreateStep(null);
-          setLibraryRoute({ albumId: currentAlbum.id, screen: "detail" });
+          pushNavigation({ createStep: null, libraryRoute: { albumId: currentAlbum.id, screen: "detail" } });
         }}
         onPlay={() => {
-          setCreateStep(null);
-          setLibraryRoute({ albumId: currentAlbum.id, screen: "slideshow" });
+          pushNavigation({ createStep: null, libraryRoute: { albumId: currentAlbum.id, screen: "slideshow" } });
         }}
         onRestart={resetCreateFlow}
-        onPrint={() => setActionRoute({ albumId: currentAlbum.id, origin: "ready", screen: "print" })}
-        onShare={() => setActionRoute({ albumId: currentAlbum.id, origin: "ready", screen: "share" })}
+        onPrint={() => pushNavigation({ actionRoute: { albumId: currentAlbum.id, origin: "ready", screen: "print" } })}
+        onShare={() => pushNavigation({ actionRoute: { albumId: currentAlbum.id, origin: "ready", screen: "share" } })}
         onTitleChange={(title) => {
           void renameAlbum(currentAlbum.id, title).then(setSavedAlbums).catch(() => undefined);
         }}
@@ -315,16 +413,22 @@ function PhoteoApp() {
           <AlbumsScreen
             albums={savedAlbums}
             onCreate={() => {
-              setCreateStep("pick");
+              pushNavigation({ createStep: "pick" });
             }}
-            onOpen={(selected) => setLibraryRoute({ albumId: selected.id, screen: "detail" })}
-            onOpenShared={setSharedAlbum}
+            onOpen={(selected) => pushNavigation({ libraryRoute: { albumId: selected.id, screen: "detail" } })}
+            onOpenShared={(selected) => pushNavigation({ sharedAlbum: selected })}
           />
         ) : null}
-        {tab === "photos" ? <PhotosScreen onNamePerson={setPersonToName} /> : null}
-        {tab === "account" ? <AccountScreen albumCount={savedAlbums.length} onFamily={() => setFamilyOpen(true)} /> : null}
+        {tab === "photos" ? <PhotosScreen onNamePerson={(person) => pushNavigation({ personToName: person })} /> : null}
+        {tab === "account" ? <AccountScreen albumCount={savedAlbums.length} onFamily={() => pushNavigation({ familyOpen: true })} /> : null}
       </View>
-      <TabBar activeTab={tab} onChange={(next) => { setLibraryRoute(null); setTab(next); }} />
+      <TabBar
+        activeTab={tab}
+        onChange={(next) => {
+          if (next === "albums") goToAlbumsRoot();
+          else replaceNavigation({ ...ALBUMS_ROOT, tab: next });
+        }}
+      />
     </View>
   );
 }
