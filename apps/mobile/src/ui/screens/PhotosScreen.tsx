@@ -102,6 +102,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
   const [selectedPerson, setSelectedPerson] = useState<string | null>(null);
   const [selectedPlace, setSelectedPlace] = useState<string | null>(null);
   const [status, setStatus] = useState<"loading" | "denied" | "ready" | "error">("loading");
+  const [reloading, setReloading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [scanningPeople, setScanningPeople] = useState(false);
   const cursor = useRef<string | undefined>(undefined);
@@ -131,7 +132,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
         await Promise.all([loadIndex(), loadFaceIndex()]);
         if (!active) return;
         refreshIndexes();
-        loadingPage.current = true;
+        setReloading(true);
         setStatus("ready");
         void buildIndex({ onProgress: refreshIndexes }).then(refreshIndexes).catch(() => undefined);
         void buildFaceIndex({
@@ -187,6 +188,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
     cursor.current = undefined;
     hasNextPage.current = true;
     loadingPage.current = true;
+    setReloading(true);
     setAssets([]);
     try {
       setAssets(await fetchBurst());
@@ -194,6 +196,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
       setStatus("error");
     } finally {
       loadingPage.current = false;
+      setReloading(false);
     }
   }, [fetchBurst]);
 
@@ -319,7 +322,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
         data={rows}
         getItemType={(item) => item.kind}
         keyExtractor={(item) => item.key}
-        ListEmptyComponent={loadingPage.current ? <LoadingState helper="Every photo will appear here." title="Loading your photos…" /> : <EmptyState helper={filterSet ? "Try showing all photos." : "There are no photos in this library yet."} title={filterSet ? "No photos match this filter" : "No photos yet"} />}
+        ListEmptyComponent={reloading ? <LoadingState helper="Every photo will appear here." title="Loading your photos…" /> : <EmptyState helper={filterSet ? "Try showing all photos." : "There are no photos in this library yet."} title={filterSet ? "No photos match this filter" : "No photos yet"} />}
         ListFooterComponent={loadingMore ? <Text style={styles.loadingMore}>Loading more photos…</Text> : null}
         ListHeaderComponent={header}
         onEndReached={() => void loadMore()}
