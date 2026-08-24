@@ -13,7 +13,11 @@ import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
 // v18 stores aligned embeddings as int8/base64. Older versions contain
 // unaligned embeddings and must be rebuilt rather than migrated across spaces.
-const INDEX_VERSION = 18;
+// Bumped with the post-alignment threshold recalibration (0.5 -> 0.62/0.72).
+// Persisted clusters were built under the old, far looser bar and had collapsed
+// the whole library into one identity, so they must be discarded rather than
+// carried forward — otherwise an upgrading user keeps the broken grouping.
+const INDEX_VERSION = 19;
 const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
