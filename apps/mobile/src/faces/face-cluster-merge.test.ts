@@ -52,7 +52,14 @@ const cooccurring = extendFaceClusters(
   [obs("group-photo", 1, 0), { ...obs("group-photo", 0, 0), embedding: atCosine(0.8) }],
   { identityMergeThreshold: 0.38 },
 );
-assert(cooccurring.length === 2, "two faces in one source photo are always a strict cannot-link");
+assert(cooccurring.length === 2, "ordinary co-faces stay a strict cannot-link");
+
+const mirroredDuplicate = extendFaceClusters(
+  [],
+  [obs("panorama", 1, 0), { ...obs("panorama", 0, 0), embedding: atCosine(0.86) }],
+  { identityMergeThreshold: 0.38 },
+);
+assert(mirroredDuplicate.length === 1, "d_cos below 0.15 permits a mirror/panorama duplicate");
 
 const collisionFree = extendFaceClusters(
   [
@@ -100,7 +107,7 @@ const noisyOverlap = extendFaceClusters(
   [],
   { identityLargeClusterMinFaces: 10, identityMergeThreshold: 0.37 },
 );
-assert(noisyOverlap.length === 1, "noisy co-detections cannot veto a high-confidence identity merge");
+assert(noisyOverlap.length === 2, "same-photo clusters below cosine 0.85 cannot merge");
 
 const frequentOverlap = extendFaceClusters(
   [
@@ -115,12 +122,23 @@ assert(frequentOverlap.length === 2, "lower-similarity co-faces remain a hard ca
 const sparseSatellite = extendFaceClusters(
   [
     { id: "person-1", faceCount: 12, assetIds: Array.from({ length: 12 }, (_, i) => `anchor-${i}`), centroid: [1, 0], embeddingKind: "identity" },
-    { id: "person-2", faceCount: 4, assetIds: Array.from({ length: 4 }, (_, i) => `anchor-${i}`), centroid: atCosine(0.6), embeddingKind: "identity" },
+    { id: "person-2", faceCount: 4, assetIds: Array.from({ length: 4 }, (_, i) => `anchor-${i}`), centroid: atCosine(0.86), embeddingKind: "identity" },
   ],
   [],
   { identityLargeClusterMinFaces: 10, identityMergeThreshold: 0.37 },
 );
-assert(sparseSatellite.length === 1, "a supported fully-overlapping satellite rejoins its anchor");
+assert(sparseSatellite.length === 1, "an extremely close overlapping satellite rejoins its anchor");
+
+const assignableOnly = extendFaceClusters(
+  [],
+  [{ ...obs("profile", 1, 0), seedable: false }],
+);
+assert(assignableOnly.length === 0, "an assignable profile cannot seed a tile");
+const assignedProfile = extendFaceClusters(
+  [{ id: "person-1", faceCount: 1, assetIds: ["seed"], centroid: [1, 0], embeddingKind: "identity" }],
+  [{ ...obs("profile", 1, 0.02), seedable: false }],
+);
+assert(assignedProfile[0]?.faceCount === 2, "an assignable profile can join a seeded person");
 
 // eslint-disable-next-line no-console
 console.log("face-cluster merge self-check passed");

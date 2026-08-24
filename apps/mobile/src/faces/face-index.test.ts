@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { DEFAULT_FACE_INDEX_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, dedupeFaceBoxes, dedupeFaceObservations, scanFaceAssets } from "./face-index.ts";
+import { DEFAULT_FACE_INDEX_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -7,15 +7,50 @@ function assert(condition: unknown, message: string): asserts condition {
   }
 }
 
-const boxA = { x: 10, y: 10, width: 40, height: 40 };
-const boxB = { x: 70, y: 10, width: 40, height: 40 };
+const boxA = { x: 10, y: 10, width: 64, height: 64 };
+const boxB = { x: 110, y: 10, width: 64, height: 64 };
+
+assert(
+  faceQualityTier({ id: "seed", width: 1000, height: 1000 }, { ...boxA, headEulerAngleY: 30 }) === "seedable",
+  "a 64px frontal face can seed a person",
+);
+
+{
+  const source = Array.from({ length: 192 }, (_, index) =>
+    Math.sin(index * 0.7) * 0.2,
+  );
+  const stored = quantizeEmbedding(source);
+  const restored = dequantizeEmbedding(stored);
+  assert(stored.length === 256, "a 192-float embedding stores in 256 base64 chars");
+  assert(restored.length === source.length, "quantization preserves dimensions");
+  assert(
+    restored.every((value, index) => Math.abs(value - source[index]) <= 1 / 127),
+    "int8 quantization stays within one step",
+  );
+}
+
+{
+  const reverse = createPersonIdsByAsset([
+    { id: "person-2", assetIds: ["shared", "b"] },
+    { id: "person-1", assetIds: ["a", "shared"] },
+  ]);
+  assert(reverse.get("shared")?.join(",") === "person-1,person-2", "reverse person lookup is precomputed and sorted");
+}
+assert(
+  faceQualityTier({ id: "assign", width: 1000, height: 1000 }, { ...boxA, width: 40, height: 40, headEulerAngleY: 45 }) === "assignable",
+  "a smaller profile can only join an existing person",
+);
+assert(
+  faceQualityTier({ id: "reject", width: 1000, height: 1000 }, { ...boxA, headEulerAngleY: 45.1 }) === null,
+  "yaw beyond 45 degrees is discarded",
+);
 
 {
   const embeddings = new Map([
     ["photo-a:10", [1, 0, 0]],
     ["photo-b:10", [0.98, 0.2, 0]],
     ["photo-c:10", [0, 1, 0]],
-    ["photo-c:70", [0.1, 0.995, 0]],
+    ["photo-c:110", [0.1, 0.995, 0]],
     ["photo-d:10", [1, 0.02, 0]],
   ]);
   const observations = await scanFaceAssets(

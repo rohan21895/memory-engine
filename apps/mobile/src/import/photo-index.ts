@@ -8,6 +8,8 @@ const INDEX_VERSION = 2;
 const INDEX_FILENAME = "photo-location-date-index.json";
 const PAGE_SIZE = 200;
 const INFO_BATCH_SIZE = 20;
+const CHECKPOINT_ASSETS = 500;
+const CHECKPOINT_INTERVAL_MS = 10_000;
 const COORDINATE_DECIMALS = 2;
 const UNKNOWN_CITY = "Unknown place";
 const UNKNOWN_COUNTRY = "Unknown country";
@@ -88,6 +90,12 @@ function emptyIndex(): PersistedIndex {
 let index = emptyIndex();
 let activeBuild: Promise<void> | null = null;
 let hydration: Promise<void> | null = null;
+let progressSubscribers = new Set<(done: number, total: number) => void>();
+let activeScanControl: { cancelled: boolean; foreground: boolean } | null = null;
+const membershipSets = new WeakMap<
+  object,
+  Map<string, Set<string>>
+>();
 
 function indexUri(): string | null {
   return FileSystem.documentDirectory
@@ -303,7 +311,7 @@ function addToGroup(
   assetId: string,
 ): void {
   const entry = groups[id] ?? { name, assetIds: [] };
-  if (!entry.assetIds.includes(assetId)) {
+  if (addToAssetIds(groups, id, entry.assetIds, assetId)) {
     entry.assetIds.push(assetId);
   }
   // Keep the first non-unknown name we saw for the group.
@@ -311,6 +319,27 @@ function addToGroup(
     entry.name = name;
   }
   groups[id] = entry;
+}
+
+function addToAssetIds(
+  owner: object,
+  id: string,
+  existing: string[],
+  assetId: string,
+): boolean {
+  let byGroup = membershipSets.get(owner);
+  if (!byGroup) {
+    byGroup = new Map();
+    membershipSets.set(owner, byGroup);
+  }
+  let members = byGroup.get(id);
+  if (!members) {
+    members = new Set(existing);
+    byGroup.set(id, members);
+  }
+  if (members.has(assetId)) return false;
+  members.add(assetId);
+  return true;
 }
 
 function addAssetToIndex(
@@ -330,7 +359,7 @@ function addAssetToIndex(
 
   if (month) {
     const entry = index.months[month.id] ?? { label: month.label, assetIds: [] };
-    if (!entry.assetIds.includes(asset.id)) {
+    if (addToAssetIds(index.months, month.id, entry.assetIds, asset.id)) {
       entry.assetIds.push(asset.id);
     }
     index.months[month.id] = entry;
@@ -426,9 +455,51 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-async function runBuild(opts: BuildIndexOptions): Promise<void> {
+function notifyProgress(done: number, total: number): void {
+  for (const subscriber of progressSubscribers) {
+    try {
+      subscriber(done, total);
+    } catch {
+      // A screen callback cannot interrupt the shared scan.
+    }
+  }
+}
+
+async function watchAppState(
+  control: { cancelled: boolean; foreground: boolean },
+): Promise<() => void> {
+  try {
+    const { AppState } = await import("react-native");
+    control.foreground = AppState.currentState === "active";
+    const subscription = AppState.addEventListener("change", (state) => {
+      control.foreground = state === "active";
+    });
+    return () => subscription.remove();
+  } catch {
+    control.foreground = true;
+    return () => undefined;
+  }
+}
+
+async function waitForForeground(
+  control: { cancelled: boolean; foreground: boolean },
+): Promise<boolean> {
+  while (!control.cancelled && !control.foreground) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return !control.cancelled;
+}
+
+async function runBuild(
+  control: { cancelled: boolean; foreground: boolean },
+): Promise<void> {
+  const stopWatching = await watchAppState(control);
   try {
     await loadIndex();
+    if (!(await waitForForeground(control))) {
+      await persistIndex();
+      return;
+    }
 
     let incrementalTarget: number | null = null;
     if (index.scanComplete) {
@@ -462,7 +533,7 @@ async function runBuild(opts: BuildIndexOptions): Promise<void> {
     let after = index.cursor ?? undefined;
     let newlyIndexed = 0;
     let targetReached = false;
-    opts.onProgress?.(seenCount(), index.total);
+    notifyProgress(seenCount(), index.total);
 
     while (hasNextPage && !targetReached) {
       let page: MediaLibrary.PagedInfo<MediaLibrary.Asset>;
@@ -486,7 +557,7 @@ async function runBuild(opts: BuildIndexOptions): Promise<void> {
         ).length;
         await processBatch(batch);
         await persistIndex();
-        opts.onProgress?.(Object.keys(index.assets).length, index.total);
+        notifyProgress(Object.keys(index.assets).length, index.total);
         await yieldToEventLoop();
         if (
           incrementalTarget !== null &&
@@ -511,9 +582,11 @@ async function runBuild(opts: BuildIndexOptions): Promise<void> {
     index.cursor = null;
     index.scanComplete = true;
     await persistIndex();
-    opts.onProgress?.(Object.keys(index.assets).length, index.total);
+    notifyProgress(Object.keys(index.assets).length, index.total);
   } catch {
     await persistIndex();
+  } finally {
+    stopWatching();
   }
 }
 
@@ -522,14 +595,27 @@ async function runBuild(opts: BuildIndexOptions): Promise<void> {
  * or persistence failures. Concurrent callers share the same background scan.
  */
 export function buildIndex(opts: BuildIndexOptions = {}): Promise<void> {
+  if (opts.onProgress) progressSubscribers.add(opts.onProgress);
   if (activeBuild) {
+    if (opts.onProgress) {
+      opts.onProgress(Object.keys(index.assets).length, index.total);
+    }
     return activeBuild;
   }
 
-  activeBuild = runBuild(opts).finally(() => {
+  const control = { cancelled: false, foreground: true };
+  activeScanControl = control;
+  activeBuild = runBuild(control).finally(() => {
     activeBuild = null;
+    activeScanControl = null;
+    progressSubscribers.clear();
   });
   return activeBuild;
+}
+
+/** Stops the active location/date scan after its current batch is settled. */
+export function stopIndexBuild(): void {
+  if (activeScanControl) activeScanControl.cancelled = true;
 }
 
 function summaries(groups: Record<string, GroupEntry>): PlaceSummary[] {

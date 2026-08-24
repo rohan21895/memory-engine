@@ -2,11 +2,7 @@ import type { FaceObservation, Person } from "./types";
 
 export const DEFAULT_IDENTITY_THRESHOLD = 0.5;
 export const DEFAULT_PERCEPTUAL_THRESHOLD = 0.92;
-const OVERLAP_TOLERANT_IDENTITY_SIMILARITY = 0.66;
-const SPARSE_DUPLICATE_SIMILARITY = 0.55;
-const SPARSE_DUPLICATE_OVERLAP_RATIO = 0.9;
-const SPARSE_DUPLICATE_MIN_FACES = 2;
-const SPARSE_DUPLICATE_MAX_FACES = 8;
+const SAME_PHOTO_EXCEPTION_SIMILARITY = 0.85;
 
 export function cosine(a: number[], b: number[]): number {
   if (a.length === 0 || a.length !== b.length) {
@@ -147,6 +143,9 @@ export function extendFaceClusters(
     }
 
     if (bestIndex === -1) {
+      if (observation.seedable === false) {
+        continue;
+      }
       const id = `person-${nextPersonNumber++}`;
       people.push({
         id,
@@ -190,9 +189,9 @@ export function extendFaceClusters(
  * Second pass: greedy online assignment is order-dependent, so one person's
  * faces routinely seed several clusters (a bad-angle first frame the later good
  * frames never match). Repeatedly merge the closest pair of same-kind people
- * above a calibrated centroid bar. Co-occurrence remains a cannot-link except
- * for device-calibrated, well-supported duplicate signatures. The older
- * cluster (lower index) survives, keeping surfaced ids stable.
+ * above a calibrated centroid bar. Co-occurrence remains a cannot-link unless
+ * cosine is above 0.85 (d_cos < 0.15), which covers mirrors and panoramas. The
+ * older cluster (lower index) survives, keeping surfaced ids stable.
  *
  * ponytail: O(k^2) per merge round over k people; fine for the hundreds of
  * people a personal library yields. Swap for union-find on an ANN index if k
@@ -222,10 +221,6 @@ function mergeSimilarPeople(
         ) {
           continue;
         }
-        const sharedAssetCount = a.assetIds.reduce(
-          (count, assetId) => count + Number(b.assetIdSet.has(assetId)),
-          0,
-        );
         const largeIdentityPair =
           a.embeddingKind === "identity" &&
           a.faceCount >= identityLargeClusterMinFaces &&
@@ -236,34 +231,27 @@ function mergeSimilarPeople(
             : identityMergeThreshold
           : perceptualThreshold;
         const similarity = cosine(a.centroid, b.centroid);
-        const smallerFaceCount = Math.min(a.faceCount, b.faceCount);
-        const largerFaceCount = Math.max(a.faceCount, b.faceCount);
-        const overlapRatio =
-          sharedAssetCount /
-          Math.max(1, Math.min(a.assetIdSet.size, b.assetIdSet.size));
-        const supportedOverlapDuplicate =
-          similarity >= OVERLAP_TOLERANT_IDENTITY_SIMILARITY &&
-          a.faceCount >= identityLargeClusterMinFaces &&
-          b.faceCount >= identityLargeClusterMinFaces;
-        const sparseDuplicate =
-          similarity >= SPARSE_DUPLICATE_SIMILARITY &&
-          overlapRatio >= SPARSE_DUPLICATE_OVERLAP_RATIO &&
-          smallerFaceCount >= SPARSE_DUPLICATE_MIN_FACES &&
-          smallerFaceCount <= SPARSE_DUPLICATE_MAX_FACES &&
-          largerFaceCount >= identityLargeClusterMinFaces;
+        if (similarity < threshold || similarity <= bestSimilarity) {
+          continue;
+        }
+        const smallerAssets =
+          a.assetIdSet.size <= b.assetIdSet.size ? a.assetIdSet : b.assetIdSet;
+        const largerAssets = smallerAssets === a.assetIdSet
+          ? b.assetIdSet
+          : a.assetIdSet;
+        const sharesPhoto = Array.from(smallerAssets).some((assetId) =>
+          largerAssets.has(assetId),
+        );
         if (
           a.embeddingKind === "identity" &&
-          sharedAssetCount > 0 &&
-          !supportedOverlapDuplicate &&
-          !sparseDuplicate
+          sharesPhoto &&
+          similarity <= SAME_PHOTO_EXCEPTION_SIMILARITY
         ) {
           continue;
         }
-        if (similarity >= threshold && similarity > bestSimilarity) {
-          bestSimilarity = similarity;
-          bestI = i;
-          bestJ = j;
-        }
+        bestSimilarity = similarity;
+        bestI = i;
+        bestJ = j;
       }
     }
 

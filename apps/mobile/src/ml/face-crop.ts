@@ -77,7 +77,9 @@ export function landmarksToPatch(
   return {
     leftEye: landmarkToPatch(landmarks.leftEye, geometry),
     rightEye: landmarkToPatch(landmarks.rightEye, geometry),
-    noseBase: landmarkToPatch(landmarks.noseBase, geometry),
+    ...(landmarks.noseBase
+      ? { noseBase: landmarkToPatch(landmarks.noseBase, geometry) }
+      : {}),
     leftMouth: landmarkToPatch(landmarks.leftMouth, geometry),
     rightMouth: landmarkToPatch(landmarks.rightMouth, geometry),
   };

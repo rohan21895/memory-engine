@@ -1,5 +1,5 @@
 // @ts-expect-error Node requires the extension; Metro resolves it too.
-import { normalizeFacePixels, parseFaceEmbeddingOutput, squareFaceCrop } from "./facenet.ts";
+import { normalizeFacePixels, normalizeFaceRgb, parseFaceEmbeddingOutput, squareFaceCrop } from "./facenet.ts";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(`MobileFaceNet self-check failed: ${message}`);
@@ -36,8 +36,12 @@ function close(actual: number, expected: number, message: string): void {
     1,
   );
   close(normalized[0], -1, "black maps to -1");
-  close(normalized[1], 0, "mid-gray maps to 0");
-  close(normalized[2], 127 / 128, "white follows the model's published preprocessing");
+  close(normalized[1], 1 / 255, "128 follows exact ArcFace centering");
+  close(normalized[2], 1, "white maps to 1");
+  const rgb = normalizeFaceRgb(new Uint8Array([0, 128, 255]), 1, 1);
+  close(rgb[0], -1, "aligned RGB black maps to -1");
+  close(rgb[1], 1 / 255, "aligned RGB keeps channel order");
+  close(rgb[2], 1, "aligned RGB white maps to 1");
 }
 
 {

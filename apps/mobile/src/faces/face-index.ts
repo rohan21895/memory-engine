@@ -11,15 +11,16 @@ import { embedFaceIdentity } from "../ml/facenet.ts";
 import { incrementalScanTarget } from "../import/incremental-index.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
-// v17 applies the final device-calibrated overlap boundary to v16 locally.
-const INDEX_VERSION = 17;
-const MIGRATABLE_INDEX_VERSION = 16;
+// v18 stores aligned embeddings as int8/base64. Older versions contain
+// unaligned embeddings and must be rebuilt rather than migrated across spaces.
+const INDEX_VERSION = 18;
 const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
-// Face crop fingerprinting runs on the JS thread after native detection. Keep
-// batches small so a large first scan cannot starve taps and navigation.
-const SCAN_BATCH_SIZE = 1;
+const SCAN_BATCH_SIZE = 32;
+const SCAN_CONCURRENCY = 2;
+const CHECKPOINT_ASSETS = 50;
+const CHECKPOINT_INTERVAL_MS = 10_000;
 const FACE_THUMBNAIL_SIZE = 128;
 const LUMA_GRID_SIZE = 8;
 const COLOR_BINS = 4;
@@ -68,7 +69,10 @@ export type FaceScanAsset = {
 
 export type FaceScanDependencies = {
   isDetectionAvailable: () => boolean;
-  detectFaces: (imageUri: string) => Promise<FaceBox[]>;
+  detectFaces: (
+    imageUri: string,
+    source?: FaceScanAsset,
+  ) => Promise<FaceBox[]>;
   embedFace: (
     asset: FaceScanAsset,
     imageUri: string,
@@ -101,6 +105,20 @@ type PersistedFaceIndex = {
   faceThumbUris: Record<string, string>;
 };
 
+type StoredFaceObservation = Omit<FaceObservation, "embedding"> & {
+  embedding: string;
+};
+
+type StoredPerson = Omit<Person, "centroid"> & { centroid: string };
+
+type StoredFaceIndex = Omit<
+  PersistedFaceIndex,
+  "observations" | "people"
+> & {
+  observations: StoredFaceObservation[];
+  people: StoredPerson[];
+};
+
 function emptyIndex(): PersistedFaceIndex {
   return {
     version: INDEX_VERSION,
@@ -120,6 +138,9 @@ let index = emptyIndex();
 let activeBuild: Promise<void> | null = null;
 let hydration: Promise<void> | null = null;
 let duplicateDetectionsDropped = 0;
+let personIdsByAsset = new Map<string, string[]>();
+let progressSubscribers = new Set<(done: number, total: number) => void>();
+let activeScanControl: { cancelled: boolean; foreground: boolean } | null = null;
 
 function observationCounts(): Pick<
   FaceIndexStatus,
@@ -201,13 +222,108 @@ function validEmbedding(value: unknown): value is number[] {
   );
 }
 
+function encodeBase64(bytes: Uint8Array): string {
+  let result = "";
+  for (let offset = 0; offset < bytes.length; offset += 3) {
+    const first = bytes[offset];
+    const second = bytes[offset + 1];
+    const third = bytes[offset + 2];
+    result += BASE64_ALPHABET[first >> 2];
+    result += BASE64_ALPHABET[((first & 3) << 4) | ((second ?? 0) >> 4)];
+    result += offset + 1 < bytes.length
+      ? BASE64_ALPHABET[((second & 15) << 2) | ((third ?? 0) >> 6)]
+      : "=";
+    result += offset + 2 < bytes.length
+      ? BASE64_ALPHABET[third & 63]
+      : "=";
+  }
+  return result;
+}
+
+/** Symmetric fixed-scale int8 quantization for normalized face embeddings. */
+export function quantizeEmbedding(embedding: number[]): string {
+  if (!validEmbedding(embedding)) {
+    throw new Error("Cannot quantize an invalid face embedding.");
+  }
+  const bytes = new Uint8Array(embedding.length);
+  for (let index = 0; index < embedding.length; index += 1) {
+    const quantized = Math.round(Math.max(-1, Math.min(1, embedding[index])) * 127);
+    bytes[index] = quantized & 0xff;
+  }
+  return encodeBase64(bytes);
+}
+
+export function dequantizeEmbedding(value: string): number[] {
+  const bytes = decodeBase64(value);
+  const signed = new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return Array.from(signed, (component) => component / 127);
+}
+
+function storedObservation(value: unknown): value is StoredFaceObservation {
+  return (
+    isRecord(value) &&
+    typeof value.assetId === "string" &&
+    typeof value.embedding === "string" &&
+    value.embedding.length > 0 &&
+    (value.embeddingKind === "identity" || value.embeddingKind === "perceptual") &&
+    (value.seedable === undefined || typeof value.seedable === "boolean")
+  );
+}
+
+function storedPerson(value: unknown): value is StoredPerson {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.faceCount === "number" &&
+    Number.isFinite(value.faceCount) &&
+    value.faceCount >= 0 &&
+    Array.isArray(value.assetIds) &&
+    value.assetIds.every((assetId) => typeof assetId === "string") &&
+    typeof value.centroid === "string" &&
+    value.centroid.length > 0 &&
+    (value.embeddingKind === "identity" || value.embeddingKind === "perceptual")
+  );
+}
+
+function storedIndex(): StoredFaceIndex {
+  return {
+    ...index,
+    observations: index.observations.map((observation) => ({
+      ...observation,
+      embedding: quantizeEmbedding(observation.embedding),
+    })),
+    people: index.people.map((person) => ({
+      ...person,
+      centroid: quantizeEmbedding(person.centroid),
+    })),
+  };
+}
+
 function validObservation(value: unknown): value is FaceObservation {
   return (
     isRecord(value) &&
     typeof value.assetId === "string" &&
     validEmbedding(value.embedding) &&
-    (value.embeddingKind === "identity" || value.embeddingKind === "perceptual")
+    (value.embeddingKind === "identity" || value.embeddingKind === "perceptual") &&
+    (value.seedable === undefined || typeof value.seedable === "boolean")
   );
+}
+
+export type FaceQualityTier = "seedable" | "assignable";
+
+/** Two-tier identity gate: poor faces are bridges that join distinct people. */
+export function faceQualityTier(
+  asset: FaceScanAsset,
+  box: FaceBox,
+): FaceQualityTier | null {
+  const shortSide = Math.min(box.width, box.height);
+  const imageMin = Math.min(asset.width, asset.height);
+  const imageRatio = imageMin > 0 ? shortSide / imageMin : 0;
+  const yaw = Math.abs(box.headEulerAngleY ?? 0);
+  if (shortSide < 40 || imageRatio < 0.03 || yaw > 45) return null;
+  return shortSide >= 64 && imageRatio >= 0.04 && yaw <= 30
+    ? "seedable"
+    : "assignable";
 }
 
 /** Removes repeat detections of one face while preserving distinct co-faces. */
@@ -309,12 +425,11 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
     const value: unknown = JSON.parse(contents);
     if (
       !isRecord(value) ||
-      (value.version !== INDEX_VERSION &&
-        value.version !== MIGRATABLE_INDEX_VERSION) ||
+      value.version !== INDEX_VERSION ||
       !Array.isArray(value.observations) ||
-      !value.observations.every(validObservation) ||
+      !value.observations.every(storedObservation) ||
       !Array.isArray(value.people) ||
-      !value.people.every(validPerson) ||
+      !value.people.every(storedPerson) ||
       !trueRecord(value.processedAssetIds) ||
       !trueRecord(value.seenAssetIds) ||
       (typeof value.cursor !== "string" && value.cursor !== null) ||
@@ -326,26 +441,25 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
     ) {
       return null;
     }
-    const loaded = {
-      ...(value as Omit<PersistedFaceIndex, "faceThumbUris">),
+    const stored = value as unknown as StoredFaceIndex;
+    const loaded: PersistedFaceIndex = {
+      ...stored,
+      observations: stored.observations.map((observation) => ({
+        ...observation,
+        embedding: dequantizeEmbedding(observation.embedding),
+      })),
+      people: stored.people.map((person) => ({
+        ...person,
+        centroid: dequantizeEmbedding(person.centroid),
+      })),
       faceThumbUris: stringRecord(value.faceThumbUris)
         ? value.faceThumbUris
         : {},
     };
-    if (value.version === MIGRATABLE_INDEX_VERSION) {
-      const observations = dedupeFaceObservations(loaded.observations);
-      return {
-        ...loaded,
-        version: INDEX_VERSION,
-        observations,
-        people: peopleFromObservations(
-          observations,
-          loaded.threshold,
-          FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
-        ),
-      };
-    }
-    return loaded;
+    return loaded.observations.every(validObservation) &&
+      loaded.people.every(validPerson)
+      ? loaded
+      : null;
   } catch {
     return null;
   }
@@ -378,15 +492,37 @@ async function hydrateFaceIndex(): Promise<void> {
     const temporary = await readPersistedIndex(fileSystem, `${uri}.tmp`);
     if (temporary) {
       index = temporary;
+      rebuildPersonIdsByAsset();
       return;
     }
     const saved = await readPersistedIndex(fileSystem, uri);
     if (saved) {
       index = saved;
+      rebuildPersonIdsByAsset();
     }
   } catch {
     // An in-memory index is still usable when durable storage is unavailable.
   }
+}
+
+function rebuildPersonIdsByAsset(): void {
+  personIdsByAsset = createPersonIdsByAsset(index.people);
+}
+
+/** Builds the reverse lookup once so selecting thousands of assets stays O(N). */
+export function createPersonIdsByAsset(
+  people: readonly Pick<Person, "id" | "assetIds">[],
+): Map<string, string[]> {
+  const next = new Map<string, string[]>();
+  for (const person of people) {
+    for (const assetId of person.assetIds) {
+      const personIds = next.get(assetId) ?? [];
+      personIds.push(person.id);
+      next.set(assetId, personIds);
+    }
+  }
+  for (const personIds of next.values()) personIds.sort();
+  return next;
 }
 
 /** Hydrates the last crash-safe checkpoint without loading native ML bindings. */
@@ -403,7 +539,10 @@ async function persistFaceIndex(): Promise<void> {
     }
     const uri = `${fileSystem.documentDirectory}${INDEX_FILENAME}`;
     const temporaryUri = `${uri}.tmp`;
-    await fileSystem.writeAsStringAsync(temporaryUri, JSON.stringify(index));
+    await fileSystem.writeAsStringAsync(
+      temporaryUri,
+      JSON.stringify(storedIndex()),
+    );
     await fileSystem.deleteAsync(uri, { idempotent: true });
     await fileSystem.moveAsync({ from: temporaryUri, to: uri });
   } catch {
@@ -500,25 +639,26 @@ export async function scanFaceAssets(
   dependencies: FaceScanDependencies,
 ): Promise<FaceObservation[]> {
   try {
-    if (!dependencies.isDetectionAvailable()) {
-      return [];
-    }
-
-    const perAsset = await Promise.all(
-      assets.map(async (asset): Promise<FaceObservation[]> => {
+    if (!dependencies.isDetectionAvailable() || assets.length === 0) return [];
+    const perAsset = Array.from<FaceObservation[]>({ length: assets.length });
+    let nextAsset = 0;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const assetIndex = nextAsset;
+        nextAsset += 1;
+        if (assetIndex >= assets.length) return;
+        const asset = assets[assetIndex];
         const imageUri = contentUri(asset.id);
         try {
-          const detectedBoxes = await dependencies.detectFaces(imageUri);
+          const detectedBoxes = await dependencies.detectFaces(imageUri, asset);
           const boxes = dedupeFaceBoxes(detectedBoxes);
           duplicateDetectionsDropped += detectedBoxes.length - boxes.length;
           const observations: FaceObservation[] = [];
           for (const box of boxes) {
+            const qualityTier = faceQualityTier(asset, box);
+            if (!qualityTier) continue;
             try {
-              const result = await dependencies.embedFace(
-                asset,
-                imageUri,
-                box,
-              );
+              const result = await dependencies.embedFace(asset, imageUri, box);
               if (
                 validEmbedding(result.embedding) &&
                 (result.kind === "identity" || result.kind === "perceptual")
@@ -527,6 +667,7 @@ export async function scanFaceAssets(
                   assetId: asset.id,
                   embedding: result.embedding,
                   embeddingKind: result.kind,
+                  seedable: qualityTier === "seedable",
                 };
                 observations.push(observation);
                 if (result.cropUri) {
@@ -541,11 +682,17 @@ export async function scanFaceAssets(
               // One unreadable crop must not stop other faces or assets.
             }
           }
-          return dedupeFaceObservations(observations);
+          perAsset[assetIndex] = dedupeFaceObservations(observations);
         } catch {
-          return [];
+          perAsset[assetIndex] = [];
         }
-      }),
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(SCAN_CONCURRENCY, assets.length) },
+        worker,
+      ),
     );
     return perAsset.flat();
   } catch {
@@ -723,27 +870,43 @@ async function prepareFaceCrop(
   box: FaceBox,
 ): Promise<PreparedFaceCrop> {
   const imageManipulator = await import("expo-image-manipulator");
-  const thumbnail = await imageManipulator.manipulateAsync(
-    imageUri,
-    [
-      { crop: paddedCrop(asset, box) },
-      {
-        resize: {
-          width: FACE_THUMBNAIL_SIZE,
-          height: FACE_THUMBNAIL_SIZE,
+  let thumbnailUri: string | undefined;
+  try {
+    const thumbnail = await imageManipulator.manipulateAsync(
+      imageUri,
+      [
+        { crop: paddedCrop(asset, box) },
+        {
+          resize: {
+            width: FACE_THUMBNAIL_SIZE,
+            height: FACE_THUMBNAIL_SIZE,
+          },
         },
+      ],
+      {
+        base64: true,
+        compress: 0.85,
+        format: imageManipulator.SaveFormat.JPEG,
       },
-    ],
-    {
-      base64: true,
-      compress: 0.85,
-      format: imageManipulator.SaveFormat.JPEG,
-    },
-  );
-  if (!thumbnail.base64) {
-    throw new Error("Image manipulator returned no face pixels.");
+    );
+    thumbnailUri = thumbnail.uri;
+    if (!thumbnail.base64) {
+      throw new Error("Image manipulator returned no face pixels.");
+    }
+    return { uri: thumbnail.uri, base64: thumbnail.base64 };
+  } catch (error) {
+    if (thumbnailUri) await deleteFaceCrop(thumbnailUri);
+    throw error;
   }
-  return { uri: thumbnail.uri, base64: thumbnail.base64 };
+}
+
+async function deleteFaceCrop(uri: string): Promise<void> {
+  try {
+    const fileSystem = await fileSystemModule();
+    await fileSystem.deleteAsync(uri, { idempotent: true });
+  } catch {
+    // Image-manipulator cache cleanup is best-effort.
+  }
 }
 
 function createPerceptualFaceEmbedding(crop: PreparedFaceCrop): number[] {
@@ -766,25 +929,24 @@ async function createFaceEmbedding(
   imageUri: string,
   box: FaceBox,
 ): Promise<FaceEmbedding> {
+  const identity = await embedFaceIdentity(asset, imageUri, box);
   const crop = await prepareFaceCrop(asset, imageUri, box);
-  const identity = await embedFaceIdentity(
-    { width: FACE_THUMBNAIL_SIZE, height: FACE_THUMBNAIL_SIZE },
-    crop.uri,
-    {
-      x: 0,
-      y: 0,
-      width: FACE_THUMBNAIL_SIZE,
-      height: FACE_THUMBNAIL_SIZE,
-    },
-  );
-  if (identity && validEmbedding(identity)) {
-    return { embedding: identity, kind: "identity", cropUri: crop.uri };
+  let returned = false;
+  try {
+    if (identity && validEmbedding(identity)) {
+      returned = true;
+      return { embedding: identity, kind: "identity", cropUri: crop.uri };
+    }
+    const fallback = createPerceptualFaceEmbedding(crop);
+    returned = true;
+    return {
+      embedding: fallback,
+      kind: "perceptual",
+      cropUri: crop.uri,
+    };
+  } finally {
+    if (!returned) await deleteFaceCrop(crop.uri);
   }
-  return {
-    embedding: createPerceptualFaceEmbedding(crop),
-    kind: "perceptual",
-    cropUri: crop.uri,
-  };
 }
 
 async function persistCoverFaceThumbs(
@@ -820,6 +982,8 @@ async function persistCoverFaceThumbs(
     }
   } catch {
     // Face avatars are optional; full-frame cover images remain available.
+  } finally {
+    await Promise.all(candidates.map((candidate) => deleteFaceCrop(candidate.cropUri)));
   }
 }
 
@@ -838,6 +1002,7 @@ function rebuildPeople(threshold: number): void {
     index.threshold,
     FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
   );
+  rebuildPersonIdsByAsset();
 }
 
 function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
@@ -866,16 +1031,61 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
     threshold: index.threshold,
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
   });
+  rebuildPersonIdsByAsset();
   return assignments;
 }
 
-async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
+function notifyFaceProgress(done: number, total: number): void {
+  for (const subscriber of progressSubscribers) {
+    try {
+      subscriber(done, total);
+    } catch {
+      // A screen callback cannot interrupt the shared scan.
+    }
+  }
+}
+
+async function watchAppState(
+  control: { cancelled: boolean; foreground: boolean },
+): Promise<() => void> {
+  try {
+    const { AppState } = await import("react-native");
+    control.foreground = AppState.currentState === "active";
+    const subscription = AppState.addEventListener("change", (state) => {
+      control.foreground = state === "active";
+    });
+    return () => subscription.remove();
+  } catch {
+    control.foreground = true;
+    return () => undefined;
+  }
+}
+
+async function waitForForeground(
+  control: { cancelled: boolean; foreground: boolean },
+): Promise<boolean> {
+  while (!control.cancelled && !control.foreground) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return !control.cancelled;
+}
+
+async function runBuild(
+  opts: BuildFaceIndexOptions,
+  control: { cancelled: boolean; foreground: boolean },
+): Promise<void> {
+  const stopWatching = await watchAppState(control);
   try {
     await loadFaceIndex();
+    if (!(await waitForForeground(control))) {
+      await persistFaceIndex();
+      return;
+    }
     if (!isFaceDetectionAvailable()) {
       index = { ...emptyIndex(), scanComplete: true };
+      rebuildPersonIdsByAsset();
       await persistFaceIndex();
-      opts.onProgress?.(0, 0);
+      notifyFaceProgress(0, 0);
       return;
     }
 
@@ -913,9 +1123,15 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
     let hasNextPage = true;
     let newlyProcessed = 0;
     let targetReached = false;
-    opts.onProgress?.(seenCount(), index.total);
+    let assetsSinceCheckpoint = 0;
+    let lastCheckpointAt = Date.now();
+    notifyFaceProgress(seenCount(), index.total);
 
     while (hasNextPage && !targetReached) {
+      if (!(await waitForForeground(control))) {
+        await persistFaceIndex();
+        return;
+      }
       let page: Awaited<ReturnType<typeof mediaLibrary.getAssetsAsync>>;
       try {
         page = await mediaLibrary.getAssetsAsync({
@@ -931,6 +1147,10 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
 
       index.total = page.totalCount;
       for (let start = 0; start < page.assets.length; start += SCAN_BATCH_SIZE) {
+        if (!(await waitForForeground(control))) {
+          await persistFaceIndex();
+          return;
+        }
         const batch = page.assets.slice(start, start + SCAN_BATCH_SIZE);
         const pending = batch.filter(
           (asset) => !Object.hasOwn(index.processedAssetIds, asset.id),
@@ -942,7 +1162,7 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
         }> = [];
         const observations = await scanFaceAssets(pending, {
           isDetectionAvailable: () => true,
-          detectFaces,
+          detectFaces: (uri, asset) => detectFaces(uri, asset),
           embedFace: createFaceEmbedding,
           onFaceCrop: (observation, cropUri) => {
             faceCropCandidates.push({ observation, cropUri });
@@ -957,8 +1177,16 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
         for (const asset of batch) {
           index.seenAssetIds[asset.id] = true;
         }
-        await persistFaceIndex();
-        opts.onProgress?.(Math.min(seenCount(), index.total), index.total);
+        assetsSinceCheckpoint += batch.length;
+        if (
+          assetsSinceCheckpoint >= CHECKPOINT_ASSETS ||
+          Date.now() - lastCheckpointAt >= CHECKPOINT_INTERVAL_MS
+        ) {
+          await persistFaceIndex();
+          assetsSinceCheckpoint = 0;
+          lastCheckpointAt = Date.now();
+        }
+        notifyFaceProgress(Math.min(seenCount(), index.total), index.total);
         await yieldToEventLoop();
         if (
           incrementalTarget !== null &&
@@ -972,10 +1200,15 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
       after = page.endCursor;
       index.cursor = after;
       hasNextPage = page.hasNextPage;
-      await persistFaceIndex();
       if (page.assets.length === 0 && hasNextPage) {
+        await persistFaceIndex();
         return;
       }
+    }
+
+    if (control.cancelled) {
+      await persistFaceIndex();
+      return;
     }
 
     index.observations = index.observations.filter((observation) =>
@@ -992,9 +1225,11 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
     index.total = seenCount();
     await persistFaceIndex();
     logEmbeddingPath("scan complete");
-    opts.onProgress?.(index.total, index.total);
+    notifyFaceProgress(index.total, index.total);
   } catch {
     await persistFaceIndex();
+  } finally {
+    stopWatching();
   }
 }
 
@@ -1005,13 +1240,26 @@ async function runBuild(opts: BuildFaceIndexOptions): Promise<void> {
 export function buildFaceIndex(
   opts: BuildFaceIndexOptions = {},
 ): Promise<void> {
+  if (opts.onProgress) progressSubscribers.add(opts.onProgress);
   if (activeBuild) {
+    if (opts.onProgress) {
+      opts.onProgress(Math.min(seenCount(), index.total), index.total);
+    }
     return activeBuild;
   }
-  activeBuild = runBuild(opts).finally(() => {
+  const control = { cancelled: false, foreground: true };
+  activeScanControl = control;
+  activeBuild = runBuild(opts, control).finally(() => {
     activeBuild = null;
+    activeScanControl = null;
+    progressSubscribers.clear();
   });
   return activeBuild;
+}
+
+/** Stops the active face scan after its current bounded batch is settled. */
+export function stopFaceIndexBuild(): void {
+  if (activeScanControl) activeScanControl.cancelled = true;
 }
 
 export function getPeople(): FaceIndexPerson[] {
@@ -1026,10 +1274,7 @@ export function assetIdsForPerson(personId: string): string[] {
 
 /** High-confidence local person clusters present in one asset. */
 export function personIdsForAsset(assetId: string): string[] {
-  return index.people
-    .filter((person) => person.assetIds.includes(assetId))
-    .map((person) => person.id)
-    .sort();
+  return personIdsByAsset.get(assetId)?.slice() ?? [];
 }
 
 export function faceIndexStatus(): FaceIndexStatus {

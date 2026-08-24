@@ -3,6 +3,8 @@ import { decode as decodeJpeg } from "jpeg-js";
 import type { FaceBox } from "../faces/face-detector";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { alignDecodedPatch, patchCropRect, patchGeometry, PATCH_SIZE } from "./face-crop.ts";
 
 const INPUT_SIZE = 112;
 const EMBEDDING_SIZE = 192;
@@ -47,6 +49,12 @@ export async function embedFaceIdentity(
   imageUri: string,
   box: FaceBox,
 ): Promise<number[] | undefined> {
+  if (
+    box.headEulerAngleY !== undefined &&
+    Math.abs(box.headEulerAngleY) > 45
+  ) {
+    return undefined;
+  }
   const job = inferenceQueue.then(async () => {
     try {
       const model = await loadModel();
@@ -133,34 +141,106 @@ async function faceFloatTensor(
   imageUri: string,
   box: FaceBox,
 ): Promise<Float32Array> {
-  const imageManipulator = await import("expo-image-manipulator");
-  const face = await imageManipulator.manipulateAsync(
-    imageUri,
-    [
-      { crop: squareFaceCrop(asset, box) },
-      { resize: { width: INPUT_SIZE, height: INPUT_SIZE } },
-    ],
-    {
-      base64: true,
-      compress: 0.95,
-      format: imageManipulator.SaveFormat.JPEG,
-    },
-  );
-  if (!face.base64) {
-    throw new Error("MobileFaceNet preprocessing returned no pixels.");
+  if (box.landmarks) {
+    const aligned = await alignedFaceFloatTensor(asset, imageUri, box);
+    if (aligned) return aligned;
   }
+  return boundingBoxFaceFloatTensor(asset, imageUri, box);
+}
 
-  const decoded = decodeJpeg(decodeBase64(face.base64), {
+async function alignedFaceFloatTensor(
+  asset: FaceImageAsset,
+  imageUri: string,
+  box: FaceBox,
+): Promise<Float32Array | undefined> {
+  if (!box.landmarks) return undefined;
+  const geometry = patchGeometry(asset, box);
+  if (!geometry) return undefined;
+  const imageManipulator = await import("expo-image-manipulator");
+  let faceUri: string | undefined;
+  try {
+    const face = await imageManipulator.manipulateAsync(
+      imageUri,
+      [
+        { crop: patchCropRect(geometry) },
+        { resize: { width: PATCH_SIZE, height: PATCH_SIZE } },
+      ],
+      {
+        base64: true,
+        compress: 0.95,
+        format: imageManipulator.SaveFormat.JPEG,
+      },
+    );
+    faceUri = face.uri;
+    if (!face.base64) return undefined;
+    const decoded = decodeFaceJpeg(face.base64, PATCH_SIZE);
+    const aligned = alignDecodedPatch(
+      decoded.data,
+      decoded.width,
+      decoded.height,
+      box.landmarks,
+      geometry,
+    );
+    return aligned ? normalizeFaceRgb(aligned, INPUT_SIZE, INPUT_SIZE) : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (faceUri) await deleteManipulatorOutput(faceUri);
+  }
+}
+
+async function boundingBoxFaceFloatTensor(
+  asset: FaceImageAsset,
+  imageUri: string,
+  box: FaceBox,
+): Promise<Float32Array> {
+  const imageManipulator = await import("expo-image-manipulator");
+  let faceUri: string | undefined;
+  try {
+    const face = await imageManipulator.manipulateAsync(
+      imageUri,
+      [
+        { crop: squareFaceCrop(asset, box) },
+        { resize: { width: INPUT_SIZE, height: INPUT_SIZE } },
+      ],
+      {
+        base64: true,
+        compress: 0.95,
+        format: imageManipulator.SaveFormat.JPEG,
+      },
+    );
+    faceUri = face.uri;
+    if (!face.base64) {
+      throw new Error("MobileFaceNet preprocessing returned no pixels.");
+    }
+    const decoded = decodeFaceJpeg(face.base64, INPUT_SIZE);
+    return normalizeFacePixels(decoded.data, decoded.width, decoded.height);
+  } finally {
+    if (faceUri) await deleteManipulatorOutput(faceUri);
+  }
+}
+
+function decodeFaceJpeg(base64: string, expectedSize: number) {
+  const decoded = decodeJpeg(decodeBase64(base64), {
     useTArray: true,
     formatAsRGBA: true,
     tolerantDecoding: true,
     maxResolutionInMP: 1,
     maxMemoryUsageInMB: 8,
   });
-  if (decoded.width !== INPUT_SIZE || decoded.height !== INPUT_SIZE) {
+  if (decoded.width !== expectedSize || decoded.height !== expectedSize) {
     throw new Error("MobileFaceNet preprocessing returned the wrong image size.");
   }
-  return normalizeFacePixels(decoded.data, decoded.width, decoded.height);
+  return decoded;
+}
+
+async function deleteManipulatorOutput(uri: string): Promise<void> {
+  try {
+    const fileSystem = await import("expo-file-system/legacy");
+    await fileSystem.deleteAsync(uri, { idempotent: true });
+  } catch {
+    // Best-effort cache cleanup; inference must stay fail-neutral.
+  }
 }
 
 /** Makes a padded square crop and shifts it inside the source image bounds. */
@@ -204,7 +284,7 @@ export function squareFaceCrop(
   return { originX, originY, width: side, height: side };
 }
 
-/** Converts RGBA pixels to the model's RGB float range, (channel - 128) / 128. */
+/** Converts RGBA pixels to RGB floats in the ArcFace range (x - 127.5) / 127.5. */
 export function normalizeFacePixels(
   rgba: Uint8Array,
   width: number,
@@ -225,9 +305,32 @@ export function normalizeFacePixels(
   for (let pixel = 0; pixel < pixelCount; pixel += 1) {
     const source = pixel * 4;
     const target = pixel * 3;
-    values[target] = (rgba[source] - 128) / 128;
-    values[target + 1] = (rgba[source + 1] - 128) / 128;
-    values[target + 2] = (rgba[source + 2] - 128) / 128;
+    values[target] = (rgba[source] - 127.5) / 127.5;
+    values[target + 1] = (rgba[source + 1] - 127.5) / 127.5;
+    values[target + 2] = (rgba[source + 2] - 127.5) / 127.5;
+  }
+  return values;
+}
+
+/** Converts an already aligned packed RGB image to the ArcFace float range. */
+export function normalizeFaceRgb(
+  rgb: Uint8Array,
+  width: number,
+  height: number,
+): Float32Array {
+  const componentCount = width * height * 3;
+  if (
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width < 1 ||
+    height < 1 ||
+    rgb.length < componentCount
+  ) {
+    throw new Error("RGB buffer is incomplete.");
+  }
+  const values = new Float32Array(componentCount);
+  for (let index = 0; index < componentCount; index += 1) {
+    values[index] = (rgb[index] - 127.5) / 127.5;
   }
   return values;
 }
