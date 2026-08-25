@@ -51,6 +51,10 @@ import { colors, layout, radii, spacing, typeScale } from "../tokens";
 import type { NamePersonTarget } from "./NamePersonScreen";
 
 const PAGE_SIZE = 180;
+/** One beat after the first tiles land, so the grid wins the race it used to lose. */
+const SCAN_START_DELAY_MS = 600;
+/** Rail rebuilds are expensive; once a second reads as live and leaves the thread free. */
+const RAIL_REFRESH_MS = 1000;
 const FILTER_BURST_TARGET = 120;
 const FILTER_PAGE_GUARD = 400;
 const GRID_COLUMNS = 3;
@@ -159,9 +163,11 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
   const [placeScan, setPlaceScan] = useState<{ done: number; total: number } | null>(null);
   const [access, setAccess] = useState<PhotoAccess>(NO_PHOTO_ACCESS);
   const [accessDismissed, setAccessDismissed] = useState(false);
+  const [indexesReady, setIndexesReady] = useState(false);
   const cursor = useRef<string | undefined>(undefined);
   const hasNextPage = useRef(true);
   const loadingPage = useRef(false);
+  const scansStarted = useRef(false);
 
   const refreshIndexes = useCallback(() => {
     const nextPeople = getPeople();
@@ -192,11 +198,38 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
     setPlaces(nextPlaces);
   }, []);
 
+  // Rebuilding the rails walks every person and every place tier, and the scan
+  // reports progress once per batch. Doing the full rebuild on each tick meant
+  // the scan spent most of the JS thread redrawing two rails nobody was looking
+  // at yet, while the grid waited its turn. A rail that updates once a second is
+  // indistinguishable to a reader and leaves the thread free to paint.
+  const lastRailRefresh = useRef(0);
+  const railTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshRailsSoon = useCallback(() => {
+    const since = Date.now() - lastRailRefresh.current;
+    if (since >= RAIL_REFRESH_MS) {
+      lastRailRefresh.current = Date.now();
+      refreshIndexes();
+      return;
+    }
+    // A trailing call is already queued; it will pick up the newest index.
+    if (railTimer.current) return;
+    railTimer.current = setTimeout(() => {
+      railTimer.current = null;
+      lastRailRefresh.current = Date.now();
+      refreshIndexes();
+    }, RAIL_REFRESH_MS - since);
+  }, [refreshIndexes]);
+
+  useEffect(() => () => {
+    if (railTimer.current) clearTimeout(railTimer.current);
+  }, []);
+
   const startScans = useCallback(() => {
     void buildIndex({
       onProgress: (done, total) => {
         setPlaceScan({ done, total });
-        refreshIndexes();
+        refreshRailsSoon();
       },
     }).then(refreshIndexes).catch(() => undefined).finally(() => setPlaceScan(null));
     void buildFaceIndex({
@@ -212,7 +245,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
         setScanningPeople(false);
         setFaceScan(null);
       });
-  }, [refreshIndexes]);
+  }, [refreshIndexes, refreshRailsSoon]);
 
   useEffect(() => {
     let active = true;
@@ -227,13 +260,22 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
           setStatus("denied");
           return;
         }
-        await Promise.all([loadIndex(), loadFaceIndex()]);
-        if (!active) return;
-        logFaceIndexDiagnostics("photos hydrated");
-        refreshIndexes();
+        // The grid needs MediaLibrary and nothing else, so it must not wait on
+        // the indexes. Hydrating the face index means reading every persisted
+        // observation and re-clustering them — minutes on a real library — and
+        // gating `ready` on that is what made the Photos tab sit on "Loading
+        // your photos…" long after the photos themselves were readable.
         setReloading(true);
         setStatus("ready");
-        startScans();
+
+        // The rails (People, Places) fill in behind the grid as each index
+        // lands, and the scans only start once there is an index to add to.
+        void Promise.all([loadIndex(), loadFaceIndex()]).then(() => {
+          if (!active) return;
+          logFaceIndexDiagnostics("photos hydrated");
+          refreshIndexes();
+          setIndexesReady(true);
+        });
       } catch {
         if (active) setStatus("error");
       }
@@ -312,6 +354,17 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
   useEffect(() => {
     if (status === "ready") void reload();
   }, [filterSet, reload, status]);
+
+  // The scan is the heaviest thing this app does — decoding frames, running the
+  // detector and the embedder — and it runs on the same JS thread that paints
+  // the grid. Starting it at mount meant the first tiles queued behind it. Wait
+  // until real photos are on screen, then give the UI one more beat to settle.
+  useEffect(() => {
+    if (scansStarted.current || status !== "ready" || !indexesReady || assets.length === 0) return;
+    scansStarted.current = true;
+    const timer = setTimeout(startScans, SCAN_START_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [assets.length, indexesReady, startScans, status]);
 
   const widenAccess = useCallback(() => {
     void (async () => {

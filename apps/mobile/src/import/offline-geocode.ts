@@ -18,9 +18,14 @@
  * neighbourhood across sibling towns — photos around Noida landed variously on
  * "Noida" and "Greater Noida", 20km apart but the same district — and nobody
  * thinks of those as different places. Districts also collapse ~70k cities into
- * ~31.5k places, which is what makes a browsable hierarchy viable.
+ * ~29.6k places, which is what makes a browsable hierarchy viable.
  *
  * Per-city names are not shipped: the label always comes from the district.
+ * GeoNames omits admin2 on many of the largest cities while their suburbs carry
+ * it, so those would each be a lone point place ringed by village-named
+ * districts; the build script adopts them into the nearest district within the
+ * same country and admin1, which is why Delhi photos read as a Delhi district
+ * rather than as "Delhi".
  */
 export type PlaceDataset = {
   v: number;

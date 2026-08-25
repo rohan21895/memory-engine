@@ -222,6 +222,26 @@ function PhoteoApp() {
 
   // Both library scans are singletons with subscriber fan-out, so calling this
   // again just re-attaches to whatever is already running.
+/** Hard cap on waiting for idle: a busy phone must still get its library scanned. */
+const SCAN_IDLE_TIMEOUT_MS = 2500;
+
+/**
+ * Resolves when the JS thread has nothing better to do, or after `timeout`.
+ *
+ * `requestIdleCallback` is the platform's own answer here and is what React
+ * Native points to now that InteractionManager is deprecated. It is feature
+ * detected because it is a host global rather than a module export.
+ */
+function whenIdle(timeout: number): Promise<void> {
+  return new Promise((resolve) => {
+    const idle = (globalThis as {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => void;
+    }).requestIdleCallback;
+    if (typeof idle === "function") idle(() => resolve(), { timeout });
+    else setTimeout(resolve, timeout);
+  });
+}
+
   const startLibraryScan = useCallback(async () => {
     const access = await getPhotoAccess();
     // Limited access still reads photos. Scanning what we can see beats
@@ -243,6 +263,13 @@ function PhoteoApp() {
           await requestPhotoAccess();
         }
       }
+      // The scan decodes frames and runs two models on the same JS thread that
+      // paints the first screen, and it used to start the moment the app
+      // mounted — so the library grid queued behind it and the Photos tab sat
+      // on "Loading your photos…". Waiting for the thread to go idle hands the
+      // first paint to the UI; the timeout is the guarantee that a phone which
+      // never goes idle still scans.
+      await whenIdle(SCAN_IDLE_TIMEOUT_MS);
       await startLibraryScan();
     })().catch(() => undefined);
   }, [startLibraryScan]);

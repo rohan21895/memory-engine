@@ -36,6 +36,19 @@ const INDEX_VERSION = 21;
 const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
+/**
+ * Calibration instrumentation: the impostor sweep and the alignment probe.
+ *
+ * These are how the mirrored-alignment collapse was found, so they stay in the
+ * tree — but the sweep is O(n^2) over a sample of the whole index and the probe
+ * re-runs the real pipeline over fresh photos. Measured on device they cost
+ * minutes, during which nothing else on the JS thread makes progress. Flip to
+ * true and rebuild to re-measure; it must never ship on.
+ *
+ * Typed `boolean` rather than left as a literal so the guarded bodies below do
+ * not narrow to unreachable code.
+ */
+const FACE_DIAGNOSTICS: boolean = false;
 const SCAN_BATCH_SIZE = 32;
 /**
  * Held at 2 on purpose, and not a guess.
@@ -325,21 +338,29 @@ function logEmbeddingPath(context: string): void {
     shared: number;
     similarity: number;
   }> = [];
-  for (let first = 0; first < index.people.length; first += 1) {
-    for (let second = first + 1; second < index.people.length; second += 1) {
-      const a = index.people[first];
-      const b = index.people[second];
-      if (a.embeddingKind !== b.embeddingKind) continue;
-      const bAssets = new Set(b.assetIds);
-      closestPairs.push({
-        a: a.id,
-        b: b.id,
-        shared: a.assetIds.reduce(
-          (count, assetId) => count + Number(bAssets.has(assetId)),
-          0,
-        ),
-        similarity: cosine(a.centroid, b.centroid),
-      });
+  // The closest-pair scan is O(people^2) and allocates a Set of one person's
+  // asset ids per pair. On a real library that is ~500 people, so ~125k pairs,
+  // each doing a 192-dim cosine and building a Set: measured at 2.8 SECONDS of
+  // blocked JS thread, at app start, to print a single log line. It answers a
+  // calibration question — is some pair of clusters obviously the same person —
+  // so it belongs behind the same switch as the rest of the calibration work.
+  if (FACE_DIAGNOSTICS) {
+    for (let first = 0; first < index.people.length; first += 1) {
+      for (let second = first + 1; second < index.people.length; second += 1) {
+        const a = index.people[first];
+        const b = index.people[second];
+        if (a.embeddingKind !== b.embeddingKind) continue;
+        const bAssets = new Set(b.assetIds);
+        closestPairs.push({
+          a: a.id,
+          b: b.id,
+          shared: a.assetIds.reduce(
+            (count, assetId) => count + Number(bAssets.has(assetId)),
+            0,
+          ),
+          similarity: cosine(a.centroid, b.centroid),
+        });
+      }
     }
   }
   const pairSummary = closestPairs
@@ -381,6 +402,7 @@ function logEmbeddingPath(context: string): void {
 let alignmentProbeDone = false;
 
 export async function probeFaceAlignment(photos = 6, faces = 3): Promise<void> {
+  if (!FACE_DIAGNOSTICS) return;
   if (alignmentProbeDone || !isFaceDetectionAvailable()) return;
   alignmentProbeDone = true;
   try {
@@ -572,6 +594,7 @@ function sweepThresholds(
 }
 
 export function logSimilarityStructure(context = "status"): void {
+  if (!FACE_DIAGNOSTICS) return;
   const sample = sampleObservations(SIMILARITY_SAMPLE);
   if (sample.length < 8) {
     console.warn(`[PhoteoFaceSim] ${context} too few observations (${sample.length})`);
@@ -1022,7 +1045,17 @@ async function readPersistedIndex(
   uri: string,
 ): Promise<PersistedFaceIndex | null> {
   try {
-    return parseIndex(await fileSystem.readAsStringAsync(uri));
+    const readAt = Date.now();
+    const raw = await fileSystem.readAsStringAsync(uri);
+    const parsedAt = Date.now();
+    const parsed = parseIndex(raw);
+    // Hydration blocks the JS thread, so the split between reading bytes and
+    // parsing them is what says whether the file is too big or the shape is.
+    console.warn(
+      `[PhoteoFaceIndex] read bytes=${raw.length} readMs=${parsedAt - readAt} ` +
+        `parseMs=${Date.now() - parsedAt}`,
+    );
+    return parsed;
   } catch {
     return null;
   }
@@ -1037,6 +1070,8 @@ async function hydrateFaceIndex(): Promise<void> {
     const uri = `${fileSystem.documentDirectory}${INDEX_FILENAME}`;
     const temporary = await readPersistedIndex(fileSystem, `${uri}.tmp`);
     if (temporary) {
+      // Recovering from a `.tmp` means the last write was interrupted, so the
+      // real file is missing or stale. Stay dirty and rewrite it.
       index = temporary;
       rebuildPersonIdsByAsset();
       return;
@@ -1045,6 +1080,10 @@ async function hydrateFaceIndex(): Promise<void> {
     if (saved) {
       index = saved;
       rebuildPersonIdsByAsset();
+      // Just read from disk, so by definition it matches disk. This is what
+      // lets an app open that scans nothing skip the multi-second rewrite.
+      indexDirty = false;
+      persistedShape = indexShape();
     }
   } catch {
     // An in-memory index is still usable when durable storage is unavailable.
@@ -1077,11 +1116,76 @@ export function loadFaceIndex(): Promise<void> {
   return hydration;
 }
 
+/**
+ * Whether the in-memory index has diverged from the file on disk.
+ *
+ * Persisting is `JSON.stringify` over the whole index: measured at 3161ms for a
+ * 3MB index, on the same JS thread that paints the photo grid. A scan pass that
+ * finds nothing new used to pay that on every single app open, which is most of
+ * what made the Photos tab feel stuck.
+ *
+ * Skipping a write that was needed loses the user's scan, so this fails safe:
+ * it starts dirty, is cleared ONLY by a write that completed, and is re-set by
+ * anything that touches the index — including a mutation that lands while a
+ * write is already in flight.
+ */
+let indexDirty = true;
+let persistedShape = "";
+
+/**
+ * A cheap fingerprint of everything persisted, as a backstop: if a future
+ * mutation site forgets to call `markIndexDirty`, a changed count still forces
+ * the write. It is a second line of defence, not the primary signal — an
+ * in-place edit that preserves every count is exactly what the dirty flag is
+ * for.
+ */
+function indexShape(): string {
+  return [
+    index.observations.length,
+    index.people.length,
+    Object.keys(index.processedAssetIds).length,
+    Object.keys(index.seenAssetIds).length,
+    Object.keys(index.faceThumbUris).length,
+    index.threshold,
+    index.calibration,
+    index.scanComplete,
+    index.cursor,
+    index.total,
+  ].join(":");
+}
+
+function markIndexDirty(): void {
+  indexDirty = true;
+}
+
+/**
+ * Whether a persist must actually run. Fails safe in both directions: a dirty
+ * index always writes, and an index whose shape moved writes even if nothing
+ * called `markIndexDirty` — so the only skipped write is one where the flag and
+ * the fingerprint agree that disk is already correct.
+ */
+export function shouldPersistIndex(
+  dirty: boolean,
+  shape: string,
+  writtenShape: string,
+): boolean {
+  return dirty || shape !== writtenShape;
+}
+
 async function persistFaceIndex(): Promise<void> {
+  if (!shouldPersistIndex(indexDirty, indexShape(), persistedShape)) {
+    traceScanCount("persistSkipped");
+    return;
+  }
   const startedAt = Date.now();
+  // Cleared before the await, so a mutation arriving mid-write re-dirties the
+  // index and is picked up by the next pass rather than being swallowed.
+  indexDirty = false;
+  const shapeAtWrite = indexShape();
   try {
     const fileSystem = await fileSystemModule();
     if (!fileSystem.documentDirectory) {
+      indexDirty = true;
       return;
     }
     const uri = `${fileSystem.documentDirectory}${INDEX_FILENAME}`;
@@ -1092,8 +1196,10 @@ async function persistFaceIndex(): Promise<void> {
     );
     await fileSystem.deleteAsync(uri, { idempotent: true });
     await fileSystem.moveAsync({ from: temporaryUri, to: uri });
+    persistedShape = shapeAtWrite;
   } catch {
     // A later batch retries; the in-memory query index remains available.
+    indexDirty = true;
   } finally {
     traceScanStage("persist", startedAt);
   }
@@ -1749,6 +1855,7 @@ async function persistCoverFaceThumbs(
           to: destination,
         });
         index.faceThumbUris[personId] = destination;
+        markIndexDirty();
       } catch {
         // A missing cache crop or filesystem failure must not stop the scan.
       }
@@ -1781,6 +1888,7 @@ function calibrationForLibrary(): { rule: string; threshold: number; centered: b
 function rebuildPeople(requested?: number): void {
   const calibration = calibrationForLibrary();
   index.calibration = calibration.rule;
+  markIndexDirty();
   // Recomputed only here, where every person is rebuilt in the same pass, so no
   // stored centroid is ever left in a different space than the mean it used.
   index.embeddingMean = calibration.centered
@@ -1788,6 +1896,7 @@ function rebuildPeople(requested?: number): void {
     : undefined;
   index.threshold = safeThreshold(requested ?? calibration.threshold);
   index.people = peopleFromObservations(index.observations, index.threshold);
+  markIndexDirty();
   rebuildPersonIdsByAsset();
 }
 
@@ -1827,6 +1936,9 @@ function reclusterIfCalibrationChanged(threshold?: number): boolean {
 
 function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
   const assignments = new Map<FaceObservation, string>();
+  // Marked before the call, not after: onMerge mutates faceThumbUris as it
+  // goes, so a throw partway through still leaves the index dirty.
+  markIndexDirty();
   index.people = extendFaceClusters(index.people, centeredForClustering(observations), {
     ...faceClusterOptions(index.threshold),
     onAssign: (observation, personId) => assignments.set(observation, personId),
@@ -1907,6 +2019,7 @@ async function runBuild(
     }
     if (!isFaceDetectionAvailable()) {
       index = { ...emptyIndex(), scanComplete: true };
+      markIndexDirty();
       rebuildPersonIdsByAsset();
       await persistFaceIndex();
       notifyFaceProgress(0, 0);
@@ -1946,6 +2059,7 @@ async function runBuild(
       }
       index.cursor = null;
       index.scanComplete = false;
+      markIndexDirty();
       await persistFaceIndex();
     }
 
@@ -2006,10 +2120,12 @@ async function runBuild(
         traceScanCount("photos", pending.length);
         traceScanCount("faces", observations.length);
         index.observations.push(...observations);
+        markIndexDirty();
         const assignments = appendPeople(observations);
         await persistCoverFaceThumbs(faceCropCandidates, assignments);
         for (const asset of pending) {
           index.processedAssetIds[asset.id] = true;
+          markIndexDirty();
         }
         for (const asset of batch) {
           index.seenAssetIds[asset.id] = true;
@@ -2061,6 +2177,7 @@ async function runBuild(
     rebuildPeople(opts.threshold ?? index.threshold);
     index.cursor = null;
     index.scanComplete = true;
+    markIndexDirty();
     index.total = seenCount();
     await persistFaceIndex();
     logEmbeddingPath("scan complete");
