@@ -97,14 +97,17 @@ assert(clusterFaces([]).length === 0, "empty input should return an empty array"
     similarity,
     Math.sqrt(1 - similarity * similarity),
   ];
-  // 0.50 clears the requested 0.45 merge bar but not the 0.62 assignment bar,
-  // so the clamp is the only thing standing between these two and one tile.
+  // Positioned relative to the live bar rather than written as a literal: the
+  // pair clears the requested merge bar but NOT the assignment bar, so the
+  // clamp is the only thing standing between these two and one tile.
+  const underBar = Number((DEFAULT_IDENTITY_THRESHOLD - 0.03).toFixed(4));
+  const requestedMerge = Number((DEFAULT_IDENTITY_THRESHOLD - 0.08).toFixed(4));
   const clamped = clusterFaces(
     [
       { assetId: "a", embedding: [1, 0], embeddingKind: "identity" },
-      { assetId: "b", embedding: atCosine(0.5), embeddingKind: "identity" },
+      { assetId: "b", embedding: atCosine(underBar), embeddingKind: "identity" },
     ],
-    { identityMergeThreshold: 0.45 },
+    { identityMergeThreshold: requestedMerge },
   );
   assert(
     clamped.length === 2,

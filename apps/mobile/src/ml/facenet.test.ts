@@ -1,5 +1,5 @@
 // @ts-expect-error Node requires the extension; Metro resolves it too.
-import { decodeBase64, normalizeFacePixels, normalizeFaceRgb, parseFaceEmbeddingOutput, squareFaceCrop } from "./facenet.ts";
+import { EMBEDDING_SIZE, decodeBase64, normalizeFacePixels, normalizeFaceRgb, parseFaceEmbeddingOutput, squareFaceCrop } from "./facenet.ts";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(`MobileFaceNet self-check failed: ${message}`);
@@ -84,11 +84,14 @@ function close(actual: number, expected: number, message: string): void {
 }
 
 {
-  const output = new Float32Array(192);
+  // Sized from the constant, not from a literal: the embedding width changed
+  // from 192 to 512 with the w600k_mbf swap, and a hard-coded fixture would
+  // have gone on passing against a model that no longer exists.
+  const output = new Float32Array(EMBEDDING_SIZE);
   output[0] = 3;
   output[1] = 4;
   const embedding = parseFaceEmbeddingOutput(output.buffer);
-  assert(embedding?.length === 192, "the complete embedding is parsed");
+  assert(embedding?.length === EMBEDDING_SIZE, "the complete embedding is parsed");
   close(embedding[0], 0.6, "the output is L2-normalized");
   close(embedding[1], 0.8, "the output is L2-normalized");
   assert(
@@ -96,7 +99,7 @@ function close(actual: number, expected: number, message: string): void {
     "a short tensor fails neutral",
   );
   assert(
-    parseFaceEmbeddingOutput(new Float32Array(192).buffer) === undefined,
+    parseFaceEmbeddingOutput(new Float32Array(EMBEDDING_SIZE).buffer) === undefined,
     "a zero tensor fails neutral",
   );
 }

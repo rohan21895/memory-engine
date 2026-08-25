@@ -1,7 +1,7 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { faceClusterOptions, summariesForPeople } from "./face-index.ts";
+import { DEFAULT_FACE_INDEX_THRESHOLD, faceClusterOptions, summariesForPeople } from "./face-index.ts";
 import type { Person } from "./types";
 
 // Local assert to match the house test style (the app tsconfig has no
@@ -28,14 +28,22 @@ function assert(value: unknown, message: string): asserts value {
  *   face = normalize(A*shared + B*identity + C*noise),  A^2+B^2+C^2 = 1
  *
  * giving, in expectation, cosine(same person) = A^2+B^2 and
- * cosine(different people) = A^2. A^2 = 0.18 / A^2+B^2 = 0.70 reproduces the
- * published LFW-scale statistics for this model family, and STATISTICS below
- * asserts the generator actually hits that band before anything else is judged.
+ * cosine(different people) = A^2.
+ *
+ * Recalibrated for w600k_mbf. The old A^2 = 0.18 / A^2+B^2 = 0.70 matched the
+ * 192-dim model, whose impostor median really was ~0.177; measured on 1,471 LFW
+ * crops through the bundled TFLite build, w600k_mbf puts the impostor median at
+ * 0.004 and the genuine median at 0.623. Leaving the old numbers would have put
+ * synthetic impostors at 0.18 against a 0.20 assignment bar — the generator, not
+ * the clusterer, deciding the result. A^2 is held slightly above the measured
+ * impostor median so the fixture stays harder than reality rather than easier.
+ * STATISTICS below asserts the generator actually hits that band before anything
+ * else is judged.
  */
-const EMBEDDING_SIZE = 192;
-const SHARED_WEIGHT = Math.sqrt(0.18);
-const IDENTITY_WEIGHT = Math.sqrt(0.52);
-const NOISE_WEIGHT = Math.sqrt(0.3);
+const EMBEDDING_SIZE = 512;
+const SHARED_WEIGHT = Math.sqrt(0.03);
+const IDENTITY_WEIGHT = Math.sqrt(0.59);
+const NOISE_WEIGHT = Math.sqrt(0.38);
 
 /** mulberry32: a seeded PRNG, so a failure here is reproducible forever. */
 function createRandom(seed: number): () => number {
@@ -165,12 +173,22 @@ const solo = (identity: number, face: number) => `solo-${identity}-${face}`;
     intraMean > 0.6 && intraMean < 0.8,
     `same-person cosine must sit in the ArcFace band (got ${intraMean.toFixed(3)})`,
   );
+  // Band recalibrated with the generator: w600k_mbf separates strangers far
+  // better than the 192-dim model did, so the impostor mean belongs near zero.
+  // A generator still producing 0.1-0.3 impostors would be modelling the OLD
+  // model against the NEW thresholds and would fail for reasons the clusterer
+  // is not responsible for.
   assert(
-    interMean > 0.1 && interMean < 0.3,
-    `different-person cosine must sit in the ArcFace band (got ${interMean.toFixed(3)})`,
+    interMean > 0.005 && interMean < 0.08,
+    `different-person cosine must sit in the w600k_mbf band (got ${interMean.toFixed(3)})`,
   );
+  // The hardest pair has to approach the real tail, not the old model's. My own
+  // measurement on 1,471 LFW crops puts the w600k_mbf impostor p99 at 0.169, so
+  // a worst synthetic pair in that neighbourhood is the honest bar; requiring
+  // 0.3 would demand the generator be less separable than the model it stands in
+  // for.
   assert(
-    interMax > 0.3,
+    interMax > 0.12,
     `the hardest impostor pair must be genuinely hard (got ${interMax.toFixed(3)})`,
   );
 }
@@ -390,14 +408,19 @@ const solo = (identity: number, face: number) => `solo-${identity}-${face}`;
     Array.from({ length: identityCount }, () => 14),
     solo,
   );
+  // 0.37 and 0.62 were the numbers at the time of the defect. What has to keep
+  // holding is the SHAPE — an explicit merge bar below the assignment bar gets
+  // clamped up — so both are now taken from the shipped bars instead of frozen
+  // at values that mean nothing in w600k_mbf space.
+  const LEGACY_MERGE_BAR = Number((DEFAULT_FACE_INDEX_THRESHOLD - 0.05).toFixed(4));
   const withLegacyBar = clusterFaces(faces, {
-    identityMergeThreshold: 0.37,
-    threshold: 0.62,
+    identityMergeThreshold: LEGACY_MERGE_BAR,
+    threshold: DEFAULT_FACE_INDEX_THRESHOLD,
   }) as Cluster[];
   const members = identitiesPerCluster(faces, withLegacyBar);
   assert(
     withLegacyBar.length === identityCount,
-    `the shipped 0.37 merge bar is clamped to the 0.62 assignment bar, so this exact input yields ${identityCount} people (got ${withLegacyBar.length})`,
+    `an explicit sub-assignment merge bar is clamped up, so this exact input yields ${identityCount} people (got ${withLegacyBar.length})`,
   );
   assert(
     members.every((identities) => identities.size === 1),

@@ -12,7 +12,7 @@ import { alignDecodedPatch, alignedPatchGeometry, patchCropRect } from "./face-c
 import { createModelCache } from "./model-cache.ts";
 
 const INPUT_SIZE = 112;
-const EMBEDDING_SIZE = 192;
+export const EMBEDDING_SIZE = 512;
 const FACE_PADDING_SCALE = 1.3;
 const BASE64_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -137,7 +137,7 @@ async function loadFaceIdentityModel(): Promise<TensorflowModel | undefined> {
     const { loadTensorflowModel } = await import("react-native-fast-tflite");
     // Static require is required so Metro packages the graph in the APK.
     const source = await bundledTfliteSource(
-      require("../../assets/models/mobilefacenet-192-float32.tflite") as number,
+      require("../../assets/models/w600k-mbf-512-float32.tflite") as number,
     );
     // The empty delegate list means XNNPACK CPU, and it has to stay empty:
     // fast-tflite 3.0.1 hardcodes GPU delegate options with no serialization

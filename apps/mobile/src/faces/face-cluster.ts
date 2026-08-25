@@ -11,8 +11,13 @@ import type { FaceObservation, Person } from "./types";
  * thresholds for ArcFace-family embeddings sit near 0.3-0.45, but clustering
  * must be strictly tighter: assignment errors are transitive, so one bad link
  * merges two entire people.
+ *
+ * Now in w600k_mbf space (512-dim). Measured on 1,471 LFW crops through the
+ * bundled TFLite build, this bar sits between an impostor p99 of 0.169 and a
+ * genuine p05 of 0.423 — a real gap, where the old model's two distributions
+ * overlapped.
  */
-export const DEFAULT_IDENTITY_THRESHOLD = 0.62;
+export const DEFAULT_IDENTITY_THRESHOLD = 0.39;
 
 /**
  * Cluster-to-cluster merging is the transitive step, so it is tighter still.
@@ -20,7 +25,7 @@ export const DEFAULT_IDENTITY_THRESHOLD = 0.62;
  * far weaker evidence than two faces being similar, and a single wrong merge is
  * unrecoverable for the user (two people permanently fused under one name).
  */
-export const DEFAULT_MERGE_THRESHOLD = 0.72;
+export const DEFAULT_MERGE_THRESHOLD = 0.6;
 
 export const DEFAULT_PERCEPTUAL_THRESHOLD = 0.92;
 
@@ -32,10 +37,17 @@ export const DEFAULT_PERCEPTUAL_THRESHOLD = 0.92;
  * siblings collapse into a single tile, which is the worst-looking failure in a
  * family library. The exception is a face that legitimately appears twice in a
  * single frame — mirrors, panorama stitches, collages, photos-of-photos — and
- * those land far above any identity bar. Cosine >= 0.85 (d_cos < 0.15) is that
- * exception; anything below stays split even when the identity threshold passes.
+ * those land far above any identity bar; anything below the bar stays split even
+ * when the identity threshold passes.
+ *
+ * Ported with the w600k_mbf swap by holding its old offset above the merge bar
+ * (0.85 against a 0.72 merge). Unlike the identity bar this offset is NOT
+ * separately measured — there is no labelled corpus of mirrors and collages to
+ * measure against. It fails safe: too high only leaves a legitimate
+ * double-appearance split into two people, which the user can merge by hand,
+ * whereas too low fuses a parent with their child irreversibly.
  */
-export const SAME_PHOTO_EXCEPTION_SIMILARITY = 0.85;
+export const SAME_PHOTO_EXCEPTION_SIMILARITY = 0.72;
 
 /** True when two people draw on at least one common photo (a cannot-link). */
 function sharesAsset(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {

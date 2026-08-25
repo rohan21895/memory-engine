@@ -32,7 +32,7 @@ import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 // 112px template; it is 3.8px now. Those embeddings cannot be salvaged by
 // re-clustering, so this is the rare case where discarding them and re-scanning
 // is the correct call rather than the lazy one.
-const INDEX_VERSION = 21;
+const INDEX_VERSION = 22;
 const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
@@ -100,8 +100,19 @@ const BASE64_VALUES = (() => {
   return table;
 })();
 
-/** ArcFace/MobileFaceNet-space cosine threshold for high-precision identity. */
-export const DEFAULT_FACE_INDEX_THRESHOLD = 0.4;
+/**
+ * Cosine bar for high-precision identity in w600k_mbf space.
+ *
+ * Ported from the previous model's 0.40 by matching FAR rather than by keeping
+ * the number, because the two spaces are not comparable: measured on 1,471 LFW
+ * crops through the bundled TFLite build, w600k_mbf puts the impostor p99 at
+ * 0.169 and the genuine p05 at 0.423, where the old 192-dim model sat at an
+ * impostor median of 0.177 with far more overlap.
+ *
+ * Everything in this file that names a cosine is in THIS space now. A bar
+ * carried over from the old model reads as far stricter than it is.
+ */
+export const DEFAULT_FACE_INDEX_THRESHOLD = 0.2;
 
 /**
  * Identifies HOW the persisted people were grouped, not just at what bar.
@@ -120,20 +131,24 @@ export const DEFAULT_FACE_INDEX_THRESHOLD = 0.4;
  * embedding, re-scanning the whole library for what is a cheap recomputation
  * over data already on disk.
  */
-export const CLUSTER_CALIBRATION = "avg-linkage-aligned-1";
+export const CLUSTER_CALIBRATION = "avg-linkage-w600k-mbf-1";
 
 /**
  * Bar for the CENTERED space, and only valid there.
  *
- * Centering shifts the whole distribution: measured on 13,459 real faces the
- * impostor median moves from +0.725 (raw) to -0.015 (centered), so a bar that
- * is sane in one space is badly wrong in the other. 0.62 applied to centered
- * embeddings shatters identities; 0.35 applied to RAW embeddings merges
+ * Centering shifts the whole distribution, so a bar that is sane in one space
+ * is badly wrong in the other: a raw-space bar applied to centered embeddings
+ * shatters identities, and a centered bar applied to RAW embeddings merges
  * strangers. These two constants and CLUSTER_CALIBRATION move together or not
  * at all.
+ *
+ * Ported alongside the model swap by the same ratio as the raw bar. Unlike the
+ * raw bar this one is NOT independently measured in w600k_mbf space — centered
+ * clustering is still behind USE_CENTERED_CLUSTERING = false, so nothing runs
+ * on it. Measure before switching it on.
  */
-export const CENTERED_FACE_INDEX_THRESHOLD = 0.35;
-export const CENTERED_CLUSTER_CALIBRATION = "centered-avg-linkage-1";
+export const CENTERED_FACE_INDEX_THRESHOLD = 0.17;
+export const CENTERED_CLUSTER_CALIBRATION = "centered-avg-linkage-w600k-mbf-1";
 
 /**
  * Centering needs a POPULATION to estimate a mean from. With a handful of faces

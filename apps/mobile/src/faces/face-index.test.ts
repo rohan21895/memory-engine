@@ -1,3 +1,5 @@
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { SAME_PHOTO_EXCEPTION_SIMILARITY } from "./face-cluster.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { CENTERED_FACE_INDEX_THRESHOLD, DEFAULT_FACE_INDEX_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
 
@@ -116,13 +118,20 @@ assert(
   // in that band, so the second person was destroyed before clustering saw
   // them. Hence the 0.78 co-face below is now KEPT (three, not two).
   const duplicate = { assetId: "same-photo", embedding: [1, 0], embeddingKind: "identity" as const };
-  // Three faces at 0, 40 and 80 degrees: every pair sits at cosine 0.77 or
-  // lower, i.e. inside the old 0.75-0.85 disagreement band but below the
-  // same-photo exception. Three people in one frame, all three kept.
+  // Three faces spread far enough that EVERY pair sits below the same-photo
+  // exception — three people in one frame, all three kept. The spread is
+  // derived from the bar: at 0.85 these could sit 40 degrees apart, but in
+  // w600k_mbf space the exception is lower, so they have to be further apart to
+  // still be three distinct people rather than one face found three times.
+  const spreadDegrees = (Math.acos(SAME_PHOTO_EXCEPTION_SIMILARITY) * 180) / Math.PI * 1.15;
+  const atDegrees = (degrees: number): number[] => [
+    Math.cos((degrees * Math.PI) / 180),
+    Math.sin((degrees * Math.PI) / 180),
+  ];
   const cleaned = dedupeFaceObservations([
     duplicate,
-    { ...duplicate, embedding: [0.766, 0.643] },
-    { ...duplicate, embedding: [0.1736, 0.9848] },
+    { ...duplicate, embedding: atDegrees(spreadDegrees) },
+    { ...duplicate, embedding: atDegrees(spreadDegrees * 2) },
   ]);
   assert(cleaned.length === 3, "co-faces below the same-photo exception survive as separate people");
   const repeats = dedupeFaceObservations([
@@ -188,14 +197,15 @@ assert(
   // construction. Clustering now runs on CENTERED embeddings, where the
   // measured impostor median is -0.015 and p99 is 0.533, so the bar belongs far
   // lower. Move these two together or not at all.
-  // 0.40 is an operating point, not a guess: measured on labelled faces with
-  // this exact model and correct alignment, it gives TAR 88.0% / FAR 0.63%.
+  // 0.20 is an operating point, not a guess: in w600k_mbf space, measured on
+  // 1,471 LFW crops through the bundled TFLite build, the impostor p99 is 0.169
+  // and the genuine p05 is 0.423, so this bar sits inside a real gap.
   assert(
-    DEFAULT_FACE_INDEX_THRESHOLD === 0.4,
-    "the RAW bar is the measured TAR/FAR operating point",
+    DEFAULT_FACE_INDEX_THRESHOLD === 0.2,
+    "the RAW bar is the measured w600k_mbf operating point",
   );
   assert(
-    CENTERED_FACE_INDEX_THRESHOLD === 0.35,
+    CENTERED_FACE_INDEX_THRESHOLD === 0.17,
     "the CENTERED bar is calibrated for a distribution whose impostor median is ~0",
   );
   // The whole point of keeping two constants: a bar is meaningless without the

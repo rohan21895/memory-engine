@@ -1,5 +1,5 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, extendFaceClusters } from "./face-cluster.ts";
+import { DEFAULT_IDENTITY_THRESHOLD, DEFAULT_MERGE_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { faceQualityTier, scanFaceAssets } from "./face-index.ts";
 
@@ -27,16 +27,34 @@ const partition = (people: { assetIds: string[] }[]) =>
     .sort()
     .join(" | ");
 
+// Ported with the w600k_mbf swap, holding its old offset above the merge bar.
+// The value matters less than the ordering asserted below it: the exception has
+// to sit ABOVE the merge bar, or a same-photo pair would merge through the
+// normal path and the cannot-link would be decorative.
 assert(
-  SAME_PHOTO_EXCEPTION_SIMILARITY === 0.85,
-  "the mirror/panorama exception stays at cosine 0.85 (d_cos 0.15)",
+  SAME_PHOTO_EXCEPTION_SIMILARITY === 0.72,
+  "the mirror/panorama exception is the w600k_mbf-space bar",
+);
+assert(
+  SAME_PHOTO_EXCEPTION_SIMILARITY > DEFAULT_MERGE_THRESHOLD,
+  "the same-photo exception must be stricter than an ordinary merge",
 );
 
 // (a) Two faces in the SAME photo are two different people — a parent and their
 // child, or two siblings, sit well above the 0.5 identity bar without being the
 // same person. Below the exception they must never end up in one tile, on
 // either the online-assignment path or the agglomerative merge path.
-for (const similarity of [0.6, 0.8, 0.84]) {
+// Derived from the bar, not written as literals: these moved from 0.85-space to
+// 0.72-space with the w600k_mbf swap, and literals would have quietly started
+// testing the opposite case.
+const BELOW_EXCEPTION = [0.15, 0.5, 0.9].map(
+  (fraction) => Number((SAME_PHOTO_EXCEPTION_SIMILARITY * fraction).toFixed(3)),
+);
+const ABOVE_EXCEPTION = [
+  Number((SAME_PHOTO_EXCEPTION_SIMILARITY + 0.02).toFixed(3)),
+  0.95,
+];
+for (const similarity of BELOW_EXCEPTION) {
   const online = clusterFaces(
     [
       { assetId: "group-shot", embedding: [1, 0], embeddingKind: "identity" },
@@ -65,7 +83,7 @@ for (const similarity of [0.6, 0.8, 0.84]) {
 
 // (b) Above the exception the same photo legitimately holds one face twice:
 // mirrors, panorama stitches, collages, a photo of a photo. Both paths merge.
-for (const similarity of [0.86, 0.95]) {
+for (const similarity of ABOVE_EXCEPTION) {
   const online = clusterFaces(
     [
       { assetId: "mirror", embedding: [1, 0], embeddingKind: "identity" },
@@ -252,14 +270,37 @@ assert(
     centroid: atDegrees(degrees),
     embeddingKind: "identity" as const,
   });
+  // The angles are derived from the exception rather than written down, so the
+  // scenario still sets itself up after a model swap moves the bar. The three
+  // setup assertions are the point: if any stops holding, this test is no longer
+  // testing chaining and would pass for the wrong reason.
+  const barDegrees = (Math.acos(SAME_PHOTO_EXCEPTION_SIMILARITY) * 180) / Math.PI;
+  const calDegrees = barDegrees * 1.15;
+  const bridgeDegrees = barDegrees * 0.45;
+  const cosOf = (degrees: number) => Math.cos((degrees * Math.PI) / 180);
+  assert(
+    cosOf(calDegrees) < SAME_PHOTO_EXCEPTION_SIMILARITY,
+    "setup: the forbidden pair starts BELOW the exception",
+  );
+  assert(
+    cosOf(bridgeDegrees) > SAME_PHOTO_EXCEPTION_SIMILARITY,
+    "setup: the bridge is close enough to ana to merge",
+  );
+  assert(
+    cosOf(calDegrees - bridgeDegrees / 2) > SAME_PHOTO_EXCEPTION_SIMILARITY,
+    "setup: after the bridge moves ana's centroid, cal clears the exception",
+  );
   const chained = extendFaceClusters(
     [
       withPhotos("person-1", 0, ["group-shot", "ana-solo"]),
-      withPhotos("person-2", 16, ["bridge-solo"]),
-      withPhotos("person-3", 38, ["group-shot", "cal-solo"]),
+      withPhotos("person-2", bridgeDegrees, ["bridge-solo"]),
+      withPhotos("person-3", calDegrees, ["group-shot", "cal-solo"]),
     ],
     [],
-    { identityMergeThreshold: 0.85, threshold: 0.85 },
+    {
+      identityMergeThreshold: SAME_PHOTO_EXCEPTION_SIMILARITY,
+      threshold: SAME_PHOTO_EXCEPTION_SIMILARITY,
+    },
   );
   const fused = chained.filter((person) => person.assetIds.includes("group-shot"));
   assert(
@@ -274,12 +315,18 @@ assert(
 
 // (f) THE SAME PROPERTY END TO END, ON EMBEDDINGS AS BAD AS THE DEVICE'S.
 //
-// The device library measures impostor cosine at p50 0.724 — different people
-// are, on average, as close as the assignment bar. Whatever that does to
-// accuracy, ONE invariant has to survive it: a tile may never hold two faces out
-// of a single photo. That number is checkable on the phone (a 10,851-face tile
-// spanning 5,979 photos is 1.8 faces per photo and is therefore proof of a
-// broken constraint, not proof of a popular person), so pin it here.
+// The 0.724 impostor median this was originally built around came from the
+// mirrored-alignment bug, not from the world: once alignment was fixed the same
+// library measured 0.177, and in w600k_mbf space it is nearer 0.004. So the
+// generator is now pinned to the BAR rather than to that dead number — impostors
+// sit adversarially close, above the assignment bar, but still below the
+// same-photo exception, because above it the clusterer is *supposed* to fuse
+// them as a mirror or collage and the invariant genuinely does not apply.
+//
+// The invariant itself is unchanged: a tile may never hold two faces out of one
+// photo. It stays checkable on the phone — a 10,851-face tile spanning 5,979
+// photos is 1.8 faces per photo, and that is proof of a broken constraint rather
+// than proof of a popular person.
 //
 // The generator is the recovery-suite one recalibrated to the device: every face
 // is A*shared + B*identity + C*noise, re-normalized, giving impostor cosine A^2
@@ -308,8 +355,10 @@ assert(
       ),
     );
 
-  const IMPOSTOR = 0.724;
-  const GENUINE = 0.82;
+  // Just under the exception: as hard as this test can be while the constraint
+  // it checks still applies at all.
+  const IMPOSTOR = Number((SAME_PHOTO_EXCEPTION_SIMILARITY - 0.05).toFixed(3));
+  const GENUINE = Number(((1 + IMPOSTOR) / 2).toFixed(3));
   const shared = unitVector();
   const identityCount = 4;
   const photoCount = 25;
@@ -336,7 +385,12 @@ assert(
   // Every threshold, because the constraint is not a threshold's job. A
   // clusterer may legitimately over-merge people who never posed together on
   // embeddings this poor; it may never put one photo's faces in one tile.
-  for (const threshold of [0.5, 0.62, 0.75, 0.85]) {
+  for (const threshold of [
+    DEFAULT_IDENTITY_THRESHOLD,
+    SAME_PHOTO_EXCEPTION_SIMILARITY,
+    0.85,
+    0.95,
+  ]) {
     const people = clusterFaces(faces, {
       threshold,
       identityMergeThreshold: threshold,
