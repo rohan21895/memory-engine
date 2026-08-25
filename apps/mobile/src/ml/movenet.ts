@@ -23,23 +23,46 @@ type TensorflowModel = {
 
 const modelCache = createModelCache<TensorflowModel>(loadBodyPoseModel);
 let inferenceQueue: Promise<void> = Promise.resolve();
+// undefined until the first acquire has reported. `false` means the bundled
+// graph is missing or has the wrong tensor contract, which is a property of the
+// build, not a transient failure - so stop paying for preprocessing per photo.
+let graphUsable: boolean | undefined;
 
 /**
  * Run single-person MoveNet Lightning on a local image. Every native step is
  * guarded: an unavailable module, unreadable image, or bad tensor returns no
  * pose and album building continues with the other coverage signals.
+ *
+ * `sourceWidth`/`sourceHeight` let the caller skip a dimension lookup; they only
+ * choose the letterbox, so a wrong value costs accuracy, never correctness.
  */
 export async function detectBodyPose(
   imageUri: string,
+  sourceWidth?: number,
+  sourceHeight?: number,
 ): Promise<MoveNetResult | undefined> {
+  if (graphUsable === false) return undefined;
+
+  // Preprocessing is a native resize plus a JPEG decode, and it deliberately
+  // runs OUTSIDE the inference queue. It used to sit inside, which serialized
+  // the single most expensive step in the wrapper and made the caller's
+  // ANALYZE_CONCURRENCY purely decorative: photos queued one behind another for
+  // work that has no shared state. Only acquire() + run() need serializing.
+  let input: Uint8Array;
+  try {
+    input = await imageRgbTensor(imageUri, sourceWidth, sourceHeight);
+  } catch {
+    return undefined;
+  }
+
   const job = inferenceQueue.then(async () => {
     try {
       // Acquired inside the queue: it may retire the previous interpreter, and
       // disposing one while a run is in flight is not safe.
       const model = await modelCache.acquire();
-      if (!model || !isExpectedModel(model)) return undefined;
+      graphUsable = model !== undefined && isExpectedModel(model);
+      if (!model || !graphUsable) return undefined;
 
-      const input = await imageRgbTensor(imageUri);
       const outputs = await model.run([input.buffer as ArrayBuffer]);
       return parseMoveNetOutput(outputs[0]);
     } catch {
@@ -79,7 +102,8 @@ export async function probeBodyPoseModel(): Promise<boolean> {
   const job = inferenceQueue.then(async () => {
     try {
       const model = await modelCache.acquire();
-      return model !== undefined && isExpectedModel(model);
+      graphUsable = model !== undefined && isExpectedModel(model);
+      return graphUsable;
     } catch {
       return false;
     }
@@ -91,6 +115,17 @@ export async function probeBodyPoseModel(): Promise<boolean> {
   return job;
 }
 
+/**
+ * Tensor contract, read straight out of the bundled flatbuffer:
+ *   input  serving_default_input:0  UINT8   [1,192,192,3]  no quantization record
+ *   output StatefulPartitionedCall:0 FLOAT32 [1,1,17,3]
+ *
+ * The int8 build quantizes its WEIGHTS, not its input: the input tensor carries
+ * no scale/zero-point, so the identity mapping this file uses (raw 0..255 RGB,
+ * NHWC, no normalization) is the right one. Do not divide by 255 here - that
+ * would hand the graph a tensor of zeros and ones and still return a plausible
+ * skeleton. The float32 output needs no dequantization either.
+ */
 function isExpectedModel(model: TensorflowModel): boolean {
   const input = model.inputs[0];
   const output = model.outputs[0];
@@ -102,63 +137,167 @@ function isExpectedModel(model: TensorflowModel): boolean {
   );
 }
 
-async function imageRgbTensor(imageUri: string): Promise<Uint8Array> {
+async function resolveDimensions(
+  imageUri: string,
+  width: number | undefined,
+  height: number | undefined,
+): Promise<{ width: number; height: number } | undefined> {
+  if (positive(width) && positive(height)) return { width, height };
+  try {
+    // Header-only measurement. Never manipulate the source just to size it:
+    // expo-image-manipulator has no subsampling hint, so any pass over an
+    // original decodes the whole frame into the Java heap.
+    const { Image } = await import("react-native");
+    const measured = await Image.getSize(imageUri);
+    return positive(measured?.width) && positive(measured?.height)
+      ? { width: measured.width, height: measured.height }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function imageRgbTensor(
+  imageUri: string,
+  sourceWidth?: number,
+  sourceHeight?: number,
+): Promise<Uint8Array> {
   const [{ manipulateAsync, SaveFormat }, { decode: decodeJpeg }] =
     await Promise.all([
       import("expo-image-manipulator"),
       import("jpeg-js"),
     ]);
-  const resized = await manipulateAsync(
+  const dimensions = await resolveDimensions(
     imageUri,
-    [{ resize: { width: INPUT_SIZE, height: INPUT_SIZE } }],
-    {
-      base64: true,
-      compress: 0.92,
-      format: SaveFormat.JPEG,
-    },
+    sourceWidth,
+    sourceHeight,
   );
-  if (!resized.base64) {
-    throw new Error("MoveNet preprocessing returned no pixels.");
-  }
+  // Without dimensions the letterbox degenerates to the old square resize. That
+  // distorts the pose, but a missing pose is worse than a distorted one.
+  const layout = dimensions
+    ? letterboxLayout(dimensions.width, dimensions.height)
+    : { drawWidth: INPUT_SIZE, drawHeight: INPUT_SIZE };
 
-  const decoded = decodeJpeg(decodeBase64(resized.base64), {
-    useTArray: true,
-    formatAsRGBA: true,
-    tolerantDecoding: true,
-    maxResolutionInMP: 1,
-    maxMemoryUsageInMB: 16,
-  });
-  if (decoded.width !== INPUT_SIZE || decoded.height !== INPUT_SIZE) {
-    throw new Error("MoveNet preprocessing returned the wrong image size.");
+  let outputUri: string | undefined;
+  try {
+    const resized = await manipulateAsync(
+      imageUri,
+      [{ resize: { width: layout.drawWidth, height: layout.drawHeight } }],
+      {
+        base64: true,
+        compress: 0.92,
+        format: SaveFormat.JPEG,
+      },
+    );
+    outputUri = resized.uri;
+    if (!resized.base64) {
+      throw new Error("MoveNet preprocessing returned no pixels.");
+    }
+
+    const decoded = decodeJpeg(decodeBase64(resized.base64), {
+      useTArray: true,
+      formatAsRGBA: true,
+      tolerantDecoding: true,
+      maxResolutionInMP: 1,
+      maxMemoryUsageInMB: 16,
+    });
+    if (
+      decoded.width < 1 ||
+      decoded.height < 1 ||
+      decoded.width > INPUT_SIZE ||
+      decoded.height > INPUT_SIZE
+    ) {
+      throw new Error("MoveNet preprocessing returned the wrong image size.");
+    }
+    return letterboxRgbaToRgb(decoded.data, decoded.width, decoded.height);
+  } finally {
+    // saveAsync always writes a cache file, base64 or not. Nothing else ever
+    // reads this one, so leaving it behind grows the cache by one JPEG per
+    // photo, forever.
+    if (outputUri) await deleteManipulatorOutput(outputUri);
   }
-  return rgbaToRgb(decoded.data, decoded.width, decoded.height);
 }
 
-export function rgbaToRgb(
+async function deleteManipulatorOutput(uri: string): Promise<void> {
+  try {
+    const fileSystem = await import("expo-file-system/legacy");
+    await fileSystem.deleteAsync(uri, { idempotent: true });
+  } catch {
+    // Best-effort cache cleanup; inference must stay fail-neutral.
+  }
+}
+
+/**
+ * How large the frame is drawn inside MoveNet's square input.
+ *
+ * MoveNet's documented preprocessing is "resize with pad", not a square squash.
+ * The squash this replaces was a NON-uniform scale, and pose.ts reads the output
+ * as joint ANGLES: a non-uniform scale changes every angle, and changes it by a
+ * different amount for a portrait frame than for a landscape one, so one body in
+ * two crops clustered as two different poses. Uniform scale plus centring is a
+ * similarity transform, and angles are invariant under those - which is also why
+ * the keypoints need no un-padding afterwards.
+ */
+export function letterboxLayout(
+  width: number,
+  height: number,
+  size = INPUT_SIZE,
+): { drawWidth: number; drawHeight: number } {
+  if (!positive(width) || !positive(height) || !positive(size)) {
+    throw new Error("Letterbox dimensions must be finite and positive.");
+  }
+  const scale = Math.min(size / width, size / height);
+  return {
+    drawWidth: Math.max(1, Math.min(size, Math.round(width * scale))),
+    drawHeight: Math.max(1, Math.min(size, Math.round(height * scale))),
+  };
+}
+
+/**
+ * Drop alpha and centre the decoded frame in a `size` x `size` RGB tensor,
+ * leaving the unused border at zero (the same black padding
+ * `tf.image.resize_with_pad` produces). Offsets come from the DECODED size, not
+ * the requested one, so an encoder that rounds a dimension cannot shear the row
+ * stride.
+ */
+export function letterboxRgbaToRgb(
   rgba: Uint8Array,
   width: number,
   height: number,
+  size = INPUT_SIZE,
 ): Uint8Array {
-  const pixelCount = width * height;
   if (
     !Number.isInteger(width) ||
     !Number.isInteger(height) ||
     width < 1 ||
     height < 1 ||
-    rgba.length < pixelCount * 4
+    rgba.length < width * height * 4
   ) {
     throw new Error("RGBA buffer is incomplete.");
   }
 
-  const rgb = new Uint8Array(pixelCount * 3);
-  for (let pixel = 0; pixel < pixelCount; pixel += 1) {
-    const source = pixel * 4;
-    const target = pixel * 3;
-    rgb[target] = rgba[source];
-    rgb[target + 1] = rgba[source + 1];
-    rgb[target + 2] = rgba[source + 2];
+  const rgb = new Uint8Array(size * size * 3);
+  const drawWidth = Math.min(width, size);
+  const drawHeight = Math.min(height, size);
+  const offsetX = Math.floor((size - drawWidth) / 2);
+  const offsetY = Math.floor((size - drawHeight) / 2);
+
+  for (let y = 0; y < drawHeight; y += 1) {
+    let source = y * width * 4;
+    let target = ((y + offsetY) * size + offsetX) * 3;
+    for (let x = 0; x < drawWidth; x += 1) {
+      rgb[target] = rgba[source];
+      rgb[target + 1] = rgba[source + 1];
+      rgb[target + 2] = rgba[source + 2];
+      source += 4;
+      target += 3;
+    }
   }
   return rgb;
+}
+
+function positive(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 export function parseMoveNetOutput(

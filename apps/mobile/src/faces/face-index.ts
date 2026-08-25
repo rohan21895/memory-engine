@@ -2,7 +2,7 @@ import { decode as decodeJpeg } from "jpeg-js";
 
 // Explicit extensions keep this pure module importable by Node's TS test runner.
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_PERCEPTUAL_THRESHOLD, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
+import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { detectFaces, isFaceDetectionAvailable, type FaceBox } from "./face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -13,11 +13,13 @@ import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
 // v18 stores aligned embeddings as int8/base64. Older versions contain
 // unaligned embeddings and must be rebuilt rather than migrated across spaces.
-// Bumped with the post-alignment threshold recalibration (0.5 -> 0.62/0.72).
-// Persisted clusters were built under the old, far looser bar and had collapsed
-// the whole library into one identity, so they must be discarded rather than
-// carried forward — otherwise an upgrading user keeps the broken grouping.
-const INDEX_VERSION = 19;
+// v19 recalibrated the DEFAULT thresholds (0.5 -> 0.62/0.72) but every shipped
+// call site was still passing explicit overrides of 0.37/0.30, so the merge bar
+// never actually moved and the library stayed collapsed into one identity.
+// v20 deletes those overrides. Clusters persisted under any earlier version were
+// built by the runaway merge and must be discarded, not carried forward —
+// otherwise an upgrading user keeps the broken grouping.
+const INDEX_VERSION = 20;
 const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
@@ -34,10 +36,37 @@ const BASE64_ALPHABET =
 
 /** ArcFace/MobileFaceNet-space cosine threshold for high-precision identity. */
 export const DEFAULT_FACE_INDEX_THRESHOLD = 0.62;
-export const FACE_INDEX_IDENTITY_MERGE_THRESHOLD = 0.37;
-export const FACE_INDEX_LARGE_CLUSTER_MERGE_THRESHOLD = 0.3;
-export const FACE_INDEX_LARGE_CLUSTER_MIN_FACES = 10;
+
+/**
+ * Cluster-to-cluster merge bar. Held at the calibrated post-alignment default,
+ * and never below the bar a single face had to clear to join a person.
+ *
+ * This constant used to be 0.37, with a second "large cluster" constant of 0.30
+ * that took over once BOTH clusters held 10+ faces. Both numbers were calibrated
+ * against unaligned bounding-box crops and were never revisited when 5-point
+ * alignment tightened the space. src/faces/face-cluster-recovery.test.ts
+ * measures what they actually did to aligned embeddings: on eight synthetic
+ * identities whose centroids sit at cosine 0.153-0.398 from each other, a merge
+ * bar of 0.37 fuses them into six tiles (one holding three people) and 0.30
+ * fuses all eight into a single 112-face tile. The large-cluster rule was the
+ * worse of the two, because relaxing the bar for clusters that have already
+ * absorbed 10 faces is a positive feedback loop: every merge pulls a centroid
+ * toward the population mean, which raises its similarity to every remaining
+ * cluster, which licenses the next merge. That is the 2,164-photo tile.
+ */
+export const FACE_INDEX_IDENTITY_MERGE_THRESHOLD = DEFAULT_MERGE_THRESHOLD;
 export const PERCEPTUAL_FACE_INDEX_THRESHOLD = DEFAULT_PERCEPTUAL_THRESHOLD;
+
+/**
+ * Faces below this are withheld from the People UI as probable fragments.
+ *
+ * Absolute, not relative. The previous floor was `max(3, largest * 0.1)`, which
+ * makes the most-photographed person censor everyone else: beside a 2,164-face
+ * tile it demanded 217 faces before a person was allowed to appear at all, so a
+ * real family member with fifty photos was silently invisible. A dominant
+ * cluster is evidence about that cluster, never about anybody else.
+ */
+const MIN_VISIBLE_FACE_COUNT = 2;
 
 export type FaceIndexPerson = {
   id: string;
@@ -338,6 +367,37 @@ const ASSIGNABLE_MIN_IMAGE_RATIO = 0.03;
 /** Past this yaw alignment is impossible, so the face is dropped entirely. */
 const ASSIGNABLE_MAX_YAW_DEGREES = 45;
 
+/**
+ * Ceiling on what the fraction-of-frame rules may demand in real pixels.
+ *
+ * The ratio rules are a proxy for "is this person a subject of the photo", but
+ * what actually determines embedding quality is pixels on the face and pose.
+ * On a 4032x3024 phone photo the 4% seed rule demanded a 121px face, i.e. a
+ * subject within about four metres of the camera; someone who only ever appears
+ * in wider group shots cleared the assignable bar, contributed nothing, and
+ * never got a tile of their own. That is a permanent, silent omission from the
+ * People UI, and no amount of rescanning fixes it.
+ *
+ * MobileFaceNet consumes a 112x112 aligned patch, so past roughly a hundred
+ * source pixels the extra resolution is discarded anyway. Cap the ratio rules
+ * there: a 96px face is judged on its own merits no matter how large the frame
+ * around it is. Phone-photo seed floor moves 121px -> 96px (about 1.6x the face
+ * area, roughly four metres -> five and a half). Raise this constant if beta
+ * feedback shows background strangers seeding tiles.
+ */
+const RATIO_RULE_MAX_FACE_PX = 96;
+
+function minimumFacePx(
+  absoluteFloor: number,
+  ratio: number,
+  imageMin: number,
+): number {
+  return Math.max(
+    absoluteFloor,
+    Math.min(ratio * imageMin, RATIO_RULE_MAX_FACE_PX),
+  );
+}
+
 export function faceQualityTier(
   asset: FaceScanAsset,
   box: FaceBox,
@@ -351,30 +411,42 @@ export function faceQualityTier(
   ) {
     return null;
   }
-  const imageRatio = shortSide / imageMin;
   // Head angles are optional metadata. A detector build that omits them must
   // degrade to "unknown pose, judge on size alone" rather than reject the
   // whole library, so an absent yaw reads as frontal.
   const reportedYaw = box.headEulerAngleY;
   const yaw = Number.isFinite(reportedYaw) ? Math.abs(reportedYaw as number) : 0;
   if (
-    shortSide < ASSIGNABLE_MIN_FACE_PX ||
-    imageRatio < ASSIGNABLE_MIN_IMAGE_RATIO ||
+    shortSide <
+      minimumFacePx(ASSIGNABLE_MIN_FACE_PX, ASSIGNABLE_MIN_IMAGE_RATIO, imageMin) ||
     yaw > ASSIGNABLE_MAX_YAW_DEGREES
   ) {
     return null;
   }
-  return shortSide >= SEEDABLE_MIN_FACE_PX &&
-    imageRatio >= SEEDABLE_MIN_IMAGE_RATIO &&
+  return shortSide >=
+      minimumFacePx(SEEDABLE_MIN_FACE_PX, SEEDABLE_MIN_IMAGE_RATIO, imageMin) &&
     yaw <= SEEDABLE_MAX_YAW_DEGREES
     ? "seedable"
     : "assignable";
 }
 
-/** Removes repeat detections of one face while preserving distinct co-faces. */
+/**
+ * Removes repeat detections of one face while preserving distinct co-faces.
+ *
+ * Tied to SAME_PHOTO_EXCEPTION_SIMILARITY on purpose: this rule and the
+ * clustering cannot-link both answer "are these two boxes in one photo the same
+ * person?", and they must not answer it differently. At the old 0.75 they
+ * disagreed across a whole band — clustering treated a same-photo pair at
+ * cosine 0.80 as two people who merely posed together, while this function had
+ * already deleted one of them as a duplicate detection. Siblings and
+ * parent/child pairs land in exactly that band, so the second person was
+ * destroyed before clustering ever saw them, which no threshold could undo.
+ * Genuine repeat detections of one face (ML Kit re-firing on the same head,
+ * a mirror, a photo of a photo) sit far above 0.85.
+ */
 export function dedupeFaceObservations(
   observations: FaceObservation[],
-  similarityThreshold = 0.75,
+  similarityThreshold = SAME_PHOTO_EXCEPTION_SIMILARITY,
 ): FaceObservation[] {
   const kept: FaceObservation[] = [];
   const byAsset = new Map<string, FaceObservation[]>();
@@ -392,6 +464,28 @@ export function dedupeFaceObservations(
     kept.push(observation);
   }
   return kept;
+}
+
+/**
+ * Unit-norms an embedding as it enters the index.
+ *
+ * MobileFaceNet output is already normalized in ../ml/parseFaceEmbeddingOutput
+ * and the perceptual fallback normalizes its own fingerprint, so on the shipped
+ * paths this is idempotent — it is a trust boundary, not a fix. It matters
+ * because `updateCentroid` takes an unweighted MEAN of whatever arrives: one
+ * embedder returning larger-magnitude vectors would drag every centroid toward
+ * its faces and inflate cosine against the whole library. `embedFace` is
+ * dependency-injected, and a persisted embedding comes back through int8
+ * dequantization with its norm slightly off, so the invariant is worth
+ * enforcing here rather than assuming it upstream.
+ */
+function unitEmbedding(embedding: number[]): number[] {
+  const magnitude = Math.sqrt(
+    embedding.reduce((sum, value) => sum + value * value, 0),
+  );
+  return Number.isFinite(magnitude) && magnitude > Number.EPSILON
+    ? embedding.map((value) => value / magnitude)
+    : embedding;
 }
 
 function boxIntersection(a: FaceBox, b: FaceBox): number {
@@ -605,36 +699,56 @@ function safeThreshold(value: number | undefined): number {
     : DEFAULT_FACE_INDEX_THRESHOLD;
 }
 
+/**
+ * The single clustering policy this app ships.
+ *
+ * Every path that produces people — the full rebuild, the incremental append,
+ * and the pure query projection — routes through here, so an offline test that
+ * imports it is exercising exactly what runs on the phone. Three call sites
+ * each passing their own thresholds is how the merge bar silently drifted
+ * below the assignment bar in the first place.
+ */
+export function faceClusterOptions(
+  threshold: number = DEFAULT_FACE_INDEX_THRESHOLD,
+): {
+  identityMergeThreshold: number;
+  perceptualThreshold: number;
+  threshold: number;
+} {
+  const identityThreshold = safeThreshold(threshold);
+  return {
+    // Never easier than assignment. Assignment errors are transitive and merge
+    // errors are unrecoverable, so two averaged centroids at some distance are
+    // strictly weaker evidence than two raw faces at that same distance.
+    identityMergeThreshold: Math.max(
+      identityThreshold,
+      FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
+    ),
+    perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
+    threshold: identityThreshold,
+  };
+  // Deliberately omits identityLargeClusterMergeThreshold /
+  // identityLargeClusterMinFaces: nothing shipped may relax the merge bar for a
+  // cluster that is already large. See FACE_INDEX_IDENTITY_MERGE_THRESHOLD.
+}
+
 function peopleFromObservations(
   observations: FaceObservation[],
   threshold = DEFAULT_FACE_INDEX_THRESHOLD,
-  identityMergeThreshold = threshold,
 ): Person[] {
-  return clusterFaces(observations, {
-    identityLargeClusterMergeThreshold:
-      FACE_INDEX_LARGE_CLUSTER_MERGE_THRESHOLD,
-    identityLargeClusterMinFaces: FACE_INDEX_LARGE_CLUSTER_MIN_FACES,
-    identityMergeThreshold,
-    threshold: safeThreshold(threshold),
-    perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
-  });
+  return clusterFaces(observations, faceClusterOptions(threshold));
 }
 
-function summariesForPeople(
+export function summariesForPeople(
   people: Person[],
   faceThumbUris: Readonly<Record<string, string>> = {},
   suppressLowSupport = false,
 ): FaceIndexPerson[] {
-  const largestCluster = people.reduce(
-    (largest, person) => Math.max(largest, person.faceCount),
-    0,
-  );
-  const visibleFloor = Math.max(3, Math.ceil(largestCluster * 0.1));
   return people
     .filter(
       (person) =>
         person.assetIds.length > 0 &&
-        (!suppressLowSupport || person.faceCount >= visibleFloor),
+        (!suppressLowSupport || person.faceCount >= MIN_VISIBLE_FACE_COUNT),
     )
     .map((person) => ({
       id: person.id,
@@ -710,7 +824,7 @@ export async function scanFaceAssets(
               ) {
                 const observation: FaceObservation = {
                   assetId: asset.id,
-                  embedding: result.embedding,
+                  embedding: unitEmbedding(result.embedding),
                   embeddingKind: result.kind,
                   seedable: qualityTier === "seedable",
                 };
@@ -1042,21 +1156,14 @@ function seenCount(): number {
 
 function rebuildPeople(threshold: number): void {
   index.threshold = safeThreshold(threshold);
-  index.people = peopleFromObservations(
-    index.observations,
-    index.threshold,
-    FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
-  );
+  index.people = peopleFromObservations(index.observations, index.threshold);
   rebuildPersonIdsByAsset();
 }
 
 function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
   const assignments = new Map<FaceObservation, string>();
   index.people = extendFaceClusters(index.people, observations, {
-    identityLargeClusterMergeThreshold:
-      FACE_INDEX_LARGE_CLUSTER_MERGE_THRESHOLD,
-    identityLargeClusterMinFaces: FACE_INDEX_LARGE_CLUSTER_MIN_FACES,
-    identityMergeThreshold: FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
+    ...faceClusterOptions(index.threshold),
     onAssign: (observation, personId) => assignments.set(observation, personId),
     onMerge: (absorbedPersonId, survivingPersonId) => {
       for (const [observation, personId] of assignments) {

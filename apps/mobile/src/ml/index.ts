@@ -34,7 +34,7 @@ export type ModelProbe = {
  * without this a build with a missing or mismatched model is indistinguishable
  * from a working one - the album just gets quietly worse. Never throws.
  *
- * Not wired into any screen: call it from a debug affordance or a dev console.
+ * Prefer `checkModelHealth()` for anything that may be called more than once.
  */
 export async function probeModels(): Promise<ModelProbe> {
   const probe = async (run: () => Promise<boolean>): Promise<boolean> => {
@@ -50,4 +50,37 @@ export async function probeModels(): Promise<ModelProbe> {
     probe(probeSemanticModel),
   ]);
   return { facenet, movenet, tinyclip };
+}
+
+/** Human-readable one-liner, e.g. "facenet=ok movenet=MISSING tinyclip=ok". */
+export function describeModelProbe(probe: ModelProbe): string {
+  return (Object.keys(probe) as Array<keyof ModelProbe>)
+    .map((name) => `${name}=${probe[name] ? "ok" : "MISSING"}`)
+    .join(" ");
+}
+
+let healthCheck: Promise<ModelProbe> | undefined;
+
+/**
+ * Session-memoized `probeModels()` that also writes the result to the log.
+ *
+ * `buildAlbum()` awaits this before the heavy pass, so every beta build leaves
+ * one grep-able line ("[photeo-models] ...") saying which graphs actually
+ * loaded. It also settles each wrapper's usability latch up front, so a broken
+ * graph stops costing per-photo preprocessing for a result it can never return.
+ *
+ * A UI worker wanting a debug affordance should call THIS (re-exported from
+ * `src/build-album.ts`) rather than `probeModels()`: it is idempotent, never
+ * throws, and never loads a second copy of a 32MB graph.
+ */
+export function checkModelHealth(): Promise<ModelProbe> {
+  // Never rejects: buildAlbum() awaits this, and a diagnostic must not be able
+  // to fail the album it is diagnosing.
+  healthCheck ??= probeModels()
+    .then((probe) => {
+      console.warn(`[photeo-models] ${describeModelProbe(probe)}`);
+      return probe;
+    })
+    .catch(() => ({ facenet: false, movenet: false, tinyclip: false }));
+  return healthCheck;
 }

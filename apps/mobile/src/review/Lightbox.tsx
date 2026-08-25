@@ -136,6 +136,9 @@ export function Lightbox({
   );
 
   const currentItem = items[currentIndex];
+  // In album mode the primary opens this slot's alternates. A photo with no slot
+  // has none, and the button used to silently do nothing when pressed.
+  const primaryUnavailable = !currentItem || (mode === "browse-album" && !currentItem.slot_media_id);
   const handlePrimary = useCallback(() => {
     if (!currentItem) return;
     if (mode === "browse-album") {
@@ -239,8 +242,12 @@ export function Lightbox({
           {whyExpanded ? <Text style={styles.caption}>{currentItem?.caption ?? ""}</Text> : null}
           <PrimaryButton
             accessibilityHint={primaryHint}
-            disabled={!currentItem}
-            label={primaryLabel}
+            disabled={primaryUnavailable}
+            label={
+              mode === "browse-album" && currentItem && !currentItem.slot_media_id
+                ? "No other shots of this moment"
+                : primaryLabel
+            }
             onPress={handlePrimary}
           />
         </View>

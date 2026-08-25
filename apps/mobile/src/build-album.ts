@@ -2,7 +2,7 @@
 // image quality -> selection -> the review UI's data shape.
 import { detectFaces, type FaceBox } from "./faces/face-detector";
 import type { PickedPhoto } from "./import/picked-photo";
-import { getModel } from "./ml";
+import { checkModelHealth, getModel } from "./ml";
 import { detectBodyPose } from "./ml/movenet";
 import {
   analyzeSemanticImage,
@@ -20,6 +20,7 @@ import {
   HEAVY_ANALYSIS_CANDIDATE_LIMIT,
   type ProbedCandidate,
 } from "./selection/candidate-prepass";
+import { mapLimit, throwIfCancelled } from "./selection/concurrent-map";
 import {
   prepareCandidateAnalysisProxy,
   probeCandidateQuality,
@@ -38,15 +39,41 @@ import type { AlbumData } from "./selection/types";
 
 // A face whose box sits within 1% of any border is treated as cut off.
 const EDGE_FRACTION = 0.01;
-// ML Kit detection + two image-manipulator passes per photo is heavy; cap
-// concurrency so a large pick set can't spawn hundreds of native ops at once.
-// ponytail: fixed batch of 6; make adaptive only if build time becomes a problem.
+/**
+ * Photos analyzed at once.
+ *
+ * This is a real bound on native work now. It used to be decorative twice over:
+ * every photo held up to five INDEPENDENT full-resolution decodes of the
+ * original (expo-image-manipulator loads via Glide at SIZE_ORIGINAL and has no
+ * subsampling hint, so a 12MP frame is a ~48MB ARGB bitmap - six photos in
+ * flight could ask for over a gigabyte against a 192-256MB heap), while the
+ * MoveNet and TinyCLIP wrappers serialized their preprocessing on a module-level
+ * queue, so the photos that survived that queued up single file anyway. Both are
+ * fixed: one bounded proxy per photo feeds every model, and the wrappers now
+ * serialize only the inference itself.
+ */
 const ANALYZE_CONCURRENCY = 6;
 // The 32 px platform thumbnail is substantially smaller than any model input. A little
 // extra concurrency keeps large library screening I/O-bound without allowing
 // hundreds of image-manipulator operations to accumulate.
 const PREPASS_CONCURRENCY = 32;
 const MAX_PREPASS_PROGRESS_UPDATES = 200;
+/**
+ * How much one deep-analysis photo costs relative to one prepass photo, used
+ * only to weight the progress bar.
+ *
+ * Counting both stages as one unit each made the bar lie badly on a large
+ * library: 11,793 prepass units against 64 analysis units puts the bar at 99.5%
+ * before the expensive stage has begun, so it appears to hang for the last
+ * fifth of the build. A prepass item reads a 32px platform thumbnail and hashes
+ * it; an analysis item renders a bounded proxy and runs four models over it.
+ * They are at least an order of magnitude apart.
+ *
+ * This is a calibration knob, not a measurement — the phase text carries the
+ * real counts, so a wrong value here only mis-shapes the bar. Tune it against a
+ * stopwatch on the beta device.
+ */
+const ANALYSIS_WORK_UNITS = 20;
 
 export type BuildAlbumProgress = {
   done: number;
@@ -59,42 +86,13 @@ export type BuildAlbumOptions = {
   onProgress?: (progress: BuildAlbumProgress) => void;
 };
 
-export class AlbumBuildCancelledError extends Error {
-  constructor() {
-    super("Album build was cancelled.");
-    this.name = "AlbumBuildCancelledError";
-  }
-}
-
-async function mapLimit<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>,
-  options: {
-    signal?: AbortSignal;
-    onComplete?: (completed: number) => void;
-  } = {},
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let cursor = 0;
-  let completed = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      throwIfCancelled(options.signal);
-      const index = cursor++;
-      results[index] = await fn(items[index], index);
-      throwIfCancelled(options.signal);
-      completed += 1;
-      options.onComplete?.(completed);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
-function throwIfCancelled(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw new AlbumBuildCancelledError();
-}
+/**
+ * Which on-device graphs actually loaded. Re-exported here so a debug
+ * affordance can report model health without reaching into `src/ml`. Idempotent
+ * and never throws; `buildAlbum()` already calls it once per session.
+ */
+export { checkModelHealth, type ModelProbe } from "./ml";
+export { AlbumBuildCancelledError } from "./selection/concurrent-map";
 
 function formatCount(value: number): string {
   return Math.max(0, Math.floor(value)).toLocaleString();
@@ -205,12 +203,20 @@ export async function buildAlbum(
 ): Promise<ReviewData> {
   throwIfCancelled(options.signal);
   const model = getModel();
+  // Started here so it overlaps the prepass, awaited before the heavy pass.
+  // Every build then leaves one "[photeo-models] ..." line naming the graphs
+  // that actually loaded, and each wrapper knows up front whether its graph is
+  // usable instead of preprocessing every photo for an answer it cannot give.
+  const modelHealth = checkModelHealth();
   const capEngaged = photos.length > CANDIDATE_PREPASS_THRESHOLD;
   const expectedCandidateCount = capEngaged
     ? Math.min(HEAVY_ANALYSIS_CANDIDATE_LIMIT, photos.length)
     : photos.length;
-  const totalWork =
-    (capEngaged ? photos.length : 0) + expectedCandidateCount + 1;
+  // Progress is measured in work units, not photos, so the two stages are
+  // weighted by roughly what they cost. The trailing unit is the planner.
+  const analysisWork = expectedCandidateCount * ANALYSIS_WORK_UNITS;
+  const prepassWork = capEngaged ? photos.length : 0;
+  const totalWork = prepassWork + analysisWork + 1;
 
   let analysisInputs: Array<{
     photo: PickedPhoto;
@@ -266,19 +272,26 @@ export async function buildAlbum(
     });
   }
 
+  await modelHealth;
   const analyzed = await mapLimit(analysisInputs, ANALYZE_CONCURRENCY, async ({
     photo,
     quality: probedQuality,
   }) => {
     throwIfCancelled(options.signal);
-    const proxy = capEngaged
-      ? await prepareCandidateAnalysisProxy(photo.uri)
-      : undefined;
+    // ONE bounded proxy per photo, on every path — not just the capped one.
+    // expo-image's loadAsync subsamples during decode (Glide submit(w,h)), so
+    // the original is never fully materialized; everything downstream then works
+    // from a file:// JPEG of at most ANALYSIS_PROXY_SIZE. Before this, a normal
+    // sub-500-photo pick — the beta's whole usage — sent the original
+    // content:// URI to five preprocessors that each decoded it at full
+    // resolution, which is the heap ceiling times several.
+    const proxy = await prepareCandidateAnalysisProxy(photo.uri);
     try {
       throwIfCancelled(options.signal);
-      // A failed large-photo proxy is treated like any guarded native failure;
-      // do not fall back to decoding the original and risk the Java heap.
-      if (capEngaged && !proxy) {
+      // A failed proxy is treated like any guarded native failure; do not fall
+      // back to decoding the original and risk the Java heap. The photo still
+      // reaches the planner, scored on its metadata alone.
+      if (!proxy) {
         return {
           photo,
           result: { embedding: [], faces: 0 },
@@ -291,24 +304,31 @@ export async function buildAlbum(
         };
       }
 
-      const analysisUri = proxy?.uri ?? photo.uri;
-      const analysisWidth = proxy?.width ?? photo.width;
-      const analysisHeight = proxy?.height ?? photo.height;
+      const analysisUri = proxy.uri;
+      const analysisWidth = proxy.width;
+      const analysisHeight = proxy.height;
       const [result, boxes, quality, detectedPose, semantic] = await Promise.all([
         capEngaged
           ? Promise.resolve({ embedding: [], faces: 0 })
           : model.run(analysisUri),
-        detectFaces(analysisUri).catch(() => [] as FaceBox[]),
+        // Dimensions supplied so the detector neither re-measures nor
+        // re-manipulates: the proxy is already a file:// image inside its
+        // detection bound, so boxes come back 1:1 in proxy coordinates — the
+        // same space as analysisWidth/analysisHeight below.
+        detectFaces(analysisUri, {
+          width: analysisWidth,
+          height: analysisHeight,
+        }).catch(() => [] as FaceBox[]),
         // Always measure properly here, even when the prepass already produced a
         // probedQuality. That probe comes from a 4x3 blurhash decoded to 16x12,
         // which by construction holds no high frequencies — it reads ~0.05
         // sharpness no matter how well focused the photo is. It is a fine
         // ranking prior for choosing candidates, but feeding it onward as the
-        // final quality signal drives every photo under the planner's absolute
-        // quality floor, so large libraries produce an empty album.
+        // final quality signal drives every photo under the planner's quality
+        // floor, so large libraries produce an empty album.
         measureImageQuality(analysisUri)
           .catch(() => probedQuality ?? {}),
-        detectBodyPose(analysisUri),
+        detectBodyPose(analysisUri, analysisWidth, analysisHeight),
         analyzeSemanticImage(analysisUri, analysisWidth, analysisHeight),
       ]);
       throwIfCancelled(options.signal);
@@ -330,7 +350,7 @@ export async function buildAlbum(
   }, {
     signal: options.signal,
     onComplete: (done) => {
-      completedWork = (capEngaged ? photos.length : 0) + done;
+      completedWork = prepassWork + done * ANALYSIS_WORK_UNITS;
       emitProgress(options.onProgress, {
         done: completedWork,
         total: totalWork,

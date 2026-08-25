@@ -9,7 +9,7 @@ export type FinalPhoto = { media_id: string; uri: string; page: number };
 
 function QuietAction({ label, onPress }: { label: string; onPress?: () => void }) {
   return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.quietAction, pressed ? styles.pressed : null]}>
+    <Pressable accessibilityLabel={label.replace("▸", "Play").trim()} accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.quietAction, pressed ? styles.pressed : null]}>
       <Text style={styles.quietActionText}>{label}</Text>
     </Pressable>
   );
@@ -40,10 +40,24 @@ export default function FinalAlbum({
   const [draftTitle, setDraftTitle] = useState(title);
   const updateTitle = (next: string) => setDraftTitle(next);
 
+  // On Android a Pressable can fire without the TextInput ever blurring, so
+  // onEndEditing alone lost a freshly typed name the moment the user tapped
+  // Play/Open/Done. Every way off this screen commits the draft first.
+  const commitTitle = () => {
+    const cleanTitle = draftTitle.trim() || "My photo album";
+    if (cleanTitle !== draftTitle) setDraftTitle(cleanTitle);
+    if (cleanTitle !== title) onTitleChange?.(cleanTitle);
+    return cleanTitle;
+  };
+  const leaveVia = (action?: () => void) => () => {
+    commitTitle();
+    action?.();
+  };
+
   return (
     <View style={[styles.root, { paddingBottom: Math.max(spacing.lg, insets.bottom + spacing.sm) }]}>
       <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
-      <Pressable accessibilityLabel="Back to review" accessibilityRole="button" onPress={onBack} style={styles.back}>
+      <Pressable accessibilityLabel="Back to review" accessibilityRole="button" onPress={leaveVia(onBack)} style={styles.back}>
         <Text style={styles.backText}>‹</Text>
       </Pressable>
       {photos[0] ? (
@@ -54,13 +68,11 @@ export default function FinalAlbum({
         <TextInput
           accessibilityLabel="Album title"
           onChangeText={updateTitle}
-          onEndEditing={() => {
-            const cleanTitle = draftTitle.trim() || "My photo album";
-            setDraftTitle(cleanTitle);
-            onTitleChange?.(cleanTitle);
-          }}
+          onEndEditing={commitTitle}
+          onSubmitEditing={commitTitle}
           placeholder="Album title"
           placeholderTextColor={colors.muted}
+          returnKeyType="done"
           selectTextOnFocus
           style={styles.title}
           value={draftTitle}
@@ -71,10 +83,10 @@ export default function FinalAlbum({
       <Text style={styles.meta}>{photos.length} photos · Saved to your albums</Text>
       <View style={styles.flex} />
       <View style={styles.pair}>
-        <QuietAction label="▸  Play album" onPress={onPlay} />
-        <QuietAction label="Open album" onPress={onOpen} />
+        <QuietAction label="▸  Play album" onPress={leaveVia(onPlay)} />
+        <QuietAction label="Open album" onPress={leaveVia(onOpen)} />
       </View>
-      <QuietAction label="Done" onPress={onDone ?? onRestart} />
+      <QuietAction label="Done" onPress={leaveVia(onDone ?? onRestart)} />
     </View>
   );
 }

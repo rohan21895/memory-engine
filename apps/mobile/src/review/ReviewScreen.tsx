@@ -26,6 +26,7 @@ type Swaps = Record<string, string>;
 type ViewerState = { mode: LightboxMode; initialIndex: number; slotMediaId?: string };
 
 type DisplayItem = {
+  alternativeCount: number;
   caption: string;
   media_id: string;
   page: number;
@@ -93,6 +94,7 @@ export default function ReviewScreen({
           : undefined;
         const shown = (replacementId ? mediaById.get(replacementId) : undefined) ?? selected;
         return {
+          alternativeCount: selected.alternatives.length,
           caption: replacementId ? copy.review.changedReason : plainChosenReason(selected.chosen_because),
           media_id: shown.media_id,
           page: selected.page,
@@ -105,6 +107,8 @@ export default function ReviewScreen({
     const addedItems = data.pool
       .filter((item) => added.has(item.media_id))
       .map((item, index) => ({
+        // A photo added back from the pool owns no slot, so it has no alternates.
+        alternativeCount: 0,
         caption: copy.review.changedReason,
         media_id: item.media_id,
         page: maxPage + index + 1,
@@ -120,7 +124,9 @@ export default function ReviewScreen({
       caption: item.caption,
       media_id: item.media_id,
       rawReasons: item.rawReasons,
-      slot_media_id: item.slot_media_id,
+      // No slot id means no alternates to browse; the lightbox greys its primary
+      // action out rather than offering a button that does nothing.
+      slot_media_id: item.alternativeCount > 0 ? item.slot_media_id : undefined,
       uri: item.uri,
     })),
     [gridItems],
@@ -170,9 +176,14 @@ export default function ReviewScreen({
 
         {gridItems.length > 0 ? (
           <View style={styles.grid}>
-            {gridItems.map((item, index) => (
+            {gridItems.map((item, index) => {
+              // A slot with no runner-up has nothing to swap in. The button used
+              // to open a sheet that showed the same photo back, which read as
+              // broken; say so on the control instead.
+              const canSwap = item.alternativeCount > 0;
+              return (
               <View key={item.slot_media_id} style={styles.card}>
-                <Pressable accessibilityRole="button" onPress={() => setViewer({ initialIndex: index, mode: "browse-album" })}>
+                <Pressable accessibilityHint={copy.review.openPhotoHint} accessibilityLabel={item.caption} accessibilityRole="button" onPress={() => setViewer({ initialIndex: index, mode: "browse-album" })}>
                   <Image cachePolicy="memory-disk" contentFit="cover" source={item.uri} style={styles.image} transition={120} />
                   <View style={styles.expand}><Text style={styles.expandText}>⤢</Text></View>
                 </Pressable>
@@ -180,11 +191,14 @@ export default function ReviewScreen({
                 <View style={styles.actions}>
                   <Pressable
                     accessibilityRole="button"
-                    disabled={item.slot_media_id.startsWith("pool:")}
+                    accessibilityState={{ disabled: !canSwap }}
+                    disabled={!canSwap}
                     onPress={() => setSwapSlot(item.slot_media_id)}
-                    style={({ pressed }) => [styles.swap, pressed ? styles.pressed : null, item.slot_media_id.startsWith("pool:") ? styles.disabled : null]}
+                    style={({ pressed }) => [styles.swap, pressed ? styles.pressed : null, canSwap ? null : styles.disabled]}
                   >
-                    <Text numberOfLines={1} style={styles.swapText}>See other shots</Text>
+                    <Text numberOfLines={1} style={styles.swapText}>
+                      {canSwap ? `See ${item.alternativeCount} other ${item.alternativeCount === 1 ? "shot" : "shots"}` : "Only shot"}
+                    </Text>
                   </Pressable>
                   <Pressable
                     accessibilityLabel="Remove from album"
@@ -202,7 +216,8 @@ export default function ReviewScreen({
                   </Pressable>
                 </View>
               </View>
-            ))}
+              );
+            })}
           </View>
         ) : (
           <View style={styles.empty}>
@@ -221,7 +236,13 @@ export default function ReviewScreen({
                   <View key={item.media_id} style={styles.missedCard}>
                     <Image cachePolicy="memory-disk" contentFit="cover" source={item.uri} style={styles.missedImage} />
                     <Text numberOfLines={2} style={styles.missedReason}>{plainAlternativeReason(item.reasons)}</Text>
-                    <Pressable onPress={() => setAdded((current) => { const next = new Set(current); if (next.has(item.media_id)) next.delete(item.media_id); else next.add(item.media_id); return next; })} style={[styles.addButton, isAdded ? styles.addButtonActive : null]}>
+                    <Pressable
+                      accessibilityLabel={isAdded ? "Added to album. Tap to remove." : "Add to album"}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: isAdded }}
+                      onPress={() => setAdded((current) => { const next = new Set(current); if (next.has(item.media_id)) next.delete(item.media_id); else next.add(item.media_id); return next; })}
+                      style={[styles.addButton, isAdded ? styles.addButtonActive : null]}
+                    >
                       <Text style={[styles.addText, isAdded ? styles.addTextActive : null]}>{isAdded ? "Added" : "Add to album"}</Text>
                     </Pressable>
                   </View>
@@ -274,12 +295,12 @@ export default function ReviewScreen({
 
 const styles = StyleSheet.create({
   actions: { flexDirection: "row", gap: 6, marginTop: "auto" },
-  addButton: { alignItems: "center", borderColor: colors.hairline, borderRadius: 18, borderWidth: 1, height: 36, justifyContent: "center" },
+  addButton: { alignItems: "center", borderColor: colors.hairline, borderRadius: 22, borderWidth: 1, justifyContent: "center", minHeight: 44 },
   addButtonActive: { backgroundColor: colors.panelRaised, borderColor: colors.gold },
   addText: { color: colors.text, fontFamily: fonts.bold, fontSize: 13 },
-  addTextActive: { color: colors.gold },
-  arrow: { color: "#cbc4b8", fontFamily: fonts.bold, fontSize: 12.5 },
-  back: { alignItems: "center", height: 44, justifyContent: "center", width: 36 },
+  addTextActive: { color: colors.goldPressed },
+  arrow: { color: colors.muted, fontFamily: fonts.bold, fontSize: 12.5 },
+  back: { alignItems: "center", height: 44, justifyContent: "center", width: 44 },
   backText: { color: colors.muted, fontFamily: fonts.regular, fontSize: 26 },
   card: { gap: 7, width: "47.8%" },
   disabled: { opacity: 0.45 },
@@ -293,7 +314,7 @@ const styles = StyleSheet.create({
   helper: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14.5, lineHeight: 21 },
   image: { aspectRatio: 1, backgroundColor: colors.hairline, borderCurve: "continuous", borderRadius: 14, width: "100%" },
   missedCard: { gap: 7, width: 132 },
-  missedCount: { color: colors.gold, fontFamily: fonts.bold, ...typeScale.small },
+  missedCount: { color: colors.goldPressed, fontFamily: fonts.bold, ...typeScale.small },
   missedHeading: { alignItems: "baseline", flexDirection: "row", justifyContent: "space-between" },
   missedHelper: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   missedImage: { backgroundColor: colors.hairline, borderCurve: "continuous", borderRadius: 14, height: 132, width: 132 },
@@ -303,14 +324,14 @@ const styles = StyleSheet.create({
   missedTitle: { color: colors.text, fontFamily: fonts.extraBold, fontSize: 18, letterSpacing: -0.3 },
   pressed: { opacity: 0.65 },
   reason: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 18, minHeight: 52 },
-  remove: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderRadius: 18, borderWidth: 1, height: 36, justifyContent: "center", width: 42 },
+  remove: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderRadius: 22, borderWidth: 1, justifyContent: "center", minHeight: 44, width: 44 },
   removeText: { color: colors.error, fontFamily: fonts.bold, fontSize: 14 },
   root: { backgroundColor: colors.background, flex: 1 },
   scroll: { paddingBottom: spacing.xl, paddingHorizontal: 18, paddingTop: (StatusBar.currentHeight ?? 24) + spacing.sm },
-  stepActive: { color: colors.gold, fontFamily: fonts.bold, fontSize: 12.5 },
-  stepIdle: { color: "#b3aba0", fontFamily: fonts.bold, fontSize: 12.5 },
+  stepActive: { color: colors.goldPressed, fontFamily: fonts.bold, fontSize: 12.5 },
+  stepIdle: { color: colors.muted, fontFamily: fonts.bold, fontSize: 12.5 },
   steps: { flexDirection: "row", gap: 6, justifyContent: "center", paddingBottom: spacing.sm },
-  swap: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderRadius: 18, borderWidth: 1, flex: 1, height: 36, justifyContent: "center", paddingHorizontal: 6 },
+  swap: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderRadius: 22, borderWidth: 1, flex: 1, justifyContent: "center", minHeight: 44, paddingHorizontal: 6 },
   swapText: { color: colors.text, fontFamily: fonts.bold, fontSize: 12 },
   title: { color: colors.text, fontFamily: fonts.extraBold, fontSize: 27, letterSpacing: -0.8, lineHeight: 32 },
 });

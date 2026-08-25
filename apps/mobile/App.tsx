@@ -6,7 +6,6 @@ import {
   Figtree_800ExtraBold,
   useFonts,
 } from "@expo-google-fonts/figtree";
-import * as MediaLibrary from "expo-media-library/legacy";
 import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -32,9 +31,9 @@ import {
   type SavedAlbum,
 } from "./src/albums/album-store";
 import { buildAlbum, type BuildAlbumProgress } from "./src/build-album";
-import { buildFaceIndex, loadFaceIndex } from "./src/faces/face-index";
+import { buildFaceIndex, loadFaceIndex, stopFaceIndexBuild } from "./src/faces/face-index";
 import GalleryGrid from "./src/import/GalleryGrid";
-import { buildIndex, loadIndex } from "./src/import/photo-index";
+import { buildIndex, loadIndex, stopIndexBuild } from "./src/import/photo-index";
 import type { PickedPhoto } from "./src/import/picked-photo";
 import FinalAlbum, { type FinalPhoto } from "./src/review/FinalAlbum";
 import type { ReviewData } from "./src/review/mock-data";
@@ -42,6 +41,7 @@ import ReviewScreen from "./src/review/ReviewScreen";
 import { Slideshow } from "./src/review/Slideshow";
 import { TabBar, type AppTab } from "./src/ui/components/TabBar";
 import { colors, copy, LoadingState } from "./src/ui";
+import { getPhotoAccess, requestPhotoAccess } from "./src/ui/photo-access";
 import { AccountScreen } from "./src/ui/screens/AccountScreen";
 import { AlbumsScreen, type SharedAlbumPreview } from "./src/ui/screens/AlbumsScreen";
 import { BuildErrorScreen } from "./src/ui/screens/BuildErrorScreen";
@@ -54,6 +54,12 @@ import { StartScreen } from "./src/ui/screens/StartScreen";
 import { WelcomeScreen } from "./src/ui/screens/WelcomeScreen";
 
 const WELCOME_SEEN_KEY = "photeo-welcome-seen-v1";
+// Declaring ACCESS_MEDIA_LOCATION added a permission existing installs never
+// granted. Android 10-13 then reports the whole media permission as denied and
+// Android 14+ reports it as "limited", so an app that used to work would go
+// silently blank. One repair prompt per install fixes both; after that the user
+// widens access from the in-app banner instead of being nagged at every launch.
+const ACCESS_REPAIR_KEY = "photeo-media-access-repair-v1";
 
 type Gate = "checking" | "welcome" | "login" | "permission" | "ready";
 type CreateStep = "pick" | "building" | "review" | "ready" | "error" | null;
@@ -128,10 +134,13 @@ function PhoteoApp() {
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionMessage, setPermissionMessage] = useState<string | null>(null);
   const [pickedPhotos, setPickedPhotos] = useState<PickedPhoto[]>([]);
-  const [savedAlbums, setSavedAlbums] = useState<SavedAlbum[]>([]);
+  // null until the shelf has been read off disk once. AlbumsScreen needs that
+  // distinction: an empty array is "you have no albums", null is "still loading".
+  const [savedAlbums, setSavedAlbums] = useState<SavedAlbum[] | null>(null);
   const [currentAlbumId, setCurrentAlbumId] = useState<string | null>(null);
-  const savedAlbumsRef = useRef(savedAlbums);
-  savedAlbumsRef.current = savedAlbums;
+  const albums = savedAlbums ?? [];
+  const savedAlbumsRef = useRef(albums);
+  savedAlbumsRef.current = albums;
   // The album this build session has already saved, if any. Held in a ref so a
   // second finalize (Back from Album Ready, or a double tap) sees it
   // synchronously and updates that album instead of minting a duplicate.
@@ -206,17 +215,37 @@ function PhoteoApp() {
   }, []);
 
   useEffect(() => {
-    void loadAlbums().then(setSavedAlbums).catch(() => setSavedAlbums([]));
+    // A transient read failure must not blank the shelf; album-store already
+    // falls back to its cache, so an empty list here means genuinely empty.
+    void loadAlbums().then(setSavedAlbums).catch(() => undefined);
+  }, []);
+
+  // Both library scans are singletons with subscriber fan-out, so calling this
+  // again just re-attaches to whatever is already running.
+  const startLibraryScan = useCallback(async () => {
+    const access = await getPhotoAccess();
+    // Limited access still reads photos. Scanning what we can see beats
+    // scanning nothing; the screens say plainly that the view is partial.
+    if (!access.readable) return;
+    await Promise.all([buildIndex(), buildFaceIndex()]);
   }, []);
 
   useEffect(() => {
     void (async () => {
       await Promise.all([loadIndex(), loadFaceIndex()]);
-      const permission = await MediaLibrary.getPermissionsAsync();
-      if (permission.status !== "granted") return;
-      await Promise.all([buildIndex(), buildFaceIndex()]);
+      const access = await getPhotoAccess();
+      // Repair prompt: anything short of full access may be a permission we
+      // only started declaring, not a user decision. Ask once, then respect it.
+      if ((!access.readable || access.limited) && access.canAskAgain) {
+        const repaired = await SecureStore.getItemAsync(ACCESS_REPAIR_KEY).catch(() => null);
+        if (repaired !== "yes") {
+          void SecureStore.setItemAsync(ACCESS_REPAIR_KEY, "yes").catch(() => undefined);
+          await requestPhotoAccess();
+        }
+      }
+      await startLibraryScan();
     })().catch(() => undefined);
-  }, []);
+  }, [startLibraryScan]);
 
   const finishGate = useCallback(() => {
     setGate("ready");
@@ -227,8 +256,10 @@ function PhoteoApp() {
     setPermissionBusy(true);
     setPermissionMessage(null);
     try {
-      const permission = await MediaLibrary.requestPermissionsAsync();
-      if (permission.status === "granted") finishGate();
+      const access = await requestPhotoAccess();
+      // "Select photos" reads as readable-but-limited. Let them in — the Photos
+      // tab and the picker both say what is missing and offer to widen it.
+      if (access.readable) finishGate();
       else setPermissionMessage("Photo access wasn’t allowed. You can continue and enable it later.");
     } catch {
       setPermissionMessage("We couldn’t open the photo permission. You can continue and try again later.");
@@ -244,6 +275,11 @@ function PhoteoApp() {
     }
 
     buildAbort.current?.abort();
+    // The library scans fight buildAlbum for the JS thread and the native image
+    // pipeline. Park them for the build and resume once it settles, otherwise
+    // the progress bar crawls and the phone gets hot for no user-visible gain.
+    stopIndexBuild();
+    stopFaceIndexBuild();
     const controller = new AbortController();
     buildAbort.current = controller;
     const request = ++buildRequest.current;
@@ -281,8 +317,11 @@ function PhoteoApp() {
       }
     } finally {
       if (buildAbort.current === controller) buildAbort.current = null;
+      // Resume the scans this build parked — unless another build already
+      // claimed the thread, in which case that build resumes them instead.
+      if (buildAbort.current === null) void startLibraryScan();
     }
-  }, [pushNavigation, replaceNavigation]);
+  }, [pushNavigation, replaceNavigation, startLibraryScan]);
 
   const finalizeAlbum = useCallback(async (photos: FinalPhoto[]) => {
     if (!album || photos.length === 0) return;
@@ -349,7 +388,10 @@ function PhoteoApp() {
         setGate("welcome");
         return true;
       }
-      if (gate === "welcome") return true;
+      // Welcome is the first screen: Back there means "leave the app", the
+      // Android convention. Swallowing it made Photeo feel like it had trapped
+      // the user on launch.
+      if (gate === "welcome") return false;
 
       const current = navigationRef.current;
       if (isAlbumsRoot(current)) return false;
@@ -372,13 +414,13 @@ function PhoteoApp() {
   }, [gate, goToAlbumsRoot, popNavigation]);
 
   const currentAlbum = currentAlbumId
-    ? savedAlbums.find((candidate) => candidate.id === currentAlbumId) ?? null
+    ? albums.find((candidate) => candidate.id === currentAlbumId) ?? null
     : null;
   const routedAlbum = libraryRoute
-    ? savedAlbums.find((candidate) => candidate.id === libraryRoute.albumId) ?? null
+    ? albums.find((candidate) => candidate.id === libraryRoute.albumId) ?? null
     : null;
   const actionAlbum = actionRoute
-    ? savedAlbums.find((candidate) => candidate.id === actionRoute.albumId) ?? null
+    ? albums.find((candidate) => candidate.id === actionRoute.albumId) ?? null
     : null;
 
   if ((!fontsLoaded && !fontError) || gate === "checking") {
@@ -519,14 +561,14 @@ function PhoteoApp() {
       <View style={styles.tabContent}>
         {tab === "albums" ? (
           <AlbumsScreen
-            albums={savedAlbums}
+            albums={albums}
+            loading={savedAlbums === null}
             onCreate={startCreateFlow}
             onOpen={(selected) => pushNavigation({ libraryRoute: { albumId: selected.id, screen: "detail" } })}
-            onOpenShared={(selected) => pushNavigation({ sharedAlbum: selected })}
           />
         ) : null}
         {tab === "photos" ? <PhotosScreen onNamePerson={(person) => pushNavigation({ personToName: person })} /> : null}
-        {tab === "account" ? <AccountScreen albumCount={savedAlbums.length} onFamily={() => pushNavigation({ familyOpen: true })} /> : null}
+        {tab === "account" ? <AccountScreen albumCount={albums.length} onFamily={() => pushNavigation({ familyOpen: true })} /> : null}
       </View>
       <TabBar
         activeTab={tab}

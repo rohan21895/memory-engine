@@ -57,6 +57,13 @@ export async function embedFaceIdentity(
   ) {
     return undefined;
   }
+  // Unlike movenet.ts and tinyclip.ts, this wrapper's PREPROCESSING stays
+  // inside the queue, and must. Those two run once per photo against a bounded
+  // analysis proxy; this one runs once per FACE and crops from the full-size
+  // image, because a 40px face in a downscaled proxy has no identity left in it.
+  // expo-image-manipulator has no subsampling hint, so each of those crops
+  // decodes the whole frame. Serializing them is what keeps a photo with eight
+  // faces from asking for eight full-resolution bitmaps at once.
   const job = inferenceQueue.then(async () => {
     try {
       // Acquired inside the queue: it may retire the previous interpreter, and
@@ -299,7 +306,22 @@ export function squareFaceCrop(
   return { originX, originY, width: side, height: side };
 }
 
-/** Converts RGBA pixels to RGB floats in the ArcFace range (x - 127.5) / 127.5. */
+/**
+ * Converts RGBA pixels to RGB floats in the ArcFace range (x - 127.5) / 127.5.
+ *
+ * Tensor contract, read out of the bundled flatbuffer: input `input`
+ * FLOAT32[1,112,112,3] (NHWC, annotated with the TOCO input range 0..255),
+ * output `embeddings` FLOAT32[1,192]. Channel order is RGB, matching the
+ * artifact's own Dart reference implementation (getRed/getGreen/getBlue) — a
+ * BGR swap here would still return confident, stable, WRONG identities.
+ *
+ * That reference uses (x - 128) / 128 and the MobileFaceNet_TF lineage uses
+ * (x - 127.5) / 128; this uses (x - 127.5) / 127.5. All three agree to within
+ * 0.4% of full scale, which is far below JPEG round-trip noise, and the output
+ * is L2-normalized before any cosine comparison. Left as-is deliberately:
+ * changing it would silently shift every embedding without invalidating the
+ * persisted face index, which is a worse outcome than a 0.4% scale difference.
+ */
 export function normalizeFacePixels(
   rgba: Uint8Array,
   width: number,

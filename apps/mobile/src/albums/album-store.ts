@@ -61,25 +61,78 @@ async function fileSystemModule(): Promise<typeof import("expo-file-system/legac
   return import("expo-file-system/legacy");
 }
 
-async function readStore(fileSystem: typeof import("expo-file-system/legacy"), uri: string) {
+/** The one I/O call the shelf reader needs, narrowed so it can be faked in tests. */
+export type ShelfReader = { readAsStringAsync: (uri: string) => Promise<string> };
+
+/**
+ * "missing" and "corrupt" must stay distinct: an absent file means the user has
+ * no albums yet and writing is safe, while an unreadable one means their albums
+ * are still on disk and writing would destroy them.
+ */
+type ReadResult = "missing" | "corrupt" | SavedAlbum[];
+
+async function readStore(fileSystem: ShelfReader, uri: string): Promise<ReadResult> {
+  let contents: string;
   try {
-    return parseStore(await fileSystem.readAsStringAsync(uri));
+    contents = await fileSystem.readAsStringAsync(uri);
+  } catch {
+    return "missing";
+  }
+  return parseStore(contents) ?? "corrupt";
+}
+
+/** `ok: false` means the shelf exists but could not be read — never overwrite it. */
+export type ShelfRead = { ok: true; albums: SavedAlbum[] } | { ok: false };
+
+export async function readShelf(fileSystem: ShelfReader, uri: string): Promise<ShelfRead> {
+  // A leftover .tmp is the residue of a crash between the write and the move,
+  // so it holds the newest shelf. A truncated one is the expected shape of that
+  // crash, so fall through to the real file rather than treating it as damage.
+  const fromTemporary = await readStore(fileSystem, `${uri}.tmp`);
+  if (Array.isArray(fromTemporary)) return { ok: true, albums: fromTemporary };
+
+  const fromFile = await readStore(fileSystem, uri);
+  if (Array.isArray(fromFile)) return { ok: true, albums: fromFile };
+  return fromFile === "missing" ? { ok: true, albums: [] } : { ok: false };
+}
+
+/**
+ * Returns the shelf, or null when disk could not be read.
+ *
+ * Callers that only display albums can treat null as empty, but callers that
+ * write MUST NOT: the old code cached `[]` on any read failure and never
+ * retried, so one transient failure made the next save persist a shelf of one
+ * album over every album the user had.
+ */
+async function shelf(): Promise<SavedAlbum[] | null> {
+  if (cachedAlbums) return cachedAlbums.slice();
+  try {
+    const fileSystem = await fileSystemModule();
+    if (!fileSystem.documentDirectory) return null;
+    const read = await readShelf(fileSystem, `${fileSystem.documentDirectory}${STORE_FILENAME}`);
+    if (!read.ok) return null;
+    cachedAlbums = read.albums;
+    return cachedAlbums.slice();
   } catch {
     return null;
   }
 }
 
 export async function loadAlbums(): Promise<SavedAlbum[]> {
-  if (cachedAlbums) return cachedAlbums.slice();
-  try {
-    const fileSystem = await fileSystemModule();
-    if (!fileSystem.documentDirectory) return [];
-    const uri = `${fileSystem.documentDirectory}${STORE_FILENAME}`;
-    cachedAlbums = await readStore(fileSystem, `${uri}.tmp`) ?? await readStore(fileSystem, uri) ?? [];
-  } catch {
-    cachedAlbums = [];
-  }
-  return cachedAlbums.slice();
+  return (await shelf()) ?? [];
+}
+
+/**
+ * Applies a change to the shelf and writes it back. When disk is unreadable the
+ * change stays in memory only, so the session keeps working and the albums on
+ * disk survive to be recovered by the next successful load.
+ */
+async function mutate(apply: (albums: SavedAlbum[]) => SavedAlbum[]): Promise<SavedAlbum[]> {
+  const current = await shelf();
+  if (!current) return apply([]);
+  const next = apply(current);
+  await persist(next);
+  return next.slice();
 }
 
 async function persist(albums: SavedAlbum[]): Promise<void> {
@@ -99,24 +152,17 @@ async function persist(albums: SavedAlbum[]): Promise<void> {
 }
 
 export async function saveAlbum(album: SavedAlbum): Promise<SavedAlbum[]> {
-  const albums = await loadAlbums();
-  const next = [album, ...albums.filter((candidate) => candidate.id !== album.id)]
-    .sort((left, right) => right.updatedAt - left.updatedAt);
-  await persist(next);
-  return next.slice();
+  return mutate((albums) =>
+    [album, ...albums.filter((candidate) => candidate.id !== album.id)]
+      .sort((left, right) => right.updatedAt - left.updatedAt));
 }
 
 export async function renameAlbum(id: string, title: string): Promise<SavedAlbum[]> {
-  const albums = await loadAlbums();
   const cleanTitle = title.trim() || "My photo album";
-  const next = albums.map((album) => album.id === id ? { ...album, title: cleanTitle, updatedAt: Date.now() } : album);
-  await persist(next);
-  return next.slice();
+  return mutate((albums) =>
+    albums.map((album) => album.id === id ? { ...album, title: cleanTitle, updatedAt: Date.now() } : album));
 }
 
 export async function deleteAlbum(id: string): Promise<SavedAlbum[]> {
-  const albums = await loadAlbums();
-  const next = albums.filter((album) => album.id !== id);
-  await persist(next);
-  return next.slice();
+  return mutate((albums) => albums.filter((album) => album.id !== id));
 }

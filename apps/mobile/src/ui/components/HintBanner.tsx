@@ -7,25 +7,46 @@ export function HintBanner({
   text,
   onDismiss,
   dismissLabel,
+  actionLabel,
+  actionHint,
+  onAction,
+  tone = "info",
 }: {
   text: string;
   onDismiss?: () => void;
   dismissLabel?: string;
+  actionLabel?: string;
+  actionHint?: string;
+  onAction?: () => void;
+  tone?: "info" | "warning";
 }) {
   return (
-    <View style={styles.root}>
-      <Text style={styles.mark}>i</Text>
-      <Text style={styles.text}>{text}</Text>
-      {onDismiss && dismissLabel ? (
+    <View accessibilityLiveRegion="polite" style={styles.root}>
+      <View style={styles.row}>
+        <Text style={[styles.mark, tone === "warning" ? styles.markWarning : null]}>!</Text>
+        <Text style={styles.text}>{text}</Text>
+        {onDismiss && dismissLabel ? (
+          <Pressable
+            accessibilityHint={dismissLabel}
+            accessibilityLabel={dismissLabel}
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={onDismiss}
+            style={({ pressed }) => [styles.close, pressed ? styles.pressed : null]}
+          >
+            <Text style={styles.closeText}>×</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {actionLabel && onAction ? (
         <Pressable
-          accessibilityHint={dismissLabel}
-          accessibilityLabel={dismissLabel}
+          accessibilityHint={actionHint}
+          accessibilityLabel={actionLabel}
           accessibilityRole="button"
-          hitSlop={8}
-          onPress={onDismiss}
-          style={({ pressed }) => [styles.close, pressed ? styles.pressed : null]}
+          onPress={onAction}
+          style={({ pressed }) => [styles.action, pressed ? styles.pressed : null]}
         >
-          <Text style={styles.closeText}>×</Text>
+          <Text style={styles.actionText}>{actionLabel}</Text>
         </Pressable>
       ) : null}
     </View>
@@ -33,13 +54,26 @@ export function HintBanner({
 }
 
 const styles = StyleSheet.create({
+  action: {
+    alignItems: "center",
+    alignSelf: "flex-start",
+    backgroundColor: colors.panel,
+    borderColor: colors.hairline,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    justifyContent: "center",
+    marginLeft: spacing.lg,
+    minHeight: layout.minTouchTarget,
+    paddingHorizontal: spacing.md,
+  },
+  actionText: { color: colors.goldPressed, fontFamily: fonts.bold, ...typeScale.small },
   close: { alignItems: "center", height: layout.minTouchTarget, justifyContent: "center", width: layout.minTouchTarget },
   closeText: { color: colors.muted, fontFamily: fonts.body, fontSize: 26, lineHeight: 30 },
   mark: {
-    borderColor: colors.gold,
+    borderColor: colors.goldPressed,
     borderRadius: 10,
     borderWidth: 1,
-    color: colors.gold,
+    color: colors.goldPressed,
     fontFamily: fonts.body,
     fontSize: 14,
     fontWeight: "700",
@@ -49,17 +83,18 @@ const styles = StyleSheet.create({
     textAlign: "center",
     width: 20,
   },
+  markWarning: { backgroundColor: colors.goldPressed, color: colors.onAccent },
   pressed: { opacity: 0.55 },
   root: {
     ...continuousRadius(radii.md),
-    alignItems: "flex-start",
     backgroundColor: colors.panelRaised,
     borderColor: colors.hairline,
     borderWidth: 1,
-    flexDirection: "row",
-    gap: spacing.sm,
+    gap: spacing.xs,
+    paddingBottom: spacing.sm,
     paddingLeft: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingTop: spacing.sm,
   },
-  text: { color: colors.text, flex: 1, fontFamily: fonts.body, paddingVertical: 2, ...typeScale.label },
+  row: { alignItems: "flex-start", flexDirection: "row", gap: spacing.sm },
+  text: { color: colors.text, flex: 1, fontFamily: fonts.body, paddingVertical: 2, ...typeScale.small },
 });

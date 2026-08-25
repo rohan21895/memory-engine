@@ -33,10 +33,19 @@ import {
   loadIndex,
   type PlaceSummary,
 } from "../../import/photo-index";
+import { copy } from "../copy";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
+import { HintBanner } from "../components/HintBanner";
 import { LoadingState } from "../components/LoadingState";
 import { fonts } from "../fonts";
+import {
+  canWidenAccess,
+  getPhotoAccess,
+  NO_PHOTO_ACCESS,
+  requestPhotoAccess,
+  type PhotoAccess,
+} from "../photo-access";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
 import type { NamePersonTarget } from "./NamePersonScreen";
 
@@ -45,6 +54,7 @@ const FILTER_BURST_TARGET = 120;
 const FILTER_PAGE_GUARD = 400;
 const GRID_COLUMNS = 3;
 const GRID_GAP = 3;
+const PLACE_RAIL_LIMIT = 24;
 
 type PlaceCard = PlaceSummary & { coverUri: string };
 type LibraryRow =
@@ -106,13 +116,20 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
   const [reloading, setReloading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [scanningPeople, setScanningPeople] = useState(false);
+  // Real counts, not a spinner: "Finding people…" with no numbers is exactly the
+  // "nothing is happening" impression the beta complained about.
+  const [faceScan, setFaceScan] = useState<{ done: number; total: number } | null>(null);
+  const [placeScan, setPlaceScan] = useState<{ done: number; total: number } | null>(null);
+  const [access, setAccess] = useState<PhotoAccess>(NO_PHOTO_ACCESS);
+  const [accessDismissed, setAccessDismissed] = useState(false);
   const cursor = useRef<string | undefined>(undefined);
   const hasNextPage = useRef(true);
   const loadingPage = useRef(false);
 
   const refreshIndexes = useCallback(() => {
     const nextPeople = getPeople();
-    const nextPlaces: PlaceCard[] = [...getCities(), ...getCountries()].slice(0, 12).map((place) => {
+    // Countries first: cities alone could fill the rail and hide every country.
+    const nextPlaces: PlaceCard[] = [...getCountries(), ...getCities()].slice(0, PLACE_RAIL_LIMIT).map((place) => {
       const ids = place.id.startsWith("country:") ? assetIdsForCountry(place.id) : assetIdsForCity(place.id);
       return { ...place, coverUri: ids[0] ? contentUri(ids[0]) : "" };
     });
@@ -120,13 +137,38 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
     setPlaces(nextPlaces);
   }, []);
 
+  const startScans = useCallback(() => {
+    void buildIndex({
+      onProgress: (done, total) => {
+        setPlaceScan({ done, total });
+        refreshIndexes();
+      },
+    }).then(refreshIndexes).catch(() => undefined).finally(() => setPlaceScan(null));
+    void buildFaceIndex({
+      onProgress: (done, total) => {
+        setScanningPeople(true);
+        setFaceScan({ done, total });
+        setPeople(getPeople());
+      },
+    })
+      .then(() => setPeople(getPeople()))
+      .catch(() => undefined)
+      .finally(() => {
+        setScanningPeople(false);
+        setFaceScan(null);
+      });
+  }, [refreshIndexes]);
+
   useEffect(() => {
     let active = true;
     void (async () => {
       try {
-        const permission = await MediaLibrary.getPermissionsAsync();
+        const current = await getPhotoAccess();
         if (!active) return;
-        if (permission.status !== "granted") {
+        setAccess(current);
+        // "Select photos" reports granted with limited privileges. Show what we
+        // can see rather than a permission wall, and say so in the banner.
+        if (!current.readable) {
           setStatus("denied");
           return;
         }
@@ -136,13 +178,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
         refreshIndexes();
         setReloading(true);
         setStatus("ready");
-        void buildIndex({ onProgress: refreshIndexes }).then(refreshIndexes).catch(() => undefined);
-        void buildFaceIndex({
-          onProgress: () => {
-            setScanningPeople(true);
-            setPeople(getPeople());
-          },
-        }).then(() => setPeople(getPeople())).catch(() => undefined).finally(() => setScanningPeople(false));
+        startScans();
       } catch {
         if (active) setStatus("error");
       }
@@ -150,7 +186,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
     return () => {
       active = false;
     };
-  }, [refreshIndexes]);
+  }, [refreshIndexes, startScans]);
 
   const filterSet = useMemo(() => {
     if (selectedPerson) return new Set(assetIdsForPerson(selectedPerson));
@@ -221,41 +257,106 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
     if (status === "ready") void reload();
   }, [filterSet, reload, status]);
 
+  const widenAccess = useCallback(() => {
+    void (async () => {
+      // Once Android stops offering the prompt, Settings is the only way through.
+      if (!canWidenAccess(access)) {
+        void Linking.openSettings();
+        return;
+      }
+      const next = await requestPhotoAccess();
+      setAccess(next);
+      if (!next.readable) return;
+      setStatus("ready");
+      // A wider grant exposes photos no index has ever seen: re-page and re-scan.
+      startScans();
+      await reload();
+    })();
+  }, [access, reload, startScans]);
+
   const scanForPeople = () => {
     if (scanningPeople || !isFaceDetectionAvailable()) return;
     setScanningPeople(true);
-    const refreshPeople = () => setPeople(getPeople());
-    void buildFaceIndex({ onProgress: refreshPeople })
-      .then(refreshPeople)
-      .catch(() => undefined)
-      .finally(() => setScanningPeople(false));
+    startScans();
   };
 
   const needle = query.trim().toLocaleLowerCase();
-  const visiblePeople = people.filter((person, index) => `person ${index + 1}`.includes(needle));
+  const peopleLabels = useMemo(
+    () => new Map(people.map((person, index) => [person.id, copy.filters.personName(index)])),
+    [people],
+  );
+  const visiblePeople = people.filter((person) =>
+    (peopleLabels.get(person.id) ?? "").toLocaleLowerCase().includes(needle),
+  );
   const visiblePlaces = places.filter((place) => place.name.toLocaleLowerCase().includes(needle));
   const rows = useMemo(() => rowsFor(assets), [assets]);
+  const searching = needle.length > 0;
+  const showAccessBanner = access.limited && !accessDismissed;
+  const peopleStatus = scanningPeople
+    ? faceScan && faceScan.total > 0
+      ? copy.states.scanningFaces(faceScan.done, faceScan.total)
+      : "Grouping faces on this phone…"
+    : null;
+  const placeStatus = placeScan && placeScan.total > 0
+    ? copy.states.scanningPhotos(placeScan.done, placeScan.total)
+    : null;
 
   const header = (
     <View style={styles.header}>
       <Text accessibilityRole="header" style={styles.title}>Photos</Text>
       <View style={styles.search}>
-        <Text style={styles.searchIcon}>⌕</Text>
-        <TextInput onChangeText={setQuery} placeholder="Search people or places" placeholderTextColor="#8b8378" style={styles.searchInput} value={query} />
+        <Text accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.searchIcon}>⌕</Text>
+        <TextInput
+          accessibilityLabel="Search people or places"
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={setQuery}
+          placeholder="Search people or places"
+          placeholderTextColor={colors.muted}
+          returnKeyType="search"
+          style={styles.searchInput}
+          value={query}
+        />
+        {query.length > 0 ? (
+          <Pressable accessibilityLabel="Clear search" accessibilityRole="button" hitSlop={10} onPress={() => setQuery("")} style={styles.searchClear}>
+            <Text style={styles.searchClearText}>×</Text>
+          </Pressable>
+        ) : null}
       </View>
 
-      <View style={styles.sectionHeading}><Text style={styles.section}>People</Text><Text style={styles.seeAll}>See all</Text></View>
-      {people.length > 0 ? (
+      {showAccessBanner ? (
+        <View style={styles.banner}>
+          <HintBanner
+            actionHint={canWidenAccess(access) ? copy.access.limitedActionHint : copy.access.settingsActionHint}
+            actionLabel={canWidenAccess(access) ? copy.access.limitedAction : copy.access.settingsAction}
+            dismissLabel={copy.access.dismiss}
+            onAction={widenAccess}
+            onDismiss={() => setAccessDismissed(true)}
+            text={copy.access.limitedHelper}
+            tone="warning"
+          />
+        </View>
+      ) : null}
+
+      <View style={styles.sectionHeading}>
+        <Text style={styles.section}>People</Text>
+        {peopleStatus ? <Text accessibilityLiveRegion="polite" style={styles.sectionStatus}>{peopleStatus}</Text> : null}
+      </View>
+      {visiblePeople.length > 0 ? (
         <ScrollView horizontal contentContainerStyle={styles.peopleRow} showsHorizontalScrollIndicator={false}>
-          {visiblePeople.map((person, index) => {
+          {visiblePeople.map((person) => {
             const active = selectedPerson === person.id;
+            const label = peopleLabels.get(person.id) ?? "Person";
             return (
               <Pressable
                 accessibilityHint="Tap to filter photos. Hold to add a name."
+                accessibilityLabel={`${label}. ${copy.filters.photoCount(person.assetIds.length)}`}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
                 key={person.id}
                 onLongPress={() => onNamePerson?.({
                   id: person.id,
-                  label: `Person ${index + 1}`,
+                  label,
                   faceThumbUri: person.faceThumbUri,
                   assetIds: assetIdsForPerson(person.id).slice(0, 8),
                 })}
@@ -266,39 +367,70 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
                 style={styles.person}
               >
                 <Image cachePolicy="memory-disk" contentFit="cover" source={person.faceThumbUri ?? contentUri(person.coverAssetId)} style={[styles.avatar, active ? styles.avatarActive : null]} />
-                <Text numberOfLines={1} style={[styles.personName, active ? styles.activeText : null]}>Person {index + 1}</Text>
+                <Text numberOfLines={1} style={[styles.personName, active ? styles.activeText : null]}>{label}</Text>
               </Pressable>
             );
           })}
         </ScrollView>
+      ) : searching && people.length > 0 ? (
+        <Text style={styles.noMatch}>No people match “{query.trim()}”.</Text>
       ) : (
         <View style={styles.noPeople}>
           <Text style={styles.noPeopleTitle}>{scanningPeople ? "Finding people…" : "No people found yet"}</Text>
-          <Text style={styles.noPeopleText}>Face grouping happens on this phone and may take a few minutes the first time.</Text>
-          <Pressable accessibilityRole="button" disabled={scanningPeople || !isFaceDetectionAvailable()} onPress={scanForPeople} style={[styles.peopleScan, scanningPeople ? styles.scanDisabled : null]}>
+          <Text style={styles.noPeopleText}>
+            {peopleStatus
+              ? `${peopleStatus}. Face grouping happens on this phone.`
+              : access.limited
+                ? copy.access.limitedPeople
+                : isFaceDetectionAvailable()
+                  ? "Face grouping happens on this phone and may take a few minutes the first time."
+                  : "Face grouping isn’t available on this phone."}
+          </Text>
+          <Pressable accessibilityRole="button" accessibilityState={{ busy: scanningPeople, disabled: scanningPeople || !isFaceDetectionAvailable() }} disabled={scanningPeople || !isFaceDetectionAvailable()} onPress={scanForPeople} style={[styles.peopleScan, scanningPeople || !isFaceDetectionAvailable() ? styles.scanDisabled : null]}>
             <Text style={styles.peopleScanText}>{scanningPeople ? "Scanning on this phone…" : "Find people on this phone"}</Text>
           </Pressable>
         </View>
       )}
 
-      <View style={styles.sectionHeading}><Text style={styles.section}>Places</Text><Text style={styles.seeAll}>See all</Text></View>
-      <ScrollView horizontal contentContainerStyle={styles.placesRow} showsHorizontalScrollIndicator={false}>
-        {visiblePlaces.map((place) => {
-          const active = selectedPlace === place.id;
-          return (
-            <Pressable key={place.id} onPress={() => {
-              setSelectedPerson(null);
-              setSelectedPlace(active ? null : place.id);
-            }} style={styles.place}>
-              {place.coverUri ? <Image cachePolicy="memory-disk" contentFit="cover" source={place.coverUri} style={[styles.placeImage, active ? styles.placeActive : null]} /> : <View style={styles.placeImage} />}
-              <Text numberOfLines={1} style={[styles.placeName, active ? styles.activeText : null]}>{place.name}</Text>
-              <Text style={styles.placeCount}>{place.count} photos</Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
+      <View style={styles.sectionHeading}>
+        <Text style={styles.section}>Places</Text>
+        {placeStatus ? <Text accessibilityLiveRegion="polite" style={styles.sectionStatus}>{placeStatus}</Text> : null}
+      </View>
+      {visiblePlaces.length > 0 ? (
+        <ScrollView horizontal contentContainerStyle={styles.placesRow} showsHorizontalScrollIndicator={false}>
+          {visiblePlaces.map((place) => {
+            const active = selectedPlace === place.id;
+            return (
+              <Pressable
+                accessibilityLabel={`${place.name}. ${copy.filters.photoCount(place.count)}`}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                key={place.id}
+                onPress={() => {
+                  setSelectedPerson(null);
+                  setSelectedPlace(active ? null : place.id);
+                }}
+                style={styles.place}
+              >
+                {place.coverUri ? <Image cachePolicy="memory-disk" contentFit="cover" source={place.coverUri} style={[styles.placeImage, active ? styles.placeActive : null]} /> : <View style={styles.placeImage} />}
+                <Text numberOfLines={1} style={[styles.placeName, active ? styles.activeText : null]}>{place.name}</Text>
+                <Text style={styles.placeCount}>{copy.filters.photoCount(place.count)}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      ) : searching && places.length > 0 ? (
+        <Text style={styles.noMatch}>No places match “{query.trim()}”.</Text>
+      ) : (
+        <View style={styles.noPeople}>
+          <Text style={styles.noPeopleTitle}>{placeStatus ? "Finding places…" : copy.access.noPlacesTitle}</Text>
+          <Text style={styles.noPeopleText}>
+            {placeStatus ?? (access.limited ? copy.access.limitedPlaces : copy.access.noPlacesHelper)}
+          </Text>
+        </View>
+      )}
       {selectedPerson || selectedPlace ? (
-        <Pressable accessibilityRole="button" onPress={() => { setSelectedPerson(null); setSelectedPlace(null); }} style={styles.clearFilter}>
+        <Pressable accessibilityHint="Removes the person or place filter" accessibilityRole="button" onPress={() => { setSelectedPerson(null); setSelectedPlace(null); }} style={styles.clearFilter}>
           <Text style={styles.clearFilterText}>Show all photos</Text>
         </Pressable>
       ) : null}
@@ -309,7 +441,15 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
     return <LoadingState helper="Your library stays on this phone." title="Loading your photos…" />;
   }
   if (status === "denied") {
-    return <ErrorState actionHint="Opens Photeo settings" actionLabel="Open settings" helper="Allow photo access to see your full library here." onAction={() => void Linking.openSettings()} title="Photo access is off" />;
+    return (
+      <ErrorState
+        actionHint={canWidenAccess(access) ? copy.access.limitedActionHint : copy.access.settingsActionHint}
+        actionLabel={canWidenAccess(access) ? copy.access.limitedAction : copy.access.settingsAction}
+        helper="Allow photo access to see your full library here."
+        onAction={widenAccess}
+        title="Photo access is off"
+      />
+    );
   }
   if (status === "error") {
     return <ErrorState actionHint="Tries your photo library again" actionLabel="Try again" helper="Your photos are safe. Photeo couldn’t read the library just now." onAction={() => setStatus("ready")} title="Couldn’t load photos" />;
@@ -324,7 +464,25 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
         data={rows}
         getItemType={(item) => item.kind}
         keyExtractor={(item) => item.key}
-        ListEmptyComponent={reloading ? <LoadingState helper="Every photo will appear here." title="Loading your photos…" /> : <EmptyState helper={filterSet ? "Try showing all photos." : "There are no photos in this library yet."} title={filterSet ? "No photos match this filter" : "No photos yet"} />}
+        // LoadingState/EmptyState are flex:1; inside a list content container
+        // that resolves to zero height and the screen reads as blank while the
+        // first page is still being fetched. The fixed block keeps them visible.
+        ListEmptyComponent={(
+          <View style={styles.emptyBlock}>
+            {reloading
+              ? <LoadingState helper="Every photo will appear here." title="Loading your photos…" />
+              : (
+                <EmptyState
+                  helper={filterSet
+                    ? "Try showing all photos."
+                    : access.limited
+                      ? copy.access.limitedShort
+                      : "There are no photos in this library yet."}
+                  title={filterSet ? "No photos match this filter" : "No photos yet"}
+                />
+              )}
+          </View>
+        )}
         ListFooterComponent={loadingMore ? <Text style={styles.loadingMore}>Loading more photos…</Text> : null}
         ListHeaderComponent={header}
         onEndReached={() => void loadMore()}
@@ -344,21 +502,24 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
 }
 
 const styles = StyleSheet.create({
-  activeText: { color: colors.gold },
+  activeText: { color: colors.goldPressed },
   avatar: { backgroundColor: colors.hairline, borderRadius: 33, height: 66, width: 66 },
   avatarActive: { borderColor: colors.gold, borderWidth: 3 },
-  clearFilter: { alignItems: "center", alignSelf: "flex-start", backgroundColor: colors.panelRaised, borderRadius: 20, justifyContent: "center", marginTop: spacing.sm, minHeight: 40, paddingHorizontal: spacing.md },
-  clearFilterText: { color: colors.gold, fontFamily: fonts.bold, ...typeScale.small },
+  banner: { paddingTop: spacing.md },
+  clearFilter: { alignItems: "center", alignSelf: "flex-start", backgroundColor: colors.panelRaised, borderRadius: radii.pill, justifyContent: "center", marginTop: spacing.sm, minHeight: layout.minTouchTarget, paddingHorizontal: spacing.md },
+  clearFilterText: { color: colors.goldPressed, fontFamily: fonts.bold, ...typeScale.small },
+  emptyBlock: { minHeight: 280, paddingVertical: spacing.lg },
   header: { paddingHorizontal: layout.screenPadding, paddingTop: (StatusBar.currentHeight ?? 24) + spacing.md },
   list: { paddingBottom: spacing.xxl },
   loadingMore: { color: colors.muted, fontFamily: fonts.regular, padding: spacing.md, textAlign: "center", ...typeScale.small },
   month: { color: colors.text, fontFamily: fonts.bold, paddingBottom: spacing.xs, paddingHorizontal: layout.screenPadding, paddingTop: spacing.lg, ...typeScale.label },
-  noPeople: { backgroundColor: colors.panel, borderColor: colors.hairline, borderCurve: "continuous", borderRadius: radii.lg, borderWidth: 1, gap: spacing.xs, padding: spacing.md },
+  noMatch: { color: colors.muted, fontFamily: fonts.regular, paddingTop: spacing.sm, ...typeScale.small },
+  noPeople: { backgroundColor: colors.panel, borderColor: colors.hairline, borderCurve: "continuous", borderRadius: radii.lg, borderWidth: 1, gap: spacing.xs, marginTop: spacing.xs, padding: spacing.md },
   noPeopleText: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   noPeopleTitle: { color: colors.text, fontFamily: fonts.bold, ...typeScale.label },
   peopleRow: { gap: 14, paddingVertical: spacing.xs },
-  peopleScan: { alignItems: "center", alignSelf: "flex-start", backgroundColor: colors.panelRaised, borderRadius: 20, height: 40, justifyContent: "center", marginTop: spacing.xs, paddingHorizontal: spacing.md },
-  peopleScanText: { color: colors.gold, fontFamily: fonts.bold, ...typeScale.small },
+  peopleScan: { alignItems: "center", alignSelf: "flex-start", backgroundColor: colors.panelRaised, borderRadius: radii.pill, justifyContent: "center", marginTop: spacing.xs, minHeight: layout.minTouchTarget, paddingHorizontal: spacing.md },
+  peopleScanText: { color: colors.goldPressed, fontFamily: fonts.bold, ...typeScale.small },
   person: { alignItems: "center", gap: 6, width: 66 },
   personName: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12.5, width: 66 },
   photoRow: { flexDirection: "row", gap: GRID_GAP },
@@ -371,10 +532,12 @@ const styles = StyleSheet.create({
   root: { backgroundColor: colors.background, flex: 1 },
   scanDisabled: { opacity: 0.55 },
   search: { alignItems: "center", backgroundColor: "#f0eee8", borderRadius: radii.pill, flexDirection: "row", gap: spacing.xs, height: 48, marginTop: 14, paddingHorizontal: spacing.md },
-  searchIcon: { color: "#8b8378", fontFamily: fonts.regular, fontSize: 21 },
+  searchClear: { alignItems: "center", height: 32, justifyContent: "center", width: 32 },
+  searchClearText: { color: colors.muted, fontFamily: fonts.regular, fontSize: 24, lineHeight: 27 },
+  searchIcon: { color: colors.muted, fontFamily: fonts.regular, fontSize: 21 },
   searchInput: { color: colors.text, flex: 1, fontFamily: fonts.regular, fontSize: 16, paddingVertical: 0 },
   section: { color: colors.text, fontFamily: fonts.bold, ...typeScale.label },
-  sectionHeading: { alignItems: "baseline", flexDirection: "row", justifyContent: "space-between", paddingTop: spacing.lg },
-  seeAll: { color: colors.gold, fontFamily: fonts.semibold, ...typeScale.small },
+  sectionHeading: { alignItems: "baseline", flexDirection: "row", gap: spacing.sm, justifyContent: "space-between", paddingTop: spacing.lg },
+  sectionStatus: { color: colors.muted, flexShrink: 1, fontFamily: fonts.regular, textAlign: "right", ...typeScale.eyebrow },
   title: { color: colors.text, fontFamily: fonts.extraBold, ...typeScale.title },
 });

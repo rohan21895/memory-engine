@@ -7,8 +7,22 @@ const INPUT_SIZE = 224;
 const EMBEDDING_SIZE = 512;
 const BASE64_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/**
+ * OpenAI CLIP's published image statistics, which TinyCLIP inherits along with
+ * the rest of the CLIP preprocessing recipe. Applied to RGB (not BGR) channels
+ * scaled to 0..1 first, then packed NHWC to match the bundled graph's
+ * float32 [1,224,224,3] input (onnx2tf transposed the ONNX NCHW export).
+ */
 const IMAGE_MEAN = [0.48145466, 0.4578275, 0.40821073] as const;
 const IMAGE_STD = [0.26862954, 0.26130258, 0.27577711] as const;
+/**
+ * The checkpoint the offline text axes were embedded from. The axes are only
+ * meaningful against the image tower of the SAME checkpoint - two CLIP variants
+ * do not share an embedding space, and comparing across them returns confident
+ * nonsense rather than an error. Swapping the image graph without regenerating
+ * the sidecar must fail loudly here.
+ */
+const TEXT_AXIS_MODEL = "TinyCLIP-ViT-8M-16-Text-3M-YFCC15M";
 
 export const SEMANTIC_SCREENSHOT_THRESHOLD = 0.06;
 
@@ -45,6 +59,10 @@ type TensorflowModel = {
 
 const modelCache = createModelCache<TensorflowModel>(loadSemanticModel);
 let inferenceQueue: Promise<void> = Promise.resolve();
+// undefined until the first acquire has reported. `false` means the bundled
+// graph is missing or has the wrong tensor contract, which is a property of the
+// build, not a transient failure - so stop paying for preprocessing per photo.
+let graphUsable: boolean | undefined;
 
 /**
  * Produce a semantic image embedding and pre-declared zero-shot contrasts.
@@ -56,13 +74,26 @@ export async function analyzeSemanticImage(
   sourceWidth?: number,
   sourceHeight?: number,
 ): Promise<SemanticSignals | undefined> {
+  if (graphUsable === false) return undefined;
+
+  // Preprocessing is a native resize/crop plus a JPEG decode, and it
+  // deliberately runs OUTSIDE the inference queue. It used to sit inside, which
+  // serialized the single most expensive step in the wrapper and made the
+  // caller's ANALYZE_CONCURRENCY purely decorative: photos queued one behind
+  // another for work that has no shared state. Only acquire() + run() need
+  // serializing, because acquire() can dispose the previous interpreter.
+  let input: Float32Array;
+  try {
+    input = await imageFloatTensor(imageUri, sourceWidth, sourceHeight);
+  } catch {
+    return undefined;
+  }
+
   const job = inferenceQueue.then(async () => {
     try {
-      // Acquired inside the queue: it may retire the previous interpreter, and
-      // disposing one while a run is in flight is not safe.
       const model = await modelCache.acquire();
-      if (!model || !isExpectedModel(model)) return undefined;
-      const input = await imageFloatTensor(imageUri, sourceWidth, sourceHeight);
+      graphUsable = model !== undefined && isExpectedModel(model);
+      if (!model || !graphUsable) return undefined;
       const outputs = await model.run([input.buffer as ArrayBuffer]);
       const embedding = parseEmbeddingOutput(outputs[0]);
       return embedding ? semanticSignals(embedding) : undefined;
@@ -102,7 +133,8 @@ export async function probeSemanticModel(): Promise<boolean> {
   const job = inferenceQueue.then(async () => {
     try {
       const model = await modelCache.acquire();
-      return model !== undefined && isExpectedModel(model);
+      graphUsable = model !== undefined && isExpectedModel(model);
+      return graphUsable;
     } catch {
       return false;
     }
@@ -126,6 +158,25 @@ function isExpectedModel(model: TensorflowModel): boolean {
   );
 }
 
+async function measureDimensions(
+  imageUri: string,
+): Promise<{ width: number; height: number } | undefined> {
+  try {
+    // Header-only measurement. This replaces a `manipulateAsync(uri, [],
+    // {compress: 1})` round trip whose ONLY purpose was reading width/height:
+    // expo-image-manipulator has no subsampling hint (Glide loads at
+    // SIZE_ORIGINAL), so that call decoded the full frame into the Java heap,
+    // re-encoded it at quality 1.0, and left the copy in the cache forever.
+    const { Image } = await import("react-native");
+    const measured = await Image.getSize(imageUri);
+    const width = validDimension(measured?.width);
+    const height = validDimension(measured?.height);
+    return width && height ? { width, height } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function imageFloatTensor(
   imageUri: string,
   sourceWidth?: number,
@@ -139,51 +190,64 @@ async function imageFloatTensor(
 
   let width = validDimension(sourceWidth);
   let height = validDimension(sourceHeight);
-  let uri = imageUri;
   if (!width || !height) {
-    const measured = await manipulateAsync(imageUri, [], {
-      compress: 1,
-      format: SaveFormat.JPEG,
-    });
-    width = validDimension(measured.width);
-    height = validDimension(measured.height);
-    uri = measured.uri;
+    const measured = await measureDimensions(imageUri);
+    width = measured?.width;
+    height = measured?.height;
   }
   if (!width || !height) throw new Error("TinyCLIP image dimensions are missing.");
 
   const transform = centerCropTransform(width, height, INPUT_SIZE);
-  const thumbnail = await manipulateAsync(
-    uri,
-    [
-      { resize: transform.resize },
-      {
-        crop: {
-          originX: transform.originX,
-          originY: transform.originY,
-          width: INPUT_SIZE,
-          height: INPUT_SIZE,
+  let outputUri: string | undefined;
+  try {
+    const thumbnail = await manipulateAsync(
+      imageUri,
+      [
+        { resize: transform.resize },
+        {
+          crop: {
+            originX: transform.originX,
+            originY: transform.originY,
+            width: INPUT_SIZE,
+            height: INPUT_SIZE,
+          },
         },
+      ],
+      {
+        base64: true,
+        compress: 0.95,
+        format: SaveFormat.JPEG,
       },
-    ],
-    {
-      base64: true,
-      compress: 0.95,
-      format: SaveFormat.JPEG,
-    },
-  );
-  if (!thumbnail.base64) throw new Error("TinyCLIP preprocessing returned no pixels.");
+    );
+    outputUri = thumbnail.uri;
+    if (!thumbnail.base64) throw new Error("TinyCLIP preprocessing returned no pixels.");
 
-  const decoded = decodeJpeg(decodeBase64(thumbnail.base64), {
-    useTArray: true,
-    formatAsRGBA: true,
-    tolerantDecoding: true,
-    maxResolutionInMP: 1,
-    maxMemoryUsageInMB: 16,
-  });
-  if (decoded.width !== INPUT_SIZE || decoded.height !== INPUT_SIZE) {
-    throw new Error("TinyCLIP preprocessing returned the wrong image size.");
+    const decoded = decodeJpeg(decodeBase64(thumbnail.base64), {
+      useTArray: true,
+      formatAsRGBA: true,
+      tolerantDecoding: true,
+      maxResolutionInMP: 1,
+      maxMemoryUsageInMB: 16,
+    });
+    if (decoded.width !== INPUT_SIZE || decoded.height !== INPUT_SIZE) {
+      throw new Error("TinyCLIP preprocessing returned the wrong image size.");
+    }
+    return normalizeClipPixels(decoded.data, decoded.width, decoded.height);
+  } finally {
+    // saveAsync always writes a cache file, base64 or not. Nothing else ever
+    // reads this one, so leaving it behind grows the cache by one JPEG per
+    // photo, forever.
+    if (outputUri) await deleteManipulatorOutput(outputUri);
   }
-  return normalizeClipPixels(decoded.data, decoded.width, decoded.height);
+}
+
+async function deleteManipulatorOutput(uri: string): Promise<void> {
+  try {
+    const fileSystem = await import("expo-file-system/legacy");
+    await fileSystem.deleteAsync(uri, { idempotent: true });
+  } catch {
+    // Best-effort cache cleanup; inference must stay fail-neutral.
+  }
 }
 
 export function centerCropTransform(
@@ -247,6 +311,14 @@ export function parseEmbeddingOutput(
 
 export function semanticSignals(embedding: number[]): SemanticSignals {
   const axes = require("../../assets/models/tinyclip-text-axes.json") as TextAxes;
+  // Checked here, where the BUNDLED sidecar is read, rather than in the
+  // injectable function below: this is the only place the pairing between the
+  // shipped image graph and the shipped text axes is actually asserted.
+  if (axes.model !== TEXT_AXIS_MODEL) {
+    throw new Error(
+      `TinyCLIP text axes were embedded from ${axes.model}, not ${TEXT_AXIS_MODEL}.`,
+    );
+  }
   return semanticSignalsWithAxes(embedding, axes);
 }
 

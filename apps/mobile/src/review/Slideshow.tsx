@@ -63,23 +63,30 @@ export function Slideshow({ album, onBack }: { album: SavedAlbum; onBack: () => 
         {current ? <Image cachePolicy="memory-disk" contentFit="cover" source={current.uri} style={StyleSheet.absoluteFill} transition={0} /> : null}
       </Animated.View>
       <View style={styles.scrim} />
-      <Pressable accessibilityLabel="Back to album" accessibilityRole="button" onPress={onBack} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>
+      <Pressable accessibilityHint="Returns to the album" accessibilityLabel="Back to album" accessibilityRole="button" hitSlop={6} onPress={onBack} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>
       <View style={styles.controls}>
-        <Text style={styles.title}>{album.title}</Text>
-        <Text style={styles.meta}>{count > 0 ? `Photo ${index + 1} of ${count}` : "No photos"}</Text>
+        <Text accessibilityRole="header" style={styles.title}>{album.title}</Text>
+        <Text accessibilityLiveRegion="polite" style={styles.meta}>{count > 0 ? `Photo ${index + 1} of ${count}` : "No photos"}</Text>
         <View style={styles.dots}>
           {album.photos.map((photo, dotIndex) => <View key={`${photo.media_id}-${dotIndex}`} style={[styles.dot, dotIndex <= index ? styles.dotActive : null]} />)}
         </View>
         <View style={styles.player}>
-          <Pressable accessibilityLabel="Previous photo" onPress={previous} style={styles.circle}><Text style={styles.circleText}>‹</Text></Pressable>
-          <Pressable accessibilityRole="button" onPress={() => setPlaying((value) => !value)} style={styles.play}><Text style={styles.playText}>{playing ? "Pause" : "Play"}</Text></Pressable>
-          <Pressable accessibilityLabel="Next photo" onPress={next} style={styles.circle}><Text style={styles.circleText}>›</Text></Pressable>
+          <Pressable accessibilityHint="Shows the photo before this one" accessibilityLabel="Previous photo" accessibilityRole="button" accessibilityState={{ disabled: count < 2 }} disabled={count < 2} onPress={previous} style={styles.circle}><Text style={styles.circleText}>‹</Text></Pressable>
+          <Pressable accessibilityHint={playing ? "Stops the slideshow on this photo" : "Starts the slideshow again"} accessibilityLabel={playing ? "Pause slideshow" : "Play slideshow"} accessibilityRole="button" onPress={() => setPlaying((value) => !value)} style={styles.play}><Text style={styles.playText}>{playing ? "Pause" : "Play"}</Text></Pressable>
+          <Pressable accessibilityHint="Shows the next photo" accessibilityLabel="Next photo" accessibilityRole="button" accessibilityState={{ disabled: count < 2 }} disabled={count < 2} onPress={next} style={styles.circle}><Text style={styles.circleText}>›</Text></Pressable>
         </View>
         <View style={styles.speedRow}>
           {speeds.map((option) => {
             const active = option.ms === speed;
             return (
-              <Pressable key={option.label} onPress={() => setSpeed(option.ms)} style={[styles.speed, active ? styles.speedActive : null]}>
+              <Pressable
+                accessibilityLabel={`${option.label} speed`}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: active }}
+                key={option.label}
+                onPress={() => setSpeed(option.ms)}
+                style={[styles.speed, active ? styles.speedActive : null]}
+              >
                 <Text style={[styles.speedText, active ? styles.speedTextActive : null]}>{option.label}</Text>
               </Pressable>
             );
@@ -105,7 +112,7 @@ const styles = StyleSheet.create({
   playText: { color: colors.text, fontFamily: fonts.bold, ...typeScale.label },
   root: { backgroundColor: "#171310", flex: 1, overflow: "hidden" },
   scrim: { backgroundColor: "rgba(15,11,8,.5)", bottom: 0, height: "50%", left: 0, position: "absolute", right: 0 },
-  speed: { alignItems: "center", borderColor: "rgba(255,255,255,.26)", borderRadius: 20, borderWidth: 1, flex: 1, height: 40, justifyContent: "center" },
+  speed: { alignItems: "center", borderColor: "rgba(255,255,255,.26)", borderRadius: 22, borderWidth: 1, flex: 1, justifyContent: "center", minHeight: 44 },
   speedActive: { backgroundColor: "rgba(255,255,255,.92)", borderColor: "rgba(255,255,255,.92)" },
   speedRow: { flexDirection: "row", gap: spacing.xs, paddingTop: spacing.sm },
   speedText: { color: colors.onAccent, fontFamily: fonts.bold, fontSize: 13.5 },

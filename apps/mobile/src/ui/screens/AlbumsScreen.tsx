@@ -1,8 +1,7 @@
 import { Image } from "expo-image";
-import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 
-import { loadAlbums, type SavedAlbum } from "../../albums/album-store";
+import { type SavedAlbum } from "../../albums/album-store";
 import { PrimaryButton } from "../components/PrimaryButton";
 import { fonts } from "../fonts";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
@@ -25,43 +24,18 @@ function albumMeta(album: SavedAlbum) {
 
 export function AlbumsScreen({
   albums,
+  loading = false,
   message,
   onCreate,
   onOpen,
 }: {
   albums: SavedAlbum[];
+  /** True until the shelf has been read off disk once, so "no albums yet" is honest. */
+  loading?: boolean;
   message?: string | null;
   onCreate: () => void;
   onOpen: (album: SavedAlbum) => void;
-  onOpenShared?: (album: SharedAlbumPreview) => void;
 }) {
-  const hydrated = useRef(false);
-  const [shelfAlbums, setShelfAlbums] = useState<SavedAlbum[] | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    void loadAlbums()
-      .then((loaded) => {
-        if (!active) return;
-        hydrated.current = true;
-        setShelfAlbums(loaded);
-      })
-      .catch(() => {
-        if (!active) return;
-        hydrated.current = true;
-        setShelfAlbums([]);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (hydrated.current) setShelfAlbums(albums);
-  }, [albums]);
-
-  const visibleAlbums = shelfAlbums ?? [];
-
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.scroll} contentInsetAdjustmentBehavior="automatic">
@@ -69,15 +43,15 @@ export function AlbumsScreen({
           <Text accessibilityRole="header" style={styles.title}>Albums</Text>
           <View style={styles.avatar}><Text style={styles.avatarText}>P</Text></View>
         </View>
-        {shelfAlbums === null ? (
+        {loading ? (
           <View accessibilityLiveRegion="polite" style={styles.loading}>
             <ActivityIndicator color={colors.gold} />
             <Text style={styles.loadingText}>Loading your albums…</Text>
           </View>
-        ) : visibleAlbums.length > 0 ? (
+        ) : albums.length > 0 ? (
           <View style={styles.grid}>
-            {visibleAlbums.map((album) => (
-              <Pressable accessibilityRole="button" key={album.id} onPress={() => onOpen(album)} style={({ pressed }) => [styles.albumCard, pressed ? styles.pressed : null]}>
+            {albums.map((album) => (
+              <Pressable accessibilityHint="Opens this album" accessibilityLabel={`${album.title}. ${albumMeta(album)}`} accessibilityRole="button" key={album.id} onPress={() => onOpen(album)} style={({ pressed }) => [styles.albumCard, pressed ? styles.pressed : null]}>
                 <Image cachePolicy="memory-disk" contentFit="cover" source={album.coverUri} style={styles.cover} transition={120} />
                 <Text numberOfLines={1} style={styles.albumTitle}>{album.title}</Text>
                 <Text style={styles.albumMeta}>{albumMeta(album)}</Text>

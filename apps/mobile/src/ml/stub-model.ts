@@ -44,33 +44,48 @@ function createFallbackEmbedding(seed: number): number[] {
 }
 
 async function createPerceptualEmbedding(imageUri: string): Promise<number[]> {
-  const thumbnail = await manipulateAsync(
-    imageUri,
-    [{ resize: { width: THUMBNAIL_WIDTH } }],
-    {
-      base64: true,
-      compress: 0.85,
-      format: SaveFormat.JPEG,
-    },
-  );
+  let outputUri: string | undefined;
+  try {
+    const thumbnail = await manipulateAsync(
+      imageUri,
+      [{ resize: { width: THUMBNAIL_WIDTH } }],
+      {
+        base64: true,
+        compress: 0.85,
+        format: SaveFormat.JPEG,
+      },
+    );
+    outputUri = thumbnail.uri;
 
-  if (!thumbnail.base64) {
-    throw new Error("Image manipulator did not return thumbnail pixels.");
+    if (!thumbnail.base64) {
+      throw new Error("Image manipulator did not return thumbnail pixels.");
+    }
+
+    const decoded = decodeJpeg(decodeBase64(thumbnail.base64), {
+      useTArray: true,
+      formatAsRGBA: true,
+      tolerantDecoding: true,
+      maxResolutionInMP: 1,
+      maxMemoryUsageInMB: 8,
+    });
+
+    if (decoded.width < 1 || decoded.height < 1 || decoded.data.length < 4) {
+      throw new Error("Decoded thumbnail is empty.");
+    }
+
+    return fingerprintPixels(decoded.data, decoded.width, decoded.height);
+  } finally {
+    // manipulateAsync always writes a cache file, base64 or not, and nothing
+    // else ever reads this 32px one.
+    if (outputUri) {
+      try {
+        const { deleteAsync } = await import("expo-file-system/legacy");
+        await deleteAsync(outputUri, { idempotent: true });
+      } catch {
+        // Best-effort cache cleanup; the fingerprint must stay fail-neutral.
+      }
+    }
   }
-
-  const decoded = decodeJpeg(decodeBase64(thumbnail.base64), {
-    useTArray: true,
-    formatAsRGBA: true,
-    tolerantDecoding: true,
-    maxResolutionInMP: 1,
-    maxMemoryUsageInMB: 8,
-  });
-
-  if (decoded.width < 1 || decoded.height < 1 || decoded.data.length < 4) {
-    throw new Error("Decoded thumbnail is empty.");
-  }
-
-  return fingerprintPixels(decoded.data, decoded.width, decoded.height);
 }
 
 function fingerprintPixels(

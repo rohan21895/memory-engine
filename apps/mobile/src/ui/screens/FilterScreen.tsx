@@ -128,9 +128,11 @@ export function FilterScreen({
     ? [{ id: "all", label: "All time" }, ...months]
     : dateMode === "Year"
       ? [{ id: "all", label: "All time" }, ...yearOptions]
-      : datePresets.filter((option) => ["all", "week", "month"].includes(option.id));
+      : datePresets.filter((option) => ["all", "week", "month", "year"].includes(option.id));
 
   const clearAll = () => setSelection({ dateId: "all", faceMatchMode: "any", locationId: null, personIds: [] });
+  // Counting walks the whole library, which takes seconds on a large one. Never
+  // block Apply on it — the count is a nicety, applying the filter is the task.
   const countLabel = photoCount === null ? "Show photos" : `Show ${copy.filters.photoCount(photoCount)}`;
 
   return (
@@ -171,7 +173,7 @@ export function FilterScreen({
               {(["Recent", "Month", "Year"] as DateMode[]).map((mode) => {
                 const active = mode === dateMode;
                 return (
-                  <Pressable key={mode} onPress={() => setDateMode(mode)} style={[styles.segment, active ? styles.segmentActive : null]}>
+                  <Pressable accessibilityRole="tab" accessibilityState={{ selected: active }} key={mode} onPress={() => setDateMode(mode)} style={[styles.segment, active ? styles.segmentActive : null]}>
                     <Text style={[styles.segmentText, active ? styles.segmentTextActive : null]}>{mode}</Text>
                   </Pressable>
                 );
@@ -181,7 +183,14 @@ export function FilterScreen({
               {dateOptions.map((option) => {
                 const active = option.id === selection.dateId;
                 return (
-                  <Pressable key={option.id} onPress={() => setSelection((current) => ({ ...current, dateId: option.id }))} style={[styles.chip, active ? styles.chipActive : null]}>
+                  <Pressable
+                    accessibilityLabel={copy.filters.selectedHint(option.label, active)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    key={option.id}
+                    onPress={() => setSelection((current) => ({ ...current, dateId: option.id }))}
+                    style={[styles.chip, active ? styles.chipActive : null]}
+                  >
                     <Text style={[styles.chipText, active ? styles.chipTextActive : null]}>{option.label}</Text>
                   </Pressable>
                 );
@@ -197,7 +206,7 @@ export function FilterScreen({
 
       <View style={[styles.footer, { paddingBottom: Math.max(spacing.lg, insets.bottom + spacing.sm) }]}>
         <View style={styles.clear}><SecondaryButton accessibilityHint="Removes every filter" label="Clear all" onPress={clearAll} /></View>
-        <View style={styles.apply}><PrimaryButton accessibilityHint="Applies these filters" busy={photoCount === null} label={countLabel} onPress={() => onApply(selection)} /></View>
+        <View style={styles.apply}><PrimaryButton accessibilityHint="Applies these filters" label={countLabel} onPress={() => onApply(selection)} /></View>
       </View>
 
       <FaceFilterModal
@@ -251,7 +260,7 @@ const styles = StyleSheet.create({
   dateValue: { color: colors.text, fontFamily: fonts.bold, fontSize: 18, letterSpacing: -0.3 },
   footer: { backgroundColor: colors.background, borderTopColor: colors.hairline, borderTopWidth: 1, flexDirection: "row", gap: spacing.sm, paddingBottom: spacing.lg, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   helper: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14.5, lineHeight: 21 },
-  kind: { color: "#a29a8e", fontFamily: fonts.bold, textTransform: "uppercase", ...typeScale.eyebrow },
+  kind: { color: colors.muted, fontFamily: fonts.bold, textTransform: "uppercase", ...typeScale.eyebrow },
   loading: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.eyebrow },
   noMatch: { alignItems: "center", backgroundColor: "#f4f1ea", borderCurve: "continuous", borderRadius: radii.lg, gap: spacing.xs, padding: spacing.lg },
   noMatchText: { color: colors.muted, fontFamily: fonts.regular, textAlign: "center", ...typeScale.small },
@@ -263,7 +272,7 @@ const styles = StyleSheet.create({
   segment: { alignItems: "center", borderRadius: 10, flex: 1, height: 40, justifyContent: "center" },
   segmentActive: { backgroundColor: colors.panel, borderColor: colors.hairline, borderWidth: 1 },
   segmentText: { color: colors.muted, fontFamily: fonts.bold, ...typeScale.small },
-  segmentTextActive: { color: colors.gold },
+  segmentTextActive: { color: colors.goldPressed },
   segmented: { backgroundColor: "#f0eee8", borderRadius: 13, flexDirection: "row", gap: 4, padding: 4 },
   title: { color: colors.text, fontFamily: fonts.extraBold, fontSize: 28, letterSpacing: -0.8, lineHeight: 33 },
 });

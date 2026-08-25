@@ -96,8 +96,6 @@ export function updateCentroid(
 type MutablePerson = Person & { assetIdSet: Set<string> };
 
 type ClusterOptions = {
-  identityLargeClusterMergeThreshold?: number;
-  identityLargeClusterMinFaces?: number;
   identityMergeThreshold?: number;
   onAssign?: (observation: FaceObservation, personId: string) => void;
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void;
@@ -136,20 +134,18 @@ export function extendFaceClusters(
     : DEFAULT_PERCEPTUAL_THRESHOLD;
   // Merging must never be looser than assignment: if two faces were too far
   // apart to join a cluster, two averaged centroids at that distance are weaker
-  // evidence still. So honour an explicit caller threshold and only tighten.
-  const identityMergeThreshold = Number.isFinite(opts.identityMergeThreshold)
-    ? (opts.identityMergeThreshold as number)
-    : Math.max(identityThreshold, DEFAULT_MERGE_THRESHOLD);
-  const identityLargeClusterMergeThreshold = Number.isFinite(
-    opts.identityLargeClusterMergeThreshold,
-  )
-    ? (opts.identityLargeClusterMergeThreshold as number)
-    : identityMergeThreshold;
-  const identityLargeClusterMinFaces = Number.isFinite(
-    opts.identityLargeClusterMinFaces,
-  )
-    ? (opts.identityLargeClusterMinFaces as number)
-    : Number.POSITIVE_INFINITY;
+  // evidence still. The clamp is UNCONDITIONAL, not a fallback for callers who
+  // supply nothing. It used to guard only the default branch, so an explicit
+  // `identityMergeThreshold: 0.37` from face-index.ts sailed straight past it
+  // and the whole recalibration to 0.72 was silently inert on the only path
+  // that ships. A caller asking for a looser bar than assignment is asking for
+  // a bug, so raise it rather than obey it.
+  const identityMergeThreshold = Math.max(
+    identityThreshold,
+    Number.isFinite(opts.identityMergeThreshold)
+      ? (opts.identityMergeThreshold as number)
+      : DEFAULT_MERGE_THRESHOLD,
+  );
   const people: MutablePerson[] = existing.map((person) => ({
     ...person,
     assetIds: person.assetIds.slice(),
@@ -229,8 +225,6 @@ export function extendFaceClusters(
   mergeSimilarPeople(
     people,
     identityMergeThreshold,
-    identityLargeClusterMergeThreshold,
-    identityLargeClusterMinFaces,
     perceptualThreshold,
     opts.onMerge,
   );
@@ -250,6 +244,17 @@ export function extendFaceClusters(
  * bounded by the initial people count. The older cluster (lower index) survives,
  * keeping surfaced ids stable between runs so the UI does not reshuffle.
  *
+ * ONE threshold governs, deliberately. There was a second, looser bar that took
+ * over once both clusters held at least N faces, on the theory that a
+ * well-supported centroid is a more trustworthy estimate. It is a
+ * runaway-absorption engine: each merge pulls a centroid toward the population
+ * mean, which RAISES its cosine against every cluster it has not eaten yet,
+ * which qualifies the next merge, and the reward for having absorbed 10 faces is
+ * a cheaper 11th. Measured in face-cluster-recovery.test.ts, that path alone
+ * takes eight cleanly separated identities to a single 112-face blob even when
+ * the base bar is correct. If large clusters ever need their own rule it must
+ * demand MORE evidence, never less.
+ *
  * ponytail: O(k^2) per merge round over k people; fine for the hundreds of
  * people a personal library yields. Swap for union-find on an ANN index if k
  * ever reaches thousands.
@@ -257,8 +262,6 @@ export function extendFaceClusters(
 function mergeSimilarPeople(
   people: MutablePerson[],
   identityMergeThreshold: number,
-  identityLargeClusterMergeThreshold: number,
-  identityLargeClusterMinFaces: number,
   perceptualThreshold: number,
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
 ): void {
@@ -278,15 +281,10 @@ function mergeSimilarPeople(
         ) {
           continue;
         }
-        const largeIdentityPair =
-          a.embeddingKind === "identity" &&
-          a.faceCount >= identityLargeClusterMinFaces &&
-          b.faceCount >= identityLargeClusterMinFaces;
-        const threshold = a.embeddingKind === "identity"
-          ? largeIdentityPair
-            ? identityLargeClusterMergeThreshold
-            : identityMergeThreshold
-          : perceptualThreshold;
+        const threshold =
+          a.embeddingKind === "identity"
+            ? identityMergeThreshold
+            : perceptualThreshold;
         const similarity = cosine(a.centroid, b.centroid);
         if (similarity < threshold || similarity <= bestSimilarity) {
           continue;

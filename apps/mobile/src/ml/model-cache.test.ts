@@ -68,4 +68,39 @@ function equal(actual: unknown, expected: unknown, message: string): void {
   equal(await cache.acquire().then((model) => model?.id), 1, "retirement works without dispose()");
 }
 
+{
+  // The whole point of retirement is that native memory goes DOWN, so the swap
+  // must never hold two interpreters at once: the old one has to be disposed,
+  // and the dispose has to have completed, before the replacement load starts.
+  // A ~200MB TFLite arena allocated alongside the one being freed is the OOM
+  // this file exists to prevent.
+  const events: string[] = [];
+  let live = 0;
+  let peakLive = 0;
+  const cache = createModelCache(
+    async () => {
+      events.push("load");
+      // A real loadTensorflowModel is asynchronous; make the window observable.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      live += 1;
+      peakLive = Math.max(peakLive, live);
+      return {
+        dispose: () => {
+          live -= 1;
+          events.push("dispose");
+        },
+      };
+    },
+    2,
+  );
+
+  for (let run = 0; run < 6; run += 1) await cache.acquire();
+  equal(peakLive, 1, "never more than one interpreter is alive at a time");
+  equal(
+    events.join(","),
+    "load,dispose,load,dispose,load",
+    "each dispose completes before the replacement load begins",
+  );
+}
+
 console.log("model-cache self-check passed");

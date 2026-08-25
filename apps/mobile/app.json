@@ -30,7 +30,8 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "Photeo reads your photos on this device to find your best shots. Nothing leaves the phone."
+          "photosPermission": "Photeo reads your photos on this device to find your best shots. Nothing leaves the phone.",
+          "isAccessMediaLocationEnabled": true
         }
       ],
       "react-native-fast-tflite"

@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { clusterFaces, extendFaceClusters } from "./face-cluster.ts";
+import { DEFAULT_IDENTITY_THRESHOLD, DEFAULT_MERGE_THRESHOLD, clusterFaces, extendFaceClusters } from "./face-cluster.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -78,6 +78,50 @@ assert(clusterFaces([]).length === 0, "empty input should return an empty array"
   assert(
     people.length === 2,
     "identity and perceptual spaces must never be mixed into one person",
+  );
+}
+
+// The merge bar is the transitive step and must be the tightest number in the
+// system. It is clamped up to the assignment bar UNCONDITIONALLY, including on
+// the explicit-caller path: the guard used to sit only on the default branch,
+// so face-index.ts passing an explicit 0.37 bypassed it entirely and a
+// recalibration of the default to 0.72 had no effect on the only path that
+// ships. A caller asking for a looser bar is asking for a bug.
+{
+  assert(
+    DEFAULT_MERGE_THRESHOLD >= DEFAULT_IDENTITY_THRESHOLD,
+    "the default merge bar is at least the default assignment bar",
+  );
+
+  const atCosine = (similarity: number) => [
+    similarity,
+    Math.sqrt(1 - similarity * similarity),
+  ];
+  // 0.50 clears the requested 0.45 merge bar but not the 0.62 assignment bar,
+  // so the clamp is the only thing standing between these two and one tile.
+  const clamped = clusterFaces(
+    [
+      { assetId: "a", embedding: [1, 0], embeddingKind: "identity" },
+      { assetId: "b", embedding: atCosine(0.5), embeddingKind: "identity" },
+    ],
+    { identityMergeThreshold: 0.45 },
+  );
+  assert(
+    clamped.length === 2,
+    "an explicit merge threshold below the identity threshold is clamped up",
+  );
+
+  // The clamp only ever raises: an explicit bar ABOVE assignment is obeyed.
+  const honoured = clusterFaces(
+    [
+      { assetId: "a", embedding: [1, 0], embeddingKind: "identity" },
+      { assetId: "b", embedding: atCosine(0.7), embeddingKind: "identity" },
+    ],
+    { identityMergeThreshold: 0.95, threshold: 0.9 },
+  );
+  assert(
+    honoured.length === 2,
+    "an explicit merge threshold above the identity threshold is honoured",
   );
 }
 

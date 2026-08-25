@@ -102,6 +102,21 @@ export function FaceFilterPanel({
           {modeControl}
           {selectionHint ? <Text style={styles.selectionHint}>{selectionHint}</Text> : null}
 
+          {/*
+            Every person is rendered — this list is never sliced, and both
+            parents wrap the panel in a ScrollView. State the count anyway: the
+            complaint that started this work was "I don't see all the faces",
+            and a bare grid gives no way to tell a short list of people from a
+            truncated one.
+          */}
+          {people.length > 0 ? (
+            <Text accessibilityLiveRegion="polite" style={styles.selectionHint}>
+              {query
+                ? `${filteredPeople.length} of ${people.length} people`
+                : `${people.length} ${people.length === 1 ? "person" : "people"}`}
+            </Text>
+          ) : null}
+
           {filteredPeople.length > 0 ? (
             <View style={styles.grid}>
               {filteredPeople.map((person) => {

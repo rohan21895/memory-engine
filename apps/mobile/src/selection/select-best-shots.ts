@@ -4,10 +4,14 @@ import type { SemanticSignals } from "../ml/tinyclip";
 // @ts-expect-error Node requires the extension; Metro resolves this path too.
 import { planAlbum } from "./album-planner.ts";
 // @ts-expect-error Node requires the extension; Metro resolves this path too.
+import { relativeQualityFloor } from "./image-quality.ts";
+// @ts-expect-error Node requires the extension; Metro resolves this path too.
 import { bestSmile, significantFaces, worstEyesOpen } from "./quality-signals.ts";
 import type { Category, QualitySignals } from "./quality-signals";
 import type { AlbumData, Alt, Pool, Selected } from "./types";
 
+/** Absolute quality gate calibrated on desktop-grade measurements. */
+const DESKTOP_QUALITY_FLOOR = 0.35;
 const NEAR_DUPLICATE_COSINE = 0.92;
 const LUMA_FEATURE_COUNT = 64;
 const SIGNIFICANT_FACE_AREA = 0.005;
@@ -180,10 +184,13 @@ export function selectBestShots(
       policy: {
         pinnedMediaIds: opts.pinnedMediaIds ?? [],
         excludedMediaIds: opts.excludedMediaIds ?? [],
-        // Preserve the legacy no-analysis import path. Real album builds always
-        // carry quality-v2 measurements and use the desktop 0.35 floor.
+        // Preserve the legacy no-analysis import path, which has no measured
+        // quality to gate on at all.
         qualityFloor: rankedTakes.some(({ winner }) => winner.analysis)
-          ? 0.35
+          ? albumQualityFloor(
+              rankedTakes.map(({ winner }) => winner.quality),
+              requestedCount,
+            )
           : 0,
       },
     },
@@ -246,6 +253,44 @@ export function selectBestShots(
     selected,
     pool,
   };
+}
+
+/**
+ * The quality gate the planner applies, capped so it can never empty an album.
+ *
+ * `DESKTOP_QUALITY_FLOOR` is calibrated against desktop-grade measurements and
+ * is the right gate for a normal library. But it is ABSOLUTE, and the planner
+ * drops everything below it — so any systemic shift in the measured scale
+ * rejects the entire library and the user gets an empty album. That has already
+ * happened once here: the blurhash-derived prepass probe reads ~0.05 sharpness
+ * for every photo by construction, it was forwarded on as the final quality
+ * signal, and every photo in a large library landed under this floor.
+ *
+ * Capping the absolute floor with a floor derived from the photos actually in
+ * hand makes that outcome structurally impossible — the relative value is itself
+ * one of the observed scores, so something always survives — while changing
+ * nothing for a normal library, where the relative floor sits well above 0.35
+ * and the `Math.min` returns the absolute one unchanged.
+ *
+ * `keepFraction` guarantees the survivors can still fill the album: half the
+ * takes, or as many as the album asked for, whichever is larger.
+ */
+export function albumQualityFloor(
+  qualities: ReadonlyArray<number | undefined>,
+  requestedCount: number,
+): number {
+  const measured = qualities.filter(
+    (value): value is number => typeof value === "number" && Number.isFinite(value),
+  );
+  if (measured.length === 0) return 0;
+  const keepFraction = Math.min(
+    1,
+    Math.max(0.5, requestedCount / measured.length),
+  );
+  return Math.min(
+    DESKTOP_QUALITY_FLOOR,
+    relativeQualityFloor(measured, keepFraction),
+  );
 }
 
 function buildCandidates(photos: AnalyzedPhoto[]): Candidate[] {

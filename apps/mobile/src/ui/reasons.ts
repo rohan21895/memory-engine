@@ -1,5 +1,7 @@
 import type { PlannerReasonCode } from "../selection/album-planner";
-import { copy } from "./copy";
+
+// @ts-expect-error Node requires the extension; Metro resolves this path too.
+import { copy } from "./copy.ts";
 
 type UiReasonCode =
   | PlannerReasonCode
@@ -8,6 +10,7 @@ type UiReasonCode =
   | "crop"
   | "diagnostic_unavailable"
   | "face_away"
+  | "lower_smile"
   | "similar_left_out"
   | "stronger_frames";
 
@@ -46,6 +49,37 @@ const reasonCodeByMessage = new Map<string, UiReasonCode>([
   ["Lovely expression, but the crop needs more headroom.", "crop"],
 ]);
 
+/**
+ * The selection engine mostly emits *measured* sentences — "Rejected: blurrier
+ * than the chosen frame (52% vs 71% sharpness)." — that carry the numbers with
+ * them and so can never appear in an exact-match table. Without this layer every
+ * alternative in the swap sheet fell through to one generic sentence, which is
+ * how the review screen came to look like it was showing placeholder text.
+ * Order matters only in that the first matching pattern wins per string.
+ */
+const reasonCodePatterns: readonly (readonly [RegExp, UiReasonCode])[] = [
+  [/^rejected: subject blinking/i, "blinking"],
+  [/^rejected: blurrier than/i, "blur"],
+  [/face (is )?cut (at|by) (the )?frame edge/i, "face_cut"],
+  [/a face touches the frame edge/i, "face_cut"],
+  [/lower smile signal/i, "lower_smile"],
+  [/^best smile signal/i, "smiling"],
+  [/all known significant faces have open eyes/i, "eyes_open"],
+  [/sharpest of \d+ near-duplicates/i, "sharpest_of_take"],
+  [/strongest thumbnail-detail proxy among/i, "sharpest_of_take"],
+  [/-weighted quality among \d+ near-duplicate/i, "strong_photo"],
+  [/^near-duplicate/i, "similar_left_out"],
+  [/album target (was )?already filled/i, "stronger_frames"],
+  [/^screenshot excluded/i, "screenshot"],
+  [/no (valid take information|reliable thumbnail-detail proxy)/i, "diagnostic_unavailable"],
+];
+
+function codeFor(reason: string): UiReasonCode | undefined {
+  const exact = reasonCodeByMessage.get(reason);
+  if (exact) return exact;
+  return reasonCodePatterns.find(([pattern]) => pattern.test(reason))?.[1];
+}
+
 const chosenCopyByCode: Record<UiReasonCode, string> = {
   below_quality_floor: copy.reasons.qualityConcern,
   blinking: copy.reasons.blinking,
@@ -64,6 +98,7 @@ const chosenCopyByCode: Record<UiReasonCode, string> = {
   face_out_of_focus: copy.reasons.focusConcern,
   face_too_dark: copy.reasons.exposureConcern,
   hard_image_gate: copy.reasons.qualityConcern,
+  lower_smile: copy.reasons.lowerSmile,
   natural_expression: copy.reasons.naturalExpression,
   only_shot_of_person: copy.reasons.onlyShotOfPerson,
   person_cap: copy.reasons.neutralLeftOut,
@@ -104,6 +139,7 @@ const chosenPriority: UiReasonCode[] = [
   "face_away",
   "face_cut",
   "blur",
+  "lower_smile",
   "face_out_of_focus",
   "subject_out_of_focus",
   "crop",
@@ -135,6 +171,7 @@ const alternativePriority: UiReasonCode[] = [
   "face_away",
   "face_cut",
   "blur",
+  "lower_smile",
   "face_out_of_focus",
   "subject_out_of_focus",
   "crop",
@@ -150,7 +187,7 @@ const alternativePriority: UiReasonCode[] = [
 
 function firstCode(reasons: readonly string[], priority: readonly UiReasonCode[]): UiReasonCode | undefined {
   const present = new Set(reasons.flatMap((reason) => {
-    const code = reasonCodeByMessage.get(reason);
+    const code = codeFor(reason);
     return code ? [code] : [];
   }));
   return priority.find((code) => present.has(code));

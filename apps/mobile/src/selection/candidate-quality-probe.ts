@@ -2,9 +2,17 @@
 import { exposureFromPixels, sharpnessFromPixels, type MeasuredImageQuality } from "./image-quality.ts";
 
 const PROBE_SIZE = 32;
-// Matches QUALITY_SAMPLE_WIDTH in image-quality.ts: sharpness needs >=512px to
-// discriminate focus at all (at 256 a blurred frame still scores ~4x too high).
-const ANALYSIS_PROXY_SIZE = 512;
+/**
+ * Long-edge bound for the shared analysis proxy.
+ *
+ * Sized for the most demanding consumer, ML Kit face detection, which wants
+ * ~1280px to keep landmark precision (those landmarks drive face alignment).
+ * It also keeps `measureImageQuality`'s width-512 sample honest in BOTH
+ * orientations: a 3:4 portrait bounded at 1280 is 960 wide, still above 512, so
+ * the quality sample is never an upscale. The previous 512 bound WAS an upscale
+ * for portraits (384 -> 512) and quietly cost sharpness discrimination there.
+ */
+const ANALYSIS_PROXY_SIZE = 1280;
 const DECODE_WIDTH = 16;
 const DECODE_HEIGHT = 12;
 const BASE83 =
@@ -74,7 +82,11 @@ export async function prepareCandidateAnalysisProxy(
         const rendered = await context.renderAsync();
         try {
           const saved = await rendered.saveAsync({
-            compress: 0.86,
+            // High quality on purpose: every downstream quality measurement now
+            // reads this proxy instead of the original, and sharpness is the
+            // heaviest term in the score. The file is deleted as soon as the
+            // photo is analyzed, so the extra bytes never accumulate.
+            compress: 0.94,
             format: SaveFormat.JPEG,
           });
           return {

@@ -174,6 +174,7 @@ export const copy = {
     facesClear: "Everyone is easy to see in this photo.",
     naturalExpression: "The expression feels natural and warm.",
     light: "The light and detail look lovely here.",
+    lowerSmile: "A similar photo caught warmer expressions.",
     composition: "This photo fits the page beautifully.",
     story: "This moment helps tell the story of your album.",
     blur: "A similar photo is a little clearer.",
@@ -219,9 +220,35 @@ export const copy = {
     emptyHelper: "Start again and choose the photos you would like to keep.",
     pageLabel: (page: number) => `Album page ${page}`,
   },
+  access: {
+    limitedTitle: "Photeo can only see the photos you picked",
+    limitedHelper:
+      "Android is showing Photeo a short list, not your library. Allow all photos so albums, people, and places can use everything on this phone.",
+    limitedShort: "Photeo can only see the photos you picked, not your whole library.",
+    limitedAction: "Allow all photos",
+    limitedActionHint: "Asks Android for access to every photo",
+    settingsAction: "Open settings",
+    settingsActionHint: "Opens this phone’s settings for Photeo",
+    dismiss: "Hide access message",
+    // Filter/People/Places empty states must not read as a broken feature when
+    // the real cause is that Android only handed us a handful of photos.
+    limitedPeople: "Only the photos you picked were searched, so people may be missing.",
+    limitedPlaces: "Only the photos you picked were searched, so places may be missing.",
+    noPlacesTitle: "No places found yet",
+    noPlacesHelper:
+      "Places come from the location saved inside each photo. Photos taken without location, or copied from another device, won’t have one.",
+  },
   states: {
     preparing: "Getting Photeo ready…",
     safe: "Nothing is being uploaded.",
+    scanningPhotos: (done: number, total: number) =>
+      total > 0
+        ? `Looking through ${done.toLocaleString()} of ${total.toLocaleString()} photos`
+        : "Looking through your photos…",
+    scanningFaces: (done: number, total: number) =>
+      total > 0
+        ? `Grouping faces — ${done.toLocaleString()} of ${total.toLocaleString()} photos`
+        : "Grouping faces on this phone…",
   },
 } as const;
 

@@ -35,11 +35,18 @@ import {
   FilterScreen,
   type FilterSelection,
   fonts,
+  HintBanner,
   LoadingState,
   PrimaryButton,
   spacing,
   typeScale,
 } from "../ui";
+import {
+  canWidenAccess,
+  NO_PHOTO_ACCESS,
+  requestPhotoAccess,
+  type PhotoAccess,
+} from "../ui/photo-access";
 import type { PickedPhoto } from "./picked-photo";
 import {
   assetIdsForCity,
@@ -219,6 +226,10 @@ export default function GalleryGrid({ onConfirm, onBack, initialSelection }: Pro
   const [filterVisible, setFilterVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [reloading, setReloading] = useState(false);
+  const [access, setAccess] = useState<PhotoAccess>(NO_PHOTO_ACCESS);
+  const [accessDismissed, setAccessDismissed] = useState(false);
+  // "Select all" is bounded; saying so beats silently picking the first 3,000.
+  const [selectAllCapped, setSelectAllCapped] = useState(false);
   const peopleAvailable = useMemo(() => isFaceDetectionAvailable(), []);
 
   const cursor = useRef<string | undefined>(undefined);
@@ -332,8 +343,11 @@ export default function GalleryGrid({ onConfirm, onBack, initialSelection }: Pro
   useEffect(() => {
     void (async () => {
       try {
-      const perm = await MediaLibrary.requestPermissionsAsync();
-      if (perm.status !== "granted") {
+      // Android 14+ "Select photos" comes back granted-but-limited. Treat that
+      // as usable and say what is missing, instead of a permission dead end.
+      const perm = await requestPhotoAccess();
+      setAccess(perm);
+      if (!perm.readable) {
         setStatus("denied");
         return;
       }
@@ -390,6 +404,7 @@ export default function GalleryGrid({ onConfirm, onBack, initialSelection }: Pro
 
   const selectAll = useCallback(async () => {
     setBusy(true);
+    setSelectAllCapped(false);
     try {
       const set = visibleSetRef.current;
       const ids = new Set<string>();
@@ -411,6 +426,7 @@ export default function GalleryGrid({ onConfirm, onBack, initialSelection }: Pro
         more = page.hasNextPage;
       }
       setSelected(ids);
+      setSelectAllCapped(more && ids.size >= SELECT_ALL_CAP);
     } catch {
       setStatus("error");
     } finally {
@@ -680,7 +696,25 @@ export default function GalleryGrid({ onConfirm, onBack, initialSelection }: Pro
 
   const clearSelection = useCallback(() => setSelected(new Set()), []);
 
+  const widenAccess = useCallback(() => {
+    void (async () => {
+      if (!canWidenAccess(access)) {
+        void Linking.openSettings();
+        return;
+      }
+      const next = await requestPhotoAccess();
+      setAccess(next);
+      if (next.readable) {
+        setStatus("ready");
+        await reload();
+      }
+    })();
+  }, [access, reload]);
+
   if (filterVisible) {
+    // A limited grant means the filter lists are built from a handful of photos.
+    // Say that inside the filters too, or an empty list reads as a broken filter.
+    const limitedNote = access.limited ? copy.access.limitedShort : undefined;
     return (
       <FilterScreen
         cities={filterCities}
@@ -688,18 +722,18 @@ export default function GalleryGrid({ onConfirm, onBack, initialSelection }: Pro
         countPhotos={countFilterPhotos}
         dateLoadingText={indexing
           ? `Scanning dates…${indexPct === null ? "" : ` ${Math.round(indexPct * 100)}%`}`
-          : undefined}
+          : limitedNote}
         datePresets={DATE_PRESETS.map((preset) => ({ id: preset.key, label: preset.label }))}
         initialSelection={{ dateId: datePreset, faceMatchMode, locationId: locId, personIds }}
         locationLoadingText={indexing
           ? copy.filters.scanningPlaces(indexPct === null ? undefined : Math.round(indexPct * 100))
-          : undefined}
+          : limitedNote}
         months={filterMonths}
         onApply={applyFilters}
         onBack={() => setFilterVisible(false)}
         people={filterPeople}
         peopleAvailable={peopleAvailable}
-        peopleLoadingText={undefined}
+        peopleLoadingText={limitedNote}
       />
     );
   }
@@ -750,21 +784,39 @@ export default function GalleryGrid({ onConfirm, onBack, initialSelection }: Pro
             </Text>
           </Pressable>
           {count > 0 ? (
-            <Pressable accessibilityRole="button" onPress={clearSelection} style={styles.clearSelection}>
+            <Pressable accessibilityHint={copy.picker.clearHint} accessibilityRole="button" onPress={clearSelection} style={styles.clearSelection}>
               <Text style={styles.clearSelectionText}>Clear picks</Text>
             </Pressable>
           ) : null}
         </View>
+        {selectAllCapped ? (
+          <Text accessibilityLiveRegion="polite" style={styles.notice}>
+            {`Picked the ${SELECT_ALL_CAP.toLocaleString()} most recent photos — that is as many as one album can weigh up at once.`}
+          </Text>
+        ) : null}
+        {access.limited && !accessDismissed ? (
+          <View style={styles.banner}>
+            <HintBanner
+              actionHint={canWidenAccess(access) ? copy.access.limitedActionHint : copy.access.settingsActionHint}
+              actionLabel={canWidenAccess(access) ? copy.access.limitedAction : copy.access.settingsAction}
+              dismissLabel={copy.access.dismiss}
+              onAction={widenAccess}
+              onDismiss={() => setAccessDismissed(true)}
+              text={copy.access.limitedHelper}
+              tone="warning"
+            />
+          </View>
+        ) : null}
       </View>
 
       {status === "loading" || (reloading && assets.length === 0) ? (
         <LoadingState helper={copy.picker.loadingHelper} title={copy.picker.loadingTitle} />
       ) : status === "denied" ? (
         <ErrorState
-          actionHint={copy.picker.openSettingsHint}
-          actionLabel={copy.picker.openSettings}
+          actionHint={canWidenAccess(access) ? copy.access.limitedActionHint : copy.picker.openSettingsHint}
+          actionLabel={canWidenAccess(access) ? copy.access.limitedAction : copy.picker.openSettings}
           helper={copy.picker.permissionHelper}
-          onAction={() => void Linking.openSettings()}
+          onAction={widenAccess}
           title={copy.picker.permissionTitle}
         />
       ) : status === "error" ? (
@@ -779,7 +831,7 @@ export default function GalleryGrid({ onConfirm, onBack, initialSelection }: Pro
         <EmptyState
           actionHint={activeFilterCount > 0 ? copy.filters.allHint : copy.picker.backHint}
           actionLabel={activeFilterCount > 0 ? copy.filters.all : copy.common.goBack}
-          helper={copy.picker.emptyHelper}
+          helper={access.limited ? copy.access.limitedShort : copy.picker.emptyHelper}
           onAction={activeFilterCount > 0 ? clearFilters : onBack}
           title={copy.picker.emptyTitle}
         />
@@ -831,13 +883,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: (StatusBar.currentHeight ?? 24) + spacing.xs,
   },
+  banner: { paddingTop: spacing.xs },
   cancelLabel: { color: colors.muted, fontFamily: fonts.semibold, ...typeScale.small },
-  clearSelection: { alignSelf: "flex-end", minHeight: 30, paddingHorizontal: spacing.xs },
+  clearSelection: { alignSelf: "flex-end", justifyContent: "center", minHeight: 44, paddingHorizontal: spacing.xs },
   clearSelectionText: { color: colors.muted, fontFamily: fonts.semibold, ...typeScale.eyebrow },
   helper: { color: colors.muted, fontFamily: fonts.regular, fontSize: 14.5, lineHeight: 21 },
-  stepActive: { color: colors.gold, fontFamily: fonts.bold, fontSize: 12.5 },
-  stepArrow: { color: "#cbc4b8", fontFamily: fonts.bold, fontSize: 12.5 },
-  stepIdle: { color: "#b3aba0", fontFamily: fonts.bold, fontSize: 12.5 },
+  notice: { color: colors.goldPressed, fontFamily: fonts.medium, ...typeScale.small },
+  stepActive: { color: colors.goldPressed, fontFamily: fonts.bold, fontSize: 12.5 },
+  stepArrow: { color: colors.muted, fontFamily: fonts.bold, fontSize: 12.5 },
+  stepIdle: { color: colors.muted, fontFamily: fonts.bold, fontSize: 12.5 },
   steps: { alignItems: "center", flexDirection: "row", gap: 6 },
   title: { color: colors.text, fontFamily: fonts.extraBold, fontSize: 27, letterSpacing: -0.8, lineHeight: 32, paddingTop: spacing.xxs },
   toolbar: { alignItems: "center", flexDirection: "row", gap: spacing.xs },
@@ -855,11 +909,11 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingHorizontal: spacing.md,
   },
-  toolDetail: { color: colors.gold, fontFamily: fonts.semibold, ...typeScale.small },
+  toolDetail: { color: colors.goldPressed, fontFamily: fonts.semibold, ...typeScale.small },
   toolLabel: { color: colors.text, fontFamily: fonts.semibold, ...typeScale.label },
   toolSummary: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   toolPressed: { opacity: 0.58 },
-  textActionLabel: { color: colors.gold, fontFamily: fonts.semibold, ...typeScale.small },
+  textActionLabel: { color: colors.goldPressed, fontFamily: fonts.semibold, ...typeScale.small },
   gridWrap: { flex: 1 },
   list: { paddingHorizontal: 0 },
   tile: { marginBottom: GAP, position: "relative" },

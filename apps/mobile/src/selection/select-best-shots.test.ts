@@ -2,7 +2,7 @@ import type { PickedPhoto } from "../import/picked-photo";
 
 import type { FaceSignal, QualitySignals } from "./quality-signals.ts";
 // @ts-expect-error Node's native TypeScript runner requires the extension.
-import { selectBestShots } from "./select-best-shots.ts";
+import { albumQualityFloor, selectBestShots } from "./select-best-shots.ts";
 
 type TestPhoto = PickedPhoto & {
   embedding?: number[];
@@ -318,6 +318,65 @@ const scenePixelsResult = selectBestShots(
 assert(
   scenePixelsResult.selected[0].media_id === "scene-sharp",
   "scene weighting should prefer overall pixel sharpness",
+);
+
+// --- The quality floor can never empty an album -----------------------------
+// Regression guard for a shipped bug: the prepass probe reads ~0.05 sharpness
+// for every photo by construction (it decodes a 4x3 blurhash, which holds no
+// high frequencies at all), that value reached the planner as the final quality
+// signal, and the planner's ABSOLUTE 0.35 floor then rejected the entire
+// library. The user asked for their best photos, not for a verdict on whether
+// their photos are good enough, so the floor is now capped by one derived from
+// the photos in hand.
+
+// A normal library keeps the calibrated absolute floor, unchanged.
+assert(
+  albumQualityFloor([0.9, 0.8, 0.7, 0.6, 0.5, 0.45], 3) === 0.35,
+  "a normal spread of qualities keeps the absolute 0.35 floor",
+);
+// A library measured on a shifted scale falls back to a relative floor.
+assert(
+  albumQualityFloor([0.1, 0.09, 0.08, 0.07], 2) <= 0.09,
+  "a uniformly low library relaxes the floor instead of rejecting everything",
+);
+assert(
+  albumQualityFloor([0.05, 0.05, 0.05, 0.05, 0.05], 24) === 0.05,
+  "an album asking for more photos than exist keeps every one of them",
+);
+assert(
+  albumQualityFloor([undefined, undefined], 5) === 0,
+  "nothing measurable rejects nothing",
+);
+assert(albumQualityFloor([], 5) === 0, "an empty candidate list rejects nothing");
+// The floor is always one of the observed values (or the absolute cap), so at
+// least one photo is always at or above it -- the structural guarantee.
+for (const sample of [[0.4, 0.2, 0.02], [0.3], [0.01, 0.9], [0.34, 0.33]]) {
+  const floor = albumQualityFloor(sample, 4);
+  assert(
+    sample.some((value) => value >= floor),
+    `at least one of ${JSON.stringify(sample)} survives its own floor`,
+  );
+}
+
+// End to end: a whole library measured below the old absolute floor still
+// produces an album rather than nothing.
+const dimLibrary = Array.from({ length: 6 }, (_, index) =>
+  ({
+    ...photo(`dim-${index}`, basisEmbedding(index * 4)),
+    width: 640,
+    height: 480,
+    analysis: signals({
+      sharpness: 0.02,
+      exposure: 0.05,
+      clippedFraction: 0.6,
+      category: "scene",
+    }),
+  }),
+);
+const dimResult = selectBestShots(dimLibrary, { count: 4 });
+assert(
+  dimResult.selected.length > 0,
+  "a library measured entirely below the absolute floor still yields an album",
 );
 
 function basisEmbedding(position: number): number[] {

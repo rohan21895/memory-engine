@@ -75,6 +75,15 @@ export function LocationFilterPanel({
     [cities, needle],
   );
   const noMatches = filteredCountries.length === 0 && filteredCities.length === 0;
+  // Three honest states, never one bare "no places": a search that found
+  // nothing, a scan still running, and a finished scan over a library whose
+  // photos carry no location at all (chat apps strip it before sending).
+  const emptyMessage =
+    !query && loadingText
+      ? loadingText
+      : !query && allPlaces.length === 0
+        ? `${copy.access.noPlacesTitle}. ${copy.access.noPlacesHelper}`
+        : "No places match that search.";
 
   return (
     <View style={styles.section}>
@@ -147,9 +156,7 @@ export function LocationFilterPanel({
             </View>
           ) : null}
           {noMatches ? (
-            <Text accessibilityLiveRegion="polite" style={styles.message}>
-              {query ? "No places match that search." : loadingText ?? "No places found yet."}
-            </Text>
+            <Text accessibilityLiveRegion="polite" style={styles.message}>{emptyMessage}</Text>
           ) : null}
           {loadingText && !noMatches ? (
             <Text accessibilityLiveRegion="polite" style={styles.scanning}>{loadingText}</Text>

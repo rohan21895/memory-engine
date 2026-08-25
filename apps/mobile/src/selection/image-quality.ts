@@ -271,6 +271,7 @@ export async function measureImageQuality(
   uri: string,
   options: MeasureImageQualityOptions = {},
 ): Promise<MeasuredImageQuality> {
+  let outputUri: string | undefined;
   try {
     const [{ manipulateAsync, SaveFormat }, { decode: decodeJpeg }] =
       await Promise.all([
@@ -286,6 +287,7 @@ export async function measureImageQuality(
         format: SaveFormat.JPEG,
       },
     );
+    outputUri = thumbnail.uri;
 
     if (!thumbnail.base64) {
       return {};
@@ -350,6 +352,18 @@ export async function measureImageQuality(
     };
   } catch {
     return {};
+  } finally {
+    // manipulateAsync always writes a cache file, base64 or not, and nothing
+    // else ever reads this one. Left behind it grows the cache by one JPEG per
+    // photo per build, forever.
+    if (outputUri) {
+      try {
+        const { deleteAsync } = await import("expo-file-system/legacy");
+        await deleteAsync(outputUri, { idempotent: true });
+      } catch {
+        // Best-effort cache cleanup; measurement must stay fail-neutral.
+      }
+    }
   }
 }
 

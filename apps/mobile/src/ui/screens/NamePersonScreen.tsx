@@ -31,14 +31,14 @@ export function NamePersonScreen({ onBack, person }: { onBack: () => void; perso
         <TextInput autoCapitalize="words" onChangeText={setName} placeholder="Their name" placeholderTextColor={colors.muted} style={styles.field} value={name} />
         <Text style={styles.private}>This name stays on this phone.</Text>
         <Text style={styles.eyebrow}>How do you know them?</Text>
-        <View style={styles.chips}>{relations.map((item) => <Pressable key={item} onPress={() => setRelation(relation === item ? null : item)} style={[styles.chip, relation === item ? styles.chipActive : null]}><Text style={[styles.chipText, relation === item ? styles.chipTextActive : null]}>{item}</Text></Pressable>)}</View>
+        <View style={styles.chips}>{relations.map((item) => <Pressable accessibilityRole="button" accessibilityState={{ selected: relation === item }} key={item} onPress={() => setRelation(relation === item ? null : item)} style={[styles.chip, relation === item ? styles.chipActive : null]}><Text style={[styles.chipText, relation === item ? styles.chipTextActive : null]}>{item}</Text></Pressable>)}</View>
         <Text style={styles.eyebrow}>Their photos</Text>
         <View style={styles.grid}>{person.assetIds.slice(0, 8).map((id) => <Image contentFit="cover" key={id} source={contentUri(id)} style={styles.tile} />)}</View>
         {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
       </ScrollView>
       <View style={styles.footer}>
-        <Pressable disabled={!name.trim()} onPress={() => setNotice("Naming will be saved when person profiles are connected.")} style={[styles.save, !name.trim() ? styles.disabled : null]}><Text style={styles.saveText}>Save name</Text></Pressable>
-        <Pressable onPress={onBack} style={styles.skip}><Text style={styles.skipText}>Skip for now</Text></Pressable>
+        <Pressable accessibilityRole="button" accessibilityState={{ disabled: !name.trim() }} disabled={!name.trim()} onPress={() => setNotice("Names aren’t saved yet in this beta. Nothing was changed or uploaded.")} style={[styles.save, !name.trim() ? styles.disabled : null]}><Text style={styles.saveText}>Save name</Text></Pressable>
+        <Pressable accessibilityRole="button" onPress={onBack} style={styles.skip}><Text style={styles.skipText}>Skip for now</Text></Pressable>
       </View>
     </View>
   );
@@ -54,12 +54,12 @@ const styles = StyleSheet.create({
   chipTextActive: { color: colors.onAccent },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, marginTop: spacing.sm },
   disabled: { opacity: 0.38 },
-  eyebrow: { color: "#a29a8e", fontFamily: fonts.bold, marginTop: spacing.lg, textTransform: "uppercase", ...typeScale.eyebrow },
+  eyebrow: { color: colors.muted, fontFamily: fonts.bold, marginTop: spacing.lg, textTransform: "uppercase", ...typeScale.eyebrow },
   field: { backgroundColor: colors.panel, borderColor: colors.hairline, borderCurve: "continuous", borderRadius: radii.md, borderWidth: 2, color: colors.text, fontFamily: fonts.semibold, fontSize: 19, height: 58, marginTop: spacing.lg, paddingHorizontal: spacing.md },
   footer: { backgroundColor: colors.background, borderTopColor: colors.hairline, borderTopWidth: 1, paddingBottom: spacing.md, paddingHorizontal: layout.screenPadding, paddingTop: spacing.sm },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: spacing.sm },
   helper: { color: colors.muted, fontFamily: fonts.regular, textAlign: "center", ...typeScale.body },
-  notice: { color: colors.gold, fontFamily: fonts.medium, paddingTop: spacing.md, textAlign: "center", ...typeScale.small },
+  notice: { color: colors.goldPressed, fontFamily: fonts.medium, paddingTop: spacing.md, textAlign: "center", ...typeScale.small },
   private: { color: colors.muted, fontFamily: fonts.regular, marginTop: spacing.xs, textAlign: "center", ...typeScale.eyebrow },
   root: { backgroundColor: colors.background, flex: 1 },
   save: { alignItems: "center", backgroundColor: colors.gold, borderRadius: 28, height: 56, justifyContent: "center" },

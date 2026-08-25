@@ -1,5 +1,6 @@
 import { Modal, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 
+import { copy } from "../copy";
 import { fonts } from "../fonts";
 import { colors, layout, spacing, typeScale } from "../tokens";
 import { LocationFilterPanel, type LocationFilterOption } from "./LocationFilterPanel";
@@ -28,7 +29,12 @@ export function LocationFilterModal({
         <View style={styles.header}>
           <View>
             <Text accessibilityRole="header" style={styles.title}>Choose a place</Text>
-            <Text style={styles.helper}>Search the places found in your library.</Text>
+            <Text accessibilityLiveRegion="polite" style={styles.helper}>
+              {loadingText ??
+                (cities.length + countries.length === 0
+                  ? copy.access.noPlacesTitle
+                  : "Search the places found in your library.")}
+            </Text>
           </View>
           <Pressable accessibilityLabel="Close place filter" accessibilityRole="button" onPress={onClose} style={styles.close}>
             <Text style={styles.closeText}>✕</Text>

@@ -26,6 +26,7 @@ export function TabBar({
         const active = tab.key === activeTab;
         return (
           <Pressable
+            accessibilityLabel={tab.label}
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
             key={tab.key}
@@ -42,7 +43,8 @@ export function TabBar({
 }
 
 const styles = StyleSheet.create({
-  active: { color: colors.gold },
+  // #8b8378 on the light background is 3.5:1 — under AA for 12px labels.
+  active: { color: colors.goldPressed },
   bar: {
     backgroundColor: colors.background,
     borderTopColor: colors.hairline,
@@ -51,8 +53,8 @@ const styles = StyleSheet.create({
     minHeight: 70,
     paddingHorizontal: spacing.sm,
   },
-  icon: { color: "#8b8378", fontFamily: fonts.bold, fontSize: 22, lineHeight: 23 },
-  label: { color: "#8b8378", fontFamily: fonts.bold, ...typeScale.eyebrow },
+  icon: { color: colors.muted, fontFamily: fonts.bold, fontSize: 22, lineHeight: 23 },
+  label: { color: colors.muted, fontFamily: fonts.bold, ...typeScale.eyebrow },
   pressed: { opacity: 0.62 },
   tab: {
     alignItems: "center",

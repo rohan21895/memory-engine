@@ -107,13 +107,30 @@ assert(
 }
 
 {
+  // CHANGED (face-index v20): the dedupe bar moved 0.75 -> 0.85 to match
+  // SAME_PHOTO_EXCEPTION_SIMILARITY. Both rules answer "are these two boxes in
+  // one photo the same person?" and they used to disagree across the whole
+  // 0.75-0.85 band: clustering treated a same-photo pair at cosine 0.80 as two
+  // people who merely posed together, while this function had already deleted
+  // one of them as a duplicate detection. Siblings and parent/child pairs land
+  // in that band, so the second person was destroyed before clustering saw
+  // them. Hence the 0.78 co-face below is now KEPT (three, not two).
   const duplicate = { assetId: "same-photo", embedding: [1, 0], embeddingKind: "identity" as const };
+  // Three faces at 0, 40 and 80 degrees: every pair sits at cosine 0.77 or
+  // lower, i.e. inside the old 0.75-0.85 disagreement band but below the
+  // same-photo exception. Three people in one frame, all three kept.
   const cleaned = dedupeFaceObservations([
     duplicate,
-    { ...duplicate, embedding: [0.78, 0.626] },
+    { ...duplicate, embedding: [0.766, 0.643] },
+    { ...duplicate, embedding: [0.1736, 0.9848] },
+  ]);
+  assert(cleaned.length === 3, "co-faces below the same-photo exception survive as separate people");
+  const repeats = dedupeFaceObservations([
+    duplicate,
+    { ...duplicate, embedding: [0.995, 0.0999] },
     { ...duplicate, embedding: [0.68, 0.733] },
   ]);
-  assert(cleaned.length === 2, "same-photo identity repeats are removed without dropping a genuine co-face");
+  assert(repeats.length === 2, "a genuine repeat detection of one face is still removed");
 }
 
 {

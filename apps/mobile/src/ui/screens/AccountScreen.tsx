@@ -1,8 +1,9 @@
 import * as MediaLibrary from "expo-media-library/legacy";
 import { useEffect, useState } from "react";
-import { Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { Linking, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 
 import { fonts } from "../fonts";
+import { getPhotoAccess, NO_PHOTO_ACCESS, type PhotoAccess } from "../photo-access";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
 
 function SettingRow({ label, value, onPress }: { label: string; value: string; onPress?: () => void }) {
@@ -22,14 +23,25 @@ export function AccountScreen({
   onSignOut?: () => void;
 }) {
   const [photoCount, setPhotoCount] = useState(0);
+  const [access, setAccess] = useState<PhotoAccess>(NO_PHOTO_ACCESS);
   useEffect(() => {
-    void MediaLibrary.getPermissionsAsync()
-      .then((permission) => permission.status === "granted"
-        ? MediaLibrary.getAssetsAsync({ first: 1, mediaType: [MediaLibrary.MediaType.photo] })
-        : null)
+    void getPhotoAccess()
+      .then(async (current) => {
+        setAccess(current);
+        // Limited access still returns a real (small) count; a hard "granted"
+        // check reported zero photos and read as "the app cannot see anything".
+        if (!current.readable) return null;
+        return MediaLibrary.getAssetsAsync({ first: 1, mediaType: [MediaLibrary.MediaType.photo] });
+      })
       .then((page) => setPhotoCount(page?.totalCount ?? 0))
       .catch(() => setPhotoCount(0));
   }, []);
+
+  const accessValue = !access.readable
+    ? "Not allowed  ›"
+    : access.limited
+      ? "Only selected photos  ›"
+      : "All photos";
 
   return (
     <ScrollView contentContainerStyle={styles.scroll} contentInsetAdjustmentBehavior="automatic">
@@ -44,7 +56,11 @@ export function AccountScreen({
       </View>
       <View style={styles.settings}>
         <SettingRow label="Your family" onPress={onFamily} value="Set up  ›" />
-        <SettingRow label="Photo access" value={photoCount > 0 ? "Allowed" : "Not allowed"} />
+        <SettingRow
+          label="Photo access"
+          onPress={access.readable && !access.limited ? undefined : () => void Linking.openSettings()}
+          value={accessValue}
+        />
         <SettingRow label="Album storage" value="On this phone" />
         <SettingRow label="App version" value="1.0.0" />
       </View>
