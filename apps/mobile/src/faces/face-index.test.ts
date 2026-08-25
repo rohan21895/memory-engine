@@ -150,13 +150,37 @@ assert(
     createFacePeopleQuery(pair, 0.97).getPeople().length === 2,
     "a stricter synthetic calibration should split the same variants",
   );
-  assert(
-    createFacePeopleQuery([
-      pair[0],
-      { assetId: "different", embedding: [0.4, 0.9165], embeddingKind: "identity" },
-    ]).getPeople().length === 2,
-    "the MobileFaceNet default should split examples below cosine 0.5",
-  );
+  // Tests the BAR, not a fixed number, so moving the operating point does not
+  // silently invalidate the case. pair[0] is a unit vector, so a partner at a
+  // chosen angle from it has exactly that cosine.
+  {
+    const base = pair[0].embedding;
+    const partnerAt = (cosine: number) => {
+      // Component along `base`, plus an orthogonal component to make it unit.
+      const orthogonal = [-base[1], base[0]];
+      const sine = Math.sqrt(Math.max(0, 1 - cosine * cosine));
+      return [
+        base[0] * cosine + orthogonal[0] * sine,
+        base[1] * cosine + orthogonal[1] * sine,
+      ];
+    };
+    const split = DEFAULT_FACE_INDEX_THRESHOLD - 0.15;
+    const merge = DEFAULT_FACE_INDEX_THRESHOLD + 0.15;
+    assert(
+      createFacePeopleQuery([
+        pair[0],
+        { assetId: "different", embedding: partnerAt(split), embeddingKind: "identity" },
+      ]).getPeople().length === 2,
+      `a pair at cosine ${split.toFixed(2)} sits below the bar and must split`,
+    );
+    assert(
+      createFacePeopleQuery([
+        pair[0],
+        { assetId: "different", embedding: partnerAt(merge), embeddingKind: "identity" },
+      ]).getPeople().length === 1,
+      `a pair at cosine ${merge.toFixed(2)} sits above the bar and must merge`,
+    );
+  }
   // The bar only means something alongside the space it is measured in.
   // 0.62 was calibrated on RAW embeddings, whose population mean has norm 0.845
   // and therefore adds ~0.71 to every cosine — the measured raw impostor median
@@ -164,9 +188,11 @@ assert(
   // construction. Clustering now runs on CENTERED embeddings, where the
   // measured impostor median is -0.015 and p99 is 0.533, so the bar belongs far
   // lower. Move these two together or not at all.
+  // 0.40 is an operating point, not a guess: measured on labelled faces with
+  // this exact model and correct alignment, it gives TAR 88.0% / FAR 0.63%.
   assert(
-    DEFAULT_FACE_INDEX_THRESHOLD === 0.62,
-    "the RAW bar stays where post-alignment calibration put it",
+    DEFAULT_FACE_INDEX_THRESHOLD === 0.4,
+    "the RAW bar is the measured TAR/FAR operating point",
   );
   assert(
     CENTERED_FACE_INDEX_THRESHOLD === 0.35,

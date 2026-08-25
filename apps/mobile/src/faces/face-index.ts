@@ -88,7 +88,7 @@ const BASE64_VALUES = (() => {
 })();
 
 /** ArcFace/MobileFaceNet-space cosine threshold for high-precision identity. */
-export const DEFAULT_FACE_INDEX_THRESHOLD = 0.62;
+export const DEFAULT_FACE_INDEX_THRESHOLD = 0.4;
 
 /**
  * Identifies HOW the persisted people were grouped, not just at what bar.
@@ -107,7 +107,7 @@ export const DEFAULT_FACE_INDEX_THRESHOLD = 0.62;
  * embedding, re-scanning the whole library for what is a cheap recomputation
  * over data already on disk.
  */
-export const CLUSTER_CALIBRATION = "avg-linkage-1";
+export const CLUSTER_CALIBRATION = "avg-linkage-aligned-1";
 
 /**
  * Bar for the CENTERED space, and only valid there.
@@ -129,6 +129,25 @@ export const CENTERED_CLUSTER_CALIBRATION = "centered-avg-linkage-1";
  * never group. Below this count the raw space and the raw bar are used.
  */
 const CENTERING_MIN_OBSERVATIONS = 200;
+
+/**
+ * Centering is OFF now that alignment is fixed, and that is a measurement, not
+ * a preference.
+ *
+ * It was added when the raw impostor median was 0.725 and the population mean
+ * had norm 0.845 — but both were artefacts of the alignment bug, which fed the
+ * model near-identical wide shots. With crops corrected, the on-device raw
+ * distribution reproduces this model's offline benchmark almost exactly
+ * (impostor median 0.177 measured here vs 0.180 offline), so the RAW space is
+ * the one with a real calibration behind it: 0.35 -> TAR 92.4% / FAR 1.8%, and
+ * 0.40 -> TAR 88.0% / FAR 0.63%, measured on labelled faces.
+ *
+ * Centering still reports lower impostor percentiles, but nothing measures what
+ * it does to GENUINE pairs, so choosing it would trade a calibrated bar for an
+ * uncalibrated one. Flip this to true only alongside a genuine/impostor
+ * measurement in the centered space.
+ */
+const USE_CENTERED_CLUSTERING = false;
 
 /**
  * Cluster-to-cluster merge bar. Held at the calibrated post-alignment default,
@@ -1632,10 +1651,23 @@ async function createFaceEmbedding(
   // is also too small to make a sharp avatar from it, and this crop is the only
   // source a person tile ever gets.
   const cropStartedAt = Date.now();
+  // The AVATAR always comes from the frame, never the original.
+  //
+  // It used to share `embedSpace`, so a face too small to embed from the frame
+  // made this decode the full-resolution original a SECOND time — two
+  // SIZE_ORIGINAL decodes per face on the small-face path. That is ~93MB of
+  // bitmap per face at 12MP, and because Glide serves the photo grid from the
+  // same pipeline, it also starved the UI: thumbnails queued behind full-res
+  // decodes and the grid appeared not to load at all during a scan.
+  //
+  // The identity embedding genuinely needs real resolution; a 128px circular
+  // tile does not. Upscaling a small face into a small tile is a cosmetic
+  // difference, and it is the only thing given up here.
+  const cropSpace = framed ?? embedSpace;
   const crop = await prepareFaceCrop(
-    embedSpace.asset,
-    embedSpace.source,
-    embedSpace.box,
+    cropSpace.asset,
+    cropSpace.source,
+    cropSpace.box,
     !hasIdentity,
   );
   traceScanStage("crop", cropStartedAt);
@@ -1709,7 +1741,9 @@ function seenCount(): number {
 
 /** The space and bar this library should be clustered in, given its size. */
 function calibrationForLibrary(): { rule: string; threshold: number; centered: boolean } {
-  const centered = index.observations.length >= CENTERING_MIN_OBSERVATIONS;
+  const centered =
+    USE_CENTERED_CLUSTERING &&
+    index.observations.length >= CENTERING_MIN_OBSERVATIONS;
   return centered
     ? { rule: CENTERED_CLUSTER_CALIBRATION, threshold: CENTERED_FACE_INDEX_THRESHOLD, centered }
     : { rule: CLUSTER_CALIBRATION, threshold: DEFAULT_FACE_INDEX_THRESHOLD, centered };
