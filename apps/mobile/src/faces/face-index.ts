@@ -1172,11 +1172,32 @@ export function shouldPersistIndex(
   return dirty || shape !== writtenShape;
 }
 
-async function persistFaceIndex(): Promise<void> {
+/**
+ * Floor on how often a scan pass rewrites the whole index.
+ *
+ * Persisting is `JSON.stringify` over everything: measured between 1477ms and
+ * 4278ms as the index grew past 4MB, on the thread that paints. Doing it once
+ * per 32-photo batch is most of what the scan costs the UI.
+ *
+ * Dropping a throttled write is safe in a way that dropping most writes is not:
+ * scanning is idempotent, so the only thing lost is the `processedAssetIds`
+ * marks for the last few batches, and those photos are simply scanned again.
+ * Nothing is corrupted and no user-visible state is destroyed. Terminal
+ * moments — finishing, cancelling, failing, backgrounding — force the write.
+ */
+const PERSIST_MIN_INTERVAL_MS = 15000;
+let lastPersistAt = 0;
+
+async function persistFaceIndex(force = false): Promise<void> {
   if (!shouldPersistIndex(indexDirty, indexShape(), persistedShape)) {
     traceScanCount("persistSkipped");
     return;
   }
+  if (!force && Date.now() - lastPersistAt < PERSIST_MIN_INTERVAL_MS) {
+    traceScanCount("persistThrottled");
+    return;
+  }
+  lastPersistAt = Date.now();
   const startedAt = Date.now();
   // Cleared before the await, so a mutation arriving mid-write re-dirties the
   // index and is picked up by the next pass rather than being swallowed.
@@ -1981,7 +2002,12 @@ async function watchAppState(
     const { AppState } = await import("react-native");
     control.foreground = AppState.currentState === "active";
     const subscription = AppState.addEventListener("change", (state) => {
+      const wasForeground = control.foreground;
       control.foreground = state === "active";
+      // Leaving the app is the moment a throttled write has to land: the
+      // process can be killed while backgrounded, and everything scanned since
+      // the last write would otherwise have to be scanned again.
+      if (wasForeground && !control.foreground) void persistFaceIndex(true);
     });
     return () => subscription.remove();
   } catch {
@@ -2156,13 +2182,13 @@ async function runBuild(
       index.cursor = after;
       hasNextPage = page.hasNextPage;
       if (page.assets.length === 0 && hasNextPage) {
-        await persistFaceIndex();
+        await persistFaceIndex(true);
         return;
       }
     }
 
     if (control.cancelled) {
-      await persistFaceIndex();
+      await persistFaceIndex(true);
       return;
     }
 
@@ -2179,11 +2205,11 @@ async function runBuild(
     index.scanComplete = true;
     markIndexDirty();
     index.total = seenCount();
-    await persistFaceIndex();
+    await persistFaceIndex(true);
     logEmbeddingPath("scan complete");
     notifyFaceProgress(index.total, index.total);
   } catch {
-    await persistFaceIndex();
+    await persistFaceIndex(true);
   } finally {
     stopWatching();
   }
