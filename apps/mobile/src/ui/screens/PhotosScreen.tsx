@@ -25,8 +25,6 @@ import {
   type FaceIndexPerson,
 } from "../../faces/face-index";
 import {
-  assetIdsForCity,
-  assetIdsForCountry,
   buildIndex,
   getCities,
   getCountries,
@@ -38,6 +36,9 @@ import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { HintBanner } from "../components/HintBanner";
 import { LoadingState } from "../components/LoadingState";
+import { LocationFilterModal } from "../components/LocationFilterModal";
+import { assetIdsForPlace, countryForState, getStates, stateForCity } from "../components/place-source";
+import { buildPlaceTree, placeParentNames, topPlaces } from "../components/place-tree";
 import { fonts } from "../fonts";
 import {
   canWidenAccess,
@@ -54,9 +55,10 @@ const FILTER_BURST_TARGET = 120;
 const FILTER_PAGE_GUARD = 400;
 const GRID_COLUMNS = 3;
 const GRID_GAP = 3;
-const PLACE_RAIL_LIMIT = 24;
+const PLACE_RAIL_LIMIT = 12;
 
-type PlaceCard = PlaceSummary & { coverUri: string };
+type PlaceCard = PlaceSummary & { coverUri: string; parentName?: string };
+type PlaceTiers = { cities: PlaceSummary[]; countries: PlaceSummary[]; states: PlaceSummary[] };
 type LibraryRow =
   | { key: string; kind: "month"; label: string }
   | { key: string; kind: "photos"; assets: MediaLibrary.Asset[] };
@@ -71,6 +73,12 @@ function monthFor(asset: MediaLibrary.Asset): { key: string; label: string } {
     key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`,
     label: date.toLocaleDateString(undefined, { month: "long", year: "numeric" }),
   };
+}
+
+const EMPTY_TIERS: PlaceTiers = { cities: [], countries: [], states: [] };
+
+function toFilterOption(place: PlaceSummary) {
+  return { id: place.id, label: place.name, photoCount: place.count };
 }
 
 function rowsFor(assets: MediaLibrary.Asset[]): LibraryRow[] {
@@ -109,6 +117,8 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
   const [query, setQuery] = useState("");
   const [people, setPeople] = useState<FaceIndexPerson[]>([]);
   const [places, setPlaces] = useState<PlaceCard[]>([]);
+  const [placeTiers, setPlaceTiers] = useState<PlaceTiers>(EMPTY_TIERS);
+  const [placesModalVisible, setPlacesModalVisible] = useState(false);
   const [assets, setAssets] = useState<MediaLibrary.Asset[]>([]);
   const [selectedPerson, setSelectedPerson] = useState<string | null>(null);
   const [selectedPlace, setSelectedPlace] = useState<string | null>(null);
@@ -128,12 +138,30 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
 
   const refreshIndexes = useCallback(() => {
     const nextPeople = getPeople();
-    // Countries first: cities alone could fill the rail and hide every country.
-    const nextPlaces: PlaceCard[] = [...getCountries(), ...getCities()].slice(0, PLACE_RAIL_LIMIT).map((place) => {
-      const ids = place.id.startsWith("country:") ? assetIdsForCountry(place.id) : assetIdsForCity(place.id);
-      return { ...place, coverUri: ids[0] ? contentUri(ids[0]) : "" };
+    const tiers: PlaceTiers = { cities: getCities(), countries: getCountries(), states: getStates() };
+    // One tier only in the strip. A country tile ("India, 2124 photos") sitting
+    // beside a city tile it contains ("Gurugram, 990 photos") reads as two peers
+    // of the same kind; the full hierarchy behind "See all places" is where the
+    // broader tiers belong.
+    const strip = topPlaces({ countries: tiers.countries, places: tiers.cities, states: tiers.states }, PLACE_RAIL_LIMIT);
+    const parents = placeParentNames(
+      buildPlaceTree(
+        { countries: tiers.countries, places: tiers.cities, states: tiers.states },
+        { countryForState, stateForPlace: stateForCity },
+      ),
+    );
+    const nextPlaces: PlaceCard[] = strip.items.map((place) => {
+      const ids = assetIdsForPlace(place.id);
+      return {
+        id: place.id,
+        name: place.name,
+        count: place.count,
+        coverUri: ids[0] ? contentUri(ids[0]) : "",
+        parentName: parents.get(place.id),
+      };
     });
     setPeople(nextPeople);
+    setPlaceTiers(tiers);
     setPlaces(nextPlaces);
   }, []);
 
@@ -190,9 +218,10 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
 
   const filterSet = useMemo(() => {
     if (selectedPerson) return new Set(assetIdsForPerson(selectedPerson));
-    if (selectedPlace) {
-      return new Set(selectedPlace.startsWith("country:") ? assetIdsForCountry(selectedPlace) : assetIdsForCity(selectedPlace));
-    }
+    // Any tier is selectable, so resolve country/state/place through one door.
+    // Reads the live index rather than a snapshot so this stays keyed on the
+    // selection alone and a scan tick never re-pages the grid.
+    if (selectedPlace) return new Set(assetIdsForPlace(selectedPlace));
     return null;
   }, [selectedPerson, selectedPlace]);
   const filterSetRef = useRef<Set<string> | null>(null);
@@ -289,6 +318,20 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
     (peopleLabels.get(person.id) ?? "").toLocaleLowerCase().includes(needle),
   );
   const visiblePlaces = places.filter((place) => place.name.toLocaleLowerCase().includes(needle));
+  const placesTotal = placeTiers.cities.length + placeTiers.countries.length + placeTiers.states.length;
+  const selectedPlaceName = useMemo(() => {
+    if (!selectedPlace) return null;
+    for (const tier of [placeTiers.cities, placeTiers.states, placeTiers.countries]) {
+      for (const place of tier) if (place.id === selectedPlace) return place.name;
+    }
+    return null;
+  }, [placeTiers, selectedPlace]);
+  // A country or state chosen in the hierarchy has no tile in the strip, so the
+  // "See all places" entry carries the current selection instead of it vanishing.
+  const selectedOffStrip = Boolean(selectedPlace) && !places.some((place) => place.id === selectedPlace);
+  const filterCountries = useMemo(() => placeTiers.countries.map(toFilterOption), [placeTiers.countries]);
+  const filterStates = useMemo(() => placeTiers.states.map(toFilterOption), [placeTiers.states]);
+  const filterCities = useMemo(() => placeTiers.cities.map(toFilterOption), [placeTiers.cities]);
   const rows = useMemo(() => rowsFor(assets), [assets]);
   const searching = needle.length > 0;
   const showAccessBanner = access.limited && !accessDismissed;
@@ -396,31 +439,58 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
         <Text style={styles.section}>Places</Text>
         {placeStatus ? <Text accessibilityLiveRegion="polite" style={styles.sectionStatus}>{placeStatus}</Text> : null}
       </View>
-      {visiblePlaces.length > 0 ? (
-        <ScrollView horizontal contentContainerStyle={styles.placesRow} showsHorizontalScrollIndicator={false}>
-          {visiblePlaces.map((place) => {
-            const active = selectedPlace === place.id;
-            return (
-              <Pressable
-                accessibilityLabel={`${place.name}. ${copy.filters.photoCount(place.count)}`}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-                key={place.id}
-                onPress={() => {
-                  setSelectedPerson(null);
-                  setSelectedPlace(active ? null : place.id);
-                }}
-                style={styles.place}
-              >
-                {place.coverUri ? <Image cachePolicy="memory-disk" contentFit="cover" source={place.coverUri} style={[styles.placeImage, active ? styles.placeActive : null]} /> : <View style={styles.placeImage} />}
-                <Text numberOfLines={1} style={[styles.placeName, active ? styles.activeText : null]}>{place.name}</Text>
-                <Text style={styles.placeCount}>{copy.filters.photoCount(place.count)}</Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-      ) : searching && places.length > 0 ? (
-        <Text style={styles.noMatch}>No places match “{query.trim()}”.</Text>
+      {placesTotal > 0 ? (
+        <View>
+          {searching && visiblePlaces.length === 0 ? (
+            <Text style={styles.noMatch}>No places match “{query.trim()}”.</Text>
+          ) : null}
+          <ScrollView horizontal contentContainerStyle={styles.placesRow} showsHorizontalScrollIndicator={false}>
+            {visiblePlaces.map((place) => {
+              const active = selectedPlace === place.id;
+              return (
+                <Pressable
+                  accessibilityLabel={`${place.name}${place.parentName ? `, ${place.parentName}` : ""}. ${copy.filters.photoCount(place.count)}`}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  key={place.id}
+                  onPress={() => {
+                    setSelectedPerson(null);
+                    setSelectedPlace(active ? null : place.id);
+                  }}
+                  style={styles.place}
+                >
+                  {place.coverUri ? <Image cachePolicy="memory-disk" contentFit="cover" source={place.coverUri} style={[styles.placeImage, active ? styles.placeActive : null]} /> : <View style={styles.placeImage} />}
+                  <Text numberOfLines={1} style={[styles.placeName, active ? styles.activeText : null]}>{place.name}</Text>
+                  <Text numberOfLines={1} style={styles.placeCount}>
+                    {/* Count first: the tile is 132dp wide, so the parent is
+                        what truncates rather than the number. */}
+                    {place.parentName
+                      ? `${copy.filters.photoCount(place.count)} · ${place.parentName}`
+                      : copy.filters.photoCount(place.count)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+            <Pressable
+              accessibilityHint={copy.places.seeAllHint}
+              accessibilityLabel={`${copy.places.seeAll}. ${copy.places.total(placesTotal)}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: selectedOffStrip }}
+              onPress={() => setPlacesModalVisible(true)}
+              style={styles.place}
+            >
+              <View style={[styles.placeImage, styles.seeAllTile, selectedOffStrip ? styles.placeActive : null]}>
+                <Text style={styles.seeAllIcon}>⌕</Text>
+              </View>
+              <Text numberOfLines={1} style={[styles.placeName, selectedOffStrip ? styles.activeText : null]}>{copy.places.seeAll}</Text>
+              <Text numberOfLines={1} style={styles.placeCount}>
+                {selectedOffStrip && selectedPlaceName
+                  ? copy.places.showing(selectedPlaceName)
+                  : copy.places.total(placesTotal)}
+              </Text>
+            </Pressable>
+          </ScrollView>
+        </View>
       ) : (
         <View style={styles.noPeople}>
           <Text style={styles.noPeopleTitle}>{placeStatus ? "Finding places…" : copy.access.noPlacesTitle}</Text>
@@ -497,6 +567,19 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
           </View>
         )}
       />
+      <LocationFilterModal
+        cities={filterCities}
+        countries={filterCountries}
+        loadingText={placeStatus ?? undefined}
+        onClose={() => setPlacesModalVisible(false)}
+        onSelect={(locationId) => {
+          setSelectedPerson(null);
+          setSelectedPlace(locationId);
+        }}
+        selectedLocationId={selectedPlace}
+        states={filterStates}
+        visible={placesModalVisible}
+      />
     </View>
   );
 }
@@ -537,6 +620,8 @@ const styles = StyleSheet.create({
   searchIcon: { color: colors.muted, fontFamily: fonts.regular, fontSize: 21 },
   searchInput: { color: colors.text, flex: 1, fontFamily: fonts.regular, fontSize: 16, paddingVertical: 0 },
   section: { color: colors.text, fontFamily: fonts.bold, ...typeScale.label },
+  seeAllIcon: { color: colors.goldPressed, fontFamily: fonts.regular, fontSize: 30, lineHeight: 34 },
+  seeAllTile: { alignItems: "center", backgroundColor: colors.panelRaised, borderColor: colors.hairline, borderWidth: 1, justifyContent: "center" },
   sectionHeading: { alignItems: "baseline", flexDirection: "row", gap: spacing.sm, justifyContent: "space-between", paddingTop: spacing.lg },
   sectionStatus: { color: colors.muted, flexShrink: 1, fontFamily: fonts.regular, textAlign: "right", ...typeScale.eyebrow },
   title: { color: colors.text, fontFamily: fonts.extraBold, ...typeScale.title },

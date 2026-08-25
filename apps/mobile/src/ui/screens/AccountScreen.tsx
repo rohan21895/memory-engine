@@ -64,6 +64,20 @@ export function AccountScreen({
         <SettingRow label="Album storage" value="On this phone" />
         <SettingRow label="App version" value="1.0.0" />
       </View>
+      {/* The bundled place list is CC BY 4.0, which requires attribution
+          wherever the work is used. This is that attribution — it is a licence
+          obligation, not a credit line, so it must not be quietly dropped. */}
+      <Text style={styles.attribution}>
+        Place names come from{" "}
+        <Text
+          accessibilityRole="link"
+          onPress={() => void Linking.openURL("https://www.geonames.org/")}
+          style={styles.attributionLink}
+        >
+          GeoNames
+        </Text>
+        , used under CC BY 4.0. They are stored on this phone — looking up a place never uses the internet.
+      </Text>
       {onHelp ? <Pressable accessibilityRole="button" onPress={onHelp} style={styles.help}><Text style={styles.helpText}>Help & troubleshooting</Text></Pressable> : null}
       {onSignOut ? (
         <>
@@ -79,6 +93,8 @@ const styles = StyleSheet.create({
   avatar: { alignItems: "center", backgroundColor: "#c99b78", borderRadius: 36, height: 72, justifyContent: "center", width: 72 },
   dot: { color: colors.success },
   help: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center" },
+  attribution: { color: colors.muted, fontFamily: fonts.regular, paddingHorizontal: 18, paddingTop: spacing.md, ...typeScale.eyebrow },
+  attributionLink: { color: colors.goldPressed, fontFamily: fonts.semibold },
   helpText: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   initial: { color: colors.onAccent, fontFamily: fonts.bold, fontSize: 26 },
   meta: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },

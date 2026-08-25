@@ -4,9 +4,9 @@ import { decode as decodeJpeg } from "jpeg-js";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { detectFaces, isFaceDetectionAvailable, type FaceBox } from "./face-detector.ts";
+import { closeFaceFrame, deleteImageFile, detectFacesInFrame, isFaceDetectionAvailable, openFaceFrame, scaleFaceBox, takeScanTrace, traceScanCount, traceScanStage, type FaceBox, type FaceFrame } from "./face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { embedFaceIdentity } from "../ml/facenet.ts";
+import { embedFaceIdentity, type FaceImageSource } from "../ml/facenet.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { incrementalScanTarget } from "../import/incremental-index.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
@@ -24,7 +24,39 @@ const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
 const SCAN_BATCH_SIZE = 32;
+/**
+ * Held at 2 on purpose, and not a guess.
+ *
+ * `@infinitered/react-native-mlkit-face-detection` implements `detectFaces` as
+ * an Expo `AsyncFunction` whose body is a `runBlocking { ... }` on a single
+ * detector instance, so native detection is serialized however many callers ask
+ * for it. Two workers is exactly enough to keep that serialized detect busy
+ * while the other worker does JS-side crop/decode/inference work; a third only
+ * adds a live frame bitmap to the heap and waits in the same native queue.
+ */
 const SCAN_CONCURRENCY = 2;
+/**
+ * Box short side, in FRAME pixels, below which a face is cropped from the
+ * original instead of the shared frame.
+ *
+ * Alignment warps the patch onto a 112x112 ArcFace template, so once a face is
+ * at least 112px across, the aligned crop is a downscale and any extra source
+ * resolution is discarded anyway. At or above this bar the shared frame carries
+ * provably enough detail; below it, reusing the frame would UPSCALE into the
+ * template — no error, no artifact, just quietly worse identities — so those
+ * faces pay the old full-resolution decode instead. Quality here is preserved
+ * by construction rather than by hope, which is why the bar is the tensor size
+ * and not a tuned number.
+ *
+ * It is deliberately conservative. The real no-loss point is nearer 100px (the
+ * warp maps interocular distance, roughly a third of the box, onto the
+ * template's 35px eye spacing), and ML Kit's `minFaceSize: 0.08` already puts
+ * most detections just above 100 frame px — so a bar of 112 may send a band of
+ * faces down the slow path for a 10% resolution difference nobody can measure.
+ * The per-batch `smallFaceFullRes` counter in logcat says how often that
+ * happens; lower this to ~96 if it turns out to be a large share of faces.
+ */
+const MIN_FRAME_EMBED_FACE_PX = 112;
 const CHECKPOINT_ASSETS = 50;
 const CHECKPOINT_INTERVAL_MS = 10_000;
 const FACE_THUMBNAIL_SIZE = 128;
@@ -33,6 +65,14 @@ const COLOR_BINS = 4;
 const FACE_PADDING_SCALE = 1.3;
 const BASE64_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/** Reverse table; `indexOf` per character is a 64-wide scan per decoded byte. */
+const BASE64_VALUES = (() => {
+  const table = new Int8Array(128).fill(-1);
+  for (let position = 0; position < BASE64_ALPHABET.length; position += 1) {
+    table[BASE64_ALPHABET.charCodeAt(position)] = position;
+  }
+  return table;
+})();
 
 /** ArcFace/MobileFaceNet-space cosine threshold for high-precision identity. */
 export const DEFAULT_FACE_INDEX_THRESHOLD = 0.62;
@@ -102,14 +142,26 @@ export type FaceScanAsset = {
 
 export type FaceScanDependencies = {
   isDetectionAvailable: () => boolean;
+  /**
+   * Opens the one decode that detection, embedding and the thumbnail crop all
+   * share. Optional so offline tests can inject plain per-call fakes; when it is
+   * absent every stage falls back to working from the URI.
+   */
+  openFrame?: (
+    imageUri: string,
+    asset: FaceScanAsset,
+  ) => Promise<FaceFrame | null>;
+  closeFrame?: (frame: FaceFrame) => Promise<void>;
   detectFaces: (
     imageUri: string,
     source?: FaceScanAsset,
+    frame?: FaceFrame | null,
   ) => Promise<FaceBox[]>;
   embedFace: (
     asset: FaceScanAsset,
     imageUri: string,
     box: FaceBox,
+    frame?: FaceFrame | null,
   ) => Promise<FaceEmbedding>;
   onFaceCrop?: (observation: FaceObservation, cropUri: string) => void;
 };
@@ -318,13 +370,31 @@ function storedPerson(value: unknown): value is StoredPerson {
   );
 }
 
+/**
+ * Quantized form of every observation already written to disk.
+ *
+ * The scan checkpoints on a 10-second timer, and each checkpoint re-quantized
+ * the ENTIRE growing observation list: 192 floats rounded and base64-packed per
+ * face, for every face found so far, several hundred times over a full library.
+ * That is quadratic in library size and it is pure repetition — an observation
+ * is frozen the moment it is created. Keyed weakly so pruning at the end of a
+ * scan drops the cached strings with the observations.
+ */
+const quantizedObservations = new WeakMap<FaceObservation, string>();
+
 function storedIndex(): StoredFaceIndex {
   return {
     ...index,
-    observations: index.observations.map((observation) => ({
-      ...observation,
-      embedding: quantizeEmbedding(observation.embedding),
-    })),
+    observations: index.observations.map((observation) => {
+      let embedding = quantizedObservations.get(observation);
+      if (embedding === undefined) {
+        embedding = quantizeEmbedding(observation.embedding);
+        quantizedObservations.set(observation, embedding);
+      }
+      return { ...observation, embedding };
+    }),
+    // Centroids are NOT cached: a person's centroid is recomputed on every
+    // assignment and merge, so the object is live where observations are not.
     people: index.people.map((person) => ({
       ...person,
       centroid: quantizeEmbedding(person.centroid),
@@ -671,6 +741,7 @@ export function loadFaceIndex(): Promise<void> {
 }
 
 async function persistFaceIndex(): Promise<void> {
+  const startedAt = Date.now();
   try {
     const fileSystem = await fileSystemModule();
     if (!fileSystem.documentDirectory) {
@@ -686,6 +757,8 @@ async function persistFaceIndex(): Promise<void> {
     await fileSystem.moveAsync({ from: temporaryUri, to: uri });
   } catch {
     // A later batch retries; the in-memory query index remains available.
+  } finally {
+    traceScanStage("persist", startedAt);
   }
 }
 
@@ -808,8 +881,18 @@ export async function scanFaceAssets(
         if (assetIndex >= assets.length) return;
         const asset = assets[assetIndex];
         const imageUri = contentUri(asset.id);
+        let frame: FaceFrame | null = null;
         try {
-          const detectedBoxes = await dependencies.detectFaces(imageUri, asset);
+          const frameStartedAt = Date.now();
+          frame = (await dependencies.openFrame?.(imageUri, asset)) ?? null;
+          if (dependencies.openFrame) traceScanStage("frame", frameStartedAt);
+          const detectStartedAt = Date.now();
+          const detectedBoxes = await dependencies.detectFaces(
+            imageUri,
+            asset,
+            frame,
+          );
+          traceScanStage("detect", detectStartedAt);
           const boxes = dedupeFaceBoxes(detectedBoxes);
           duplicateDetectionsDropped += detectedBoxes.length - boxes.length;
           const observations: FaceObservation[] = [];
@@ -817,7 +900,14 @@ export async function scanFaceAssets(
             const qualityTier = faceQualityTier(asset, box);
             if (!qualityTier) continue;
             try {
-              const result = await dependencies.embedFace(asset, imageUri, box);
+              const embedStartedAt = Date.now();
+              const result = await dependencies.embedFace(
+                asset,
+                imageUri,
+                box,
+                frame,
+              );
+              traceScanStage("embed", embedStartedAt);
               if (
                 validEmbedding(result.embedding) &&
                 (result.kind === "identity" || result.kind === "perceptual")
@@ -836,6 +926,10 @@ export async function scanFaceAssets(
                     // Thumbnail bookkeeping is optional scan metadata.
                   }
                 }
+              } else if (result.cropUri) {
+                // Nothing downstream will ever hear about this crop, so the
+                // caller's batch cleanup will not see it either. Drop it here.
+                await deleteImageFile(result.cropUri);
               }
             } catch {
               // One unreadable crop must not stop other faces or assets.
@@ -844,6 +938,8 @@ export async function scanFaceAssets(
           perAsset[assetIndex] = dedupeFaceObservations(observations);
         } catch {
           perAsset[assetIndex] = [];
+        } finally {
+          if (frame) await dependencies.closeFrame?.(frame);
         }
       }
     };
@@ -982,7 +1078,7 @@ function fingerprintPixels(
   return l2Normalize(embedding);
 }
 
-function decodeBase64(value: string): Uint8Array {
+export function decodeBase64(value: string): Uint8Array {
   const encoded = value.replace(/^data:[^,]*,/u, "").replace(/\s/gu, "");
   const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
   const bytes = new Uint8Array(
@@ -991,11 +1087,12 @@ function decodeBase64(value: string): Uint8Array {
   let accumulator = 0;
   let availableBits = 0;
   let byteIndex = 0;
-  for (const character of encoded) {
-    if (character === "=") {
-      break;
+  for (let position = 0; position < encoded.length; position += 1) {
+    const code = encoded.charCodeAt(position);
+    if (code === 0x3d) {
+      break; // '='
     }
-    const digit = BASE64_ALPHABET.indexOf(character);
+    const digit = code < 128 ? BASE64_VALUES[code] : -1;
     if (digit < 0) {
       throw new Error("Face thumbnail contains invalid base64 data.");
     }
@@ -1020,42 +1117,49 @@ function decodeBase64(value: string): Uint8Array {
  */
 type PreparedFaceCrop = {
   uri: string;
-  base64: string;
+  base64?: string;
 };
 
+/**
+ * Crops the 128px avatar candidate for this face.
+ *
+ * `base64` is requested only when the identity embedder failed and the
+ * perceptual fingerprint actually has to read pixels. It is not a free flag:
+ * expo-image-manipulator's `saveAsync` JPEG-encodes the bitmap a SECOND time to
+ * produce it, and the caller then pays a base64 decode and a jpeg-js decode in
+ * JS. On the healthy path — MobileFaceNet available, which is every shipped
+ * build — none of that is needed, because this crop exists purely so a person
+ * tile can have a face on it.
+ */
 async function prepareFaceCrop(
   asset: FaceScanAsset,
-  imageUri: string,
+  imageUri: FaceImageSource,
   box: FaceBox,
+  withPixels: boolean,
 ): Promise<PreparedFaceCrop> {
-  const imageManipulator = await import("expo-image-manipulator");
-  let thumbnailUri: string | undefined;
+  const { ImageManipulator, SaveFormat } = await import("expo-image-manipulator");
+  const context = ImageManipulator.manipulate(imageUri);
   try {
-    const thumbnail = await imageManipulator.manipulateAsync(
-      imageUri,
-      [
-        { crop: paddedCrop(asset, box) },
-        {
-          resize: {
-            width: FACE_THUMBNAIL_SIZE,
-            height: FACE_THUMBNAIL_SIZE,
-          },
-        },
-      ],
-      {
-        base64: true,
+    const rendered = await context
+      .crop(paddedCrop(asset, box))
+      .resize({ width: FACE_THUMBNAIL_SIZE, height: FACE_THUMBNAIL_SIZE })
+      .renderAsync();
+    try {
+      const thumbnail = await rendered.saveAsync({
+        base64: withPixels,
         compress: 0.85,
-        format: imageManipulator.SaveFormat.JPEG,
-      },
-    );
-    thumbnailUri = thumbnail.uri;
-    if (!thumbnail.base64) {
-      throw new Error("Image manipulator returned no face pixels.");
+        format: SaveFormat.JPEG,
+      });
+      if (withPixels && !thumbnail.base64) {
+        await deleteFaceCrop(thumbnail.uri);
+        throw new Error("Image manipulator returned no face pixels.");
+      }
+      return { uri: thumbnail.uri, base64: thumbnail.base64 };
+    } finally {
+      rendered.release();
     }
-    return { uri: thumbnail.uri, base64: thumbnail.base64 };
-  } catch (error) {
-    if (thumbnailUri) await deleteFaceCrop(thumbnailUri);
-    throw error;
+  } finally {
+    context.release();
   }
 }
 
@@ -1069,6 +1173,9 @@ async function deleteFaceCrop(uri: string): Promise<void> {
 }
 
 function createPerceptualFaceEmbedding(crop: PreparedFaceCrop): number[] {
+  if (!crop.base64) {
+    throw new Error("The perceptual fallback needs decoded face pixels.");
+  }
   const decoded = decodeJpeg(decodeBase64(crop.base64), {
     useTArray: true,
     formatAsRGBA: true,
@@ -1082,19 +1189,82 @@ function createPerceptualFaceEmbedding(crop: PreparedFaceCrop): number[] {
   return fingerprintPixels(decoded.data, decoded.width, decoded.height);
 }
 
+type FaceCropSpace = {
+  source: FaceImageSource;
+  asset: FaceScanAsset;
+  box: FaceBox;
+};
+
+/**
+ * The same face expressed in the shared frame's pixel space.
+ *
+ * Every crop helper downstream is scale-covariant, so the image dimensions, the
+ * box and the landmarks must be rescaled by ONE factor together — see
+ * `scaleFaceBox` and face-detector.test.ts. Rescaling the box but not the
+ * landmarks (or vice versa) produces an alignment that is wrong by a constant
+ * and looks like nothing at all.
+ */
+function frameSpaceFace(
+  frame: FaceFrame | null | undefined,
+  asset: FaceScanAsset,
+  box: FaceBox,
+): FaceCropSpace | undefined {
+  if (!frame) return undefined;
+  return {
+    // The bitmap makes a crop free; without one the frame's own bounded JPEG is
+    // still the same pixels and still far cheaper than the original.
+    source: frame.image ?? frame.uri,
+    asset: { id: asset.id, width: frame.width, height: frame.height },
+    box: scaleFaceBox(box, frame.scale),
+  };
+}
+
 /** Uses identity-grade MobileFaceNet first, then the legacy visual fallback. */
 async function createFaceEmbedding(
   asset: FaceScanAsset,
   imageUri: string,
   box: FaceBox,
+  frame?: FaceFrame | null,
 ): Promise<FaceEmbedding> {
-  const identity = await embedFaceIdentity(asset, imageUri, box);
-  const crop = await prepareFaceCrop(asset, imageUri, box);
+  const original: FaceCropSpace = { source: imageUri, asset, box };
+  const framed = frameSpaceFace(frame, asset, box);
+  // Identity is the only consumer that needs real resolution: a face already
+  // wider than the 112px alignment target loses nothing to the frame, a smaller
+  // one would be upscaled into the template and lose detail it will never get
+  // back, so that face alone falls back to decoding the original.
+  const frameKeepsDetail =
+    framed !== undefined &&
+    ((frame?.scale ?? 0) >= 1 ||
+      Math.min(framed.box.width, framed.box.height) >= MIN_FRAME_EMBED_FACE_PX);
+  const embedSpace = frameKeepsDetail && framed ? framed : original;
+  if (!frameKeepsDetail && framed) traceScanCount("smallFaceFullRes");
+  const identity = await embedFaceIdentity(
+    embedSpace.asset,
+    embedSpace.source,
+    embedSpace.box,
+  );
+  const hasIdentity = identity !== undefined && validEmbedding(identity);
+  // Deliberately the SAME space as the embedding, not simply the frame. The
+  // avatar is a 128px crop, so a face that was too small to embed from the frame
+  // is also too small to make a sharp avatar from it, and this crop is the only
+  // source a person tile ever gets.
+  const cropStartedAt = Date.now();
+  const crop = await prepareFaceCrop(
+    embedSpace.asset,
+    embedSpace.source,
+    embedSpace.box,
+    !hasIdentity,
+  );
+  traceScanStage("crop", cropStartedAt);
   let returned = false;
   try {
-    if (identity && validEmbedding(identity)) {
+    if (hasIdentity) {
       returned = true;
-      return { embedding: identity, kind: "identity", cropUri: crop.uri };
+      return {
+        embedding: identity as number[],
+        kind: "identity",
+        cropUri: crop.uri,
+      };
     }
     const fallback = createPerceptualFaceEmbedding(crop);
     returned = true;
@@ -1314,12 +1484,19 @@ async function runBuild(
         }> = [];
         const observations = await scanFaceAssets(pending, {
           isDetectionAvailable: () => true,
-          detectFaces: (uri, asset) => detectFaces(uri, asset),
+          openFrame: (uri, asset) => openFaceFrame(uri, asset),
+          closeFrame: (frame) => closeFaceFrame(frame),
+          // A frame that would not open is an unreadable asset: the previous
+          // code reached the same empty result through detectFaces' own guard.
+          detectFaces: async (_uri, _asset, frame) =>
+            frame ? detectFacesInFrame(frame) : [],
           embedFace: createFaceEmbedding,
           onFaceCrop: (observation, cropUri) => {
             faceCropCandidates.push({ observation, cropUri });
           },
         });
+        traceScanCount("photos", pending.length);
+        traceScanCount("faces", observations.length);
         index.observations.push(...observations);
         const assignments = appendPeople(observations);
         await persistCoverFaceThumbs(faceCropCandidates, assignments);
@@ -1339,6 +1516,8 @@ async function runBuild(
           lastCheckpointAt = Date.now();
         }
         notifyFaceProgress(Math.min(seenCount(), index.total), index.total);
+        const trace = takeScanTrace();
+        if (trace) console.warn(`[PhoteoFaceScan] ${trace}`);
         await yieldToEventLoop();
         if (
           incrementalTarget !== null &&

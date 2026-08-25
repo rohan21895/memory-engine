@@ -14,20 +14,59 @@ function near(actual: number, expected: number, tolerance: number, message: stri
   );
 }
 
-/** Coordinates in integer thousandths of a degree, as the bundled file stores them. */
+/**
+ * Builds a v2 dataset. Each city names its district; cities sharing a district
+ * key collapse into ONE place, labelled by the first one declared -- which is
+ * the consolidation the real generator performs by population.
+ */
 function dataset(
-  cities: { name: string; lat: number; lon: number; cc: number; pop?: number }[],
+  cities: { name: string; lat: number; lon: number; cc: number; pop?: number; place?: string; state?: string }[],
   codes: string[],
   names: string[],
 ): PlaceDataset {
+  const stateIds: string[] = [];
+  const stateNames: string[] = [];
+  const stateCc: number[] = [];
+  const placeIds: string[] = [];
+  const placeNames: string[] = [];
+  const placeState: number[] = [];
+  const place: number[] = [];
+
+  for (const city of cities) {
+    const stateId = city.state ?? `s-${city.cc}`;
+    let stateIndex = stateIds.indexOf(stateId);
+    if (stateIndex === -1) {
+      stateIndex = stateIds.length;
+      stateIds.push(stateId);
+      stateNames.push(`State ${stateId}`);
+      stateCc.push(city.cc);
+    }
+    const placeId = city.place ?? `p-${city.name.toLowerCase()}`;
+    let placeIndex = placeIds.indexOf(placeId);
+    if (placeIndex === -1) {
+      placeIndex = placeIds.length;
+      placeIds.push(placeId);
+      placeNames.push(city.name);
+      placeState.push(stateIndex);
+    }
+    place.push(placeIndex);
+  }
+
   return {
-    v: 1,
+    v: 2,
     codes,
     names,
-    city: cities.map((c) => c.name),
+    stateIds,
+    stateNames,
+    stateCc,
+    placeIds,
+    placeNames,
+    placeState,
     lat: cities.map((c) => Math.round(c.lat * 1000)),
     lon: cities.map((c) => Math.round(c.lon * 1000)),
     cc: cities.map((c) => c.cc),
+    place,
+    city: cities.map((c) => c.name),
     pop: cities.map((c) => c.pop ?? 40),
   };
 }
@@ -55,14 +94,14 @@ assert(haversineKm(60, 0, 60, 1) < haversineKm(0, 0, 0, 1), "longitude narrows w
 
 // ── Naming ──
 const inBengaluru = nearestPlace(index, 12.98, 77.6);
-assert(inBengaluru?.cityName === "Bengaluru", "a photo in the city is named for it");
+assert(inBengaluru?.placeName === "Bengaluru", "a photo in the city is named for it");
 assert(inBengaluru.countryName === "India", "country comes from the city's code");
 assert(inBengaluru.distanceKm < 2, "distance is the real distance");
 
 // The nearest city wins even across a grid-bucket boundary — the ring search
 // must not stop at the cell the query happens to land in.
 const justOverTheLine = nearestPlace(index, 12.999, 77.4);
-assert(justOverTheLine?.cityName === "Bengaluru", "nearest city wins across bucket edges");
+assert(justOverTheLine?.placeName === "Bengaluru", "nearest city wins across bucket edges");
 
 // Far from everything: a city 2 hours away must not be named as the location,
 // but the country is still honest.
@@ -93,7 +132,7 @@ const rishikesh = buildPlaceIndex(
   ),
 );
 const hamletIsNearer = nearestPlace(rishikesh, 30.0869, 78.2676);
-assert(hamletIsNearer?.cityName === "Rishikesh", "a near-tie goes to the town, not the hamlet 1km nearer");
+assert(hamletIsNearer?.placeName === "Rishikesh", "a near-tie goes to the town, not the hamlet 1km nearer");
 
 // But the bonus is bounded: a metropolis an hour away must never win over the
 // town you are standing in.
@@ -108,9 +147,42 @@ const distantMetro = buildPlaceIndex(
   ),
 );
 assert(
-  nearestPlace(distantMetro, 19.0, 73.5)?.cityName === "Small Town",
+  nearestPlace(distantMetro, 19.0, 73.5)?.placeName === "Small Town",
   "prominence never beats standing in the place: a 65km metro loses to a 0km town",
 );
+
+// ── District consolidation: the Noida case ──
+// Nearest-city bucketing scattered one neighbourhood across sibling towns.
+// Noida (28.58, 77.33) and Greater Noida (28.496, 77.536) are distinct GeoNames
+// entries 20km apart, both inside district IN.36.141. Photos near either must
+// land in ONE place so the owner does not see the same neighbourhood listed
+// three times.
+const noida = buildPlaceIndex(
+  dataset(
+    [
+      { name: "Noida", lat: 28.58, lon: 77.33, cc: 0, pop: 54, place: "in.36.141", state: "in.36" },
+      { name: "Greater Noida", lat: 28.496, lon: 77.536, cc: 0, pop: 54, place: "in.36.141", state: "in.36" },
+      { name: "Gurugram", lat: 28.4601, lon: 77.026, cc: 0, pop: 59, place: "in.10.086", state: "in.10" },
+    ],
+    ["IN"],
+    ["India"],
+  ),
+);
+const nearNoida = nearestPlace(noida, 28.575, 77.34);
+const nearGreaterNoida = nearestPlace(noida, 28.5, 77.53);
+assert(nearNoida && nearGreaterNoida, "both neighbourhoods resolve");
+assert(
+  nearNoida.placeId === nearGreaterNoida.placeId,
+  `sibling towns in one district share a place id (${nearNoida.placeId} vs ${nearGreaterNoida.placeId})`,
+);
+assert(nearNoida.placeName === "Noida", "the district is labelled by its best-known city");
+assert(nearGreaterNoida.placeName === "Noida", "a photo in Greater Noida reads as Noida, not a second place");
+assert(nearNoida.stateId === "in.36", "the place carries its state");
+
+// A genuinely different district must NOT be absorbed by that consolidation.
+const inGurugram = nearestPlace(noida, 28.46, 77.03);
+assert(inGurugram?.placeId === "in.10.086", "a neighbouring district stays separate");
+assert(inGurugram.stateId === "in.10", "and keeps its own state");
 
 // ── Wraparound and poles: the ring search must not build a nonexistent bucket ──
 const dateline = buildPlaceIndex(
@@ -131,7 +203,7 @@ const polar = buildPlaceIndex(
   dataset([{ name: "Longyearbyen", lat: 78.22, lon: 15.63, cc: 0 }], ["SJ"], ["Svalbard"]),
 );
 assert(nearestPlace(polar, 89.9, 15.6) === undefined, "the pole finds nothing and does not throw");
-assert(nearestPlace(polar, 78.2, 15.6)?.cityName === "Longyearbyen", "high latitude still resolves");
+assert(nearestPlace(polar, 78.2, 15.6)?.placeName === "Longyearbyen", "high latitude still resolves");
 
 // ── Invalid input fails closed rather than naming a wrong place ──
 assert(nearestPlace(index, Number.NaN, 77) === undefined, "NaN latitude rejected");
@@ -141,13 +213,13 @@ assert(nearestPlace(index, 12, 181) === undefined, "out-of-range longitude rejec
 // ── Dataset validation: a truncated file must not half-load ──
 assert(parsePlaceDataset(india) !== null, "a well-formed dataset parses");
 assert(parsePlaceDataset(null) === null, "null rejected");
-assert(parsePlaceDataset({ ...india, v: 2 }) === null, "an unknown version is rejected");
+assert(parsePlaceDataset({ ...india, v: 3 }) === null, "an unknown version is rejected");
 assert(
   parsePlaceDataset({ ...india, lat: india.lat.slice(0, 2) }) === null,
   "mismatched parallel array lengths rejected (a truncated download)",
 );
 assert(
-  parsePlaceDataset({ ...india, city: [], lat: [], lon: [], cc: [] }) === null,
+  parsePlaceDataset({ ...india, lat: [], lon: [], cc: [], place: [], city: [], pop: [] }) === null,
   "an empty city list is rejected rather than silently naming nothing",
 );
 

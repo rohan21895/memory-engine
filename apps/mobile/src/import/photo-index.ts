@@ -33,10 +33,13 @@ async function mediaLibrary(): Promise<MediaLibraryModule | null> {
   return mediaLibraryModule;
 }
 
-// Version 3 discards every index written before ACCESS_MEDIA_LOCATION was in
-// the manifest: Android redacted the GPS EXIF of every asset those scans read,
-// so a "complete" version 2 index is a permanent record of zero places.
-const INDEX_VERSION = 3;
+// Version 4 regroups places from city to DISTRICT and adds the state tier.
+// Version 3 keyed buckets by nearest city, which scattered one neighbourhood
+// across sibling towns -- photos around Noida split between "Noida" and
+// "Greater Noida" -- so its groups cannot be reinterpreted and must be rebuilt.
+// (Version 3 itself discarded every index written before ACCESS_MEDIA_LOCATION
+// reached the manifest, when Android redacted the GPS EXIF of every asset.)
+const INDEX_VERSION = 4;
 const INDEX_FILENAME = "photo-location-date-index.json";
 const PAGE_SIZE = 200;
 const INFO_BATCH_SIZE = 20;
@@ -44,6 +47,7 @@ const CHECKPOINT_ASSETS = 500;
 const CHECKPOINT_INTERVAL_MS = 10_000;
 const COORDINATE_DECIMALS = 2;
 const UNKNOWN_CITY = "Unknown place";
+const UNKNOWN_PLACE = "Unknown region";
 const UNKNOWN_COUNTRY = "Unknown country";
 
 const MONTH_NAMES = [
@@ -64,6 +68,7 @@ const MONTH_NAMES = [
 type AssetIndexEntry = {
   monthId: string | null;
   cityId: string | null;
+  stateId: string | null;
   countryId: string | null;
   /** Coordinate cell this asset resolved from, so a later scan can re-label it. */
   cellId?: string | null;
@@ -86,6 +91,10 @@ type MonthEntry = {
 // unavailable: it still groups photos, and a later scan retries it for a name.
 type GeoNames = {
   cityId: string;
+  /** Nearest city for this cell — its vote for what the district is called. */
+  cityLabel?: string;
+  stateId?: string;
+  stateName?: string;
   cityName: string;
   countryId: string;
   countryName: string;
@@ -96,7 +105,13 @@ type PersistedIndex = {
   version: typeof INDEX_VERSION;
   assets: Record<string, AssetIndexEntry>;
   cities: Record<string, GroupEntry>;
+  states: Record<string, GroupEntry>;
   countries: Record<string, GroupEntry>;
+  /** Place -> state and state -> country, so the UI can nest the three tiers. */
+  cityState: Record<string, string>;
+  stateCountry: Record<string, string>;
+  /** place id -> city name -> photo count, the ballot for each district's label. */
+  placeLabelVotes: Record<string, Record<string, number>>;
   months: Record<string, MonthEntry>;
   geocodeCache: Record<string, GeoNames>;
   cursor: string | null;
@@ -119,7 +134,11 @@ function emptyIndex(): PersistedIndex {
     version: INDEX_VERSION,
     assets: {},
     cities: {},
+    states: {},
     countries: {},
+    cityState: {},
+    stateCountry: {},
+    placeLabelVotes: {},
     months: {},
     geocodeCache: {},
     cursor: null,
@@ -158,7 +177,11 @@ function parseIndex(contents: string): PersistedIndex | null {
       parsed.version !== INDEX_VERSION ||
       !isRecord(parsed.assets) ||
       !isRecord(parsed.cities) ||
+      !isRecord(parsed.states) ||
       !isRecord(parsed.countries) ||
+      !isRecord(parsed.cityState) ||
+      !isRecord(parsed.stateCountry) ||
+      !isRecord(parsed.placeLabelVotes) ||
       !isRecord(parsed.months) ||
       !isRecord(parsed.geocodeCache) ||
       typeof parsed.scanGeneration !== "number" ||
@@ -359,12 +382,22 @@ export function namesFromNearestPlace(
       ? { ...coordinatePlaceNames(cell), ...countryNames, provisional: undefined }
       : coordinatePlaceNames(cell);
   }
-  const city = place.cityName.trim();
-  if (!city) return countryNames;
+  // The bucket is the DISTRICT, not the nearest city: nearest-city bucketing
+  // scattered one neighbourhood across sibling towns, splitting photos taken
+  // around Noida between "Noida" and "Greater Noida". The id comes from the
+  // district code rather than the label, so two districts that happen to share
+  // a best-known city name stay distinct.
+  const placeName = place.placeName.trim();
+  if (!placeName || !place.placeId) return countryNames;
+  const stateName = place.stateName.trim();
   return {
     ...countryNames,
-    cityId: `city:${slug(city)}`,
-    cityName: city,
+    cityId: `city:${place.placeId}`,
+    cityName: placeName,
+    ...(place.cityName.trim() ? { cityLabel: place.cityName.trim() } : {}),
+    ...(stateName && place.stateId
+      ? { stateId: `state:${place.stateId}`, stateName }
+      : {}),
   };
 }
 
@@ -470,11 +503,13 @@ function addAssetToIndex(
   cellId: string | null,
 ): void {
   const cityId = names?.cityId || null;
+  const stateId = names?.stateId || null;
   const countryId = names?.countryId || null;
 
   index.assets[asset.id] = {
     monthId: month?.id ?? null,
     cityId,
+    stateId,
     countryId,
     cellId,
     seenInScan: index.scanGeneration,
@@ -489,8 +524,24 @@ function addAssetToIndex(
   }
 
   if (cityId && names) addToGroup(index.cities, cityId, names.cityName, asset.id);
+  if (stateId && names?.stateName)
+    addToGroup(index.states, stateId, names.stateName, asset.id);
   if (countryId && names)
     addToGroup(index.countries, countryId, names.countryName, asset.id);
+
+  // One vote per photo for what this district should be called. Census
+  // population picks the wrong name for exactly the places an album is about
+  // — Manali (pop ~8k) loses to Kulu, Rishikesh to Dehradun — so the owner's
+  // own library decides instead.
+  if (cityId && names?.cityLabel) {
+    const ballot = (index.placeLabelVotes[cityId] ??= {});
+    ballot[names.cityLabel] = (ballot[names.cityLabel] ?? 0) + 1;
+  }
+
+  // Parent links, recorded as places are discovered so the UI can nest the
+  // three tiers without re-deriving them from coordinates.
+  if (cityId && stateId) index.cityState[cityId] = stateId;
+  if (stateId && countryId) index.stateCountry[stateId] = countryId;
 }
 
 async function processBatch(
@@ -550,11 +601,15 @@ function rebuildGroupsAfterCompletedScan(): void {
   index.assets = Object.fromEntries(currentAssets);
 
   const cities: Record<string, GroupEntry> = {};
+  const states: Record<string, GroupEntry> = {};
   const countries: Record<string, GroupEntry> = {};
   const months: Record<string, MonthEntry> = {};
   for (const [assetId, asset] of currentAssets) {
     if (asset.cityId) {
       addToGroup(cities, asset.cityId, index.cities[asset.cityId]?.name ?? UNKNOWN_CITY, assetId);
+    }
+    if (asset.stateId) {
+      addToGroup(states, asset.stateId, index.states[asset.stateId]?.name ?? UNKNOWN_PLACE, assetId);
     }
     if (asset.countryId) {
       addToGroup(
@@ -576,8 +631,17 @@ function rebuildGroupsAfterCompletedScan(): void {
     }
   }
   index.cities = cities;
+  index.states = states;
   index.countries = countries;
   index.months = months;
+
+  // Parent links only stay meaningful for tiers that survived the rebuild.
+  index.cityState = Object.fromEntries(
+    Object.entries(index.cityState).filter(([city, state]) => cities[city] && states[state]),
+  );
+  index.stateCountry = Object.fromEntries(
+    Object.entries(index.stateCountry).filter(([state, country]) => states[state] && countries[country]),
+  );
 }
 
 function yieldToEventLoop(): Promise<void> {
@@ -804,8 +868,34 @@ function summaries(groups: Record<string, GroupEntry>): PlaceSummary[] {
     );
 }
 
+/**
+ * Picks a district's label from the owner's own photos.
+ *
+ * Exported so the choice is testable without a scan. Ties break on the name
+ * that sorts first purely so the label is stable between runs — a place whose
+ * name flickers between two equally-photographed towns reads as a bug.
+ */
+export function labelFromVotes(
+  votes: Record<string, number> | undefined,
+  fallback: string,
+): string {
+  if (!votes) return fallback;
+  let best = fallback;
+  let bestCount = 0;
+  for (const [name, count] of Object.entries(votes)) {
+    if (count > bestCount || (count === bestCount && name < best)) {
+      best = name;
+      bestCount = count;
+    }
+  }
+  return bestCount > 0 ? best : fallback;
+}
+
 export function getCities(): CitySummary[] {
-  return summaries(index.cities);
+  return summaries(index.cities).map((place) => ({
+    ...place,
+    name: labelFromVotes(index.placeLabelVotes[place.id], place.name),
+  }));
 }
 
 export function assetIdsForCity(cityId: string): string[] {
@@ -814,6 +904,31 @@ export function assetIdsForCity(cityId: string): string[] {
 
 export function getCountries(): CountrySummary[] {
   return summaries(index.countries);
+}
+
+/** The middle tier: admin1 regions, e.g. "Uttar Pradesh". */
+export function getStates(): PlaceSummary[] {
+  return summaries(index.states);
+}
+
+export function assetIdsForState(stateId: string): string[] {
+  return index.states[stateId]?.assetIds.slice() ?? [];
+}
+
+/**
+ * Parent links for the Country -> State -> Place hierarchy.
+ *
+ * Recorded during the scan rather than re-derived, so browsing never has to
+ * touch the bundled place list or the coordinates again. Undefined means the
+ * place predates the link (or its parent had no name), and the UI must degrade
+ * to showing it ungrouped rather than dropping it.
+ */
+export function stateForCity(cityId: string): string | undefined {
+  return index.cityState[cityId];
+}
+
+export function countryForState(stateId: string): string | undefined {
+  return index.stateCountry[stateId];
 }
 
 export function assetIdsForCountry(countryId: string): string[] {

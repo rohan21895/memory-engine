@@ -1,3 +1,5 @@
+import type { ImageRef } from "expo-image";
+
 import type { FaceLandmarks5, Point } from "../ml/face-align";
 
 const MAX_DETECTION_EDGE = 1280;
@@ -39,14 +41,82 @@ type NativeDetector = {
 };
 type NativeModule = { RNMLKitFaceDetector?: new () => NativeDetector };
 
-type WorkingImage = {
+/**
+ * ONE decode of a photo, shared by every stage of the face scan.
+ *
+ * The scan used to decode each photo at full resolution once for detection and
+ * then twice MORE per detected face (identity crop + thumbnail crop), so a
+ * six-face group shot decoded a 12MP frame thirteen times. A frame is opened
+ * once per asset, ML Kit reads `uri`, and every crop is taken from `image` —
+ * an in-memory bitmap, so a crop costs no decode at all.
+ */
+export type FaceFrame = {
+  /**
+   * In-memory bitmap of the frame pixels, when the platform could give one.
+   * Undefined for a photo whose drawable is not a plain bitmap (an animated
+   * GIF/WebP) and for an original already inside the detection bound; callers
+   * must fall back to cropping from `uri`, which holds the very same pixels.
+   */
+  image: ImageRef | undefined;
+  /** file:// JPEG of the frame pixels; ML Kit only accepts a URI. */
   uri: string;
-  sourceWidth: number;
-  sourceHeight: number;
   width: number;
   height: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  /**
+   * Frame pixels per source pixel, never above 1. Uniform: the loader preserves
+   * aspect ratio, so one factor maps both axes.
+   */
+  scale: number;
   temporary: boolean;
 };
+
+/**
+ * Stage timings for the on-device scan, printed to logcat once per batch.
+ *
+ * Deliberately always on and deliberately coarse: a Date.now() per stage is
+ * nothing beside a bitmap decode, and without it the next person to optimize
+ * this pipeline is guessing which of proxy/detect/embed/crop/persist owns the
+ * per-photo milliseconds.
+ */
+type StageTotal = { ms: number; count: number };
+
+const scanStages = new Map<string, StageTotal>();
+
+function stageTotal(stage: string): StageTotal {
+  const existing = scanStages.get(stage);
+  if (existing) return existing;
+  const created = { ms: 0, count: 0 };
+  scanStages.set(stage, created);
+  return created;
+}
+
+/** Records one completed stage that began at `startedAt` (Date.now()). */
+export function traceScanStage(stage: string, startedAt: number): void {
+  const total = stageTotal(stage);
+  total.ms += Date.now() - startedAt;
+  total.count += 1;
+}
+
+/** Records a countable event with no duration (fallbacks, faces, skips). */
+export function traceScanCount(stage: string, amount = 1): void {
+  stageTotal(stage).count += amount;
+}
+
+/** Formats every accumulated stage and clears the totals for the next batch. */
+export function takeScanTrace(): string {
+  const parts: string[] = [];
+  for (const [stage, total] of scanStages) {
+    parts.push(
+      total.ms > 0
+        ? `${stage}=${Math.round(total.ms)}ms/${total.count}`
+        : `${stage}=${total.count}`,
+    );
+  }
+  scanStages.clear();
+  return parts.join(" ");
+}
 
 const DETECTOR_OPTIONS = {
   performanceMode: "accurate",
@@ -138,55 +208,221 @@ async function resolveDimensions(
 }
 
 /**
- * Materializes only a bounded detection copy. `content://` is not accepted by
- * every ML Kit decoder, while decoding the original 12MP frame for every photo
- * can exhaust Android's native bitmap heap.
+ * Opens the one bounded decode every stage of the scan then shares.
+ *
+ * `Image.loadAsync` is what makes this cheap: it asks Glide for a bounded
+ * bitmap, so the decoder subsamples (a 4032x3024 JPEG requested at 1280 decodes
+ * at 2016x1512) and the 12MP bitmap is never materialized at all. The previous
+ * `manipulateAsync(uri, [resize])` went through expo-image-loader, which loads
+ * at SIZE_ORIGINAL and only then scales down — full decode cost, full heap
+ * spike. `src/selection/candidate-quality-probe.ts` already ships this exact
+ * pattern for the album pipeline; this is the face scan catching up.
+ *
+ * Callers MUST pass the result to `closeFaceFrame`, which releases the bitmap
+ * and deletes the JPEG.
  */
-async function workingImage(
+export async function openFaceFrame(
   imageUri: string,
-  source: FaceImageDimensions | undefined,
-): Promise<WorkingImage | null> {
+  source?: FaceImageDimensions,
+): Promise<FaceFrame | null> {
   const dimensions = await resolveDimensions(imageUri, source);
   if (!dimensions) return null;
 
-  const longEdge = Math.max(dimensions.width, dimensions.height);
-  if (imageUri.startsWith("file://") && longEdge <= MAX_DETECTION_EDGE) {
+  // Long/short edges rather than width/height: MediaStore sometimes reports the
+  // pre-EXIF-rotation size, and the loader always returns the rotated bitmap.
+  // A ratio of long edges is right either way, and cannot silently transpose.
+  const sourceLong = Math.max(dimensions.width, dimensions.height);
+  if (imageUri.startsWith("file://") && sourceLong <= MAX_DETECTION_EDGE) {
     return {
+      image: undefined,
       uri: imageUri,
       sourceWidth: dimensions.width,
       sourceHeight: dimensions.height,
       width: dimensions.width,
       height: dimensions.height,
+      scale: 1,
       temporary: false,
     };
   }
 
-  const imageManipulator = await import("expo-image-manipulator");
-  const scale = Math.min(1, MAX_DETECTION_EDGE / longEdge);
-  const width = Math.max(1, Math.round(dimensions.width * scale));
-  const height = Math.max(1, Math.round(dimensions.height * scale));
-  const output = await imageManipulator.manipulateAsync(
-    imageUri,
-    [{ resize: { width, height } }],
-    { compress: 0.88, format: imageManipulator.SaveFormat.JPEG },
+  return (
+    (await bitmapFaceFrame(imageUri, dimensions, sourceLong)) ??
+    (await encodedFaceFrame(imageUri, dimensions, sourceLong))
   );
-  return {
-    uri: output.uri,
-    sourceWidth: dimensions.width,
-    sourceHeight: dimensions.height,
-    width: output.width,
-    height: output.height,
-    temporary: output.uri !== imageUri,
-  };
 }
 
-async function deleteTemporary(uri: string): Promise<void> {
+/** The fast path: a subsampled decode kept in memory for the whole photo. */
+async function bitmapFaceFrame(
+  imageUri: string,
+  dimensions: FaceImageDimensions,
+  sourceLong: number,
+): Promise<FaceFrame | null> {
+  let image: ImageRef | undefined;
+  try {
+    const [{ Image }, { ImageManipulator, SaveFormat }] = await Promise.all([
+      import("expo-image"),
+      import("expo-image-manipulator"),
+    ]);
+    image = await Image.loadAsync(imageUri, {
+      maxWidth: MAX_DETECTION_EDGE,
+      maxHeight: MAX_DETECTION_EDGE,
+    });
+    // No transformer: the context hands back the loaded bitmap untouched, and
+    // only ImageRef can write the file ML Kit needs. `image.width` is a
+    // density-scaled LOGICAL size on Android, so the saved result — which
+    // reports real bitmap pixels — is the only trustworthy dimension source.
+    const context = ImageManipulator.manipulate(image);
+    let saved;
+    try {
+      const rendered = await context.renderAsync();
+      try {
+        saved = await rendered.saveAsync({
+          compress: 0.88,
+          format: SaveFormat.JPEG,
+        });
+      } finally {
+        rendered.release();
+      }
+    } finally {
+      context.release();
+    }
+    const frameLong = Math.max(saved.width, saved.height);
+    return {
+      image,
+      uri: saved.uri,
+      sourceWidth: dimensions.width,
+      sourceHeight: dimensions.height,
+      width: saved.width,
+      height: saved.height,
+      scale: sourceLong > 0 ? Math.min(1, frameLong / sourceLong) : 1,
+      temporary: true,
+    };
+  } catch (error) {
+    try {
+      image?.release();
+    } catch {
+      // Releasing a bitmap that never loaded is not an error worth reporting.
+    }
+    // One-shot: the failure that matters here is systematic. Per-photo failures
+    // (an animated GIF has no plain bitmap to hand out) fall through to the
+    // encoded frame below and lose speed, not faces.
+    if (!frameDiagnosticWritten) {
+      frameDiagnosticWritten = true;
+      console.warn(
+        `[PhoteoFaceFrame] bitmap frame unavailable, falling back to an encoded frame: ${safeFrameError(error)}`,
+      );
+    }
+    return null;
+  }
+}
+
+/**
+ * The compatibility path, and what the scan used to do for every photo: decode
+ * the original at full size and write a bounded JPEG. Slower and heavier, but
+ * every stage still shares this ONE decode instead of repeating it per face, so
+ * even here a group photo no longer costs thirteen full decodes.
+ */
+async function encodedFaceFrame(
+  imageUri: string,
+  dimensions: FaceImageDimensions,
+  sourceLong: number,
+): Promise<FaceFrame | null> {
+  try {
+    const imageManipulator = await import("expo-image-manipulator");
+    const ratio = Math.min(1, MAX_DETECTION_EDGE / sourceLong);
+    const output = await imageManipulator.manipulateAsync(
+      imageUri,
+      [
+        {
+          resize: {
+            width: Math.max(1, Math.round(dimensions.width * ratio)),
+            height: Math.max(1, Math.round(dimensions.height * ratio)),
+          },
+        },
+      ],
+      { compress: 0.88, format: imageManipulator.SaveFormat.JPEG },
+    );
+    return {
+      image: undefined,
+      uri: output.uri,
+      sourceWidth: dimensions.width,
+      sourceHeight: dimensions.height,
+      width: output.width,
+      height: output.height,
+      scale: Math.min(1, Math.max(output.width, output.height) / sourceLong),
+      temporary: output.uri !== imageUri,
+    };
+  } catch {
+    return null;
+  }
+}
+
+let frameDiagnosticWritten = false;
+
+function safeFrameError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/(?:content|file):\/\/\S+/gu, "<local-uri>").slice(0, 200);
+}
+
+/** Frees the shared bitmap and the ML Kit JPEG. Never throws. */
+export async function closeFaceFrame(frame: FaceFrame | null): Promise<void> {
+  if (!frame) return;
+  try {
+    frame.image?.release();
+  } catch {
+    // A double release must not fail the asset that owns the frame.
+  }
+  if (!frame.temporary) return;
+  await deleteImageFile(frame.uri);
+}
+
+/** Best-effort removal of a manipulator/save output. Never throws. */
+export async function deleteImageFile(uri: string): Promise<void> {
   try {
     const fileSystem = await import("expo-file-system/legacy");
     await fileSystem.deleteAsync(uri, { idempotent: true });
   } catch {
     // Cache cleanup is best-effort and must never crash detection.
   }
+}
+
+/**
+ * Rescales a source-space box, with its landmarks, into another image scale.
+ *
+ * Every downstream crop is scale-covariant: `patchGeometry` derives its origin
+ * and size from the box and its patch `scale` from `PATCH_SIZE / size`, so
+ * multiplying the image dimensions, the box AND the landmarks by one factor
+ * leaves the patch-space landmarks — and therefore the alignment — unchanged.
+ * Scaling only some of them silently misaligns every face, which looks like
+ * nothing and destroys identity quality; see face-detector.test.ts.
+ */
+export function scaleFaceBox(box: FaceBox, scale: number): FaceBox {
+  if (!Number.isFinite(scale) || scale <= 0 || scale === 1) return box;
+  const point = (value: Point): Point => ({
+    x: value.x * scale,
+    y: value.y * scale,
+  });
+  const landmarks = box.landmarks;
+  return {
+    ...box,
+    x: box.x * scale,
+    y: box.y * scale,
+    width: box.width * scale,
+    height: box.height * scale,
+    ...(landmarks
+      ? {
+          landmarks: {
+            leftEye: point(landmarks.leftEye),
+            rightEye: point(landmarks.rightEye),
+            leftMouth: point(landmarks.leftMouth),
+            rightMouth: point(landmarks.rightMouth),
+            ...(landmarks.noseBase
+              ? { noseBase: point(landmarks.noseBase) }
+              : {}),
+          },
+        }
+      : {}),
+  };
 }
 
 function facesFrom(result: NativeResult): NativeFace[] {
@@ -313,27 +549,40 @@ export function mapDetectedFaces(
   });
 }
 
+/**
+ * Detects faces in an already-open frame and maps every box/landmark back to
+ * source-image coordinates, which is the space `faceQualityTier` and the
+ * persisted pipeline have always used.
+ */
+export async function detectFacesInFrame(
+  frame: FaceFrame,
+): Promise<FaceBox[]> {
+  try {
+    const active = await ensureDetector();
+    if (!active) return [];
+    const result = await Promise.resolve(active.detectFaces(frame.uri));
+    const inverse = frame.scale > 0 ? 1 / frame.scale : 1;
+    return mapDetectedFaces(result, inverse, inverse);
+  } catch {
+    return [];
+  }
+}
+
 /** Detects faces and maps every box/landmark back to source-image coordinates. */
 export async function detectFaces(
   imageUri: string,
   source?: FaceImageDimensions,
 ): Promise<FaceBox[]> {
-  let working: WorkingImage | null = null;
+  let frame: FaceFrame | null = null;
   try {
     if (typeof imageUri !== "string" || imageUri.length === 0) return [];
-    const active = await ensureDetector();
-    if (!active) return [];
-    working = await workingImage(imageUri, source);
-    if (!working) return [];
-    const result = await Promise.resolve(active.detectFaces(working.uri));
-    return mapDetectedFaces(
-      result,
-      working.sourceWidth / working.width,
-      working.sourceHeight / working.height,
-    );
+    if (!(await ensureDetector())) return [];
+    frame = await openFaceFrame(imageUri, source);
+    if (!frame) return [];
+    return await detectFacesInFrame(frame);
   } catch {
     return [];
   } finally {
-    if (working?.temporary) await deleteTemporary(working.uri);
+    await closeFaceFrame(frame);
   }
 }

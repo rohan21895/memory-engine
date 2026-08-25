@@ -11,33 +11,69 @@
  * Data: GeoNames cities5000 (CC BY 4.0), built by scripts/build-places-index.py.
  */
 
+/**
+ * Three tiers: country -> state (admin1) -> place (admin2 district).
+ *
+ * Photos bucket by DISTRICT, not by city. Nearest-city bucketing scattered one
+ * neighbourhood across sibling towns — photos around Noida landed variously on
+ * "Noida" and "Greater Noida", 20km apart but the same district — and nobody
+ * thinks of those as different places. Districts also collapse ~70k cities into
+ * ~31.5k places, which is what makes a browsable hierarchy viable.
+ *
+ * Per-city names are not shipped: the label always comes from the district.
+ */
 export type PlaceDataset = {
   v: number;
   /** ISO country codes, parallel to `names`. */
   codes: string[];
   /** Country display names, parallel to `codes`. */
   names: string[];
-  city: string[];
-  /** Latitude in integer thousandths of a degree, parallel to `city`. */
+  /** Stable state ids ("in.36"), parallel to `stateNames`/`stateCc`. */
+  stateIds: string[];
+  stateNames: string[];
+  /** Index into `codes`/`names`, parallel to `stateIds`. */
+  stateCc: number[];
+  /** Stable district ids ("in.36.141"), parallel to `placeNames`/`placeState`. */
+  placeIds: string[];
+  /** District label: its best-known city, e.g. "Noida". */
+  placeNames: string[];
+  /** Index into `stateIds`, parallel to `placeIds`. */
+  placeState: number[];
+  /** Latitude in integer thousandths of a degree, one entry per city. */
   lat: number[];
   lon: number[];
-  /** Index into `codes`/`names`, parallel to `city`. */
+  /** Index into `codes`/`names`, parallel to `lat`. */
   cc: number[];
-  /** Prominence tier, floor(log10(population)) capped at 7, parallel to `city`. */
+  /** Index into `placeIds`, parallel to `lat`. */
+  place: number[];
+  /**
+   * City name, parallel to `lat`. This is a LABEL CANDIDATE, not the bucket:
+   * labelling a district by its most populous city reads badly for the places
+   * an album is about (Manali became "Kulu"), so the caller picks the label by
+   * which city the owner actually photographed most.
+   */
+  city: string[];
+  /** Prominence in tenths of a decade of population, parallel to `lat`. */
   pop: number[];
 };
 
 export type NearestPlace = {
+  placeId: string;
+  /** The district's default label, from census population. */
+  placeName: string;
+  /** The specific nearest city — the label candidate this photo votes for. */
   cityName: string;
+  stateId: string;
+  stateName: string;
   countryName: string;
   countryCode: string;
   distanceKm: number;
 };
 
 /**
- * Beyond this the nearest city is not where the photo was taken, so naming it
+ * Beyond this the nearest place is not where the photo was taken, so naming it
  * would be a confident lie. A photo album would rather say "India" than name a
- * city two hours away.
+ * district two hours away.
  */
 export const CITY_MAX_KM = 60;
 /** Past this even the country is a guess, and the caller falls back to coordinates. */
@@ -79,37 +115,60 @@ function isStringArray(value: unknown): value is string[] {
 export function parsePlaceDataset(value: unknown): PlaceDataset | null {
   if (typeof value !== "object" || value === null) return null;
   const record = value as Record<string, unknown>;
-  if (record.v !== 1) return null;
+  if (record.v !== 2) return null;
   if (
     !isStringArray(record.codes) ||
     !isStringArray(record.names) ||
-    !isStringArray(record.city) ||
+    !isStringArray(record.stateIds) ||
+    !isStringArray(record.stateNames) ||
+    !isNumberArray(record.stateCc) ||
+    !isStringArray(record.placeIds) ||
+    !isStringArray(record.placeNames) ||
+    !isNumberArray(record.placeState) ||
     !isNumberArray(record.lat) ||
     !isNumberArray(record.lon) ||
     !isNumberArray(record.cc) ||
+    !isNumberArray(record.place) ||
+    !isStringArray(record.city) ||
     !isNumberArray(record.pop)
   ) {
     return null;
   }
-  const count = record.city.length;
+  const count = record.lat.length;
+  const places = record.placeIds.length;
+  const states = record.stateIds.length;
   if (
     count === 0 ||
-    record.lat.length !== count ||
+    places === 0 ||
+    states === 0 ||
     record.lon.length !== count ||
     record.cc.length !== count ||
+    record.place.length !== count ||
+    record.city.length !== count ||
     record.pop.length !== count ||
+    record.placeNames.length !== places ||
+    record.placeState.length !== places ||
+    record.stateNames.length !== states ||
+    record.stateCc.length !== states ||
     record.codes.length !== record.names.length
   ) {
     return null;
   }
   return {
-    v: 1,
+    v: 2,
     codes: record.codes,
     names: record.names,
-    city: record.city,
+    stateIds: record.stateIds,
+    stateNames: record.stateNames,
+    stateCc: record.stateCc,
+    placeIds: record.placeIds,
+    placeNames: record.placeNames,
+    placeState: record.placeState,
     lat: record.lat,
     lon: record.lon,
     cc: record.cc,
+    place: record.place,
+    city: record.city,
     pop: record.pop,
   };
 }
@@ -125,7 +184,7 @@ function bucketKey(latitudeDegree: number, longitudeDegree: number): number {
 
 export function buildPlaceIndex(dataset: PlaceDataset): PlaceIndex {
   const buckets = new Map<number, number[]>();
-  for (let index = 0; index < dataset.city.length; index += 1) {
+  for (let index = 0; index < dataset.lat.length; index += 1) {
     const key = bucketKey(
       Math.floor(dataset.lat[index] / 1000),
       Math.floor(dataset.lon[index] / 1000),
@@ -233,11 +292,18 @@ export function nearestPlace(
 
   if (bestIndex === -1 || bestKm > COUNTRY_MAX_KM) return undefined;
 
-  const countryIndex = index.dataset.cc[bestIndex];
+  const { dataset } = index;
+  const countryIndex = dataset.cc[bestIndex];
+  const placeIndex = dataset.place[bestIndex];
+  const stateIndex = dataset.placeState[placeIndex] ?? -1;
   return {
-    cityName: index.dataset.city[bestIndex],
-    countryName: index.dataset.names[countryIndex] ?? "",
-    countryCode: index.dataset.codes[countryIndex] ?? "",
+    placeId: dataset.placeIds[placeIndex] ?? "",
+    placeName: dataset.placeNames[placeIndex] ?? "",
+    cityName: dataset.city[bestIndex] ?? "",
+    stateId: dataset.stateIds[stateIndex] ?? "",
+    stateName: dataset.stateNames[stateIndex] ?? "",
+    countryName: dataset.names[countryIndex] ?? "",
+    countryCode: dataset.codes[countryIndex] ?? "",
     distanceKm: bestKm,
   };
 }

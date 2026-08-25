@@ -125,6 +125,38 @@ export const copy = {
     selectedHint: (label: string, selected: boolean) =>
       `${label}. ${selected ? "Selected" : "Not selected"}`,
   },
+  // Country → State → Place browsing. A library with a thousand places is
+  // unusable as one flat list, so every string here belongs to the hierarchy.
+  places: {
+    searchLabel: "Search places",
+    searchPlaceholder: "Search countries, states, places",
+    anyPlace: "Any place",
+    anyPlaceHint: "Removes the location filter",
+    selectHint: "Shows only photos from here",
+    sections: {
+      country: "Countries",
+      state: "States & regions",
+      place: "Places",
+    },
+    tierNoun: {
+      country: "Country",
+      state: "State or region",
+      place: "Place",
+    },
+    matches: (count: number) => (count === 1 ? "1 place matches" : `${count} places match`),
+    showAll: (count: number) => `Show all ${count}`,
+    showAllHint: "Shows every place in this group",
+    expand: (name: string) => `Expand ${name}`,
+    collapse: (name: string) => `Collapse ${name}`,
+    seeAll: "See all places",
+    seeAllHint: "Opens every country, state, and place",
+    total: (count: number) => `${count} ${plural(count, "place")}`,
+    noMatches: "No places match that search.",
+    showing: (name: string) => `Showing ${name}`,
+    modalTitle: "Choose a place",
+    modalHelper: "Open a country to find a state, then a place.",
+    close: "Close place filter",
+  },
   building: {
     title: "Making your album…",
     helper:

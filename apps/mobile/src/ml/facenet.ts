@@ -1,6 +1,9 @@
+import type { SharedRef } from "expo-modules-core/types";
 import { decode as decodeJpeg } from "jpeg-js";
 
 import type { FaceBox } from "../faces/face-detector";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { traceScanStage } from "../faces/face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -14,10 +17,33 @@ const FACE_PADDING_SCALE = 1.3;
 const BASE64_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+/**
+ * Reverse base64 table.
+ *
+ * The decoder below used to do `BASE64_ALPHABET.indexOf(character)` per
+ * character while iterating the string with for..of. On a 256x256 face patch
+ * that is a ~30,000 character string, a code-point iterator, and a linear scan
+ * of 64 characters per byte — about two million comparisons per FACE, in JS, on
+ * the same thread that has to stay responsive. A 128-entry table is one lookup.
+ */
+const BASE64_VALUES = (() => {
+  const table = new Int8Array(128).fill(-1);
+  for (let index = 0; index < BASE64_ALPHABET.length; index += 1) {
+    table[BASE64_ALPHABET.charCodeAt(index)] = index;
+  }
+  return table;
+})();
+
 export type FaceImageAsset = {
   width: number;
   height: number;
 };
+
+/**
+ * Either a URI, or an already-decoded bitmap shared with the rest of the scan.
+ * Passing the bitmap is what removes the per-face full-resolution decode.
+ */
+export type FaceImageSource = string | SharedRef<"image">;
 
 type TensorflowModel = {
   inputs: Array<{ dataType: string; shape: number[] }>;
@@ -48,7 +74,7 @@ function safeErrorMessage(error: unknown): string {
  */
 export async function embedFaceIdentity(
   asset: FaceImageAsset,
-  imageUri: string,
+  imageUri: FaceImageSource,
   box: FaceBox,
 ): Promise<number[] | undefined> {
   if (
@@ -57,13 +83,15 @@ export async function embedFaceIdentity(
   ) {
     return undefined;
   }
-  // Unlike movenet.ts and tinyclip.ts, this wrapper's PREPROCESSING stays
-  // inside the queue, and must. Those two run once per photo against a bounded
-  // analysis proxy; this one runs once per FACE and crops from the full-size
-  // image, because a 40px face in a downscaled proxy has no identity left in it.
-  // expo-image-manipulator has no subsampling hint, so each of those crops
-  // decodes the whole frame. Serializing them is what keeps a photo with eight
-  // faces from asking for eight full-resolution bitmaps at once.
+  // The queue stays, and preprocessing stays inside it, but the reason has
+  // changed. It used to be a memory bound: every crop decoded the whole
+  // original, so serializing was what stopped a photo with eight faces asking
+  // for eight full-resolution bitmaps at once. Callers now pass the shared
+  // frame bitmap (see openFaceFrame), so a crop allocates a few hundred KB and
+  // that bound is gone. What remains is correctness: there is exactly ONE
+  // TFLite interpreter, model-cache.ts retires and disposes it underneath us
+  // every RUNS_PER_MODEL inferences, and `acquire()` may only be called when no
+  // run is in flight. Removing the queue would race a dispose against a run.
   const job = inferenceQueue.then(async () => {
     try {
       // Acquired inside the queue: it may retire the previous interpreter, and
@@ -76,8 +104,12 @@ export async function embedFaceIdentity(
         }
         return undefined;
       }
+      const preprocessStartedAt = Date.now();
       const input = await faceFloatTensor(asset, imageUri, box);
+      traceScanStage("prep", preprocessStartedAt);
+      const inferenceStartedAt = Date.now();
       const outputs = await model.run([input.buffer as ArrayBuffer]);
+      traceScanStage("tflite", inferenceStartedAt);
       const embedding = parseFaceEmbeddingOutput(outputs[0]);
       if (!inferenceDiagnosticWritten) {
         inferenceDiagnosticWritten = true;
@@ -160,7 +192,7 @@ function isExpectedModel(model: TensorflowModel): boolean {
 
 async function faceFloatTensor(
   asset: FaceImageAsset,
-  imageUri: string,
+  imageUri: FaceImageSource,
   box: FaceBox,
 ): Promise<Float32Array> {
   if (box.landmarks) {
@@ -170,32 +202,62 @@ async function faceFloatTensor(
   return boundingBoxFaceFloatTensor(asset, imageUri, box);
 }
 
+/**
+ * Crops, scales and JPEG-encodes one square patch, returning its base64 pixels.
+ *
+ * Uses the contextual manipulator rather than the deprecated `manipulateAsync`
+ * for one reason: `manipulate()` accepts an already-decoded bitmap, so when the
+ * caller passes the scan's shared frame this whole call is a `createBitmap` and
+ * a `createScaledBitmap` with no decode at all. Given a URI it behaves exactly
+ * like the old call. The output file is unavoidable — `saveAsync` always writes
+ * one — so it is deleted on every path.
+ */
+async function croppedPatchBase64(
+  imageUri: FaceImageSource,
+  crop: { originX: number; originY: number; width: number; height: number },
+  size: number,
+): Promise<string | undefined> {
+  const { ImageManipulator, SaveFormat } = await import("expo-image-manipulator");
+  const context = ImageManipulator.manipulate(imageUri);
+  let faceUri: string | undefined;
+  try {
+    const rendered = await context
+      .crop(crop)
+      .resize({ width: size, height: size })
+      .renderAsync();
+    try {
+      const face = await rendered.saveAsync({
+        base64: true,
+        compress: 0.95,
+        format: SaveFormat.JPEG,
+      });
+      faceUri = face.uri;
+      return face.base64;
+    } finally {
+      rendered.release();
+    }
+  } finally {
+    context.release();
+    if (faceUri) await deleteManipulatorOutput(faceUri);
+  }
+}
+
 async function alignedFaceFloatTensor(
   asset: FaceImageAsset,
-  imageUri: string,
+  imageUri: FaceImageSource,
   box: FaceBox,
 ): Promise<Float32Array | undefined> {
   if (!box.landmarks) return undefined;
   const geometry = patchGeometry(asset, box);
   if (!geometry) return undefined;
-  const imageManipulator = await import("expo-image-manipulator");
-  let faceUri: string | undefined;
   try {
-    const face = await imageManipulator.manipulateAsync(
+    const base64 = await croppedPatchBase64(
       imageUri,
-      [
-        { crop: patchCropRect(geometry) },
-        { resize: { width: PATCH_SIZE, height: PATCH_SIZE } },
-      ],
-      {
-        base64: true,
-        compress: 0.95,
-        format: imageManipulator.SaveFormat.JPEG,
-      },
+      patchCropRect(geometry),
+      PATCH_SIZE,
     );
-    faceUri = face.uri;
-    if (!face.base64) return undefined;
-    const decoded = decodeFaceJpeg(face.base64, PATCH_SIZE);
+    if (!base64) return undefined;
+    const decoded = decodeFaceJpeg(base64, PATCH_SIZE);
     const aligned = alignDecodedPatch(
       decoded.data,
       decoded.width,
@@ -206,40 +268,24 @@ async function alignedFaceFloatTensor(
     return aligned ? normalizeFaceRgb(aligned, INPUT_SIZE, INPUT_SIZE) : undefined;
   } catch {
     return undefined;
-  } finally {
-    if (faceUri) await deleteManipulatorOutput(faceUri);
   }
 }
 
 async function boundingBoxFaceFloatTensor(
   asset: FaceImageAsset,
-  imageUri: string,
+  imageUri: FaceImageSource,
   box: FaceBox,
 ): Promise<Float32Array> {
-  const imageManipulator = await import("expo-image-manipulator");
-  let faceUri: string | undefined;
-  try {
-    const face = await imageManipulator.manipulateAsync(
-      imageUri,
-      [
-        { crop: squareFaceCrop(asset, box) },
-        { resize: { width: INPUT_SIZE, height: INPUT_SIZE } },
-      ],
-      {
-        base64: true,
-        compress: 0.95,
-        format: imageManipulator.SaveFormat.JPEG,
-      },
-    );
-    faceUri = face.uri;
-    if (!face.base64) {
-      throw new Error("MobileFaceNet preprocessing returned no pixels.");
-    }
-    const decoded = decodeFaceJpeg(face.base64, INPUT_SIZE);
-    return normalizeFacePixels(decoded.data, decoded.width, decoded.height);
-  } finally {
-    if (faceUri) await deleteManipulatorOutput(faceUri);
+  const base64 = await croppedPatchBase64(
+    imageUri,
+    squareFaceCrop(asset, box),
+    INPUT_SIZE,
+  );
+  if (!base64) {
+    throw new Error("MobileFaceNet preprocessing returned no pixels.");
   }
+  const decoded = decodeFaceJpeg(base64, INPUT_SIZE);
+  return normalizeFacePixels(decoded.data, decoded.width, decoded.height);
 }
 
 function decodeFaceJpeg(base64: string, expectedSize: number) {
@@ -398,7 +444,8 @@ function clampInteger(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function decodeBase64(value: string): Uint8Array {
+/** Table-driven base64 decode. Exported so the self-check can pin it. */
+export function decodeBase64(value: string): Uint8Array {
   const encoded = value.replace(/^data:[^,]*,/u, "").replace(/\s/gu, "");
   const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
   const bytes = new Uint8Array(
@@ -407,9 +454,10 @@ function decodeBase64(value: string): Uint8Array {
   let accumulator = 0;
   let availableBits = 0;
   let byteIndex = 0;
-  for (const character of encoded) {
-    if (character === "=") break;
-    const digit = BASE64_ALPHABET.indexOf(character);
+  for (let index = 0; index < encoded.length; index += 1) {
+    const code = encoded.charCodeAt(index);
+    if (code === 0x3d) break; // '='
+    const digit = code < 128 ? BASE64_VALUES[code] : -1;
     if (digit < 0) throw new Error("Invalid base64 face data.");
     accumulator = (accumulator << 6) | digit;
     availableBits += 6;

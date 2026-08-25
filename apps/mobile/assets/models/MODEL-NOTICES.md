@@ -39,7 +39,10 @@ document. Runtime inference therefore processes images only.
 - SHA-256: `be4bc7cfc53f7bc336d0f28b1ab92535f618c913a422b683210750f6b5354854`
 - Tensor contract: float32 `[1,112,112,3]` input, float32 `[1,192]` identity embedding output
 
-The runtime uses the artifact's published `(channel - 128) / 128`
-preprocessing and L2-normalizes every output before cosine clustering. The
+The runtime uses `(channel - 127.5) / 127.5` preprocessing and L2-normalizes
+every output before cosine clustering. The artifact publishes
+`(channel - 128) / 128`; the two differ by 0.4% of full scale, far below JPEG
+noise, and changing it now would shift every embedding without invalidating the
+persisted face index — which is worse than the discrepancy. The
 MobileFaceNet lineage reports 99.4%+ LFW verification accuracy, but Photeo's
 own family-library threshold still requires broader calibration before launch.

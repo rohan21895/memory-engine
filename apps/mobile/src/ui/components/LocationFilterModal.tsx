@@ -1,4 +1,4 @@
-import { Modal, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
 
 import { copy } from "../copy";
 import { fonts } from "../fonts";
@@ -12,6 +12,7 @@ export function LocationFilterModal({
   onClose,
   onSelect,
   selectedLocationId,
+  states,
   visible,
 }: {
   cities: LocationFilterOption[];
@@ -20,6 +21,7 @@ export function LocationFilterModal({
   onClose: () => void;
   onSelect: (locationId: string | null) => void;
   selectedLocationId: string | null;
+  states?: LocationFilterOption[];
   visible: boolean;
 }) {
   return (
@@ -27,20 +29,22 @@ export function LocationFilterModal({
       <View accessibilityViewIsModal style={styles.root}>
         <StatusBar backgroundColor={colors.panel} barStyle="dark-content" />
         <View style={styles.header}>
-          <View>
-            <Text accessibilityRole="header" style={styles.title}>Choose a place</Text>
+          <View style={styles.headerCopy}>
+            <Text accessibilityRole="header" style={styles.title}>{copy.places.modalTitle}</Text>
             <Text accessibilityLiveRegion="polite" style={styles.helper}>
               {loadingText ??
                 (cities.length + countries.length === 0
                   ? copy.access.noPlacesTitle
-                  : "Search the places found in your library.")}
+                  : copy.places.modalHelper)}
             </Text>
           </View>
-          <Pressable accessibilityLabel="Close place filter" accessibilityRole="button" onPress={onClose} style={styles.close}>
+          <Pressable accessibilityLabel={copy.places.close} accessibilityRole="button" onPress={onClose} style={styles.close}>
             <Text style={styles.closeText}>✕</Text>
           </Pressable>
         </View>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {/* No ScrollView: the hierarchy virtualizes itself and must own the
+            scroll, or a 1,000-place library mounts 1,000 rows. */}
+        <View style={styles.content}>
           <LocationFilterPanel
             cities={cities}
             countries={countries}
@@ -53,18 +57,20 @@ export function LocationFilterModal({
             onToggle={() => undefined}
             selectedLocationId={selectedLocationId}
             showHeading={false}
+            states={states}
           />
-        </ScrollView>
+        </View>
       </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  close: { alignItems: "center", backgroundColor: "#f0eee8", borderRadius: 17, height: 34, justifyContent: "center", width: 34 },
+  close: { alignItems: "center", backgroundColor: "#f0eee8", borderRadius: 22, height: 44, justifyContent: "center", width: 44 },
   closeText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 15 },
-  content: { paddingBottom: spacing.xl, paddingHorizontal: layout.screenPadding },
-  header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingBottom: spacing.md, paddingHorizontal: layout.screenPadding, paddingTop: (StatusBar.currentHeight ?? 24) + spacing.md },
+  content: { flex: 1, paddingHorizontal: layout.screenPadding },
+  header: { alignItems: "center", flexDirection: "row", gap: spacing.sm, justifyContent: "space-between", paddingBottom: spacing.md, paddingHorizontal: layout.screenPadding, paddingTop: (StatusBar.currentHeight ?? 24) + spacing.md },
+  headerCopy: { flex: 1 },
   helper: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   root: { backgroundColor: colors.panel, flex: 1 },
   title: { color: colors.text, fontFamily: fonts.extraBold, ...typeScale.subtitle },

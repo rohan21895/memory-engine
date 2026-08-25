@@ -1,8 +1,17 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { mapDetectedFaces } from "./face-detector.ts";
+import { mapDetectedFaces, scaleFaceBox } from "./face-detector.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { landmarksToPatch, patchGeometry } from "../ml/face-crop.ts";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(`face-detector self-check failed: ${message}`);
+}
+
+function close(actual: number, expected: number, message: string): void {
+  assert(
+    Math.abs(actual - expected) < 1e-9,
+    `${message}: got ${actual}, want ${expected}`,
+  );
 }
 
 const numeric = mapDetectedFaces(
@@ -39,6 +48,87 @@ const ios = mapDetectedFaces([{
   ],
 }]);
 assert(ios[0]?.landmarks?.leftMouth.x === 65, "PascalCase iOS landmarks map");
+
+// The scan detects in source coordinates and then crops from a downscaled
+// shared frame, so every face makes one round trip through scaleFaceBox. A
+// rescale that misses the landmarks (or the image dimensions) produces an
+// alignment that is wrong by a constant offset: no error, no visible artifact,
+// and every identity in the library quietly degraded. These assertions are the
+// only thing standing between that bug and a 100-minute rescan.
+{
+  const source = { width: 4032, height: 3024 };
+  const frameScale = 1280 / 4032;
+  const frame = {
+    width: source.width * frameScale,
+    height: source.height * frameScale,
+  };
+  const box = {
+    x: 1500,
+    y: 900,
+    width: 420,
+    height: 460,
+    landmarks: {
+      leftEye: { x: 1810, y: 1030 },
+      rightEye: { x: 1620, y: 1035 },
+      noseBase: { x: 1712, y: 1130 },
+      leftMouth: { x: 1790, y: 1245 },
+      rightMouth: { x: 1645, y: 1250 },
+    },
+  };
+
+  const framedBox = scaleFaceBox(box, frameScale);
+  assert(framedBox.landmarks !== undefined, "rescaling keeps the landmarks");
+  close(framedBox.width, box.width * frameScale, "the box width rescales");
+  close(
+    framedBox.landmarks.leftEye.x,
+    box.landmarks.leftEye.x * frameScale,
+    "the landmarks rescale with the box",
+  );
+
+  const sourceGeometry = patchGeometry(source, box);
+  const framedGeometry = patchGeometry(frame, framedBox);
+  assert(sourceGeometry !== undefined, "the source patch geometry resolves");
+  assert(framedGeometry !== undefined, "the framed patch geometry resolves");
+
+  const sourcePatch = landmarksToPatch(box.landmarks, sourceGeometry);
+  const framedPatch = landmarksToPatch(framedBox.landmarks, framedGeometry);
+  for (const name of ["leftEye", "rightEye", "noseBase", "leftMouth", "rightMouth"] as const) {
+    const expected = sourcePatch[name];
+    const actual = framedPatch[name];
+    assert(expected !== undefined && actual !== undefined, `${name} survives`);
+    close(actual.x, expected.x, `${name} lands on the same patch column`);
+    close(actual.y, expected.y, `${name} lands on the same patch row`);
+  }
+
+  // Negative control: scaling the box but leaving the landmarks in source
+  // coordinates must NOT agree, or the assertions above prove nothing.
+  const halfScaled = { ...framedBox, landmarks: box.landmarks };
+  const wrongGeometry = patchGeometry(frame, halfScaled);
+  assert(wrongGeometry !== undefined, "the mismatched geometry still resolves");
+  const wrongPatch = landmarksToPatch(box.landmarks, wrongGeometry);
+  assert(
+    Math.abs(wrongPatch.leftEye.x - sourcePatch.leftEye.x) > 1,
+    "forgetting to rescale the landmarks must be detectable",
+  );
+
+  // Detection reports source coordinates by scaling the frame boxes up by
+  // 1/scale, and the crop scales them back down. That round trip is exact.
+  const roundTripped = scaleFaceBox(scaleFaceBox(box, 1 / frameScale), frameScale);
+  close(roundTripped.x, box.x, "the detect/crop round trip preserves the box");
+  assert(roundTripped.landmarks !== undefined, "the round trip keeps landmarks");
+  close(
+    roundTripped.landmarks.leftEye.y,
+    box.landmarks.leftEye.y,
+    "the detect/crop round trip preserves the landmarks",
+  );
+
+  assert(scaleFaceBox(box, 1) === box, "an identity rescale allocates nothing");
+  assert(scaleFaceBox(box, 0) === box, "a degenerate scale is refused");
+  assert(
+    scaleFaceBox(box, Number.NaN) === box,
+    "a non-finite scale is refused",
+  );
+}
 
 // eslint-disable-next-line no-console
 console.log("face-detector self-check passed");

@@ -1,5 +1,5 @@
 // @ts-expect-error Node requires the extension; Metro resolves it too.
-import { normalizeFacePixels, normalizeFaceRgb, parseFaceEmbeddingOutput, squareFaceCrop } from "./facenet.ts";
+import { decodeBase64, normalizeFacePixels, normalizeFaceRgb, parseFaceEmbeddingOutput, squareFaceCrop } from "./facenet.ts";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(`MobileFaceNet self-check failed: ${message}`);
@@ -42,6 +42,45 @@ function close(actual: number, expected: number, message: string): void {
   close(rgb[0], -1, "aligned RGB black maps to -1");
   close(rgb[1], 1 / 255, "aligned RGB keeps channel order");
   close(rgb[2], 1, "aligned RGB white maps to 1");
+}
+
+{
+  // The table-driven decoder replaced an indexOf scan per character; every JPEG
+  // patch this module reads passes through it, so a wrong table would corrupt
+  // every embedding rather than fail loudly.
+  const vectors: Array<readonly [string, number[]]> = [
+    // RFC 4648 test vectors, covering both padding lengths.
+    ["Zg==", [0x66]],
+    ["Zm8=", [0x66, 0x6f]],
+    ["Zm9v", [0x66, 0x6f, 0x6f]],
+    ["Zm9vYmFy", [0x66, 0x6f, 0x6f, 0x62, 0x61, 0x72]],
+    // Sextets 62 and 63, the two table entries an alphabet typo hits first.
+    ["++++", [0xfb, 0xef, 0xbe]],
+    ["////", [0xff, 0xff, 0xff]],
+  ];
+  for (const [encoded, expected] of vectors) {
+    const decoded = decodeBase64(encoded);
+    assert(
+      decoded.length === expected.length &&
+        expected.every((value, index) => decoded[index] === value),
+      `base64 decode is byte-exact for ${encoded}`,
+    );
+  }
+  assert(
+    decodeBase64("data:image/jpeg;base64,Zm9v").length === 3,
+    "a data URI prefix is stripped",
+  );
+  assert(
+    decodeBase64("Zm9v\nYmFy").length === 6,
+    "wrapped base64 whitespace is ignored",
+  );
+  let rejected = false;
+  try {
+    decodeBase64("!!!!");
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, "a character outside the alphabet is rejected");
 }
 
 {
