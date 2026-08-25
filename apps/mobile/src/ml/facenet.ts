@@ -190,6 +190,22 @@ function isExpectedModel(model: TensorflowModel): boolean {
   );
 }
 
+/**
+ * How the tensors handed to MobileFaceNet were actually produced.
+ *
+ * The bounding-box path is a silent quality cliff: ArcFace-family weights are
+ * trained on faces warped to a canonical 5-point template, so an unaligned crop
+ * moves identity far enough that different people stop separating — which is
+ * indistinguishable, from the outside, from a clustering threshold being wrong.
+ * Without this counter a library where landmarks never arrive looks exactly
+ * like a library where they always do.
+ */
+const embeddingPathCounts = { aligned: 0, noLandmarks: 0, alignFailed: 0 };
+
+export function faceEmbeddingPathCounts(): Readonly<typeof embeddingPathCounts> {
+  return { ...embeddingPathCounts };
+}
+
 async function faceFloatTensor(
   asset: FaceImageAsset,
   imageUri: FaceImageSource,
@@ -197,7 +213,13 @@ async function faceFloatTensor(
 ): Promise<Float32Array> {
   if (box.landmarks) {
     const aligned = await alignedFaceFloatTensor(asset, imageUri, box);
-    if (aligned) return aligned;
+    if (aligned) {
+      embeddingPathCounts.aligned += 1;
+      return aligned;
+    }
+    embeddingPathCounts.alignFailed += 1;
+  } else {
+    embeddingPathCounts.noLandmarks += 1;
   }
   return boundingBoxFaceFloatTensor(asset, imageUri, box);
 }

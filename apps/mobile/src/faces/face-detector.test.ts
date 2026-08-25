@@ -47,7 +47,7 @@ const ios = mapDetectedFaces([{
     { type: "RightMouth", position: { x: 35, y: 70 } },
   ],
 }]);
-assert(ios[0]?.landmarks?.leftMouth.x === 65, "PascalCase iOS landmarks map");
+assert(ios[0]?.landmarks?.leftMouth?.x === 65, "PascalCase iOS landmarks map");
 
 // The scan detects in source coordinates and then crops from a downscaled
 // shared frame, so every face makes one round trip through scaleFaceBox. A
@@ -132,3 +132,40 @@ assert(ios[0]?.landmarks?.leftMouth.x === 65, "PascalCase iOS landmarks map");
 
 // eslint-disable-next-line no-console
 console.log("face-detector self-check passed");
+
+// ── Eyes alone are enough, and must NOT fall back to an unaligned crop ──
+// ML Kit routinely reports an off-frontal face with both eyes but only one
+// mouth corner, or none. Requiring all four corners rejected those faces, and
+// every rejection silently took the bounding-box path — which is what stops
+// ArcFace embeddings separating people. The aligner degrades on its own, so the
+// detector must hand it whatever it has.
+const eyesOnly = mapDetectedFaces([{
+  frame: { origin: { x: 0, y: 0 }, size: { x: 100, y: 100 } },
+  landmarks: [
+    { type: "LeftEye", position: { x: 70, y: 40 } },
+    { type: "RightEye", position: { x: 30, y: 40 } },
+  ],
+}]);
+assert(eyesOnly[0]?.landmarks, "a face with only eyes still carries landmarks");
+assert(eyesOnly[0].landmarks.leftMouth === undefined, "an absent mouth corner stays absent");
+assert(eyesOnly[0].landmarks.rightMouth === undefined, "an absent mouth corner is never invented");
+
+// One mouth corner is not enough for the 4-point fit, but must not discard the
+// eyes: the aligner will simply use a lower tier.
+const oneCorner = mapDetectedFaces([{
+  frame: { origin: { x: 0, y: 0 }, size: { x: 100, y: 100 } },
+  landmarks: [
+    { type: "LeftEye", position: { x: 70, y: 40 } },
+    { type: "RightEye", position: { x: 30, y: 40 } },
+    { type: "LeftMouth", position: { x: 65, y: 70 } },
+  ],
+}]);
+assert(oneCorner[0]?.landmarks?.leftEye, "one mouth corner still keeps the eyes");
+
+// No eyes is still a genuine rejection — two points are the minimum a
+// similarity transform needs.
+const noEyes = mapDetectedFaces([{
+  frame: { origin: { x: 0, y: 0 }, size: { x: 100, y: 100 } },
+  landmarks: [{ type: "LeftMouth", position: { x: 65, y: 70 } }],
+}]);
+assert(noEyes[0]?.landmarks === undefined, "a face with no eyes has no usable landmarks");

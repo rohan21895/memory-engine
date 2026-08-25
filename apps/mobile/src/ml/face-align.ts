@@ -48,12 +48,23 @@ export type Point = { x: number; y: number };
  * bias is better dropped than modelled, so alignment prefers the 4-point
  * eye+mouth fit and only uses the nose when the mouth corners are missing.
  */
+/**
+ * Only the eyes are required.
+ *
+ * `alignmentPairs` already degrades from a 4-point eye+mouth fit, to eyes+nose,
+ * to eyes alone — two points still pin scale, rotation and translation for a
+ * similarity transform. Requiring the mouth corners in the TYPE meant the
+ * detector threw away every face where ML Kit returned eyes but no mouth (which
+ * is common off-frontal), and those faces silently fell back to an UNALIGNED
+ * bounding-box crop — the exact quality cliff that stops different people
+ * separating.
+ */
 export type FaceLandmarks5 = {
   leftEye: Point;
   rightEye: Point;
   noseBase?: Point;
-  leftMouth: Point;
-  rightMouth: Point;
+  leftMouth?: Point;
+  rightMouth?: Point;
 };
 
 /**

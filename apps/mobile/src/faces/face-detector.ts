@@ -414,8 +414,14 @@ export function scaleFaceBox(box: FaceBox, scale: number): FaceBox {
           landmarks: {
             leftEye: point(landmarks.leftEye),
             rightEye: point(landmarks.rightEye),
-            leftMouth: point(landmarks.leftMouth),
-            rightMouth: point(landmarks.rightMouth),
+            // Absent corners stay absent: scaling a missing point would invent
+            // a landmark at the origin and drag the alignment to one corner.
+            ...(landmarks.leftMouth
+              ? { leftMouth: point(landmarks.leftMouth) }
+              : {}),
+            ...(landmarks.rightMouth
+              ? { rightMouth: point(landmarks.rightMouth) }
+              : {}),
             ...(landmarks.noseBase
               ? { noseBase: point(landmarks.noseBase) }
               : {}),
@@ -433,6 +439,17 @@ function facesFrom(result: NativeResult): NativeFace[] {
 }
 
 type LandmarkName = keyof FaceLandmarks5;
+
+/**
+ * Why faces lose their landmarks, so a library on the unaligned path is
+ * visible in logcat instead of merely being mysteriously bad at telling people
+ * apart.
+ */
+const landmarkRejects = { noEyes: 0, eyesOnly: 0, eyesAndNose: 0, full: 0 };
+
+export function landmarkRejectCounts(): Readonly<typeof landmarkRejects> {
+  return { ...landmarkRejects };
+}
 
 function landmarkName(type: unknown): LandmarkName | undefined {
   if (typeof type !== "string" && typeof type !== "number") return undefined;
@@ -491,19 +508,25 @@ function faceLandmarks(
     );
     if (name && point) mapped[name] = point;
   }
-  if (
-    !mapped.leftEye ||
-    !mapped.rightEye ||
-    !mapped.leftMouth ||
-    !mapped.rightMouth
-  ) {
+  // Eyes are the only requirement. Demanding both mouth corners here rejected
+  // every off-frontal face ML Kit reported without them, and each rejection fell
+  // through to an UNALIGNED bounding-box crop — the silent quality cliff that
+  // stops ArcFace embeddings separating people. The aligner degrades properly on
+  // its own (4-point, then eyes+nose, then eyes), so hand it what exists.
+  if (!mapped.leftEye || !mapped.rightEye) {
+    landmarkRejects.noEyes += 1;
     return undefined;
   }
+  const hasMouth = !!mapped.leftMouth && !!mapped.rightMouth;
+  if (hasMouth) landmarkRejects.full += 1;
+  else if (mapped.noseBase) landmarkRejects.eyesAndNose += 1;
+  else landmarkRejects.eyesOnly += 1;
+
   return {
     leftEye: mapped.leftEye,
     rightEye: mapped.rightEye,
-    leftMouth: mapped.leftMouth,
-    rightMouth: mapped.rightMouth,
+    ...(mapped.leftMouth ? { leftMouth: mapped.leftMouth } : {}),
+    ...(mapped.rightMouth ? { rightMouth: mapped.rightMouth } : {}),
     ...(mapped.noseBase ? { noseBase: mapped.noseBase } : {}),
   };
 }

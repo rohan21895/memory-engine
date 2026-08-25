@@ -2,9 +2,11 @@ import { decode as decodeJpeg } from "jpeg-js";
 
 // Explicit extensions keep this pure module importable by Node's TS test runner.
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { faceEmbeddingPathCounts } from "../ml/facenet.ts";
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { closeFaceFrame, deleteImageFile, detectFacesInFrame, isFaceDetectionAvailable, openFaceFrame, scaleFaceBox, takeScanTrace, traceScanCount, traceScanStage, type FaceBox, type FaceFrame } from "./face-detector.ts";
+import { closeFaceFrame, deleteImageFile, landmarkRejectCounts, detectFacesInFrame, isFaceDetectionAvailable, openFaceFrame, scaleFaceBox, takeScanTrace, traceScanCount, traceScanStage, type FaceBox, type FaceFrame } from "./face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { embedFaceIdentity, type FaceImageSource } from "../ml/facenet.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -290,6 +292,118 @@ function logEmbeddingPath(context: string): void {
 /** Emits anonymous centroid diagnostics for on-device clustering calibration. */
 export function logFaceIndexDiagnostics(context = "status"): void {
   logEmbeddingPath(context);
+  logSimilarityStructure(context);
+}
+
+/**
+ * Answers the one question a cluster count cannot: are these embeddings
+ * discriminative at all?
+ *
+ * On the owner's real library every face collapsed into ONE identity holding
+ * 96.6% of all observations, which means genuinely different people are landing
+ * above the 0.62 assignment bar. Two very different causes produce that same
+ * symptom, and they need opposite fixes:
+ *
+ *   - the bar is simply too loose for this embedding space  -> raise it
+ *   - the embeddings are degenerate (every face maps to nearly the same vector,
+ *     e.g. broken alignment or preprocessing) -> no threshold can ever help
+ *
+ * A percentile sweep of pairwise cosine separates them immediately. Healthy
+ * ArcFace-family embeddings put most random face pairs well below 0.4 with a
+ * long tail; a median above ~0.8 means the model is returning near-constant
+ * vectors and clustering is not the problem.
+ *
+ * Runs off the PERSISTED observations, so it needs no rescan, and samples so it
+ * stays O(SAMPLE^2) rather than O(n^2) on the JS thread.
+ */
+const SIMILARITY_SAMPLE = 220;
+const SWEEP_SAMPLE = 900;
+
+function sampleObservations(limit: number): FaceObservation[] {
+  const identity = index.observations.filter(
+    (observation) => observation.embeddingKind === "identity",
+  );
+  if (identity.length <= limit) return identity;
+  // Even stride rather than random: the sample must be identical between runs,
+  // or two consecutive diagnostics look like a change in the data.
+  const stride = identity.length / limit;
+  const sampled: FaceObservation[] = [];
+  for (let index = 0; index < limit; index += 1) {
+    sampled.push(identity[Math.floor(index * stride)]);
+  }
+  return sampled;
+}
+
+function percentile(sorted: number[], fraction: number): number {
+  if (sorted.length === 0) return Number.NaN;
+  const position = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.round(fraction * (sorted.length - 1))),
+  );
+  return sorted[position];
+}
+
+export function logSimilarityStructure(context = "status"): void {
+  const sample = sampleObservations(SIMILARITY_SAMPLE);
+  if (sample.length < 8) {
+    console.warn(`[PhoteoFaceSim] ${context} too few observations (${sample.length})`);
+    return;
+  }
+
+  // Pairs from DIFFERENT photos only. Two faces in one frame are usually two
+  // people, but a repeat detection of one face would bias the low end.
+  const similarities: number[] = [];
+  for (let first = 0; first < sample.length; first += 1) {
+    for (let second = first + 1; second < sample.length; second += 1) {
+      if (sample[first].assetId === sample[second].assetId) continue;
+      similarities.push(cosine(sample[first].embedding, sample[second].embedding));
+    }
+  }
+  similarities.sort((a, b) => a - b);
+
+  const dimensions = sample[0].embedding.length;
+  // Spread of each component across the sample: a degenerate embedder returns
+  // nearly the same vector every time, so this collapses toward zero.
+  let meanComponentSpread = 0;
+  for (let axis = 0; axis < dimensions; axis += 1) {
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    for (const observation of sample) {
+      const value = observation.embedding[axis];
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+    meanComponentSpread += max - min;
+  }
+  meanComponentSpread /= dimensions || 1;
+
+  const sweep = sampleObservations(SWEEP_SAMPLE);
+  const sweepSummary = [0.62, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+    .map((threshold) => {
+      const people = clusterFaces(sweep, {
+        threshold,
+        identityMergeThreshold: threshold,
+      });
+      const largest = people.reduce(
+        (most, person) => Math.max(most, person.faceCount),
+        0,
+      );
+      return `${threshold}:${people.length}/${largest}`;
+    })
+    .join(",");
+
+  console.warn(
+    `[PhoteoFaceSim] ${context} pairs=${similarities.length} dims=${dimensions} ` +
+      `path=${JSON.stringify(faceEmbeddingPathCounts())} ` +
+      `landmarks=${JSON.stringify(landmarkRejectCounts())} ` +
+      `spread=${meanComponentSpread.toFixed(4)} ` +
+      `p05=${percentile(similarities, 0.05).toFixed(3)} ` +
+      `p50=${percentile(similarities, 0.5).toFixed(3)} ` +
+      `p90=${percentile(similarities, 0.9).toFixed(3)} ` +
+      `p99=${percentile(similarities, 0.99).toFixed(3)} ` +
+      `max=${similarities[similarities.length - 1]?.toFixed(3)} ` +
+      `sweep[thr:people/largest]=${sweepSummary}`,
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

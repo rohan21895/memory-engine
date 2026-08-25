@@ -74,14 +74,21 @@ export function landmarksToPatch(
   landmarks: FaceLandmarks5,
   geometry: PatchGeometry,
 ): FaceLandmarks5 {
+  // Mouth corners are optional: a face ML Kit saw off-frontal may carry eyes
+  // only, and mapping an absent point would manufacture a landmark at the
+  // patch origin, which would drag the whole alignment toward one corner.
   return {
     leftEye: landmarkToPatch(landmarks.leftEye, geometry),
     rightEye: landmarkToPatch(landmarks.rightEye, geometry),
     ...(landmarks.noseBase
       ? { noseBase: landmarkToPatch(landmarks.noseBase, geometry) }
       : {}),
-    leftMouth: landmarkToPatch(landmarks.leftMouth, geometry),
-    rightMouth: landmarkToPatch(landmarks.rightMouth, geometry),
+    ...(landmarks.leftMouth
+      ? { leftMouth: landmarkToPatch(landmarks.leftMouth, geometry) }
+      : {}),
+    ...(landmarks.rightMouth
+      ? { rightMouth: landmarkToPatch(landmarks.rightMouth, geometry) }
+      : {}),
   };
 }
 
