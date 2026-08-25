@@ -4,13 +4,13 @@ import { decode as decodeJpeg } from "jpeg-js";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { faceEmbeddingPathCounts } from "../ml/facenet.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { faceAlignmentShapeCounts } from "../ml/face-align.ts";
+import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } from "../ml/face-align.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { closeFaceFrame, deleteImageFile, frameOrientationCounts, landmarkRejectCounts, detectFacesInFrame, isFaceDetectionAvailable, openFaceFrame, scaleFaceBox, takeScanTrace, traceScanCount, traceScanStage, type FaceBox, type FaceFrame } from "./face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { embedFaceIdentity, type FaceImageSource } from "../ml/facenet.ts";
+import { embedFaceIdentity, traceNextAlignments, type FaceImageSource } from "../ml/facenet.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { incrementalScanTarget } from "../import/incremental-index.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
@@ -23,7 +23,16 @@ import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 // v20 deletes those overrides. Clusters persisted under any earlier version were
 // built by the runaway merge and must be discarded, not carried forward —
 // otherwise an upgrading user keeps the broken grouping.
-const INDEX_VERSION = 20;
+// 21: every embedding before this was computed from a mis-aligned crop.
+// ML Kit names eye/mouth landmarks by PICTURE side, not by the subject's, so
+// crossing them onto the ArcFace template asked for a reflection a similarity
+// transform cannot express. Instead of failing it collapsed the scale to 0.156
+// and the "aligned face" became the entire photograph squeezed into 112x112
+// (verified by dumping the actual crops). Landmark residual was 25.9px on a
+// 112px template; it is 3.8px now. Those embeddings cannot be salvaged by
+// re-clustering, so this is the rare case where discarding them and re-scanning
+// is the correct call rather than the lazy one.
+const INDEX_VERSION = 21;
 const INDEX_FILENAME = "face-index.json";
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
@@ -334,6 +343,68 @@ function logEmbeddingPath(context: string): void {
   console.warn(
     `[PhoteoFaceIndex] ${context} identity=${counts.identityObservations} perceptual=${counts.perceptualObservations} duplicateBoxes=${duplicateDetectionsDropped} clusters=${clusterSummary || "none"} closest=${pairSummary || "none"}`,
   );
+}
+
+/**
+ * Re-runs the REAL detect+align+embed path over a few photos purely to look at
+ * what the embedder is actually being fed.
+ *
+ * Every alignment counter can read healthy while the warp samples the wrong
+ * pixels entirely: a mis-scaled landmark set still produces a finite,
+ * invertible transform, so nothing reports a failure. And on a library whose
+ * scan is complete, no face is ever embedded again, so the counters sit at zero
+ * and answer nothing. This forces a handful of embeddings and streams the
+ * resulting 112x112 faces to logcat, where they can be reassembled and viewed.
+ *
+ * Diagnostic only: the observations produced here are DISCARDED, never added to
+ * the index, and the photos are not marked processed.
+ */
+let alignmentProbeDone = false;
+
+export async function probeFaceAlignment(photos = 6, faces = 3): Promise<void> {
+  if (alignmentProbeDone || !isFaceDetectionAvailable()) return;
+  alignmentProbeDone = true;
+  try {
+    const mediaLibrary = await import("expo-media-library/legacy");
+    const page = await mediaLibrary.getAssetsAsync({
+      first: photos,
+      mediaType: [mediaLibrary.MediaType.photo],
+      sortBy: [mediaLibrary.SortBy.creationTime],
+    });
+    captureAlignedSamples(faces);
+    traceNextAlignments(faces + 4);
+    await scanFaceAssets(page.assets as unknown as FaceScanAsset[], {
+      isDetectionAvailable: () => true,
+      openFrame: (uri, asset) => openFaceFrame(uri, asset),
+      closeFrame: (frame) => closeFaceFrame(frame),
+      detectFaces: async (_uri, _asset, frame) =>
+        frame ? detectFacesInFrame(frame) : [],
+      embedFace: createFaceEmbedding,
+    });
+
+    const samples = takeAlignedSamples();
+    console.warn(
+      `[PhoteoCropProbe] photos=${page.assets.length} samples=${samples.length} ` +
+        `path=${JSON.stringify(faceEmbeddingPathCounts())} ` +
+        `landmarks=${JSON.stringify(landmarkRejectCounts())} ` +
+        `align=${JSON.stringify(faceAlignmentShapeCounts())} ` +
+        `frameOrient=${JSON.stringify(frameOrientationCounts())}`,
+    );
+    // Chunked well under logcat's ~4KB per-entry payload cap.
+    const CHUNK = 3000;
+    samples.forEach((sample, sampleIndex) => {
+      const encoded = encodeBase64(sample);
+      const parts = Math.ceil(encoded.length / CHUNK);
+      for (let part = 0; part < parts; part += 1) {
+        console.warn(
+          `[PhoteoCropPix] i=${sampleIndex} bytes=${sample.length} ` +
+            `part=${part}/${parts} ${encoded.slice(part * CHUNK, (part + 1) * CHUNK)}`,
+        );
+      }
+    });
+  } catch (error) {
+    console.warn(`[PhoteoCropProbe] failed: ${String(error).slice(0, 160)}`);
+  }
 }
 
 /** Emits anonymous centroid diagnostics for on-device clustering calibration. */
@@ -1806,6 +1877,7 @@ async function runBuild(
         // structure and the threshold sweep can be computed without touching a
         // single photo. Logging only the cheap line here meant the one run that
         // could calibrate for free was the one run that reported nothing.
+        await probeFaceAlignment();
         logFaceIndexDiagnostics("hydrated");
         return;
       }

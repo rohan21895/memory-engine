@@ -92,46 +92,95 @@ function finitePoint(point: Point | undefined | null): point is Point {
  * falls back to eyes+nose when the mouth corners are unusable. Returns
  * undefined when not even the eyes are trustworthy.
  */
+/**
+ * Splits a symmetric landmark pair into (image-left, image-right) using the
+ * face's OWN orientation, not the detector's naming.
+ *
+ * ML Kit's `leftEye`/`rightEye` were assumed to be named from the subject's
+ * point of view, so the code crossed them onto the template. Measured on device
+ * they are the opposite way round: `rightEye` consistently carries the LARGER x,
+ * i.e. it is the eye on the right of the picture. Crossing them then asks for a
+ * REFLECTION, which a similarity transform cannot express — so instead of
+ * failing it collapses the scale (measured: 0.156 template px per source px,
+ * landmark residual 25.9px on a 112px template) and the "aligned face" becomes
+ * the whole photograph squeezed into 112x112. Every counter still reads healthy.
+ *
+ * Rather than swap one hard-coded convention for another — and break again on a
+ * different binding or platform — the side is derived geometrically. `up` runs
+ * from the mouth (or nose) to the eyes; rotating it 90 degrees gives the face's
+ * own rightward axis, and each point is assigned by its projection onto it.
+ * That is correct at any roll angle and for either naming convention.
+ */
+function orderByImageSide(
+  first: Point,
+  second: Point,
+  up: Point,
+): [Point, Point] {
+  // Image y grows downward, so rotating `up` this way yields image-right for an
+  // upright face, and stays consistent as the head rolls.
+  const rightX = -up.y;
+  const rightY = up.x;
+  const firstProjection = first.x * rightX + first.y * rightY;
+  const secondProjection = second.x * rightX + second.y * rightY;
+  return firstProjection <= secondProjection ? [first, second] : [second, first];
+}
+
+/**
+ * Pairs landmarks with the image-space template (see ARCFACE_TEMPLATE_112),
+ * assigning sides by geometry. Prefers the 4-point eye+mouth fit and falls back
+ * to eyes+nose, then eyes alone. Returns undefined when not even the eyes are
+ * trustworthy.
+ */
 export function alignmentPairs(
   landmarks: FaceLandmarks5,
   template: ReadonlyArray<readonly [number, number]> = ARCFACE_TEMPLATE_112,
 ): { src: Point[]; dst: ReadonlyArray<readonly [number, number]> } | undefined {
-  const eyesOk =
-    finitePoint(landmarks.rightEye) && finitePoint(landmarks.leftEye);
-  if (!eyesOk) return undefined;
+  const eyeA = landmarks.leftEye;
+  const eyeB = landmarks.rightEye;
+  if (!finitePoint(eyeA) || !finitePoint(eyeB)) return undefined;
 
-  const noNose: ReadonlyArray<readonly [number, number]> = [
-    template[0],
-    template[1],
-    template[3],
-    template[4],
-  ];
+  const eyeMid = { x: (eyeA.x + eyeB.x) / 2, y: (eyeA.y + eyeB.y) / 2 };
+  const hasMouth =
+    finitePoint(landmarks.leftMouth) && finitePoint(landmarks.rightMouth);
+  const mouthA = landmarks.leftMouth as Point | undefined;
+  const mouthB = landmarks.rightMouth as Point | undefined;
 
-  // Subject's RIGHT maps to the image-LEFT template point, and vice versa.
-  if (finitePoint(landmarks.rightMouth) && finitePoint(landmarks.leftMouth)) {
+  // `up` points from the lower feature to the eyes. Mouth midpoint is the most
+  // reliable; the nose is a usable stand-in; with neither, assume an upright
+  // face, which is what a plain left-to-right ordering encodes.
+  let up: Point;
+  if (hasMouth && mouthA && mouthB) {
+    up = {
+      x: eyeMid.x - (mouthA.x + mouthB.x) / 2,
+      y: eyeMid.y - (mouthA.y + mouthB.y) / 2,
+    };
+  } else if (finitePoint(landmarks.noseBase)) {
+    up = { x: eyeMid.x - landmarks.noseBase.x, y: eyeMid.y - landmarks.noseBase.y };
+  } else {
+    up = { x: 0, y: -1 };
+  }
+  if (!Number.isFinite(up.x) || !Number.isFinite(up.y) || (up.x === 0 && up.y === 0)) {
+    up = { x: 0, y: -1 };
+  }
+
+  const [eyeLeft, eyeRight] = orderByImageSide(eyeA, eyeB, up);
+
+  if (hasMouth && mouthA && mouthB) {
+    const [mouthLeft, mouthRight] = orderByImageSide(mouthA, mouthB, up);
     return {
-      src: [
-        landmarks.rightEye,
-        landmarks.leftEye,
-        landmarks.rightMouth,
-        landmarks.leftMouth,
-      ],
-      dst: noNose,
+      src: [eyeLeft, eyeRight, mouthLeft, mouthRight],
+      dst: [template[0], template[1], template[3], template[4]],
     };
   }
 
   if (finitePoint(landmarks.noseBase)) {
     return {
-      src: [landmarks.rightEye, landmarks.leftEye, landmarks.noseBase],
+      src: [eyeLeft, eyeRight, landmarks.noseBase],
       dst: [template[0], template[1], template[2]],
     };
   }
 
-  // Eyes alone still pin scale, rotation and translation for a similarity fit.
-  return {
-    src: [landmarks.rightEye, landmarks.leftEye],
-    dst: [template[0], template[1]],
-  };
+  return { src: [eyeLeft, eyeRight], dst: [template[0], template[1]] };
 }
 
 /**
@@ -314,6 +363,29 @@ export function faceAlignmentShapeCounts(): {
   };
 }
 
+/**
+ * Optional capture of the actual aligned faces, for eyeballing off-device.
+ *
+ * Every counter here can look healthy while the warp samples entirely the wrong
+ * pixels: a mis-scaled landmark set still yields a finite, invertible transform,
+ * so it "succeeds". The only way to be certain the embedder is being fed faces
+ * is to look at what it is fed. Off by default; costs one array push when armed.
+ */
+const alignedSamples: Uint8Array[] = [];
+let alignedSampleLimit = 0;
+
+export function captureAlignedSamples(limit: number): void {
+  alignedSampleLimit = Math.max(0, limit);
+  alignedSamples.length = 0;
+}
+
+export function takeAlignedSamples(): Uint8Array[] {
+  const taken = alignedSamples.slice();
+  alignedSamples.length = 0;
+  alignedSampleLimit = 0;
+  return taken;
+}
+
 /** Records the rotation and landmark residual of one accepted alignment. */
 function recordAlignmentShape(
   transform: SimilarityTransform,
@@ -367,7 +439,11 @@ export function alignFaceRgb(
 
   recordAlignmentShape(transform, pairs);
 
-  return warpFaceRgb(rgba, srcWidth, srcHeight, transform, size);
+  const warped = warpFaceRgb(rgba, srcWidth, srcHeight, transform, size);
+  if (warped && alignedSamples.length < alignedSampleLimit) {
+    alignedSamples.push(warped);
+  }
+  return warped;
 }
 
 export { TEMPLATE_NO_NOSE };

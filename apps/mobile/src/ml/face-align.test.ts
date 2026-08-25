@@ -149,38 +149,87 @@ const missing = alignFaceRgb(big, 120, 120, {
 });
 assert(missing === undefined, "unusable landmarks fall back instead of throwing");
 
-// ── Alignment shape: a crossed correspondence ROTATES, it does not fail ──
-// This is the whole reason the shape counters exist. A similarity transform
-// cannot mirror, so pairing the eyes the wrong way round does not return
-// undefined — it returns a clean 180 degree rotation that feeds the embedder
-// upside-down faces while every failure counter still reads zero.
-const pixels = new Uint8Array(200 * 200 * 4).fill(120);
+// ── Naming convention must not matter: sides come from geometry ──
+// Measured on device, ML Kit reports `rightEye` with the LARGER x — the eye on
+// the right of the PICTURE — the opposite of what this file used to assume.
+// Crossing them onto the template then demands a reflection, which a similarity
+// transform cannot express, so it silently collapses the scale instead of
+// failing: measured 0.156 template px per source px and a 25.9px residual on a
+// 112px template, which turned the "aligned face" into the whole photograph.
+// Sides are therefore derived from the face's own orientation, and BOTH naming
+// conventions must now produce the same pairing.
+{
+  const subjectNamed = upright; // subject's right eye at image-left (x=40)
+  const imageNamed = {
+    rightEye: upright.leftEye, // detector that names by picture side
+    leftEye: upright.rightEye,
+    noseBase: upright.noseBase,
+    rightMouth: upright.leftMouth,
+    leftMouth: upright.rightMouth,
+  };
 
-const beforeUpright = faceAlignmentShapeCounts();
-assert(alignFaceRgb(pixels, 200, 200, upright), "upright face aligns");
-const afterUpright = faceAlignmentShapeCounts();
-assert(
-  afterUpright.upright === beforeUpright.upright + 1,
-  "a correctly-paired upright face is recorded as upright",
-);
-assert(
-  afterUpright.upsideDown === beforeUpright.upsideDown,
-  "and is not recorded as upside down",
-);
+  const a = alignmentPairs(subjectNamed);
+  const b = alignmentPairs(imageNamed);
+  assert(a && b, "both namings yield pairs");
+  for (let index = 0; index < a.src.length; index += 1) {
+    assert(
+      a.src[index].x === b.src[index].x && a.src[index].y === b.src[index].y,
+      `landmark naming must not change the pairing (index ${index})`,
+    );
+  }
+  assert(
+    a.src[0].x < a.src[1].x,
+    "template[0] always takes the eye on the IMAGE-LEFT, whatever it is called",
+  );
 
-// Eyes only, labels swapped — exactly what a wrong ML Kit left/right convention
-// would produce. Two points admit an exact fit, so the residual stays at zero:
-// nothing but the rotation angle can reveal this.
-const crossedEyes = { rightEye: upright.leftEye, leftEye: upright.rightEye };
-assert(
-  alignFaceRgb(pixels, 200, 200, crossedEyes),
-  "a crossed correspondence still ALIGNS — this is the trap",
-);
-const afterCrossed = faceAlignmentShapeCounts();
-assert(
-  afterCrossed.upsideDown === afterUpright.upsideDown + 1,
-  "a crossed correspondence is a 180 degree rotation, not a failure",
-);
+  // The real symptom this prevents: a reflected pairing cannot be fitted, so the
+  // recovered scale collapses. Both namings must recover the SAME honest scale.
+  const scaleOf = (pairs: { src: { x: number; y: number }[]; dst: ReadonlyArray<readonly [number, number]> }) => {
+    const transform = similarityTransform(pairs.src, pairs.dst);
+    assert(transform, "a well-paired face yields a transform");
+    return Math.hypot(transform.a, transform.b);
+  };
+  const scaleA = scaleOf(a);
+  near(scaleA, scaleOf(b), 1e-9, "both namings recover the same scale");
+  // Eyes 32px apart onto a 35.24px template gap is ~1.10 for an eyes-only fit;
+  // the 4-point fit compromises with the mouth and lands near 1.01. Either way
+  // the number that matters is that it is ~1 and NOT the 0.156 collapse a
+  // reflected pairing produced on device.
+  near(scaleA, 1.01, 0.1, "recovered scale is sane, not collapsed");
+  assert(scaleA > 0.5, "a reflected pairing would collapse the scale far below this");
+}
+
+// A rolled face keeps its sides straight: at 90 degrees the eyes share an x, so
+// nothing can be decided by x-ordering alone and only the mouth-derived axis
+// gets it right.
+{
+  const rolled = {
+    rightEye: { x: 50, y: 40 },
+    leftEye: { x: 50, y: 72 },
+    rightMouth: { x: 92, y: 43 },
+    leftMouth: { x: 92, y: 69 },
+  };
+  const pairsRolled = alignmentPairs(rolled);
+  assert(pairsRolled && pairsRolled.src.length === 4, "a rolled face still pairs");
+  const rolledTransform = similarityTransform(pairsRolled.src, pairsRolled.dst);
+  assert(rolledTransform, "a rolled face yields a transform");
+  // A reflection would show up as a collapsed scale; a pure roll must not.
+  const rolledScale = Math.hypot(rolledTransform.a, rolledTransform.b);
+  assert(
+    rolledScale > 0.5 && rolledScale < 2,
+    `a 90-degree roll recovers a sane scale, not a collapse (got ${rolledScale})`,
+  );
+}
+
+// Alignment still records shape, and an ordinary upright face is upright.
+{
+  const pixels = new Uint8Array(200 * 200 * 4).fill(120);
+  const before = faceAlignmentShapeCounts();
+  assert(alignFaceRgb(pixels, 200, 200, upright), "upright face aligns");
+  const after = faceAlignmentShapeCounts();
+  assert(after.upright === before.upright + 1, "an upright face is recorded upright");
+  assert(after.upsideDown === before.upsideDown, "and never as upside down");
+}
 
 // eslint-disable-next-line no-console
 console.log("face-align self-check passed");

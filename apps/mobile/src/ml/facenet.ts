@@ -202,6 +202,21 @@ function isExpectedModel(model: TensorflowModel): boolean {
  */
 const embeddingPathCounts = { aligned: 0, noLandmarks: 0, alignFailed: 0 };
 
+/**
+ * One-shot trace of the coordinate spaces a face passes through.
+ *
+ * Counters cannot catch a space mismatch: landmarks expressed in the wrong
+ * space still yield a finite, invertible transform, so alignment "succeeds" and
+ * the warp quietly samples the wrong pixels. Only the numbers show it — above
+ * all whether the patch collapsed to the WHOLE image, which is what happens
+ * when the box is large relative to the asset dimensions it is clamped against.
+ */
+let alignmentTraceRemaining = 0;
+
+export function traceNextAlignments(count: number): void {
+  alignmentTraceRemaining = Math.max(0, count);
+}
+
 export function faceEmbeddingPathCounts(): Readonly<typeof embeddingPathCounts> {
   return { ...embeddingPathCounts };
 }
@@ -281,6 +296,23 @@ async function alignedFaceFloatTensor(
   // detector box, so the crop is the pixels the warp reads and nothing else.
   const geometry = alignedPatchGeometry(asset, box, box.landmarks);
   if (!geometry) return undefined;
+  if (alignmentTraceRemaining > 0) {
+    alignmentTraceRemaining -= 1;
+    const marks = box.landmarks;
+    const inPatch = (point: { x: number; y: number } | undefined) =>
+      point
+        ? `${((point.x - geometry.originX) * geometry.scale).toFixed(1)},${((point.y - geometry.originY) * geometry.scale).toFixed(1)}`
+        : "-";
+    console.warn(
+      `[PhoteoAlignTrace] asset=${asset.width}x${asset.height} ` +
+        `box=${box.x.toFixed(0)},${box.y.toFixed(0)},${box.width.toFixed(0)}x${box.height.toFixed(0)} ` +
+        `geom=origin(${geometry.originX.toFixed(0)},${geometry.originY.toFixed(0)}) size=${geometry.size.toFixed(0)} ` +
+        `patch=${geometry.patchSize} scale=${geometry.scale.toFixed(3)} ` +
+        `eyesSrc=(${marks.rightEye.x.toFixed(0)},${marks.rightEye.y.toFixed(0)})/(${marks.leftEye.x.toFixed(0)},${marks.leftEye.y.toFixed(0)}) ` +
+        `eyesPatch=(${inPatch(marks.rightEye)})/(${inPatch(marks.leftEye)}) ` +
+        `mouthPatch=(${inPatch(marks.rightMouth)})/(${inPatch(marks.leftMouth)})`,
+    );
+  }
   try {
     const base64 = await croppedPatchBase64(
       imageUri,
