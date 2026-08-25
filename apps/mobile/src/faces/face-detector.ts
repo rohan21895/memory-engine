@@ -224,6 +224,7 @@ async function resolveDimensions(
 export async function openFaceFrame(
   imageUri: string,
   source?: FaceImageDimensions,
+  maxEdge: number = MAX_DETECTION_EDGE,
 ): Promise<FaceFrame | null> {
   const dimensions = await resolveDimensions(imageUri, source);
   if (!dimensions) return null;
@@ -232,7 +233,7 @@ export async function openFaceFrame(
   // pre-EXIF-rotation size, and the loader always returns the rotated bitmap.
   // A ratio of long edges is right either way, and cannot silently transpose.
   const sourceLong = Math.max(dimensions.width, dimensions.height);
-  if (imageUri.startsWith("file://") && sourceLong <= MAX_DETECTION_EDGE) {
+  if (imageUri.startsWith("file://") && sourceLong <= maxEdge) {
     return {
       image: undefined,
       uri: imageUri,
@@ -246,7 +247,7 @@ export async function openFaceFrame(
   }
 
   return (
-    (await bitmapFaceFrame(imageUri, dimensions, sourceLong)) ??
+    (await bitmapFaceFrame(imageUri, dimensions, sourceLong, maxEdge)) ??
     (await encodedFaceFrame(imageUri, dimensions, sourceLong))
   );
 }
@@ -297,6 +298,7 @@ async function bitmapFaceFrame(
   imageUri: string,
   dimensions: FaceImageDimensions,
   sourceLong: number,
+  maxEdge: number = MAX_DETECTION_EDGE,
 ): Promise<FaceFrame | null> {
   let image: ImageRef | undefined;
   try {
@@ -305,8 +307,8 @@ async function bitmapFaceFrame(
       import("expo-image-manipulator"),
     ]);
     image = await Image.loadAsync(imageUri, {
-      maxWidth: MAX_DETECTION_EDGE,
-      maxHeight: MAX_DETECTION_EDGE,
+      maxWidth: maxEdge,
+      maxHeight: maxEdge,
     });
     // No transformer: the context hands back the loaded bitmap untouched, and
     // only ImageRef can write the file ML Kit needs. `image.width` is a

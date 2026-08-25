@@ -1638,8 +1638,33 @@ async function createFaceEmbedding(
     framed !== undefined &&
     ((frame?.scale ?? 0) >= 1 ||
       Math.min(framed.box.width, framed.box.height) >= MIN_FRAME_EMBED_FACE_PX);
-  const embedSpace = frameKeepsDetail && framed ? framed : original;
-  if (!frameKeepsDetail && framed) traceScanCount("smallFaceFullRes");
+  let embedSpace = frameKeepsDetail && framed ? framed : original;
+  // A face too small to embed from the shared 1280px frame used to fall back to
+  // the raw content:// URI, which ImageManipulator loads at SIZE_ORIGINAL — a
+  // full 12MP decode (~46MB) per face. Measured on device, those decodes also
+  // saturate Glide, and since the photo grid is served by the same pipeline the
+  // user's thumbnails queue behind them and the tab appears not to load.
+  //
+  // Nothing here needs the original: it needs the FACE at >=112px. Opening a
+  // second bounded frame, sized so the face just clears the template, gets the
+  // same pixels for a fraction of the decode. A 200px face in a 4032px photo
+  // needs a ~2258px bound, not 4032.
+  let detailFrame: FaceFrame | null = null;
+  if (!frameKeepsDetail && framed) {
+    traceScanCount("smallFaceFullRes");
+    const faceSide = Math.max(1, Math.min(box.width, box.height));
+    const sourceLong = Math.max(asset.width, asset.height);
+    const bound = Math.min(
+      sourceLong,
+      Math.ceil((sourceLong * MIN_FRAME_EMBED_FACE_PX) / faceSide),
+    );
+    detailFrame = await openFaceFrame(imageUri, asset, bound);
+    const detailSpace = frameSpaceFace(detailFrame, asset, box);
+    if (detailSpace) {
+      embedSpace = detailSpace;
+      traceScanCount("smallFaceBounded");
+    }
+  }
   const identity = await embedFaceIdentity(
     embedSpace.asset,
     embedSpace.source,
@@ -1664,6 +1689,7 @@ async function createFaceEmbedding(
   // tile does not. Upscaling a small face into a small tile is a cosmetic
   // difference, and it is the only thing given up here.
   const cropSpace = framed ?? embedSpace;
+  // Released below in the same finally that guards the crop.
   const crop = await prepareFaceCrop(
     cropSpace.asset,
     cropSpace.source,
@@ -1690,6 +1716,9 @@ async function createFaceEmbedding(
     };
   } finally {
     if (!returned) await deleteFaceCrop(crop.uri);
+    // The bounded detail frame is ours alone: the shared frame belongs to the
+    // caller, but this one was opened here and must not outlive the face.
+    if (detailFrame) await closeFaceFrame(detailFrame);
   }
 }
 
