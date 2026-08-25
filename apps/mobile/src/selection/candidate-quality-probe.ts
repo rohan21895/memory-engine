@@ -128,12 +128,15 @@ export function qualityFromBlurhash(
     DECODE_WIDTH,
     DECODE_HEIGHT,
   );
-  if (!gray) return {};
+  if (!gray) return { blurhash };
   const exposure = exposureFromPixels(gray, DECODE_WIDTH, DECODE_HEIGHT);
   return {
     sharpness: sharpnessFromPixels(gray, DECODE_WIDTH, DECODE_HEIGHT),
     exposure: exposure.exposure,
     clippedFraction: exposure.clippedFraction,
+    // Kept for the prepass content axis. Returned even when the decode failed
+    // above, because a hash that cannot be scored can still be compared.
+    blurhash,
   };
 }
 

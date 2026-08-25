@@ -122,5 +122,108 @@ assert(
   "the capped set contains no duplicates",
 );
 
+// --- content coverage -------------------------------------------------------
+//
+// The case the other fixtures cannot express: ONE session. Every candidate
+// shares a place and carries no usable timestamp, so the time and place terms
+// are both constant and the cap has nothing left to spread on but quality --
+// and quality is highest inside bursts, which is how an album ends up as sixty
+// photos of the same pose. The blurhash is the only thing that still tells two
+// moments apart at this stage.
+
+const BASE83 =
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~";
+
+function encode83(value: number, length: number): string {
+  let out = "";
+  for (let position = 1; position <= length; position += 1) {
+    const digit = Math.floor(value / 83 ** (length - position)) % 83;
+    out += BASE83[digit];
+  }
+  return out;
+}
+
+/**
+ * A valid 4x3 blurhash of a FLAT frame at grey level `level`.
+ *
+ * Flat because the test is about whether two frames are told apart, not about
+ * decode fidelity: every AC component is pinned to its zero point (9,9,9 in
+ * blurhash's 19-level quantisation, i.e. 9*361 + 9*19 + 9) so only the DC term
+ * survives and the decoded grid is uniformly `level`.
+ */
+function flatBlurhash(level: number): string {
+  const sizeFlag = 4 - 1 + (3 - 1) * 9;
+  const dc = level * 65_793; // r == g == b == level
+  const acZero = encode83(9 * 361 + 9 * 19 + 9, 2);
+  return (
+    BASE83[sizeFlag] + BASE83[0] + encode83(dc, 4) + acZero.repeat(4 * 3 - 1)
+  );
+}
+
+function sessionCandidate(
+  id: string,
+  level: number,
+  sharpness: number,
+): ProbedCandidate {
+  return {
+    photo: {
+      id,
+      uri: `asset://${id}`,
+      filename: `${id}.jpg`,
+      source: "device-gallery",
+      // No creationTime on purpose: kills the time axis outright.
+      width: 4_000,
+      height: 3_000,
+      placeKey: "studio",
+    },
+    quality: {
+      sharpness,
+      exposure: 0.5,
+      clippedFraction: 0,
+      blurhash: flatBlurhash(level),
+    },
+  };
+}
+
+// Sanity: the fixture must actually produce two DISTINGUISHABLE looks, or the
+// assertion below would pass for the wrong reason.
+assert(
+  flatBlurhash(30) !== flatBlurhash(220),
+  "the two fixture looks must differ as blurhashes",
+);
+
+// Twelve frames of one look, all sharper than the four frames of the other.
+// On quality alone every slot goes to the burst.
+const burst = Array.from({ length: 12 }, (_, index) =>
+  sessionCandidate(`burst-${index}`, 30, 0.95),
+);
+const otherLook = Array.from({ length: 4 }, (_, index) =>
+  sessionCandidate(`other-${index}`, 220, 0.5),
+);
+const session = chooseHeavyAnalysisCandidates([...burst, ...otherLook], 4);
+assert(
+  session.length === 4,
+  `the session pick must respect the limit (got ${session.length})`,
+);
+assert(
+  session.some(({ photo }) => photo.id.startsWith("other-")),
+  "a second look must reach the planner even when every frame of it is the " +
+    "least sharp photo in the pick — otherwise the album is one pose",
+);
+assert(
+  session.filter(({ photo }) => photo.id.startsWith("burst-")).length < 4,
+  "the burst must not take every slot",
+);
+
+// The axis must stay inert rather than throw when no blurhash was probed, which
+// is the uncapped path and any frame whose proxy failed.
+const hashless = Array.from({ length: 6 }, (_, index) =>
+  candidate(`hashless-${index}`, index),
+);
+assert(
+  chooseHeavyAnalysisCandidates(hashless, 3).length === 3,
+  "candidates without a blurhash must still be selectable",
+);
+
 // eslint-disable-next-line no-console
 console.log("candidate-prepass self-check passed");

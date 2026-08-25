@@ -46,6 +46,16 @@ export type MeasuredImageQuality = {
   exposure?: number;
   clippedFraction?: number;
   /**
+   * The 4x3 blurhash the cheap probe already computed, kept rather than thrown
+   * away once its quality numbers were extracted.
+   *
+   * It is the only description of what a photo LOOKS like that exists before
+   * the heavy models run, which makes it the one signal the candidate prepass
+   * can use to avoid handing the planner sixty-four frames of the same moment.
+   * Present only on the probe path; the uncapped path never needs it.
+   */
+  blurhash?: string;
+  /**
    * Sharpness measured inside the caller-supplied subject box. Present only
    * when a usable box was supplied. Prefer this over `sharpness` for portraits:
    * a well-shot shallow-depth-of-field frame is globally "blurry" on purpose.

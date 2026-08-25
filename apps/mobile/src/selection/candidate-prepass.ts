@@ -1,4 +1,5 @@
 import type { PickedPhoto } from "../import/picked-photo";
+import { decodeBlurhashGrayscale } from "./candidate-quality-probe";
 import type { MeasuredImageQuality } from "./image-quality";
 
 /** Normal-sized picks keep the existing all-photo analysis path unchanged. */
@@ -17,9 +18,67 @@ export type ProbedCandidate = {
 type RankedCandidate = ProbedCandidate & {
   qualityScore: number;
   timeBucket?: number;
+  contentKey?: string;
 };
 
 const MAX_TIME_BUCKETS = 40;
+
+/**
+ * Grid the blurhash is reduced to before it becomes a bucket key.
+ *
+ * Coarse on purpose. The job is to make two frames of the same moment collide
+ * while a different pose, framing or subject does not, so this reads the layout
+ * of light in the frame and deliberately nothing finer. 4x3 over eight levels
+ * is about as blunt as it can be while still separating a standing shot from a
+ * seated one.
+ */
+const CONTENT_GRID_WIDTH = 4;
+const CONTENT_GRID_HEIGHT = 3;
+const CONTENT_LEVELS = 8;
+/** The grid the probe's blurhash decodes to before block-averaging. */
+const CONTENT_DECODE_WIDTH = 16;
+const CONTENT_DECODE_HEIGHT = 12;
+
+/**
+ * A coarse "what does this frame look like" key, or undefined when unavailable.
+ *
+ * This is the whole point of the content axis: before the heavy models run, the
+ * prepass knows a photo's time, its place and how sharp it is — but nothing
+ * about what is IN it. Inside a single session, time and place are constant, so
+ * those two axes go flat and the cap falls back to picking the sharpest frames,
+ * which are exactly the ones bunched inside bursts. This gives it one cheap way
+ * to tell two moments apart.
+ */
+function contentKeyForQuality(
+  quality: MeasuredImageQuality | undefined,
+): string | undefined {
+  const blurhash = quality?.blurhash;
+  if (!blurhash) return undefined;
+  const gray = decodeBlurhashGrayscale(
+    blurhash,
+    CONTENT_DECODE_WIDTH,
+    CONTENT_DECODE_HEIGHT,
+  );
+  if (!gray) return undefined;
+  const blockWidth = CONTENT_DECODE_WIDTH / CONTENT_GRID_WIDTH;
+  const blockHeight = CONTENT_DECODE_HEIGHT / CONTENT_GRID_HEIGHT;
+  const cells: number[] = [];
+  for (let row = 0; row < CONTENT_GRID_HEIGHT; row += 1) {
+    for (let column = 0; column < CONTENT_GRID_WIDTH; column += 1) {
+      let total = 0;
+      for (let y = 0; y < blockHeight; y += 1) {
+        for (let x = 0; x < blockWidth; x += 1) {
+          const sampleY = row * blockHeight + y;
+          const sampleX = column * blockWidth + x;
+          total += gray[sampleY * CONTENT_DECODE_WIDTH + sampleX] ?? 0;
+        }
+      }
+      const mean = total / (blockWidth * blockHeight);
+      cells.push(Math.min(CONTENT_LEVELS - 1, Math.floor((mean / 256) * CONTENT_LEVELS)));
+    }
+  }
+  return cells.join("");
+}
 
 /**
  * Choose a quality-biased subset while explicitly rewarding underrepresented
@@ -40,6 +99,7 @@ export function chooseHeavyAnalysisCandidates(
   const selectedIds = new Set<string>();
   const timeCounts = new Map<number, number>();
   const placeCounts = new Map<string, number>();
+  const contentCounts = new Map<string, number>();
 
   // User pins remain sovereign when a future edit flow feeds them into a
   // capped rebuild. The safety cap still wins if more than the limit are pinned.
@@ -48,7 +108,7 @@ export function chooseHeavyAnalysisCandidates(
     .sort(compareRankedCandidates)
     .slice(0, normalizedLimit);
   for (const candidate of pinned) {
-    select(candidate, selectedIds, timeCounts, placeCounts);
+    select(candidate, selectedIds, timeCounts, placeCounts, contentCounts);
   }
 
   const remaining = ranked.filter(({ photo }) => !selectedIds.has(photo.id));
@@ -58,6 +118,7 @@ export function chooseHeavyAnalysisCandidates(
       remaining[0],
       timeCounts,
       placeCounts,
+      contentCounts,
     );
 
     for (let index = 1; index < remaining.length; index += 1) {
@@ -65,6 +126,7 @@ export function chooseHeavyAnalysisCandidates(
         remaining[index],
         timeCounts,
         placeCounts,
+        contentCounts,
       );
       if (
         priority > bestPriority ||
@@ -77,7 +139,7 @@ export function chooseHeavyAnalysisCandidates(
     }
 
     const [winner] = remaining.splice(bestIndex, 1);
-    select(winner, selectedIds, timeCounts, placeCounts);
+    select(winner, selectedIds, timeCounts, placeCounts, contentCounts);
   }
 
   return unique.filter(({ photo }) => selectedIds.has(photo.id));
@@ -121,6 +183,9 @@ function addTimeBuckets(
     ...candidate,
     qualityScore: cheapQualityScore(candidate),
     timeBucket: bucketById.get(candidate.photo.id),
+    // Decoded once here rather than inside the O(limit x remaining) scoring
+    // loop, where the same hash would be decoded tens of thousands of times.
+    contentKey: contentKeyForQuality(candidate.quality),
   }));
 }
 
@@ -149,6 +214,7 @@ function candidatePriority(
   candidate: RankedCandidate,
   timeCounts: ReadonlyMap<number, number>,
   placeCounts: ReadonlyMap<string, number>,
+  contentCounts: ReadonlyMap<string, number>,
 ): number {
   const timeCount =
     candidate.timeBucket === undefined
@@ -156,6 +222,9 @@ function candidatePriority(
       : timeCounts.get(candidate.timeBucket) ?? 0;
   const place = normalizedPlace(candidate.photo.placeKey);
   const placeCount = place ? placeCounts.get(place) ?? 0 : undefined;
+  const contentCount = candidate.contentKey
+    ? contentCounts.get(candidate.contentKey) ?? 0
+    : undefined;
 
   // A first representative for a time window outweighs up to one full point
   // of quality. This guarantees broad chronology before taking repeats.
@@ -167,7 +236,23 @@ function candidatePriority(
       : placeCount === 0
         ? 0.45
         : 0.1 / (placeCount + 1);
-  return candidate.qualityScore + timeCoverage + placeCoverage;
+  // Weighted just under time, and for the same reason: within one session every
+  // candidate shares a time bucket and a place, so those two terms go constant
+  // and stop discriminating at exactly the moment the album needs them to. The
+  // first frame of an unseen look must then outweigh the quality gap between
+  // two frames of the SAME look, which in a burst is a few hundredths -- so
+  // this is the term that decides whether the planner receives sixty-four
+  // photos of one pose or sixty-four different moments. Repeats fall off fast
+  // so a genuinely richer look can still take a second slot.
+  const contentCoverage =
+    contentCount === undefined
+      ? 0
+      : contentCount === 0
+        ? 0.9
+        : 0.14 / (contentCount + 1);
+  return (
+    candidate.qualityScore + timeCoverage + placeCoverage + contentCoverage
+  );
 }
 
 function select(
@@ -175,6 +260,7 @@ function select(
   selectedIds: Set<string>,
   timeCounts: Map<number, number>,
   placeCounts: Map<string, number>,
+  contentCounts: Map<string, number>,
 ): void {
   selectedIds.add(candidate.photo.id);
   if (candidate.timeBucket !== undefined) {
@@ -185,6 +271,12 @@ function select(
   }
   const place = normalizedPlace(candidate.photo.placeKey);
   if (place) placeCounts.set(place, (placeCounts.get(place) ?? 0) + 1);
+  if (candidate.contentKey) {
+    contentCounts.set(
+      candidate.contentKey,
+      (contentCounts.get(candidate.contentKey) ?? 0) + 1,
+    );
+  }
 }
 
 function compareRankedCandidates(
