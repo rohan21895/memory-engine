@@ -8,6 +8,9 @@ import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } f
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { calibrateThreshold } from "./face-calibration.ts";
+
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { closeFaceFrame, deleteImageFile, frameOrientationCounts, landmarkRejectCounts, detectFacesInFrame, isFaceDetectionAvailable, openFaceFrame, scaleFaceBox, takeScanTrace, traceScanCount, traceScanStage, type FaceBox, type FaceFrame } from "./face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { embedFaceIdentity, traceNextAlignments, type FaceImageSource } from "../ml/facenet.ts";
@@ -101,18 +104,29 @@ const BASE64_VALUES = (() => {
 })();
 
 /**
- * Cosine bar for high-precision identity in w600k_mbf space.
+ * COLD-START cosine bar, held only until this library calibrates its own.
  *
- * Ported from the previous model's 0.40 by matching FAR rather than by keeping
- * the number, because the two spaces are not comparable: measured on 1,471 LFW
- * crops through the bundled TFLite build, w600k_mbf puts the impostor p99 at
- * 0.169 and the genuine p05 at 0.423, where the old 192-dim model sat at an
- * impostor median of 0.177 with far more overlap.
+ * This was 0.20, ported by matching FAR against LFW, where the same bundled
+ * TFLite build puts the impostor p99 at 0.169. That benchmark is the wrong
+ * yardstick for this product: LFW pairs are strangers, and a family library is
+ * mostly relatives, who genuinely resemble each other. Measured through this
+ * exact model on two real libraries, the impostor p99 came out at 0.264 and
+ * 0.427, and 0.20 admitted 5.3% and 17.5% of different-person pairs — roughly
+ * one in six in the second. That is what "my brother-in-law's album has my
+ * mother in it" looks like as a number.
  *
- * Everything in this file that names a cosine is in THIS space now. A bar
- * carried over from the old model reads as far stricter than it is.
+ * No constant fixes that, because the two libraries need bars 36% apart. The
+ * bar is therefore MEASURED per library by `calibrateThreshold`, and this value
+ * only covers the window before enough same-photo pairs exist to measure with.
+ *
+ * It sits at the harder of the two libraries rather than between them, so the
+ * uncalibrated case fails toward splitting: a person arriving as two groups is
+ * one merge away from correct, while two people fused is unrecoverable. Real
+ * calibration RELAXES it where a library turns out to be easy. Provisional
+ * until re-derived on a demographically balanced set (RFW/BUPT-Balancedface)
+ * rather than on the two libraries that happened to be at hand.
  */
-export const DEFAULT_FACE_INDEX_THRESHOLD = 0.2;
+export const DEFAULT_FACE_INDEX_THRESHOLD = 0.44;
 
 /**
  * Identifies HOW the persisted people were grouped, not just at what bar.
@@ -131,7 +145,7 @@ export const DEFAULT_FACE_INDEX_THRESHOLD = 0.2;
  * embedding, re-scanning the whole library for what is a cheap recomputation
  * over data already on disk.
  */
-export const CLUSTER_CALIBRATION = "avg-linkage-w600k-mbf-1";
+export const CLUSTER_CALIBRATION = "avg-linkage-w600k-mbf-calibrated-1";
 
 /**
  * Bar for the CENTERED space, and only valid there.
@@ -149,6 +163,18 @@ export const CLUSTER_CALIBRATION = "avg-linkage-w600k-mbf-1";
  */
 export const CENTERED_FACE_INDEX_THRESHOLD = 0.17;
 export const CENTERED_CLUSTER_CALIBRATION = "centered-avg-linkage-w600k-mbf-1";
+
+/**
+ * How far the calibrated bar must move before the whole grouping is rebuilt.
+ *
+ * The bar stopped being a constant, so it now drifts slightly every time the
+ * library grows and the impostor sample gets one pair longer. Without a dead
+ * band, `reclusterIfCalibrationChanged` would re-cluster every persisted face
+ * on every scan to chase a move of 0.001 that reassigns nobody. Set below the
+ * smallest move that can actually change a decision, so real recalibration
+ * still lands promptly.
+ */
+const RECALIBRATION_HYSTERESIS = 0.01;
 
 /**
  * Centering needs a POPULATION to estimate a mean from. With a handful of faces
@@ -1916,9 +1942,23 @@ function calibrationForLibrary(): { rule: string; threshold: number; centered: b
   const centered =
     USE_CENTERED_CLUSTERING &&
     index.observations.length >= CENTERING_MIN_OBSERVATIONS;
-  return centered
-    ? { rule: CENTERED_CLUSTER_CALIBRATION, threshold: CENTERED_FACE_INDEX_THRESHOLD, centered }
-    : { rule: CLUSTER_CALIBRATION, threshold: DEFAULT_FACE_INDEX_THRESHOLD, centered };
+  if (centered) {
+    // The centered bar has never been measured in this space, so it does not
+    // get to claim a calibration it does not have. Nothing runs on this path
+    // while USE_CENTERED_CLUSTERING is false.
+    return {
+      rule: CENTERED_CLUSTER_CALIBRATION,
+      threshold: CENTERED_FACE_INDEX_THRESHOLD,
+      centered,
+    };
+  }
+  // Measured from this library's own same-photo pairs, falling back to the
+  // cold-start bar until there are enough of them to be a measurement.
+  const calibrated = calibrateThreshold(
+    index.observations,
+    DEFAULT_FACE_INDEX_THRESHOLD,
+  );
+  return { rule: CLUSTER_CALIBRATION, threshold: calibrated.threshold, centered };
 }
 
 function rebuildPeople(requested?: number): void {
@@ -1955,7 +1995,11 @@ function reclusterIfCalibrationChanged(threshold?: number): boolean {
   const wanted = safeThreshold(threshold ?? calibration.threshold);
   const previousThreshold = index.threshold;
   const previousCalibration = index.calibration;
-  const sameBar = Math.abs(previousThreshold - wanted) < 1e-9;
+  // Hysteresis, not float tolerance. The bar is now a measurement that drifts a
+  // little every time the library grows, and re-clustering every face because
+  // it moved by 0.001 would rebuild the whole grouping on each scan for a
+  // change no one can see. Only a move big enough to reassign a face counts.
+  const sameBar = Math.abs(previousThreshold - wanted) < RECALIBRATION_HYSTERESIS;
   const sameRule = previousCalibration === calibration.rule;
   if (sameBar && sameRule) return false;
 

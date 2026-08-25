@@ -1,7 +1,9 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { SAME_PHOTO_EXCEPTION_SIMILARITY } from "./face-cluster.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { CENTERED_FACE_INDEX_THRESHOLD, DEFAULT_FACE_INDEX_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
+import { CENTERED_FACE_INDEX_THRESHOLD, DEFAULT_FACE_INDEX_THRESHOLD, FACE_INDEX_IDENTITY_MERGE_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { CALIBRATION_MAX_THRESHOLD, CALIBRATION_MIN_THRESHOLD } from "./face-calibration.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -197,12 +199,33 @@ assert(
   // construction. Clustering now runs on CENTERED embeddings, where the
   // measured impostor median is -0.015 and p99 is 0.533, so the bar belongs far
   // lower. Move these two together or not at all.
-  // 0.20 is an operating point, not a guess: in w600k_mbf space, measured on
-  // 1,471 LFW crops through the bundled TFLite build, the impostor p99 is 0.169
-  // and the genuine p05 is 0.423, so this bar sits inside a real gap.
+  // The raw bar is deliberately NOT pinned to a number any more.
+  //
+  // It used to be pinned to 0.20, the LFW operating point (impostor p99 0.169,
+  // genuine p05 0.423 over 1,471 crops). Measured through the same TFLite build
+  // on two real libraries, that bar admitted 5.3% and 17.5% of different-person
+  // pairs, because LFW pairs are strangers and a family library is relatives.
+  // The two libraries wanted bars 36% apart, so no constant is correct for both
+  // and the bar is now measured per library by `calibrateThreshold`. Asserting
+  // an exact value here would re-freeze the assumption that a single number can
+  // be right, which is the bug this replaced. Pin the INVARIANTS instead.
   assert(
-    DEFAULT_FACE_INDEX_THRESHOLD === 0.2,
-    "the RAW bar is the measured w600k_mbf operating point",
+    DEFAULT_FACE_INDEX_THRESHOLD >= CALIBRATION_MIN_THRESHOLD &&
+      DEFAULT_FACE_INDEX_THRESHOLD <= CALIBRATION_MAX_THRESHOLD,
+    "the cold-start bar must sit inside the range calibration may return, or " +
+      "the first scan and every later one disagree by construction",
+  );
+  assert(
+    DEFAULT_FACE_INDEX_THRESHOLD < FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
+    "assignment must stay strictly easier than merging: merge errors are " +
+      "unrecoverable, assignment errors are one manual split away",
+  );
+  // Uncalibrated, the app must fail toward splitting rather than fusing. 0.264
+  // was the easier of the two measured libraries' impostor p99; a cold-start
+  // bar below that is known to merge strangers on real photos.
+  assert(
+    DEFAULT_FACE_INDEX_THRESHOLD > 0.264,
+    "the cold-start bar must clear the impostor tail measured on real libraries",
   );
   assert(
     CENTERED_FACE_INDEX_THRESHOLD === 0.17,
