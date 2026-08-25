@@ -1,5 +1,5 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { ARCFACE_TEMPLATE_112, alignFaceRgb, alignmentPairs, similarityTransform, warpFaceRgb } from "./face-align.ts";
+import { ARCFACE_TEMPLATE_112, alignFaceRgb, alignmentPairs, faceAlignmentShapeCounts, similarityTransform, warpFaceRgb } from "./face-align.ts";
 
 // Local assert to match the house test style (the app tsconfig has no
 // @types/node, so node:test / node:assert are intentionally not imported).
@@ -148,6 +148,39 @@ const missing = alignFaceRgb(big, 120, 120, {
   leftMouth: { x: 70.7, y: 92.2 },
 });
 assert(missing === undefined, "unusable landmarks fall back instead of throwing");
+
+// ── Alignment shape: a crossed correspondence ROTATES, it does not fail ──
+// This is the whole reason the shape counters exist. A similarity transform
+// cannot mirror, so pairing the eyes the wrong way round does not return
+// undefined — it returns a clean 180 degree rotation that feeds the embedder
+// upside-down faces while every failure counter still reads zero.
+const pixels = new Uint8Array(200 * 200 * 4).fill(120);
+
+const beforeUpright = faceAlignmentShapeCounts();
+assert(alignFaceRgb(pixels, 200, 200, upright), "upright face aligns");
+const afterUpright = faceAlignmentShapeCounts();
+assert(
+  afterUpright.upright === beforeUpright.upright + 1,
+  "a correctly-paired upright face is recorded as upright",
+);
+assert(
+  afterUpright.upsideDown === beforeUpright.upsideDown,
+  "and is not recorded as upside down",
+);
+
+// Eyes only, labels swapped — exactly what a wrong ML Kit left/right convention
+// would produce. Two points admit an exact fit, so the residual stays at zero:
+// nothing but the rotation angle can reveal this.
+const crossedEyes = { rightEye: upright.leftEye, leftEye: upright.rightEye };
+assert(
+  alignFaceRgb(pixels, 200, 200, crossedEyes),
+  "a crossed correspondence still ALIGNS — this is the trap",
+);
+const afterCrossed = faceAlignmentShapeCounts();
+assert(
+  afterCrossed.upsideDown === afterUpright.upsideDown + 1,
+  "a crossed correspondence is a 180 degree rotation, not a failure",
+);
 
 // eslint-disable-next-line no-console
 console.log("face-align self-check passed");

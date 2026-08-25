@@ -125,6 +125,56 @@ assert(clusterFaces([]).length === 0, "empty input should return an empty array"
   );
 }
 
+// AVERAGE LINKAGE, and why cosine-against-a-centroid is not a similarity.
+//
+// A centroid is the arithmetic MEAN of its members' unit embeddings, so
+// cos(face, centroid) is the mean cosine to the members divided by the
+// centroid's own length — and that length shrinks as a cluster gets sloppier.
+// The score therefore RISES as a cluster gets worse, which is a positive
+// feedback loop: absorb a junk face, get shorter, look closer to everything,
+// absorb the next one. It is the mechanism behind a library that collapses into
+// one tile no matter what threshold is set, and no threshold can stop it
+// because the quantity being compared is not bounded by anything real.
+//
+// Two members 40 degrees either side of the centroid direction: a probe sitting
+// exactly on that direction resembles NEITHER member more than cos 40 = 0.766,
+// yet cos(probe, centroid) is 1.0 — a perfect score against a cluster it only
+// half matches. Multiplying by |centroid| recovers the honest number.
+{
+  const spread = Math.cos((40 * Math.PI) / 180);
+  const loose = {
+    id: "person-1",
+    faceCount: 2,
+    assetIds: ["member-a", "member-b"],
+    // The mean of unit vectors at +40 and -40 degrees.
+    centroid: [spread, 0],
+    embeddingKind: "identity" as const,
+  };
+  const probe = {
+    assetId: "probe",
+    embedding: [1, 0],
+    embeddingKind: "identity" as const,
+  };
+
+  assert(
+    extendFaceClusters([loose], [probe], { threshold: 0.8 })[0].faceCount === 2,
+    "a face cannot join a cluster it matches at 0.766 when the bar is 0.80",
+  );
+  assert(
+    extendFaceClusters([loose], [probe], { threshold: 0.75 })[0].faceCount === 3,
+    "and it does join once the bar drops below its true mean similarity",
+  );
+
+  // The runaway law, stated directly: of two clusters the same size, the one
+  // whose members agree with each other must be the more attractive. Under
+  // centroid cosine it is the other way round.
+  const tight = { ...loose, centroid: [1, 0] };
+  assert(
+    extendFaceClusters([tight], [probe], { threshold: 0.8 })[0].faceCount === 3,
+    "the tight cluster admits the same face the loose one rejected",
+  );
+}
+
 {
   const fallback = [
     { assetId: "base", embedding: [1, 0], embeddingKind: "perceptual" as const },

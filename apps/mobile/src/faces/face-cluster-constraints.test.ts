@@ -227,5 +227,134 @@ assert(
   );
 }
 
+// (e) THE CANNOT-LINK MUST BE TRANSITIVE.
+//
+// Blocking only the DIRECT link between two co-occurring clusters is not a
+// constraint, it is a speed bump: a merge with an unrelated third cluster moves
+// a centroid, and the exception was re-measured against the moved centroid. So
+// a pair that was forbidden became legal one round later, with no new evidence
+// about either person. Concretely, and this is the shape the device produced:
+//
+//   ana    at   0 deg, photos {group-shot, ana-solo}
+//   bridge at  16 deg, photos {bridge-solo}
+//   cal    at  38 deg, photos {group-shot, cal-solo}
+//
+// ana-cal sit at cosine 0.788 and share group-shot, so they are a cannot-link
+// and can never merge directly. ana-bridge at 0.961 merges, which swings ana's
+// centroid to 8 deg, and from there cal is at 0.866 — over the 0.85 exception.
+// The forbidden pair merges via the chain. The relation is now frozen before the
+// first merge and inherited on every merge, so drift cannot dissolve it.
+{
+  const withPhotos = (id: string, degrees: number, assetIds: string[]) => ({
+    id,
+    faceCount: 1,
+    assetIds,
+    centroid: atDegrees(degrees),
+    embeddingKind: "identity" as const,
+  });
+  const chained = extendFaceClusters(
+    [
+      withPhotos("person-1", 0, ["group-shot", "ana-solo"]),
+      withPhotos("person-2", 16, ["bridge-solo"]),
+      withPhotos("person-3", 38, ["group-shot", "cal-solo"]),
+    ],
+    [],
+    { identityMergeThreshold: 0.85, threshold: 0.85 },
+  );
+  const fused = chained.filter((person) => person.assetIds.includes("group-shot"));
+  assert(
+    fused.length === 2,
+    `co-occurring identities must not be chained through a bridge (got ${partition(chained)})`,
+  );
+  assert(
+    chained.length === 2,
+    `the bridge itself still joins its closest neighbour (got ${partition(chained)})`,
+  );
+}
+
+// (f) THE SAME PROPERTY END TO END, ON EMBEDDINGS AS BAD AS THE DEVICE'S.
+//
+// The device library measures impostor cosine at p50 0.724 — different people
+// are, on average, as close as the assignment bar. Whatever that does to
+// accuracy, ONE invariant has to survive it: a tile may never hold two faces out
+// of a single photo. That number is checkable on the phone (a 10,851-face tile
+// spanning 5,979 photos is 1.8 faces per photo and is therefore proof of a
+// broken constraint, not proof of a popular person), so pin it here.
+//
+// The generator is the recovery-suite one recalibrated to the device: every face
+// is A*shared + B*identity + C*noise, re-normalized, giving impostor cosine A^2
+// and genuine cosine A^2+B^2. Four people appear in every photo.
+{
+  const DIMENSIONS = 96;
+  let state = 20260825 >>> 0;
+  const random = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+  const gaussian = () =>
+    Math.sqrt(-2 * Math.log(Math.max(random(), Number.EPSILON))) *
+    Math.cos(2 * Math.PI * random());
+  const normalize = (values: number[]) => {
+    const length = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0));
+    return values.map((value) => value / length);
+  };
+  const unitVector = () => normalize(Array.from({ length: DIMENSIONS }, gaussian));
+  const mix = (parts: Array<[number, number[]]>) =>
+    normalize(
+      Array.from({ length: DIMENSIONS }, (_unused, axis) =>
+        parts.reduce((sum, [weight, vector]) => sum + weight * vector[axis], 0),
+      ),
+    );
+
+  const IMPOSTOR = 0.724;
+  const GENUINE = 0.82;
+  const shared = unitVector();
+  const identityCount = 4;
+  const photoCount = 25;
+  const identities = Array.from({ length: identityCount }, unitVector);
+  const faces: {
+    assetId: string;
+    embedding: number[];
+    embeddingKind: "identity";
+  }[] = [];
+  for (let photo = 0; photo < photoCount; photo += 1) {
+    for (let identity = 0; identity < identityCount; identity += 1) {
+      faces.push({
+        assetId: `family-${photo}`,
+        embedding: mix([
+          [Math.sqrt(IMPOSTOR), shared],
+          [Math.sqrt(GENUINE - IMPOSTOR), identities[identity]],
+          [Math.sqrt(1 - GENUINE), unitVector()],
+        ]),
+        embeddingKind: "identity" as const,
+      });
+    }
+  }
+
+  // Every threshold, because the constraint is not a threshold's job. A
+  // clusterer may legitimately over-merge people who never posed together on
+  // embeddings this poor; it may never put one photo's faces in one tile.
+  for (const threshold of [0.5, 0.62, 0.75, 0.85]) {
+    const people = clusterFaces(faces, {
+      threshold,
+      identityMergeThreshold: threshold,
+    });
+    for (const person of people) {
+      assert(
+        person.faceCount <= new Set(person.assetIds).size,
+        `at threshold ${threshold} a tile holds ${person.faceCount} faces from only ` +
+          `${new Set(person.assetIds).size} photos — same-photo faces were fused`,
+      );
+    }
+    const assigned = people.reduce((sum, person) => sum + person.faceCount, 0);
+    assert(
+      assigned === faces.length,
+      `every face must land somewhere at threshold ${threshold} (got ${assigned}/${faces.length})`,
+    );
+  }
+}
+
 // eslint-disable-next-line no-console
 console.log("face-cluster constraints self-check passed");

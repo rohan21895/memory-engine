@@ -305,7 +305,12 @@ export function coordinateCell(location: {
     !Number.isFinite(location.latitude) ||
     !Number.isFinite(location.longitude) ||
     Math.abs(location.latitude) > 90 ||
-    Math.abs(location.longitude) > 180
+    Math.abs(location.longitude) > 180 ||
+    // Null Island. A GPS EXIF tag written empty parses as exactly 0,0, which is
+    // 600km of open Atlantic; a whole camera roll of them would otherwise share
+    // one invented place called "Near 0.0°N, 0.0°E". No GPS is the honest
+    // reading, and it is what a missing tag already gets.
+    (location.latitude === 0 && location.longitude === 0)
   ) {
     return null;
   }
@@ -347,6 +352,24 @@ export function coordinatePlaceNames(cell: {
   };
 }
 
+/**
+ * Names a cell no bundled place could name.
+ *
+ * Only a cell that failed for want of the bundled list is provisional. A cell
+ * that is genuinely hundreds of kilometres from any city is SETTLED: the list
+ * does not change between runs, so asking again next launch can only give the
+ * same answer. Marking it provisional put an unanswerable cell in the cache
+ * that the launch probe below would pick first and stall on, leaving every
+ * cell that really could be named stuck on coordinates forever.
+ */
+export function unnamedPlaceNames(
+  cell: { latitude: number; longitude: number },
+  geocoderAvailable: boolean,
+): GeoNames {
+  const names = coordinatePlaceNames(cell);
+  return geocoderAvailable ? { ...names, provisional: undefined } : names;
+}
+
 /** A cell is geocoded when it is unknown, or when its label is coordinates. */
 export function needsGeocode(cached: GeoNames | undefined): boolean {
   return !cached || cached.provisional === true;
@@ -378,9 +401,17 @@ export function namesFromNearestPlace(
   // the country is all that can honestly be claimed. Coordinates still label the
   // bucket so those photos group together rather than vanishing.
   if (place.distanceKm > CITY_MAX_KM) {
-    return countryNames.countryId
-      ? { ...coordinatePlaceNames(cell), ...countryNames, provisional: undefined }
-      : coordinatePlaceNames(cell);
+    if (!countryNames.countryId) return coordinatePlaceNames(cell);
+    // Only the country is copied over the coordinate label. Spreading the whole
+    // of countryNames would put its empty cityId back on top, and every photo
+    // more than an hour from a city — a trek, a safari, a long drive — would
+    // drop out of Places entirely instead of grouping by where it was taken.
+    return {
+      ...coordinatePlaceNames(cell),
+      countryId: countryNames.countryId,
+      countryName: countryNames.countryName,
+      provisional: undefined,
+    };
   }
   // The bucket is the DISTRICT, not the nearest city: nearest-city bucketing
   // scattered one neighbourhood across sibling towns, splitting photos taken
@@ -415,11 +446,9 @@ async function geocodeCell(cell: {
     ? nearestPlace(places, cell.latitude, cell.longitude)
     : undefined;
 
-  // No bundled list (damaged asset) or genuinely nowhere near a city: the
-  // coordinate label is provisional, so a later scan asks again.
   index.geocodeCache[cell.id] = nearest
     ? namesFromNearestPlace(nearest, cell)
-    : coordinatePlaceNames(cell);
+    : unnamedPlaceNames(cell, places !== null);
 }
 
 /** Recovers the coordinates a cell id was built from. */
@@ -641,6 +670,11 @@ function rebuildGroupsAfterCompletedScan(): void {
   );
   index.stateCountry = Object.fromEntries(
     Object.entries(index.stateCountry).filter(([state, country]) => states[state] && countries[country]),
+  );
+  // So do the ballots: a place the owner deleted every photo of must not keep
+  // voting on a label, and its ballot must not sit in the checkpoint forever.
+  index.placeLabelVotes = Object.fromEntries(
+    Object.entries(index.placeLabelVotes).filter(([city]) => cities[city]),
   );
 }
 

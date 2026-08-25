@@ -81,8 +81,13 @@ export const COUNTRY_MAX_KM = 250;
 
 const EARTH_RADIUS_KM = 6371;
 const DEGREE_KM = 111.32;
-/** Grid cells are one degree square; rings past this cannot beat COUNTRY_MAX_KM. */
-const MAX_RING = 3;
+/**
+ * A ring is never treated as narrower than this. At the pole a degree of
+ * longitude is metres wide, so an honest ring width would ask for hundreds of
+ * rings to reach COUNTRY_MAX_KM around a point that has no city within
+ * thousands of kilometres anyway.
+ */
+const MIN_RING_KM = 5;
 
 /**
  * How much extra distance one order of magnitude of population is worth.
@@ -220,7 +225,8 @@ export function haversineKm(
  * Nearest city by expanding one-degree rings.
  *
  * Terminates as soon as the best hit is closer than anything the next ring could
- * hold, so a dense continent costs one ring and an empty ocean costs four.
+ * hold, so a dense continent costs one ring; only empty water scans out to the
+ * ring that covers COUNTRY_MAX_KM.
  */
 export function nearestPlace(
   index: PlaceIndex,
@@ -240,18 +246,25 @@ export function nearestPlace(
   const centreLongitude = Math.floor(longitude);
   // A degree of longitude shrinks toward the poles, so the conservative floor on
   // what the next ring could contain uses the narrower of the two.
-  const longitudeScale = Math.max(0.05, Math.cos(toRadians(latitude)));
-  const ringFloorKm = DEGREE_KM * Math.min(1, longitudeScale);
+  const ringFloorKm = DEGREE_KM * Math.min(1, Math.cos(toRadians(latitude)));
+  // That same shrinking is why the ring cap cannot be a constant: three
+  // one-degree rings reach 334km at the equator but only ~180km at 57N, where
+  // Sitka, Kodiak and Juneau all sit inside COUNTRY_MAX_KM and were never
+  // scanned, so their photos lost even their country.
+  const maxRing = Math.ceil(COUNTRY_MAX_KM / Math.max(MIN_RING_KM, ringFloorKm));
 
   const maxProminenceBonusKm = MAX_PROMINENCE_DECADES * PROMINENCE_KM_PER_DECADE;
   let bestIndex = -1;
   let bestScore = Number.POSITIVE_INFINITY;
   let bestKm = Number.POSITIVE_INFINITY;
   // Termination is judged on raw distance, never on the prominence-adjusted
-  // score, so the bonus can never cause the search to stop early.
+  // score, so the bonus can never cause the search to stop early. The nearest
+  // candidate is kept as well: the bonus decides between comparable neighbours,
+  // it must never decide which TIER the photo lands in.
+  let nearestIndex = -1;
   let nearestKm = Number.POSITIVE_INFINITY;
 
-  for (let ring = 0; ring <= MAX_RING; ring += 1) {
+  for (let ring = 0; ring <= maxRing; ring += 1) {
     for (let dLat = -ring; dLat <= ring; dLat += 1) {
       for (let dLon = -ring; dLon <= ring; dLon += 1) {
         // Only the new perimeter: inner cells were scanned by earlier rings.
@@ -267,7 +280,10 @@ export function nearestPlace(
             index.dataset.lat[candidate] / 1000,
             index.dataset.lon[candidate] / 1000,
           );
-          if (distance < nearestKm) nearestKm = distance;
+          if (distance < nearestKm) {
+            nearestKm = distance;
+            nearestIndex = candidate;
+          }
           // `pop` is tenths of a decade, so /10 recovers decades of population.
           const decades = Math.min(
             MAX_PROMINENCE_DECADES,
@@ -290,21 +306,34 @@ export function nearestPlace(
     }
   }
 
-  if (bestIndex === -1 || bestKm > COUNTRY_MAX_KM) return undefined;
+  if (bestIndex === -1) return undefined;
+
+  // The bonus is worth up to 24km, which is enough to reach across a radius the
+  // caller treats as a hard edge. Letting it do so demotes a photo 55km from a
+  // town to country-only because a metro 66km away scored better, and can even
+  // hand the photo the wrong country: 54km from Manguzi in South Africa, the
+  // scored winner is Maputo, 62km away in Mozambique. When the bonus crosses a
+  // radius the truly nearest city is inside, that nearer city is the answer.
+  const crossesRadius =
+    (bestKm > CITY_MAX_KM && nearestKm <= CITY_MAX_KM) ||
+    (bestKm > COUNTRY_MAX_KM && nearestKm <= COUNTRY_MAX_KM);
+  const chosen = crossesRadius ? nearestIndex : bestIndex;
+  const chosenKm = crossesRadius ? nearestKm : bestKm;
+  if (chosenKm > COUNTRY_MAX_KM) return undefined;
 
   const { dataset } = index;
-  const countryIndex = dataset.cc[bestIndex];
-  const placeIndex = dataset.place[bestIndex];
+  const countryIndex = dataset.cc[chosen];
+  const placeIndex = dataset.place[chosen];
   const stateIndex = dataset.placeState[placeIndex] ?? -1;
   return {
     placeId: dataset.placeIds[placeIndex] ?? "",
     placeName: dataset.placeNames[placeIndex] ?? "",
-    cityName: dataset.city[bestIndex] ?? "",
+    cityName: dataset.city[chosen] ?? "",
     stateId: dataset.stateIds[stateIndex] ?? "",
     stateName: dataset.stateNames[stateIndex] ?? "",
     countryName: dataset.names[countryIndex] ?? "",
     countryCode: dataset.codes[countryIndex] ?? "",
-    distanceKm: bestKm,
+    distanceKm: chosenKm,
   };
 }
 

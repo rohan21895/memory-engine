@@ -278,6 +278,69 @@ export function warpFaceRgb(
 }
 
 /**
+ * What geometry alignment actually applied, so a warp that "succeeds" while
+ * producing nonsense is visible.
+ *
+ * A 2D similarity transform CANNOT mirror. So if the eye correspondence were
+ * crossed the wrong way, the fit would not fail — it would come back as a clean
+ * ~180 degree rotation with a low residual, and every aligned face would be fed
+ * to the embedder upside down. That is indistinguishable from success by every
+ * other counter we have (`alignFailed` stays 0), and it collapses the embedding
+ * space exactly like a broken model would. Faces are overwhelmingly upright, so
+ * a healthy library must sit in `upright`; a large `upsideDown` bucket is the
+ * signature of a crossed template.
+ */
+const alignmentShape = {
+  upright: 0,
+  tilted: 0,
+  upsideDown: 0,
+  residualSum: 0,
+  residualCount: 0,
+};
+
+export function faceAlignmentShapeCounts(): {
+  upright: number;
+  tilted: number;
+  upsideDown: number;
+  residualPx: number;
+} {
+  const { upright, tilted, upsideDown, residualSum, residualCount } =
+    alignmentShape;
+  return {
+    upright,
+    tilted,
+    upsideDown,
+    residualPx: residualCount > 0 ? Number((residualSum / residualCount).toFixed(2)) : 0,
+  };
+}
+
+/** Records the rotation and landmark residual of one accepted alignment. */
+function recordAlignmentShape(
+  transform: SimilarityTransform,
+  pairs: { src: Point[]; dst: ReadonlyArray<readonly [number, number]> },
+): void {
+  const degrees = Math.abs(
+    (Math.atan2(transform.b, transform.a) * 180) / Math.PI,
+  );
+  if (degrees <= 30) alignmentShape.upright += 1;
+  else if (degrees < 150) alignmentShape.tilted += 1;
+  else alignmentShape.upsideDown += 1;
+
+  const count = Math.min(pairs.src.length, pairs.dst.length);
+  let residual = 0;
+  for (let index = 0; index < count; index += 1) {
+    const { x, y } = pairs.src[index];
+    const u = transform.a * x - transform.b * y + transform.tx;
+    const v = transform.b * x + transform.a * y + transform.ty;
+    residual += Math.hypot(u - pairs.dst[index][0], v - pairs.dst[index][1]);
+  }
+  if (count > 0) {
+    alignmentShape.residualSum += residual / count;
+    alignmentShape.residualCount += 1;
+  }
+}
+
+/**
  * Full alignment: landmarks (in the coordinate space of the supplied pixels)
  * to an aligned RGB face. Returns undefined when the landmarks are unusable so
  * callers can fall back to the legacy bounding-box crop rather than fail.
@@ -301,6 +364,8 @@ export function alignFaceRgb(
 
   const transform = similarityTransform(pairs.src, pairs.dst);
   if (!transform) return undefined;
+
+  recordAlignmentShape(transform, pairs);
 
   return warpFaceRgb(rgba, srcWidth, srcHeight, transform, size);
 }

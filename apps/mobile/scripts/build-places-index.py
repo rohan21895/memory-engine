@@ -26,8 +26,16 @@ around Noida landed variously on "Noida" (28.58, 77.33) and "Greater Noida"
 places, and the Places list filled with near-duplicates.
 
 So the durable bucket is the admin2 district, labelled by its best-known city.
-That also collapses ~70k cities into ~25k places, which is what makes a
+That also collapses ~70k cities into ~30k places, which is what makes a
 browsable Country -> State -> Place hierarchy viable at all.
+
+GeoNames does not give every city an admin2 code, and it omits it on exactly
+the cities that matter most -- Delhi, Mumbai, Tokyo, Seoul, New York City, Sao
+Paulo, Mexico City -- while the suburbs around them all carry one. Left alone,
+each of those metros became a single POINT place ringed by a dozen district
+places named after villages, which is the Noida split again at metro scale. A
+city with no district code that sits inside a neighbouring city's district is a
+neighbourhood of it, so it joins that district (see DISTRICT_ADOPTION_KM).
 
 Per-city NAMES *are* shipped. Labelling a district by its most populous city
 reads badly for exactly the places a photo album is about: Manali (pop ~8k)
@@ -43,6 +51,32 @@ Usage:
 import json
 import math
 import sys
+
+
+# How far a city with no admin2 code may reach for a district to join.
+#
+# Bounded, and never across an admin1, because the nearest district is not
+# always the same settlement: Cairo's is 165km away in another governorate, and
+# an unbounded cross-admin1 reach demotes Busan into Gyeongsangnam-do, Beirut
+# into Mount Lebanon and Sharjah into Dubai -- capital territories whose whole
+# point is that they are not part of the province around them.
+#
+# 25km covers every case where the two really are one settlement: Delhi is
+# 3.8km from its district, Mumbai 3.1km, Tokyo 1.2km, Sydney 0.3km, New York
+# City 0.3km, Jakarta 12km, Tehran 20km. On cities5000 this folds 1,959 cities
+# into a neighbouring district and leaves 8,836 as places of their own.
+DISTRICT_ADOPTION_KM = 25
+
+
+def haversine_km(a, b) -> float:
+    """Distance between two rows, whose coordinates are thousandths of a degree."""
+    lat1, lon1 = math.radians(a["lat"] / 1000), math.radians(a["lon"] / 1000)
+    lat2, lon2 = math.radians(b["lat"] / 1000), math.radians(b["lon"] / 1000)
+    h = (
+        math.sin((lat2 - lat1) / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    )
+    return 2 * 6371 * math.asin(min(1.0, math.sqrt(h)))
 
 
 def read_admin_names(path: str) -> dict:
@@ -121,22 +155,71 @@ def main() -> int:
     def state_name(row) -> str:
         return admin1.get(f"{row['cc']}.{row['a1']}", "") or countries[row["cc"]]
 
-    # Without an admin2 the city is its own place, keyed by NAME so two
-    # same-named entries in one state merge instead of colliding by position.
-    def place_key(row) -> str:
+    def district_key(row) -> str:
+        """The admin2 district this row is coded into, or "" if GeoNames omits it."""
         if row["a1"] and row["a2"]:
             return f"{row['cc']}.{row['a1']}.{row['a2']}".lower()
+        return ""
+
+    # No district anywhere near: the city is its own place, keyed by NAME so two
+    # same-named entries in one state merge instead of colliding by position.
+    def own_place_key(row) -> str:
         return f"{state_key(row)}~{row['name'].lower()}"
+
+    def place_state_key(pkey: str) -> str:
+        """A place id carries its own parent: "in.07.094" -> "in.07", "gi~x" -> "gi".
+
+        Read off the id rather than off the first row filed under it: a row that
+        joined a neighbour's district must not drag its own admin1 onto that
+        district and move every city in it into the wrong state.
+        """
+        return pkey.split("~")[0] if "~" in pkey else pkey.rsplit(".", 1)[0]
+
+    # Whole-degree buckets, so each adoption measures against its neighbourhood
+    # rather than all 70k cities.
+    grid = {}
+    for row in rows:
+        if district_key(row):
+            grid.setdefault((row["lat"] // 1000, row["lon"] // 1000), []).append(row)
+
+    for row in rows:
+        key = district_key(row)
+        if not key:
+            # A degree of longitude shrinks toward the poles, so the number of
+            # buckets DISTRICT_ADOPTION_KM spans is a function of latitude.
+            latitude = row["lat"] / 1000
+            span = 1 + int(
+                DISTRICT_ADOPTION_KM
+                / max(1.0, 111.32 * math.cos(math.radians(latitude)))
+            )
+            nearest, nearest_km = None, DISTRICT_ADOPTION_KM
+            for dlat in range(-span, span + 1):
+                for dlon in range(-span, span + 1):
+                    cell = grid.get((
+                        row["lat"] // 1000 + dlat,
+                        # Longitude wraps: 179E and 179W are 20km apart.
+                        (row["lon"] // 1000 + dlon + 180) % 360 - 180,
+                    ))
+                    for other in cell or ():
+                        # Same country and same admin1, so a place never
+                        # straddles a border its own id claims it does not.
+                        if other["cc"] != row["cc"] or other["a1"] != row["a1"]:
+                            continue
+                        km = haversine_km(row, other)
+                        if km < nearest_km:
+                            nearest, nearest_km = other, km
+            if nearest is not None:
+                key = district_key(nearest)
+        row["place"] = key or own_place_key(row)
 
     states = {}
     place_state = {}
     place_label = {}
 
     for row in rows:
-        skey = state_key(row)
-        states.setdefault(skey, state_name(row))
-        pkey = place_key(row)
-        place_state.setdefault(pkey, skey)
+        states.setdefault(state_key(row), state_name(row))
+        pkey = row["place"]
+        place_state.setdefault(pkey, place_state_key(pkey))
         candidate = (row["name"], row["pop"])
         if pkey not in place_label or better_label(candidate, place_label[pkey]):
             place_label[pkey] = candidate
@@ -169,7 +252,7 @@ def main() -> int:
         "lat": [row["lat"] for row in rows],
         "lon": [row["lon"] for row in rows],
         "cc": [code_index[row["cc"]] for row in rows],
-        "place": [place_index[place_key(row)] for row in rows],
+        "place": [place_index[row["place"]] for row in rows],
         # The city name is the LABEL candidate; the district above is the bucket.
         "city": [row["name"] for row in rows],
         # Prominence in TENTHS of a decade of population: round(log10(pop)*10).

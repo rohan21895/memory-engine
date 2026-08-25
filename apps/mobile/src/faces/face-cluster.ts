@@ -46,6 +46,75 @@ function sharesAsset(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return false;
 }
 
+/** True when the two sets have any element in common. */
+function intersects(a: ReadonlySet<number>, b: ReadonlySet<number>): boolean {
+  const [smaller, larger] = a.size <= b.size ? [a, b] : [b, a];
+  for (const value of smaller) {
+    if (larger.has(value)) return true;
+  }
+  return false;
+}
+
+function magnitude(values: number[]): number {
+  let squared = 0;
+  for (const value of values) {
+    squared += value * value;
+  }
+  return Number.isFinite(squared) ? Math.sqrt(squared) : 0;
+}
+
+/**
+ * Unit-norms an embedding so a centroid is a mean of UNIT vectors.
+ *
+ * That invariant is what makes `centroidScale` below meaningful: the length of
+ * a mean of unit vectors is a measurement of how tightly the cluster agrees
+ * with itself. `face-index.ts` already normalizes at its own trust boundary,
+ * so on the shipped path this is idempotent; it is repeated here because
+ * `clusterFaces` is a public export and a caller handing in longer vectors
+ * would otherwise make every cluster look artificially loose.
+ */
+function unitEmbedding(embedding: number[]): number[] {
+  const length = magnitude(embedding);
+  return length > Number.EPSILON && Math.abs(length - 1) > 1e-9
+    ? embedding.map((value) => value / length)
+    : embedding;
+}
+
+/**
+ * |centroid|, the AVERAGE-LINKAGE correction, clamped to 1.
+ *
+ * A centroid is the arithmetic mean of its members' unit embeddings, so for a
+ * unit-length face f:
+ *
+ *   dot(f, centroid) = mean_i cos(f, member_i)          <- average linkage
+ *   cos(f, centroid) = mean_i cos(f, member_i) / |centroid|
+ *
+ * Cosine against a centroid therefore divides the honest quantity by a number
+ * that SHRINKS as a cluster gets sloppier. That is a positive feedback loop and
+ * it is the mechanism behind the one-tile library: every junk face a cluster
+ * absorbs pulls its centroid toward the population mean, shortening it, which
+ * RAISES its cosine against every remaining face, which qualifies the next junk
+ * face. The biggest, worst cluster ends up the most attractive one, so it eats
+ * the library and no threshold anywhere can stop it — the sweep at 0.62 through
+ * 0.95 was re-measuring the same runaway at seven different speeds.
+ *
+ * Multiplying the cosine back by |centroid| recovers average linkage: the score
+ * is the mean cosine between the candidate and every face already in the
+ * cluster. It is bounded by the cluster's best member rather than inflated past
+ * it, and absorbing a bad face now makes a cluster LESS attractive, which is the
+ * direction that terminates. It also puts assignment, merging and the same-photo
+ * exception back on the same face-to-face scale the thresholds were reasoned
+ * about on.
+ *
+ * Clamped to 1 so it can only ever tighten: an over-long centroid (int8
+ * dequantization noise, or a caller that built one by hand) must not be allowed
+ * to manufacture similarity.
+ */
+function centroidScale(centroid: number[]): number {
+  const length = magnitude(centroid);
+  return length > Number.EPSILON ? Math.min(1, length) : 1;
+}
+
 export function cosine(a: number[], b: number[]): number {
   if (a.length === 0 || a.length !== b.length) {
     return 0;
@@ -93,7 +162,7 @@ export function updateCentroid(
   );
 }
 
-type MutablePerson = Person & { assetIdSet: Set<string> };
+type MutablePerson = Person & { assetIdSet: Set<string>; scale: number };
 
 type ClusterOptions = {
   identityMergeThreshold?: number;
@@ -151,6 +220,7 @@ export function extendFaceClusters(
     assetIds: person.assetIds.slice(),
     centroid: person.centroid.slice(),
     assetIdSet: new Set(person.assetIds),
+    scale: centroidScale(person.centroid),
   }));
   let nextPersonNumber = people.reduce((largest, person) => {
     const match = /^person-(\d+)$/u.exec(person.id);
@@ -158,6 +228,7 @@ export function extendFaceClusters(
   }, 0) + 1;
 
   for (const observation of observations) {
+    const embedding = unitEmbedding(observation.embedding);
     let bestIndex = -1;
     let bestSimilarity = Number.NEGATIVE_INFINITY;
 
@@ -165,16 +236,21 @@ export function extendFaceClusters(
       const person = people[index];
       if (
         observation.embeddingKind !== person.embeddingKind ||
-        observation.embedding.length === 0 ||
-        observation.embedding.length !== person.centroid.length
+        embedding.length === 0 ||
+        embedding.length !== person.centroid.length
       ) {
         continue;
       }
 
-      const similarity = cosine(observation.embedding, person.centroid);
+      // Average linkage: the mean cosine between this face and every face
+      // already in the person, NOT the cosine against their mean. See
+      // `centroidScale`.
+      const similarity = cosine(embedding, person.centroid) * person.scale;
       // Cannot-link: this person already owns a face from this very photo, so
       // joining would fuse two people who merely posed together. Only the
-      // mirror/panorama exception may cross it.
+      // mirror/panorama exception may cross it, and on average linkage that
+      // exception now means what it says — the face must average 0.85 against
+      // the WHOLE cluster, which a sprawling one can no longer fake.
       if (
         person.assetIdSet.has(observation.assetId) &&
         similarity < SAME_PHOTO_EXCEPTION_SIMILARITY
@@ -200,9 +276,10 @@ export function extendFaceClusters(
         id,
         faceCount: 1,
         assetIds: [observation.assetId],
-        centroid: observation.embedding.slice(),
+        centroid: embedding.slice(),
         embeddingKind: observation.embeddingKind,
         assetIdSet: new Set([observation.assetId]),
+        scale: centroidScale(embedding),
       });
       opts.onAssign?.(observation, id);
       continue;
@@ -211,9 +288,10 @@ export function extendFaceClusters(
     const person = people[bestIndex];
     person.centroid = updateCentroid(
       person.centroid,
-      observation.embedding,
+      embedding,
       person.faceCount,
     );
+    person.scale = centroidScale(person.centroid);
     person.faceCount += 1;
     if (!person.assetIdSet.has(observation.assetId)) {
       person.assetIdSet.add(observation.assetId);
@@ -229,7 +307,9 @@ export function extendFaceClusters(
     opts.onMerge,
   );
 
-  return people.map(({ assetIdSet: _assetIdSet, ...person }) => person);
+  return people.map(
+    ({ assetIdSet: _assetIdSet, scale: _scale, ...person }) => person,
+  );
 }
 
 /**
@@ -243,6 +323,27 @@ export function extendFaceClusters(
  * a bridge cluster. Every round removes exactly one person, so the loop is
  * bounded by the initial people count. The older cluster (lower index) survives,
  * keeping surfaced ids stable between runs so the UI does not reshuffle.
+ *
+ * The cannot-link is FROZEN before the first merge, because a live re-check is
+ * defeated by exactly the chain it is supposed to stop. It used to re-evaluate
+ * `similarity >= SAME_PHOTO_EXCEPTION_SIMILARITY` against the current centroids,
+ * so absorbing an unrelated bridge cluster could walk a centroid far enough to
+ * clear the exception and void a constraint that held moments earlier:
+ *
+ *   ana    at   0 deg, photos {group-shot, ana-solo}
+ *   bridge at  16 deg, photos {bridge-solo}
+ *   cal    at  38 deg, photos {group-shot, cal-solo}
+ *
+ * ana and cal share group-shot at cosine 0.788, below the exception, so they are
+ * a cannot-link and were never eligible to merge directly. But ana absorbs
+ * bridge (0.961), which drags ana's centroid to 8 deg — and from there cal sits
+ * at cosine 0.866, over the 0.85 exception, so the pair that was forbidden gets
+ * merged on the very next round. Two faces from one photo, one tile. Freezing
+ * the relation up front and inheriting it through `origins`/`blocked` makes the
+ * constraint genuinely transitive: a cluster carries every cannot-link of every
+ * cluster it is built from, and no amount of centroid drift can dissolve one.
+ * (It is also cheaper — the asset-set intersection now runs once per pair
+ * instead of once per pair per round.)
  *
  * ONE threshold governs, deliberately. There was a second, looser bar that took
  * over once both clusters held at least N faces, on the theory that a
@@ -265,6 +366,37 @@ function mergeSimilarPeople(
   perceptualThreshold: number,
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
 ): void {
+  const comparable = (a: MutablePerson, b: MutablePerson): boolean =>
+    a.embeddingKind === b.embeddingKind &&
+    a.centroid.length > 0 &&
+    a.centroid.length === b.centroid.length;
+  /** Mean cosine between every face of `a` and every face of `b`. */
+  const linkage = (a: MutablePerson, b: MutablePerson): number =>
+    cosine(a.centroid, b.centroid) * a.scale * b.scale;
+  /** Order-free name for a pair, used only to settle exact ties. */
+  const pairKey = (a: MutablePerson, b: MutablePerson): string =>
+    a.id < b.id ? `${a.id} ${b.id}` : `${b.id} ${a.id}`;
+
+  // Cannot-link, frozen against the pre-merge clusters. `origins` tracks which
+  // of those original clusters each surviving person is built from; `blocked`
+  // tracks which of them it may never be joined to. Both sets union on a merge,
+  // so the constraint is inherited rather than re-derived from a centroid that
+  // has since moved. Applies to the perceptual fallback too: two faces in one
+  // frame are two people whichever space measured them.
+  const origins = people.map((_person, index) => new Set([index]));
+  const blocked = people.map(() => new Set<number>());
+  for (let i = 0; i < people.length; i += 1) {
+    for (let j = i + 1; j < people.length; j += 1) {
+      const a = people[i];
+      const b = people[j];
+      if (!comparable(a, b)) continue;
+      if (!sharesAsset(a.assetIdSet, b.assetIdSet)) continue;
+      if (linkage(a, b) >= SAME_PHOTO_EXCEPTION_SIMILARITY) continue;
+      blocked[i].add(j);
+      blocked[j].add(i);
+    }
+  }
+
   for (;;) {
     let bestI = -1;
     let bestJ = -1;
@@ -274,31 +406,29 @@ function mergeSimilarPeople(
       for (let j = i + 1; j < people.length; j += 1) {
         const a = people[i];
         const b = people[j];
-        if (
-          a.embeddingKind !== b.embeddingKind ||
-          a.centroid.length === 0 ||
-          a.centroid.length !== b.centroid.length
-        ) {
-          continue;
-        }
+        if (!comparable(a, b)) continue;
         const threshold =
           a.embeddingKind === "identity"
             ? identityMergeThreshold
             : perceptualThreshold;
-        const similarity = cosine(a.centroid, b.centroid);
-        if (similarity < threshold || similarity <= bestSimilarity) {
+        const similarity = linkage(a, b);
+        if (similarity < threshold || similarity < bestSimilarity) {
           continue;
         }
-        // The union of both asset sets carries the constraint forward, so a
-        // merged cluster inherits every cannot-link of its parts: a bad bridge
-        // face can never chain two identities that co-occur in one photo.
+        // Exact ties are common in synthetic and symmetric libraries, and
+        // "whichever the loops reached first" makes the result depend on the
+        // order people were discovered in — the one thing closest-first
+        // merging exists to remove. Break them on the id pair instead.
         if (
-          a.embeddingKind === "identity" &&
-          similarity < SAME_PHOTO_EXCEPTION_SIMILARITY &&
-          sharesAsset(a.assetIdSet, b.assetIdSet)
+          similarity === bestSimilarity &&
+          bestI !== -1 &&
+          pairKey(a, b) >= pairKey(people[bestI], people[bestJ])
         ) {
           continue;
         }
+        // `blocked` and `origins` are both unions over the same pre-merge
+        // clusters, so this single test is symmetric in i and j.
+        if (intersects(blocked[i], origins[j])) continue;
         bestSimilarity = similarity;
         bestI = i;
         bestJ = j;
@@ -317,6 +447,7 @@ function mergeSimilarPeople(
         (value * survivor.faceCount + absorbed.centroid[index] * absorbed.faceCount) /
         total,
     );
+    survivor.scale = centroidScale(survivor.centroid);
     survivor.faceCount = total;
     for (const assetId of absorbed.assetIds) {
       if (!survivor.assetIdSet.has(assetId)) {
@@ -324,8 +455,12 @@ function mergeSimilarPeople(
         survivor.assetIds.push(assetId);
       }
     }
+    for (const origin of origins[bestJ]) origins[bestI].add(origin);
+    for (const origin of blocked[bestJ]) blocked[bestI].add(origin);
     onMerge?.(absorbed.id, survivor.id);
     people.splice(bestJ, 1);
+    origins.splice(bestJ, 1);
+    blocked.splice(bestJ, 1);
   }
 }
 

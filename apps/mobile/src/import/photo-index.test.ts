@@ -2,7 +2,7 @@
 // Node's TypeScript runner can import it: the native modules resolve to null
 // here and the scan degrades to a no-op instead of throwing.
 // @ts-expect-error Node requires the extension; Metro resolves it too.
-import { buildIndex, cellCoordinates, coordinateCell, coordinatePlaceNames, getCities, labelFromVotes, namesFromNearestPlace, needsGeocode, shouldCheckpoint } from "./photo-index.ts";
+import { buildIndex, cellCoordinates, coordinateCell, coordinatePlaceNames, getCities, labelFromVotes, namesFromNearestPlace, needsGeocode, shouldCheckpoint, unnamedPlaceNames } from "./photo-index.ts";
 
 // Local assert to match the house test style (the app tsconfig has no
 // @types/node, so node:test / node:assert are intentionally not imported).
@@ -21,6 +21,21 @@ assert(
 assert(
   coordinateCell({ latitude: 91, longitude: 10 }) === null,
   "an out-of-range latitude produces no cell",
+);
+// Null Island: an empty GPS EXIF tag parses as exactly 0,0. Treating it as a
+// location invents one shared place, "Near 0.0°N, 0.0°E", in the middle of the
+// Atlantic -- for every photo whose camera app wrote the tag but no fix.
+assert(
+  coordinateCell({ latitude: 0, longitude: 0 }) === null,
+  "an empty GPS tag reading exactly 0,0 is not a location",
+);
+assert(
+  coordinateCell({ latitude: 0, longitude: 9.45 })?.id === "geo:0.00,9.45",
+  "but a real coordinate on the equator still resolves",
+);
+assert(
+  coordinateCell({ latitude: 51.48, longitude: 0 })?.id === "geo:51.48,0.00",
+  "and so does one on the prime meridian",
 );
 
 // A photo with GPS is never dropped: without a geocoder it still gets a place.
@@ -121,6 +136,35 @@ const farFromTown = namesFromNearestPlace(
 assert(farFromTown.cityId !== "city:in.29.584", "a district 140km away is never named as the location");
 assert(farFromTown.countryId === "country:india", "the country survives past the city radius");
 assert(!needsGeocode(farFromTown), "a country-named cell is settled, not retried forever");
+// ...and it keeps the coordinate bucket. Spreading the country names over the
+// whole label put an empty cityId back on top, so a trek, a safari or a long
+// drive -- anything more than an hour from a city -- vanished from Places and
+// showed up under the country alone.
+assert(
+  farFromTown.cityId === coordinatePlaceNames(here).cityId,
+  `a photo far from any city still groups by where it was taken (got "${farFromTown.cityId}")`,
+);
+assert(
+  farFromTown.cityName === coordinatePlaceNames(here).cityName,
+  `and reads as its coordinates rather than "Unknown place" (got "${farFromTown.cityName}")`,
+);
+
+// A cell the bundled list genuinely cannot name is settled, not provisional:
+// the list does not change between runs. One unanswerable cell sitting at the
+// head of the cache used to stall the retry probe for every cell that could
+// really be named, freezing them on coordinate labels forever.
+assert(
+  !needsGeocode(unnamedPlaceNames(here, true)),
+  "mid-ocean with the place list loaded is a settled answer",
+);
+assert(
+  needsGeocode(unnamedPlaceNames(here, false)),
+  "but the same label written without the place list is retried",
+);
+assert(
+  unnamedPlaceNames(here, true).cityId === coordinatePlaceNames(here).cityId,
+  "either way the photo keeps its coordinate bucket",
+);
 
 // A place with no usable name must not become a place.
 const nameless = namesFromNearestPlace(

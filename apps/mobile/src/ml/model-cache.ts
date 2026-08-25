@@ -30,6 +30,20 @@ export type ModelCache<T> = {
    * run is still in flight.
    */
   acquire(): Promise<T | undefined>;
+  /**
+   * Drops the cached model so its native arena can be collected.
+   *
+   * Without this the cache holds `pending` for the life of the process, which
+   * keeps the interpreter REACHABLE — and since the only thing that frees the
+   * arena is the destructor running after GC (see `releaseModel`), a reachable
+   * model can never be reclaimed at all. Call it when a batch of work is
+   * finished, not between inferences.
+   *
+   * Safe to call at any time: it must not be called while a run is in flight,
+   * for the same reason `acquire()` may only be called from the wrapper's
+   * serialized queue.
+   */
+  retire(): Promise<void>;
   /** Inferences served by the current instance. Exposed for the self-check. */
   runsSinceLoad(): number;
 };
@@ -58,17 +72,40 @@ export function createModelCache<T>(
       runs += 1;
       return pending;
     },
+    async retire(): Promise<void> {
+      if (!pending) return;
+      const retiring = pending;
+      pending = undefined;
+      runs = 0;
+      await releaseModel(retiring);
+    },
     runsSinceLoad: () => runs,
   };
 }
 
+/**
+ * Drops the reference to a retired model.
+ *
+ * There is NO deterministic release available, and it is worth being exact
+ * about why, because the obvious call looks like one and is not.
+ *
+ * `dispose()` IS callable on any nitro HybridObject — the base class registers
+ * it on the prototype (nitro-modules 0.37 `HybridObject.cpp`:64). But the base
+ * implementation is `virtual void dispose() {}` (`HybridObject.hpp`:108), an
+ * empty body, and fast-tflite 3.0.1 does NOT override it. The only code that
+ * ever calls `TfLiteInterpreterDelete` is `~HybridTfliteModel()`. So
+ * `model.dispose()` runs a real function that does nothing at all, and the
+ * arena is reclaimed only when the JS object becomes unreachable AND Hermes
+ * collects it.
+ *
+ * That leaves exactly one lever: stop referencing the model, which is what the
+ * caller's `pending = undefined` does. Collection is still at the mercy of a GC
+ * that cannot see the native footprint it is holding, so retirement bounds the
+ * arena in the long run rather than releasing it on demand.
+ */
 async function releaseModel(pending: Promise<unknown>): Promise<void> {
   try {
-    const model = (await pending) as { dispose?: () => void } | undefined;
-    // Nitro HybridObjects free their native state on JS GC, but a photo batch
-    // allocates almost nothing on the JS heap, so GC may never run before the
-    // native arena wins. dispose() is the deterministic release.
-    model?.dispose?.();
+    await pending;
   } catch {
     // A model that failed to load holds nothing to release.
   }

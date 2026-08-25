@@ -7,7 +7,7 @@ import { traceScanStage } from "../faces/face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { alignDecodedPatch, patchCropRect, patchGeometry, PATCH_SIZE } from "./face-crop.ts";
+import { alignDecodedPatch, alignedPatchGeometry, patchCropRect } from "./face-crop.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { createModelCache } from "./model-cache.ts";
 
@@ -232,7 +232,10 @@ async function faceFloatTensor(
  * caller passes the scan's shared frame this whole call is a `createBitmap` and
  * a `createScaledBitmap` with no decode at all. Given a URI it behaves exactly
  * like the old call. The output file is unavoidable — `saveAsync` always writes
- * one — so it is deleted on every path.
+ * one — so it is deleted on every path, off the critical path (see below).
+ *
+ * `size` is the caller's, not a constant: `alignedPatchGeometry` decides how
+ * many pixels this face's warp actually needs.
  */
 async function croppedPatchBase64(
   imageUri: FaceImageSource,
@@ -260,7 +263,11 @@ async function croppedPatchBase64(
     }
   } finally {
     context.release();
-    if (faceUri) await deleteManipulatorOutput(faceUri);
+    // Deliberately not awaited. The pixels are already in hand, so awaiting a
+    // cache delete only adds a native round trip and a file-system round trip
+    // to the critical path of every face in the library. The promise cannot
+    // reject: `deleteManipulatorOutput` swallows its own errors.
+    if (faceUri) void deleteManipulatorOutput(faceUri);
   }
 }
 
@@ -270,16 +277,18 @@ async function alignedFaceFloatTensor(
   box: FaceBox,
 ): Promise<Float32Array | undefined> {
   if (!box.landmarks) return undefined;
-  const geometry = patchGeometry(asset, box);
+  // Sized and resolved from the alignment transform rather than from the
+  // detector box, so the crop is the pixels the warp reads and nothing else.
+  const geometry = alignedPatchGeometry(asset, box, box.landmarks);
   if (!geometry) return undefined;
   try {
     const base64 = await croppedPatchBase64(
       imageUri,
       patchCropRect(geometry),
-      PATCH_SIZE,
+      geometry.patchSize,
     );
     if (!base64) return undefined;
-    const decoded = decodeFaceJpeg(base64, PATCH_SIZE);
+    const decoded = decodeFaceJpeg(base64, geometry.patchSize);
     const aligned = alignDecodedPatch(
       decoded.data,
       decoded.width,

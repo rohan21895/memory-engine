@@ -251,6 +251,47 @@ export async function openFaceFrame(
   );
 }
 
+/**
+ * Whether the dimensions we BELIEVE the original has agree with the bitmap the
+ * loader actually produced.
+ *
+ * `scale` is computed from long edges, so a transposed MediaStore record cannot
+ * corrupt it. But `sourceWidth`/`sourceHeight` are handed to `patchGeometry` as
+ * the crop bounds for the full-resolution path (the `smallFaceFullRes` faces),
+ * and there a transpose is not survivable: the crop is clamped against
+ * 4032x3024 on an image that is really 3024x4032, so it samples the wrong
+ * region — while still producing a perfectly valid, invertible alignment
+ * transform. That failure is invisible to every counter we have, and an offline
+ * reimplementation of this pipeline showed a landmark/coordinate-space mismatch
+ * is the ONE fault that reproduces the observed embedding collapse (genuine
+ * median equal to impostor median). This counts it instead of assuming it.
+ */
+const frameOrientation = { agree: 0, transposed: 0, degenerate: 0 };
+
+export function frameOrientationCounts(): Readonly<typeof frameOrientation> {
+  return { ...frameOrientation };
+}
+
+export function recordFrameOrientation(
+  source: FaceImageDimensions,
+  frame: { width: number; height: number },
+): void {
+  const values = [source.width, source.height, frame.width, frame.height];
+  // A square frame carries no orientation, so it can neither agree nor disagree.
+  if (!values.every((value) => Number.isFinite(value) && value > 0)) {
+    frameOrientation.degenerate += 1;
+    return;
+  }
+  if (source.width === source.height || frame.width === frame.height) {
+    frameOrientation.agree += 1;
+    return;
+  }
+  const sourcePortrait = source.height > source.width;
+  const framePortrait = frame.height > frame.width;
+  if (sourcePortrait === framePortrait) frameOrientation.agree += 1;
+  else frameOrientation.transposed += 1;
+}
+
 /** The fast path: a subsampled decode kept in memory for the whole photo. */
 async function bitmapFaceFrame(
   imageUri: string,
@@ -287,6 +328,7 @@ async function bitmapFaceFrame(
       context.release();
     }
     const frameLong = Math.max(saved.width, saved.height);
+    recordFrameOrientation(dimensions, saved);
     return {
       image,
       uri: saved.uri,

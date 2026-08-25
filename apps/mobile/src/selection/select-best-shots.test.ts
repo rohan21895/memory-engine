@@ -379,6 +379,81 @@ assert(
   "a library measured entirely below the absolute floor still yields an album",
 );
 
+// --- The take comparator must be an ordering, not a cycle -------------------
+// The smile tie-break used to fire only for portrait/portrait pairs inside one
+// quality band, so a scene frame sharing that band compared by quality instead.
+// That admits a real cycle (A beats C on smile, C beats B on quality, B beats A
+// on quality), and Array.prototype.sort on a cyclic comparator returns whatever
+// the input order happens to produce. These three frames -- deliberately tuned
+// into one 0.02 band -- elected THREE different take winners across their six
+// permutations, so the photo the user saw depended on the order they picked in.
+const cycleTrio = [
+  photo(
+    "cycle-big-smile",
+    nearDuplicateA,
+    portraitSignals(face({ smile: 0.9 }), { sharpness: 0.7184 }),
+  ),
+  photo("cycle-scene", nearDuplicateA, signals({ sharpness: 0.6964 })),
+  photo(
+    "cycle-small-smile",
+    nearDuplicateA,
+    portraitSignals(face({ smile: 0.1 }), { sharpness: 0.9816 }),
+  ),
+];
+const cycleWinners = new Set(
+  [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]].map(
+    (order) =>
+      selectBestShots(
+        order.map((index) => cycleTrio[index]),
+        { count: 1 },
+      ).selected[0].media_id,
+  ),
+);
+assert(
+  cycleWinners.size === 1,
+  "the winning frame must not depend on the order the photos were picked in",
+);
+assert(
+  cycleWinners.has("cycle-big-smile"),
+  "inside one quality band the bigger smile should win the take",
+);
+
+// --- A "cut face" must mean a face that matters -----------------------------
+// `anyFaceCutAtEdge` is computed over EVERY detected box, and the planner treats
+// a cut face as a soft rejection, so a bystander's ear at the border of a group
+// shot pulled the whole photo out of the album. Here it made the ranker prefer a
+// 50%-sharp frame over a 90%-sharp one: the selection choosing the blurrier
+// photo, which is the one outcome it exists to avoid.
+const incidentalEdgeFace = selectBestShots(
+  [
+    photo(
+      "sharp-with-bystander",
+      nearDuplicateA,
+      signals({
+        sharpness: 0.9,
+        category: "portrait",
+        faces: [face(), face({ areaRatio: 0.001, cutAtEdge: true })],
+        faceCount: 2,
+        largestFaceAreaRatio: 0.08,
+        anyFaceCutAtEdge: true,
+      }),
+    ),
+    photo("soft-clean", nearDuplicateA, portraitSignals(face(), { sharpness: 0.5 })),
+  ],
+  { count: 1 },
+);
+assert(
+  incidentalEdgeFace.selected[0].media_id === "sharp-with-bystander",
+  "a face too small to matter must not cost a sharp frame its slot",
+);
+assert(
+  !includesReason(
+    incidentalEdgeFace.selected[0].chosen_because,
+    "touches the frame edge",
+  ),
+  "an incidental edge face must not be reported as a cut-face penalty",
+);
+
 function basisEmbedding(position: number): number[] {
   return Array.from({ length: 64 }, (_, index) =>
     index === position ? 1 : 0,

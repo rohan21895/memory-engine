@@ -26,7 +26,11 @@ import {
   probeCandidateQuality,
   removeCandidateAnalysisProxy,
 } from "./selection/candidate-quality-probe";
-import { measureImageQuality } from "./selection/image-quality";
+import {
+  measureImageQuality,
+  type MeasuredImageQuality,
+  type NormalizedBox,
+} from "./selection/image-quality";
 import { clusterPoses, makePose } from "./selection/pose";
 import {
   classifyCategory,
@@ -129,12 +133,84 @@ function shouldReportPrepass(done: number, total: number): boolean {
   return done === 1 || done === total || done % step === 0;
 }
 
+/**
+ * Pick the largest usable detected face and map its proxy-pixel box to the
+ * normalized coordinates expected by `measureImageQuality`.
+ *
+ * Returning undefined is intentional: a photo without a reliable face region
+ * must not acquire face-quality gates from whole-frame measurements.
+ */
+function dominantFaceSubjectBox(
+  boxes: readonly FaceBox[],
+  imageWidth: number | undefined,
+  imageHeight: number | undefined,
+): NormalizedBox | undefined {
+  if (
+    imageWidth === undefined ||
+    imageHeight === undefined ||
+    !Number.isFinite(imageWidth) ||
+    !Number.isFinite(imageHeight) ||
+    imageWidth <= 0 ||
+    imageHeight <= 0
+  ) {
+    return undefined;
+  }
+
+  let dominant:
+    | { x: number; y: number; width: number; height: number; area: number }
+    | undefined;
+
+  for (const box of boxes) {
+    if (
+      ![box.x, box.y, box.width, box.height].every(Number.isFinite) ||
+      box.width <= 0 ||
+      box.height <= 0
+    ) {
+      continue;
+    }
+    const x0 = Math.max(0, Math.min(imageWidth, box.x));
+    const y0 = Math.max(0, Math.min(imageHeight, box.y));
+    const x1 = Math.max(x0, Math.min(imageWidth, box.x + box.width));
+    const y1 = Math.max(y0, Math.min(imageHeight, box.y + box.height));
+    const area = (x1 - x0) * (y1 - y0);
+    if (area > 0 && (dominant === undefined || area > dominant.area)) {
+      dominant = { x: x0, y: y0, width: x1 - x0, height: y1 - y0, area };
+    }
+  }
+
+  return dominant
+    ? {
+        x: dominant.x / imageWidth,
+        y: dominant.y / imageHeight,
+        width: dominant.width / imageWidth,
+        height: dominant.height / imageHeight,
+      }
+    : undefined;
+}
+
+/**
+ * The hard 0.92 take-collapse threshold is for visual near-copies, not shared
+ * semantics. Prefer the phone's perceptual fingerprint when it exists; capped
+ * builds skip that model, so TinyCLIP remains a useful fail-open fallback.
+ */
+function embeddingForNearDuplicateGrouping(
+  perceptualEmbedding: number[],
+  semanticEmbedding: number[] | undefined,
+): number[] {
+  const hasPerceptualEmbedding =
+    perceptualEmbedding.length > 0 &&
+    perceptualEmbedding.every((value) => Number.isFinite(value));
+  return hasPerceptualEmbedding
+    ? perceptualEmbedding
+    : semanticEmbedding ?? [];
+}
+
 // Assemble the selection quality contract from a photo + its detected faces +
 // measured pixel quality. All inputs are best-effort; missing data stays neutral.
 function analyzePhoto(
   photo: PickedPhoto,
   boxes: FaceBox[],
-  quality: { sharpness?: number; exposure?: number; clippedFraction?: number },
+  quality: MeasuredImageQuality,
   analysisWidth = photo.width,
   analysisHeight = photo.height,
 ): QualitySignals {
@@ -173,6 +249,10 @@ function analyzePhoto(
   );
 
   return {
+    // Preserve additive subject-region fields from measureImageQuality for the
+    // planner bridge. Whole-frame fields retain their existing scoring role;
+    // they are never substituted for an absent subject-region field.
+    ...quality,
     sharpness: quality.sharpness,
     exposure: quality.exposure,
     clippedFraction: quality.clippedFraction,
@@ -307,6 +387,25 @@ export async function buildAlbum(
       const analysisUri = proxy.uri;
       const analysisWidth = proxy.width;
       const analysisHeight = proxy.height;
+      // Start face detection alongside the other models, then let only quality
+      // measurement wait for its result. The quality API owns the single pixel
+      // decode and can produce face-region signals only when given this box.
+      const boxesPromise = detectFaces(analysisUri, {
+        width: analysisWidth,
+        height: analysisHeight,
+      }).catch(() => [] as FaceBox[]);
+      const qualityPromise = boxesPromise
+        .then((detectedBoxes) => {
+          const subjectBox = dominantFaceSubjectBox(
+            detectedBoxes,
+            analysisWidth,
+            analysisHeight,
+          );
+          return subjectBox
+            ? measureImageQuality(analysisUri, { subjectBox })
+            : measureImageQuality(analysisUri);
+        })
+        .catch(() => probedQuality ?? {});
       const [result, boxes, quality, detectedPose, semantic] = await Promise.all([
         capEngaged
           ? Promise.resolve({ embedding: [], faces: 0 })
@@ -315,10 +414,7 @@ export async function buildAlbum(
         // re-manipulates: the proxy is already a file:// image inside its
         // detection bound, so boxes come back 1:1 in proxy coordinates — the
         // same space as analysisWidth/analysisHeight below.
-        detectFaces(analysisUri, {
-          width: analysisWidth,
-          height: analysisHeight,
-        }).catch(() => [] as FaceBox[]),
+        boxesPromise,
         // Always measure properly here, even when the prepass already produced a
         // probedQuality. That probe comes from a 4x3 blurhash decoded to 16x12,
         // which by construction holds no high frequencies — it reads ~0.05
@@ -326,8 +422,7 @@ export async function buildAlbum(
         // ranking prior for choosing candidates, but feeding it onward as the
         // final quality signal drives every photo under the planner's quality
         // floor, so large libraries produce an empty album.
-        measureImageQuality(analysisUri)
-          .catch(() => probedQuality ?? {}),
+        qualityPromise,
         detectBodyPose(analysisUri, analysisWidth, analysisHeight),
         analyzeSemanticImage(analysisUri, analysisWidth, analysisHeight),
       ]);
@@ -393,7 +488,13 @@ export async function buildAlbum(
           : photo.poseCluster,
       faces: result.faces,
       perceptualEmbedding: result.embedding,
-      embedding: semantic?.embedding ?? result.embedding,
+      // `selectBestShots` uses this field for hard take collapse. Semantic
+      // similarity is too broad for that job (two different beach moments can
+      // be close), so it is only the fallback when no perceptual vector exists.
+      embedding: embeddingForNearDuplicateGrouping(
+        result.embedding,
+        semantic?.embedding,
+      ),
       semantic,
       analysis: {
         ...analysis,

@@ -368,7 +368,7 @@ function greedySelect(
   const shotCounts: MutableCounts = {};
   const familyCounts: MutableCounts = {};
   const closest: MutableCounts = {};
-  const personCap = perPersonCap(survivors, target, policy);
+  let personCap = perPersonCap(survivors, target, policy);
   const [redundancyFree, redundancyDenominator] = calibratedRedundancy(
     survivors,
     policy,
@@ -518,6 +518,7 @@ function greedySelect(
     ).length;
     const reservedNow = reserve - nonPeopleSelected >= slotsLeft;
     const eligible: string[] = [];
+    let personCapBlocked = false;
     for (const mediaId of remaining) {
       const candidate = byId.get(mediaId)!;
       const atCap =
@@ -525,11 +526,26 @@ function greedySelect(
         candidate.personIds.some((personId) => (personCounts[personId] ?? 0) >= personCap);
       if (atCap) blocked.add(mediaId);
       if (reservedNow && candidate.personIds.length > 0) continue;
-      if (atCap) continue;
+      if (atCap) {
+        personCapBlocked = true;
+        continue;
+      }
       if (sleeping.get(mediaId) && sleepingCount >= sleepingCap) continue;
       eligible.push(mediaId);
     }
-    if (eligible.length === 0) break;
+    if (eligible.length === 0) {
+      // The per-person cap keeps one face from taking the whole book. It must
+      // not SHORTEN the book, so relax it rather than stopping — the same way
+      // the shot/family/pose caps relax below. An album of one person is the
+      // case that forces this: every photo holds the same face, so a second
+      // incidental face anywhere in the set flips perPersonCap() off `target`
+      // and onto maxPerPersonFraction, and 24 requested photos came back as 12.
+      if (personCapBlocked) {
+        personCap += 1;
+        continue;
+      }
+      break;
+    }
 
     const fresh = eligible.filter(
       (mediaId) =>
@@ -568,7 +584,16 @@ function greedySelect(
     commit(bestId, coverageReasons(bestId, standing, timeCounts, placeCounts, momentCounts, poseCounts, timeKey, placeKey, momentKey, poseKey));
   }
 
-  return { selected, capBlocked: Array.from(blocked).sort(), reasonDetails, reasons };
+  // A relaxed cap can admit a photo that an earlier pass had blocked, so a
+  // "per-person cap reached" rejection must not be reported for one that ended
+  // up in the album.
+  const chosen = new Set(selected);
+  return {
+    selected,
+    capBlocked: Array.from(blocked).filter((mediaId) => !chosen.has(mediaId)).sort(),
+    reasonDetails,
+    reasons,
+  };
 }
 
 function coverageReasons(
@@ -752,7 +777,12 @@ function qualityStanding(candidates: NormalizedCandidate[]) {
       const first = below < 0 ? values.length : below;
       let after = first;
       while (after < values.length && values[after] === candidate.quality) after += 1;
-      const raw = (first + (after - first)) / members.length;
+      // Midrank, exactly as axisPercentiles computes it: ties share the middle of
+      // the range they span. Without the halving this is a CDF, which hands the
+      // top of every class a full 1.0 -- and a comparison class with a single
+      // member is ALWAYS the top of its class, so one lone "detail" frame scored
+      // 0.42 outranked eight portraits scored 0.85 on the dominant gain term.
+      const raw = (first + (after - first) / 2) / members.length;
       standing.set(
         candidate.mediaId,
         quantize((raw * members.length + candidate.quality * STANDING_PRIOR) / (members.length + STANDING_PRIOR)),

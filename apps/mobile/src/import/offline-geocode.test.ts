@@ -151,6 +151,51 @@ assert(
   "prominence never beats standing in the place: a 65km metro loses to a 0km town",
 );
 
+// ── Prominence must not decide which TIER the photo lands in ──
+// The bonus is worth up to 24km, enough to reach across a radius the caller
+// treats as a hard edge. A town 58km away is inside CITY_MAX_KM; a metro 66km
+// away is not, however well it scores. Naming the metro demoted the photo to
+// country-only, so it lost the place it was actually taken in.
+const justInsideRadius = buildPlaceIndex(
+  dataset(
+    [
+      { name: "Edge Town", lat: 20 + 58 / 111.32, lon: 76, cc: 0, pop: 30 },
+      { name: "Edge Metro", lat: 20 + 66 / 111.32, lon: 76, cc: 0, pop: 75 },
+    ],
+    ["IN"],
+    ["India"],
+  ),
+);
+const atTheEdge = nearestPlace(justInsideRadius, 20, 76);
+assert(atTheEdge?.placeName === "Edge Town", `a town inside the city radius beats a metro outside it (got ${atTheEdge?.placeName})`);
+assert(atTheEdge.distanceKm <= CITY_MAX_KM, "so the photo keeps its place instead of falling back to the country");
+
+// Same edge at the country radius: naming the metro past COUNTRY_MAX_KM threw
+// away a perfectly good city 240km away and left the photo with no country.
+const justInsideCountry = buildPlaceIndex(
+  dataset(
+    [
+      { name: "Far Town", lat: 20 + 240 / 111.32, lon: 76, cc: 0, pop: 30 },
+      { name: "Far Metro", lat: 20 + 253 / 111.32, lon: 76, cc: 1, pop: 75 },
+    ],
+    ["IN", "NP"],
+    ["India", "Nepal"],
+  ),
+);
+const nearTheCountryEdge = nearestPlace(justInsideCountry, 20, 76);
+assert(nearTheCountryEdge?.countryName === "India", `a city inside the country radius is not discarded for a scored winner outside it (got ${nearTheCountryEdge?.countryName})`);
+
+// ── Ring coverage must follow the latitude, not a constant ──
+// A degree of longitude is ~56km at 60N, so three one-degree rings reach only
+// ~167km there: real cities inside COUNTRY_MAX_KM (Sitka, Kodiak, Juneau,
+// Neryungri) were never scanned and their photos lost even their country.
+const highLatitude = buildPlaceIndex(
+  dataset([{ name: "Northern Town", lat: 60, lon: 0, cc: 0 }], ["NO"], ["Norway"]),
+);
+const acrossFourCells = nearestPlace(highLatitude, 60, 4.05);
+assert(acrossFourCells, "a city 225km east at 60N is inside the country radius and must be found");
+assert(acrossFourCells.distanceKm < COUNTRY_MAX_KM, `and its distance is the real one (${acrossFourCells.distanceKm})`);
+
 // ── District consolidation: the Noida case ──
 // Nearest-city bucketing scattered one neighbourhood across sibling towns.
 // Noida (28.58, 77.33) and Greater Noida (28.496, 77.536) are distinct GeoNames

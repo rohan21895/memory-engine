@@ -111,6 +111,33 @@ function rowsFor(assets: MediaLibrary.Asset[]): LibraryRow[] {
   return rows;
 }
 
+/**
+ * One photo in the grid.
+ *
+ * An asset can disappear between the MediaStore query and the render — deleted,
+ * moved off the phone, or dropped out of a "Select photos" grant — and until now
+ * a broken tile was indistinguishable from one still decoding. It draws a quiet
+ * panel instead, and nothing else: no filename, no URI, no error text. Whatever
+ * a failed asset carries is not something to paint over the grid.
+ */
+function PhotoTile({ assetId, size }: { assetId: string; size: number }) {
+  const [failed, setFailed] = useState(false);
+  const box = { height: size, width: size };
+  if (failed) {
+    return <View accessibilityLabel="Photo unavailable" accessibilityRole="image" style={[styles.tileMissing, box]} />;
+  }
+  return (
+    <Image
+      cachePolicy="memory-disk"
+      contentFit="cover"
+      onError={() => setFailed(true)}
+      recyclingKey={assetId}
+      source={contentUri(assetId)}
+      style={[styles.tile, box]}
+    />
+  );
+}
+
 export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePersonTarget) => void }) {
   const { width } = useWindowDimensions();
   const tileSize = Math.floor((width - GRID_GAP * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
@@ -386,7 +413,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
         {peopleStatus ? <Text accessibilityLiveRegion="polite" style={styles.sectionStatus}>{peopleStatus}</Text> : null}
       </View>
       {visiblePeople.length > 0 ? (
-        <ScrollView horizontal contentContainerStyle={styles.peopleRow} showsHorizontalScrollIndicator={false}>
+        <ScrollView horizontal contentContainerStyle={styles.peopleRow} showsHorizontalScrollIndicator={false} style={styles.rail}>
           {visiblePeople.map((person) => {
             const active = selectedPerson === person.id;
             const label = peopleLabels.get(person.id) ?? "Person";
@@ -562,7 +589,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
         ) : (
           <View style={styles.photoRow}>
             {item.assets.map((asset) => (
-              <Image cachePolicy="memory-disk" contentFit="cover" key={asset.id} recyclingKey={asset.id} source={contentUri(asset.id)} style={{ backgroundColor: colors.hairline, height: tileSize, width: tileSize }} />
+              <PhotoTile assetId={asset.id} key={asset.id} size={tileSize} />
             ))}
           </View>
         )}
@@ -612,6 +639,11 @@ const styles = StyleSheet.create({
   placeImage: { backgroundColor: colors.quietSurface, borderCurve: "continuous", borderRadius: 14, height: 92, width: 132 },
   placeName: { color: colors.text, fontFamily: fonts.bold, fontSize: 14.5, paddingTop: 7 },
   placesRow: { gap: spacing.sm, paddingVertical: spacing.xs },
+  // ScrollView ships `flexGrow: 1, flexShrink: 1` in its own base style, which
+  // makes the people rail the one child of this header column that absorbs any
+  // height the parent imposes. Pinned to its content, it cannot be squeezed into
+  // the heading above it.
+  rail: { flexGrow: 0, flexShrink: 0 },
   root: { backgroundColor: colors.background, flex: 1 },
   scanDisabled: { opacity: 0.55 },
   search: { alignItems: "center", backgroundColor: "#f0eee8", borderRadius: radii.pill, flexDirection: "row", gap: spacing.xs, height: 48, marginTop: 14, paddingHorizontal: spacing.md },
@@ -622,7 +654,17 @@ const styles = StyleSheet.create({
   section: { color: colors.text, fontFamily: fonts.bold, ...typeScale.label },
   seeAllIcon: { color: colors.goldPressed, fontFamily: fonts.regular, fontSize: 30, lineHeight: 34 },
   seeAllTile: { alignItems: "center", backgroundColor: colors.panelRaised, borderColor: colors.hairline, borderWidth: 1, justifyContent: "center" },
-  sectionHeading: { alignItems: "baseline", flexDirection: "row", gap: spacing.sm, justifyContent: "space-between", paddingTop: spacing.lg },
-  sectionStatus: { color: colors.muted, flexShrink: 1, fontFamily: fonts.regular, textAlign: "right", ...typeScale.eyebrow },
+  // No `alignItems: "baseline"` here. The scan status wraps to two lines on a
+  // phone ("Grouping faces — 11,532 of 11,805 photos"), and a baseline line with
+  // two differently sized children sizes itself from ascent/descent rather than
+  // from the tallest child: the row measured shorter than the status, the label
+  // was offset down inside it, and the people rail — the next sibling — started
+  // high enough to paint its first avatar over the word "People". Cross-start
+  // alignment sizes the row to its tallest child, so the rail can never begin
+  // above the heading's baseline; wrapping keeps that true at any width.
+  sectionHeading: { alignItems: "flex-start", columnGap: spacing.sm, flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", paddingTop: spacing.lg, rowGap: spacing.xxs },
+  sectionStatus: { color: colors.muted, flexGrow: 1, flexShrink: 1, fontFamily: fonts.regular, textAlign: "right", ...typeScale.eyebrow },
+  tile: { backgroundColor: colors.hairline },
+  tileMissing: { backgroundColor: colors.quietSurface, borderColor: colors.hairline, borderWidth: 1 },
   title: { color: colors.text, fontFamily: fonts.extraBold, ...typeScale.title },
 });

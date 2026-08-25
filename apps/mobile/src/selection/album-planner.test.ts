@@ -188,3 +188,78 @@ try {
 }
 assert(contradictionRaised, "pin/exclude contradiction must be refused");
 
+// An album of ONE person must not be halved by the per-person cap.
+// perPersonCap() falls off `target` and onto maxPerPersonFraction the moment a
+// second face appears anywhere in the set. Every photo in a person-filtered
+// album holds the same face, so one incidental bystander was enough: 20 photos
+// were asked for and 10 came back, with no error and no explanation.
+const onePersonAlbum = planAlbum(
+  Array.from({ length: 30 }, (_, index) =>
+    candidate(`ava-${String(index).padStart(2, "0")}`, 0.6 + (index % 5) * 0.02, {
+      personIds: index % 3 === 0 ? ["ava", "bo"] : ["ava"],
+    }),
+  ),
+  20,
+);
+assert(
+  onePersonAlbum.selectedIds.length === 20,
+  "the per-person cap must relax rather than shorten the album",
+);
+const onePersonSelected = new Set(onePersonAlbum.selectedIds);
+assert(
+  onePersonAlbum.rejected.every(({ mediaId }) => !onePersonSelected.has(mediaId)),
+  "a photo that made the album must never also be reported as rejected",
+);
+
+// The cap must still bind while there is anything else to take.
+const stillCapped = planAlbum(
+  [
+    ...Array.from({ length: 6 }, (_, index) =>
+      candidate(`face-${index}`, 0.95 - index * 0.01, { personIds: ["ava"] }),
+    ),
+    candidate("scene-x", 0.6),
+    candidate("scene-y", 0.59),
+  ],
+  4,
+  { policy: { minNonPeopleFraction: 0.5 } },
+);
+assert(stillCapped.personCounts.ava <= 2, "relaxation must not disarm the cap outright");
+
+// Standing is a MIDRANK percentile, not a CDF. Without the halving the top of
+// every comparison class scores a full 1.0 -- and every member of an all-tied
+// class is its own class's top, so all of them claimed to be the clearest.
+const equalQuality = planAlbum(
+  Array.from({ length: 10 }, (_, index) =>
+    candidate(`tied-${index}`, 0.5, { comparisonClass: "portrait" }),
+  ),
+  4,
+);
+assert(equalQuality.selectedIds.length === 4, "equally good photos still fill the album");
+assert(
+  equalQuality.selectedIds.every(
+    (mediaId) =>
+      !(equalQuality.reasonsByMediaId[mediaId] ?? []).includes(
+        "One of the clearest photos in its group.",
+      ),
+  ),
+  "ten equally good photos cannot each be the clearest of their group",
+);
+
+// A comparison class of one is ALWAYS its own top, so the CDF handed a lone
+// mediocre frame the standing of a hero shot on the dominant gain term.
+const loneClass = planAlbum(
+  [
+    ...Array.from({ length: 8 }, (_, index) =>
+      candidate(`hero-${index}`, 0.8 + index * 0.01, { comparisonClass: "portrait" }),
+    ),
+    candidate("lone-detail", 0.65, { comparisonClass: "detail" }),
+  ],
+  9,
+);
+assert(
+  !(loneClass.reasonsByMediaId["lone-detail"] ?? []).includes(
+    "One of the clearest photos in its group.",
+  ),
+  "the only member of a comparison class is not thereby one of its clearest",
+);
+

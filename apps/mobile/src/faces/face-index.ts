@@ -4,9 +4,11 @@ import { decode as decodeJpeg } from "jpeg-js";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { faceEmbeddingPathCounts } from "../ml/facenet.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { faceAlignmentShapeCounts } from "../ml/face-align.ts";
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { closeFaceFrame, deleteImageFile, landmarkRejectCounts, detectFacesInFrame, isFaceDetectionAvailable, openFaceFrame, scaleFaceBox, takeScanTrace, traceScanCount, traceScanStage, type FaceBox, type FaceFrame } from "./face-detector.ts";
+import { closeFaceFrame, deleteImageFile, frameOrientationCounts, landmarkRejectCounts, detectFacesInFrame, isFaceDetectionAvailable, openFaceFrame, scaleFaceBox, takeScanTrace, traceScanCount, traceScanStage, type FaceBox, type FaceFrame } from "./face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { embedFaceIdentity, type FaceImageSource } from "../ml/facenet.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -78,6 +80,46 @@ const BASE64_VALUES = (() => {
 
 /** ArcFace/MobileFaceNet-space cosine threshold for high-precision identity. */
 export const DEFAULT_FACE_INDEX_THRESHOLD = 0.62;
+
+/**
+ * Identifies HOW the persisted people were grouped, not just at what bar.
+ *
+ * A threshold change is not the only thing that invalidates a stored grouping.
+ * The clusterer previously scored a face against a cluster with
+ * `cosine(face, centroid)`, which is not a similarity: a centroid is the mean of
+ * unit vectors, so that value is the mean cosine to members DIVIDED by the
+ * centroid's length, and it therefore rises as a cluster gets sloppier. Absorb
+ * junk, get shorter, look closer to everything, absorb more. Switching to true
+ * average linkage changes every score in the index, so groupings computed under
+ * the old rule have to be rebuilt even though the threshold is unchanged.
+ *
+ * Bump this whenever the clustering RULE changes. It is deliberately not
+ * INDEX_VERSION: that would make `parseIndex` reject the file and discard every
+ * embedding, re-scanning the whole library for what is a cheap recomputation
+ * over data already on disk.
+ */
+export const CLUSTER_CALIBRATION = "avg-linkage-1";
+
+/**
+ * Bar for the CENTERED space, and only valid there.
+ *
+ * Centering shifts the whole distribution: measured on 13,459 real faces the
+ * impostor median moves from +0.725 (raw) to -0.015 (centered), so a bar that
+ * is sane in one space is badly wrong in the other. 0.62 applied to centered
+ * embeddings shatters identities; 0.35 applied to RAW embeddings merges
+ * strangers. These two constants and CLUSTER_CALIBRATION move together or not
+ * at all.
+ */
+export const CENTERED_FACE_INDEX_THRESHOLD = 0.35;
+export const CENTERED_CLUSTER_CALIBRATION = "centered-avg-linkage-1";
+
+/**
+ * Centering needs a POPULATION to estimate a mean from. With a handful of faces
+ * the mean sits between them, so subtracting it drives them apart artificially
+ * — two faces centered against their own midpoint land at cosine -1 and can
+ * never group. Below this count the raw space and the raw bar are used.
+ */
+const CENTERING_MIN_OBSERVATIONS = 200;
 
 /**
  * Cluster-to-cluster merge bar. Held at the calibrated post-alignment default,
@@ -189,6 +231,10 @@ type PersistedFaceIndex = {
   scanComplete: boolean;
   total: number;
   threshold: number;
+  /** Which clustering rule produced `people`; see CLUSTER_CALIBRATION. */
+  calibration?: string;
+  /** Frozen population mean the stored centroids are centered against. */
+  embeddingMean?: number[];
   faceThumbUris: Record<string, string>;
 };
 
@@ -217,6 +263,7 @@ function emptyIndex(): PersistedFaceIndex {
     scanComplete: false,
     total: 0,
     threshold: DEFAULT_FACE_INDEX_THRESHOLD,
+    calibration: CLUSTER_CALIBRATION,
     faceThumbUris: {},
   };
 }
@@ -343,15 +390,14 @@ function percentile(sorted: number[], fraction: number): number {
   return sorted[position];
 }
 
-export function logSimilarityStructure(context = "status"): void {
-  const sample = sampleObservations(SIMILARITY_SAMPLE);
-  if (sample.length < 8) {
-    console.warn(`[PhoteoFaceSim] ${context} too few observations (${sample.length})`);
-    return;
-  }
-
-  // Pairs from DIFFERENT photos only. Two faces in one frame are usually two
-  // people, but a repeat detection of one face would bias the low end.
+/**
+ * Pairwise cosines between faces from DIFFERENT photos. Two faces in one frame
+ * are usually two people, but a repeat detection of one face would bias the low
+ * end, so same-photo pairs are skipped.
+ */
+function impostorSimilarities<T extends { assetId: string; embedding: number[] }>(
+  sample: readonly T[],
+): number[] {
   const similarities: number[] = [];
   for (let first = 0; first < sample.length; first += 1) {
     for (let second = first + 1; second < sample.length; second += 1) {
@@ -359,7 +405,90 @@ export function logSimilarityStructure(context = "status"): void {
       similarities.push(cosine(sample[first].embedding, sample[second].embedding));
     }
   }
-  similarities.sort((a, b) => a - b);
+  return similarities.sort((a, b) => a - b);
+}
+
+/**
+ * Removes the population mean, then re-normalizes.
+ *
+ * A collapsed-looking embedder has two very different causes that raw cosine
+ * cannot tell apart. If every vector carries one large SHARED direction, cosine
+ * is dominated by that constant and everyone looks alike even though identity
+ * information is still present underneath. If the embedder genuinely encodes
+ * nothing, removing the mean leaves noise and the distribution stays unimodal.
+ * Centering separates the two: it is the difference between "fixable by
+ * whitening" and "the tensors fed to the model are wrong".
+ */
+function centerObservations<T extends { embedding: number[] }>(
+  sample: readonly T[],
+): { centered: T[]; meanNorm: number } {
+  const dimensions = sample[0].embedding.length;
+  const mean = new Array<number>(dimensions).fill(0);
+  for (const observation of sample) {
+    for (let axis = 0; axis < dimensions; axis += 1) {
+      mean[axis] += observation.embedding[axis];
+    }
+  }
+  let meanSquared = 0;
+  for (let axis = 0; axis < dimensions; axis += 1) {
+    mean[axis] /= sample.length;
+    meanSquared += mean[axis] * mean[axis];
+  }
+
+  const centered = sample.map((observation) => {
+    const shifted = new Array<number>(dimensions);
+    let squared = 0;
+    for (let axis = 0; axis < dimensions; axis += 1) {
+      const value = observation.embedding[axis] - mean[axis];
+      shifted[axis] = value;
+      squared += value * value;
+    }
+    const magnitude = Math.sqrt(squared);
+    if (!Number.isFinite(magnitude) || magnitude <= Number.EPSILON) {
+      return { ...observation, embedding: shifted };
+    }
+    for (let axis = 0; axis < dimensions; axis += 1) {
+      shifted[axis] /= magnitude;
+    }
+    return { ...observation, embedding: shifted };
+  });
+
+  return { centered, meanNorm: Math.sqrt(meanSquared) };
+}
+
+function sweepThresholds(
+  sample: readonly { assetId: string; embedding: number[] }[],
+): string {
+  // Spans BOTH spaces on purpose. Raw embeddings carry a shared direction of
+  // norm ~0.845, which alone contributes ~0.71 to every cosine, so the useful
+  // raw bar sits high (0.8-0.95). Centering removes that offset and drops the
+  // impostor median to ~0, so the useful centered bar sits far lower (0.3-0.55,
+  // where the measured centered impostor p99 is 0.533). A sweep that starts at
+  // 0.62 cannot see the centered optimum at all, and reports over-splitting at
+  // every point it samples.
+  return [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.62, 0.7, 0.8, 0.9]
+    .map((threshold) => {
+      const people = clusterFaces(sample as never, {
+        threshold,
+        identityMergeThreshold: threshold,
+      });
+      const largest = people.reduce(
+        (most, person) => Math.max(most, person.faceCount),
+        0,
+      );
+      return `${threshold}:${people.length}/${largest}`;
+    })
+    .join(",");
+}
+
+export function logSimilarityStructure(context = "status"): void {
+  const sample = sampleObservations(SIMILARITY_SAMPLE);
+  if (sample.length < 8) {
+    console.warn(`[PhoteoFaceSim] ${context} too few observations (${sample.length})`);
+    return;
+  }
+
+  const similarities = impostorSimilarities(sample);
 
   const dimensions = sample[0].embedding.length;
   // Spread of each component across the sample: a degenerate embedder returns
@@ -378,31 +507,35 @@ export function logSimilarityStructure(context = "status"): void {
   meanComponentSpread /= dimensions || 1;
 
   const sweep = sampleObservations(SWEEP_SAMPLE);
-  const sweepSummary = [0.62, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
-    .map((threshold) => {
-      const people = clusterFaces(sweep, {
-        threshold,
-        identityMergeThreshold: threshold,
-      });
-      const largest = people.reduce(
-        (most, person) => Math.max(most, person.faceCount),
-        0,
-      );
-      return `${threshold}:${people.length}/${largest}`;
-    })
-    .join(",");
 
   console.warn(
     `[PhoteoFaceSim] ${context} pairs=${similarities.length} dims=${dimensions} ` +
       `path=${JSON.stringify(faceEmbeddingPathCounts())} ` +
       `landmarks=${JSON.stringify(landmarkRejectCounts())} ` +
+      `align=${JSON.stringify(faceAlignmentShapeCounts())} ` +
+      `frameOrient=${JSON.stringify(frameOrientationCounts())} ` +
       `spread=${meanComponentSpread.toFixed(4)} ` +
       `p05=${percentile(similarities, 0.05).toFixed(3)} ` +
       `p50=${percentile(similarities, 0.5).toFixed(3)} ` +
       `p90=${percentile(similarities, 0.9).toFixed(3)} ` +
       `p99=${percentile(similarities, 0.99).toFixed(3)} ` +
       `max=${similarities[similarities.length - 1]?.toFixed(3)} ` +
-      `sweep[thr:people/largest]=${sweepSummary}`,
+      `sweep[thr:people/largest]=${sweepThresholds(sweep)}`,
+  );
+
+  // Same population with the shared direction removed. If identity survives
+  // here, the embedder works and the fix is whitening; if this stays as flat as
+  // the raw line, the pixels reaching the model are wrong.
+  const { centered, meanNorm } = centerObservations(sample);
+  const centeredSimilarities = impostorSimilarities(centered);
+  console.warn(
+    `[PhoteoFaceSimCentered] ${context} meanNorm=${meanNorm.toFixed(3)} ` +
+      `p05=${percentile(centeredSimilarities, 0.05).toFixed(3)} ` +
+      `p50=${percentile(centeredSimilarities, 0.5).toFixed(3)} ` +
+      `p90=${percentile(centeredSimilarities, 0.9).toFixed(3)} ` +
+      `p99=${percentile(centeredSimilarities, 0.99).toFixed(3)} ` +
+      `max=${centeredSimilarities[centeredSimilarities.length - 1]?.toFixed(3)} ` +
+      `sweep[thr:people/largest]=${sweepThresholds(centerObservations(sweep).centered)}`,
   );
 }
 
@@ -919,11 +1052,76 @@ export function faceClusterOptions(
   // cluster that is already large. See FACE_INDEX_IDENTITY_MERGE_THRESHOLD.
 }
 
+/**
+ * Removes the shared direction every embedding carries, then re-normalizes.
+ *
+ * Measured on a real 13,459-face library: the population mean has norm 0.845,
+ * so it alone contributes 0.845^2 = 0.714 to EVERY pairwise cosine — against a
+ * measured raw impostor median of 0.725. Virtually all of the apparent
+ * similarity between two strangers was that one constant. Subtracting it drops
+ * the impostor median from +0.725 to -0.015, which is what a healthy impostor
+ * distribution looks like.
+ *
+ * The mean is FROZEN in the index once computed, and every later face is
+ * centered by that same stored vector. Recomputing it as the library grows
+ * would silently move every previously stored centroid out of the space its
+ * cluster was built in, which is a far worse bug than a slightly stale mean.
+ */
+function embeddingMean(observations: readonly FaceObservation[]): number[] {
+  const dimensions = observations[0]?.embedding.length ?? 0;
+  const mean = new Array<number>(dimensions).fill(0);
+  if (dimensions === 0 || observations.length === 0) return mean;
+  for (const observation of observations) {
+    if (observation.embedding.length !== dimensions) continue;
+    for (let axis = 0; axis < dimensions; axis += 1) {
+      mean[axis] += observation.embedding[axis];
+    }
+  }
+  for (let axis = 0; axis < dimensions; axis += 1) mean[axis] /= observations.length;
+  return mean;
+}
+
+/** Centers one embedding by the stored mean and re-normalizes to unit length. */
+export function centerEmbedding(
+  embedding: readonly number[],
+  mean: readonly number[] | undefined,
+): number[] {
+  if (!mean || mean.length !== embedding.length) return embedding.slice();
+  const shifted = new Array<number>(embedding.length);
+  let squared = 0;
+  for (let axis = 0; axis < embedding.length; axis += 1) {
+    const value = embedding[axis] - mean[axis];
+    shifted[axis] = value;
+    squared += value * value;
+  }
+  const magnitude = Math.sqrt(squared);
+  // A face sitting exactly on the population mean has no direction left; keep
+  // it as-is rather than dividing by zero and producing NaNs that would poison
+  // every centroid it ever joins.
+  if (!Number.isFinite(magnitude) || magnitude <= Number.EPSILON) {
+    return embedding.slice();
+  }
+  for (let axis = 0; axis < shifted.length; axis += 1) shifted[axis] /= magnitude;
+  return shifted;
+}
+
+/** Observations mapped into the centered space the clusterer works in. */
+function centeredForClustering(
+  observations: readonly FaceObservation[],
+): FaceObservation[] {
+  const mean = index.embeddingMean;
+  if (!mean) return observations.slice();
+  return observations.map((observation) => ({
+    ...observation,
+    embedding: centerEmbedding(observation.embedding, mean),
+  }));
+}
+
 function peopleFromObservations(
   observations: FaceObservation[],
   threshold = DEFAULT_FACE_INDEX_THRESHOLD,
 ): Person[] {
-  return clusterFaces(observations, faceClusterOptions(threshold));
+  return clusterFaces(centeredForClustering(observations), faceClusterOptions(threshold));
 }
 
 export function summariesForPeople(
@@ -1438,15 +1636,64 @@ function seenCount(): number {
   return Object.keys(index.seenAssetIds).length;
 }
 
-function rebuildPeople(threshold: number): void {
-  index.threshold = safeThreshold(threshold);
+/** The space and bar this library should be clustered in, given its size. */
+function calibrationForLibrary(): { rule: string; threshold: number; centered: boolean } {
+  const centered = index.observations.length >= CENTERING_MIN_OBSERVATIONS;
+  return centered
+    ? { rule: CENTERED_CLUSTER_CALIBRATION, threshold: CENTERED_FACE_INDEX_THRESHOLD, centered }
+    : { rule: CLUSTER_CALIBRATION, threshold: DEFAULT_FACE_INDEX_THRESHOLD, centered };
+}
+
+function rebuildPeople(requested?: number): void {
+  const calibration = calibrationForLibrary();
+  index.calibration = calibration.rule;
+  // Recomputed only here, where every person is rebuilt in the same pass, so no
+  // stored centroid is ever left in a different space than the mean it used.
+  index.embeddingMean = calibration.centered
+    ? embeddingMean(index.observations)
+    : undefined;
+  index.threshold = safeThreshold(requested ?? calibration.threshold);
   index.people = peopleFromObservations(index.observations, index.threshold);
   rebuildPersonIdsByAsset();
 }
 
+/**
+ * Re-clusters the faces already on disk when a new build changes the clustering
+ * calibration, WITHOUT forcing a re-scan.
+ *
+ * The tempting way to make a threshold change take effect is to bump
+ * INDEX_VERSION. That is a trap: `parseIndex` rejects the entire file on a
+ * version mismatch, so it would throw away all 11k persisted embeddings and
+ * re-scan the whole library — hours of work to apply a one-line constant. The
+ * observations are the expensive artifact; the clustering over them is cheap and
+ * entirely derived, so it can simply be recomputed on load.
+ *
+ * Returns true when it re-clustered, so the caller can persist the new grouping.
+ */
+function reclusterIfCalibrationChanged(threshold?: number): boolean {
+  if (index.observations.length === 0) return false;
+  const calibration = calibrationForLibrary();
+  const wanted = safeThreshold(threshold ?? calibration.threshold);
+  const previousThreshold = index.threshold;
+  const previousCalibration = index.calibration;
+  const sameBar = Math.abs(previousThreshold - wanted) < 1e-9;
+  const sameRule = previousCalibration === calibration.rule;
+  if (sameBar && sameRule) return false;
+
+  const previousPeople = index.people.length;
+  rebuildPeople(wanted);
+  console.warn(
+    `[PhoteoFaceIndex] recalibrated bar ${previousThreshold.toFixed(3)}->` +
+      `${index.threshold.toFixed(3)} rule ${previousCalibration ?? "legacy"}->` +
+      `${index.calibration} people ${previousPeople}->${index.people.length} ` +
+      `over ${index.observations.length} persisted faces (no re-scan)`,
+  );
+  return true;
+}
+
 function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
   const assignments = new Map<FaceObservation, string>();
-  index.people = extendFaceClusters(index.people, observations, {
+  index.people = extendFaceClusters(index.people, centeredForClustering(observations), {
     ...faceClusterOptions(index.threshold),
     onAssign: (observation, personId) => assignments.set(observation, personId),
     onMerge: (absorbedPersonId, survivingPersonId) => {
@@ -1513,6 +1760,13 @@ async function runBuild(
   const stopWatching = await watchAppState(control);
   try {
     await loadFaceIndex();
+    // A build can ship a different clustering calibration (a new threshold, or
+    // a corrected linkage). Apply it to the faces already on disk rather than
+    // bumping INDEX_VERSION, which would discard every embedding and re-scan
+    // the whole library to change one constant.
+    if (reclusterIfCalibrationChanged(opts.threshold)) {
+      await persistFaceIndex();
+    }
     if (!(await waitForForeground(control))) {
       await persistFaceIndex();
       return;
@@ -1547,7 +1801,12 @@ async function runBuild(
       );
       index.total = head.totalCount;
       if (incrementalTarget === 0) {
-        logEmbeddingPath("hydrated");
+        // Nothing new to scan is exactly when the FULL diagnostics are cheapest
+        // and most useful: every embedding is already on disk, so the similarity
+        // structure and the threshold sweep can be computed without touching a
+        // single photo. Logging only the cheap line here meant the one run that
+        // could calibrate for free was the one run that reported nothing.
+        logFaceIndexDiagnostics("hydrated");
         return;
       }
       index.cursor = null;

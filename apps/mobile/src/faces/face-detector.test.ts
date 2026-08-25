@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { mapDetectedFaces, scaleFaceBox } from "./face-detector.ts";
+import { frameOrientationCounts, mapDetectedFaces, recordFrameOrientation, scaleFaceBox } from "./face-detector.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { landmarksToPatch, patchGeometry } from "../ml/face-crop.ts";
 
@@ -131,6 +131,44 @@ assert(ios[0]?.landmarks?.leftMouth?.x === 65, "PascalCase iOS landmarks map");
 }
 
 // eslint-disable-next-line no-console
+// ── Frame orientation: a transposed MediaStore record is NOT survivable ──
+// scale is computed from long edges so it shrugs off a transpose, but
+// sourceWidth/sourceHeight become the crop bounds for the full-resolution path.
+// Clamping a crop against 4032x3024 on an image that is really 3024x4032 samples
+// the wrong region while still yielding a valid alignment transform - invisible
+// to every other counter, and the shape of fault that collapses embeddings.
+{
+  const before = frameOrientationCounts();
+
+  // Landscape source, landscape frame: agrees.
+  recordFrameOrientation({ width: 4032, height: 3024 }, { width: 2016, height: 1512 });
+  assert(
+    frameOrientationCounts().agree === before.agree + 1,
+    "matching orientation counts as agreement",
+  );
+
+  // Landscape source, PORTRAIT frame: the EXIF-rotation transpose.
+  recordFrameOrientation({ width: 4032, height: 3024 }, { width: 1512, height: 2016 });
+  assert(
+    frameOrientationCounts().transposed === before.transposed + 1,
+    "a transposed frame is detected, not silently accepted",
+  );
+
+  // A square carries no orientation, so it can never be called transposed.
+  recordFrameOrientation({ width: 3000, height: 3000 }, { width: 1280, height: 960 });
+  assert(
+    frameOrientationCounts().transposed === before.transposed + 1,
+    "a square source is never counted as transposed",
+  );
+
+  // Degenerate dimensions must not masquerade as agreement.
+  recordFrameOrientation({ width: 0, height: 3024 }, { width: 1512, height: 2016 });
+  assert(
+    frameOrientationCounts().degenerate === before.degenerate + 1,
+    "unusable dimensions are counted separately, not as agreement",
+  );
+}
+
 console.log("face-detector self-check passed");
 
 // ── Eyes alone are enough, and must NOT fall back to an unaligned crop ──

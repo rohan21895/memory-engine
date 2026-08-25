@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { DEFAULT_FACE_INDEX_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
+import { CENTERED_FACE_INDEX_THRESHOLD, DEFAULT_FACE_INDEX_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -157,9 +157,27 @@ assert(
     ]).getPeople().length === 2,
     "the MobileFaceNet default should split examples below cosine 0.5",
   );
+  // The bar only means something alongside the space it is measured in.
+  // 0.62 was calibrated on RAW embeddings, whose population mean has norm 0.845
+  // and therefore adds ~0.71 to every cosine — the measured raw impostor median
+  // was 0.725, i.e. ABOVE this bar, so it admitted most strangers by
+  // construction. Clustering now runs on CENTERED embeddings, where the
+  // measured impostor median is -0.015 and p99 is 0.533, so the bar belongs far
+  // lower. Move these two together or not at all.
   assert(
     DEFAULT_FACE_INDEX_THRESHOLD === 0.62,
-    "identity default is the post-alignment calibration (0.5 was for unaligned crops)",
+    "the RAW bar stays where post-alignment calibration put it",
+  );
+  assert(
+    CENTERED_FACE_INDEX_THRESHOLD === 0.35,
+    "the CENTERED bar is calibrated for a distribution whose impostor median is ~0",
+  );
+  // The whole point of keeping two constants: a bar is meaningless without the
+  // space it was measured in. Centered must be the LOWER of the two, because
+  // removing the shared direction removes ~0.71 from every cosine.
+  assert(
+    CENTERED_FACE_INDEX_THRESHOLD < DEFAULT_FACE_INDEX_THRESHOLD,
+    "centering removes a large constant, so its bar must sit below the raw one",
   );
   assert(
     PERCEPTUAL_FACE_INDEX_THRESHOLD > 0.9,

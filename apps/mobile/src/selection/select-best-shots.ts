@@ -98,6 +98,16 @@ type Candidate = {
   sharpness?: number;
   eyesOpen?: number;
   smile?: number;
+  /**
+   * Whether a face big enough to matter is cut by the frame edge.
+   *
+   * Deliberately NOT `analysis.anyFaceCutAtEdge`, which is computed over every
+   * detected box. The planner treats a cut face as a SOFT REJECTION, so a
+   * stranger's ear at the border of a group shot removed the whole photo from
+   * the album. Eyes and smiles already read from `significantFaces` only; the
+   * edge test now agrees with them.
+   */
+  cutFace: boolean;
   pixels: number;
 };
 
@@ -165,9 +175,7 @@ export function selectBestShots(
       poseCluster: rankedTake.winner.photo.poseCluster,
       pinned: rankedTake.winner.photo.pinned,
       excluded: rankedTake.winner.photo.excluded,
-      cutFace:
-        rankedTake.winner.analysis?.anyFaceCutAtEdge ??
-        rankedTake.winner.analysis?.faces.some((face) => face.cutAtEdge),
+      cutFace: rankedTake.winner.cutFace,
         smile: rankedTake.winner.smile,
         eyesOpen: rankedTake.winner.eyesOpen,
         screenshotDocument:
@@ -315,6 +323,7 @@ function buildCandidates(photos: AnalyzedPhoto[]): Candidate[] {
     const eyesOpen = analysis ? worstEyesOpen(faces) : undefined;
     const smile = analysis ? bestSmile(faces) : undefined;
     const sharpness = unitSignal(analysis?.sharpness);
+    const cutFace = faces.some((face) => face.cutAtEdge);
     candidates.push({
       photo,
       inputIndex,
@@ -327,6 +336,7 @@ function buildCandidates(photos: AnalyzedPhoto[]): Candidate[] {
             sharpness,
             eyesOpen,
             smile,
+            cutFace,
             pixels,
           })
         : legacyQualityScore(detailScore, pixels),
@@ -334,6 +344,7 @@ function buildCandidates(photos: AnalyzedPhoto[]): Candidate[] {
       sharpness,
       eyesOpen,
       smile,
+      cutFace,
       pixels,
     });
   });
@@ -390,10 +401,26 @@ function rankTake(take: Take): RankedTake {
   return { take, winner, blinkGateEnabled, blinkRejectedIds };
 }
 
+/**
+ * Best first.
+ *
+ * Ordered on independent keys rather than pairwise escapes, because the old
+ * shape was not a valid ordering: inside one quality band a portrait/portrait
+ * pair compared by smile while every other pair compared by quality, which
+ * admits a genuine cycle (A beats C on smile, C beats B on quality, B beats A
+ * on quality). Array.prototype.sort on a cyclic comparator returns whatever the
+ * input order happens to produce, so the SAME three frames ranked differently
+ * depending on the order they were picked in — and this comparator chooses the
+ * frame the user actually sees as a take's winner.
+ *
+ * The band comes first, which changes nothing on its own: bands do not overlap,
+ * so band order and quality order agree. Within one band the quality difference
+ * is under the measurement's own resolution, so a known smile decides instead.
+ */
 function compareCandidates(left: Candidate, right: Candidate): number {
-  const smileDifference = smileTieBreak(left, right);
   return (
-    smileDifference ||
+    qualityBand(right) - qualityBand(left) ||
+    smileRank(right) - smileRank(left) ||
     right.quality - left.quality ||
     right.pixels - left.pixels ||
     left.inputIndex - right.inputIndex ||
@@ -401,19 +428,16 @@ function compareCandidates(left: Candidate, right: Candidate): number {
   );
 }
 
-function smileTieBreak(left: Candidate, right: Candidate): number {
-  if (
-    !isSmileCategory(left.analysis?.category) ||
-    !isSmileCategory(right.analysis?.category) ||
-    left.smile === undefined ||
-    right.smile === undefined ||
-    Math.round(left.quality / SMILE_TIE_BAND) !==
-      Math.round(right.quality / SMILE_TIE_BAND)
-  ) {
-    return 0;
-  }
+function qualityBand(candidate: Candidate): number {
+  return Math.round(candidate.quality / SMILE_TIE_BAND);
+}
 
-  return right.smile - left.smile;
+/** Frames with no usable smile signal sit at zero, so they only lose to a real smile. */
+function smileRank(candidate: Candidate): number {
+  return isSmileCategory(candidate.analysis?.category) &&
+    candidate.smile !== undefined
+    ? candidate.smile
+    : 0;
 }
 
 function compareRankedTakes(left: RankedTake, right: RankedTake): number {
@@ -486,7 +510,7 @@ function chosenReasons(winner: Candidate, take: Take): string[] {
   if (isSmileCategory(winner.analysis.category) && winner.smile !== undefined) {
     reasons.push(`Best smile signal: ${formatPercent(winner.smile)}.`);
   }
-  if (winner.analysis.anyFaceCutAtEdge) {
+  if (winner.cutFace) {
     reasons.push(
       `A face touches the frame edge; the ${winner.analysis.category} cut-face penalty was applied.`,
     );
@@ -539,10 +563,7 @@ function candidateNotChosenReasons(
       `Rejected: subject blinking (${formatPercent(candidate.eyesOpen ?? 0)} eye-open, below the ${formatPercent(BLINK_REJECTION_THRESHOLD)} gate).`,
     );
   }
-  if (
-    candidate.analysis?.anyFaceCutAtEdge &&
-    !winner.analysis?.anyFaceCutAtEdge
-  ) {
+  if (candidate.cutFace && !winner.cutFace) {
     reasons.push("Rejected: face cut at frame edge.");
   }
   if (
@@ -600,7 +621,7 @@ function poolReasons(
     return reasons;
   }
 
-  if (candidate.analysis?.anyFaceCutAtEdge) {
+  if (candidate.cutFace) {
     reasons.push("A face cut at the frame edge lowered this frame's quality.");
   }
   reasons.push(
@@ -724,9 +745,11 @@ function enhancedQualityScore(input: {
   sharpness: number | undefined;
   eyesOpen: number | undefined;
   smile: number | undefined;
+  cutFace: boolean;
   pixels: number;
 }): number {
-  const { analysis, detailScore, sharpness, eyesOpen, smile, pixels } = input;
+  const { analysis, detailScore, sharpness, eyesOpen, smile, cutFace, pixels } =
+    input;
   const weights = CATEGORY_WEIGHTS[analysis.category];
   const components: Array<[number, number | undefined]> = [
     [weights.sharpness, sharpness ?? detailScore],
@@ -750,9 +773,7 @@ function enhancedQualityScore(input: {
     return legacyQualityScore(detailScore, pixels);
   }
 
-  const cutAtEdge =
-    analysis.anyFaceCutAtEdge || analysis.faces.some((face) => face.cutAtEdge);
-  const cutPenalty = cutAtEdge ? weights.cutFacePenalty : 0;
+  const cutPenalty = cutFace ? weights.cutFacePenalty : 0;
   return clamp01(weightedTotal / availableWeight - cutPenalty);
 }
 
