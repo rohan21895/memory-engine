@@ -3,7 +3,6 @@ import {
   summariesForPeople,
   // @ts-expect-error Node's TypeScript runner requires the source extension.
 } from "./face-index.ts";
-// @ts-expect-error Node's TypeScript runner requires the source extension.
 import type { Person } from "./types.ts";
 
 function assert(value: unknown, message: string): asserts value {

@@ -41,6 +41,31 @@ import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 // is the correct call rather than the lazy one.
 const INDEX_VERSION = 22;
 const INDEX_FILENAME = "face-index.json";
+
+/**
+ * The embeddings, kept OUT of the file the app opens with.
+ *
+ * Measured on the owner's device, not guessed: hydrating the combined 16.3MB
+ * index cost `readMs=84 parseMs=5993`. Six seconds of a frozen JS thread on
+ * every launch, which is exactly his report -- "i click on something, nothing
+ * happens, app hangs". 13.8MB of those 16.3 are observation embeddings, and
+ * nothing the first screen draws needs a single one of them: the People grid
+ * reads `people` and `faceThumbUris`, both of which live in the small file.
+ *
+ * One JSON object per LINE rather than one array, so the load can parse a
+ * chunk, hand the thread back to the UI, and continue. A single `JSON.parse`
+ * over 17,699 observations cannot be interrupted no matter which thread wants
+ * it.
+ */
+const OBSERVATIONS_FILENAME = "face-observations.jsonl";
+
+/**
+ * Observations parsed per turn before yielding to the UI.
+ *
+ * Small enough that a tap lands within a frame or two of asking; large enough
+ * that the yields themselves are not the cost.
+ */
+const OBSERVATION_LOAD_CHUNK = 2000;
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
 /**
@@ -363,7 +388,11 @@ type StoredFaceIndex = Omit<
   PersistedFaceIndex,
   "observations" | "people"
 > & {
-  observations: StoredFaceObservation[];
+  /**
+   * Only present in files written before embeddings moved to their own line-
+   * delimited file. Read for the one launch that upgrades, never written.
+   */
+  observations?: StoredFaceObservation[];
   people: StoredPerson[];
 };
 
@@ -526,6 +555,19 @@ export async function probeFaceAlignment(photos = 6, faces = 3): Promise<void> {
 
 /** Emits anonymous centroid diagnostics for on-device clustering calibration. */
 export function logFaceIndexDiagnostics(context = "status"): void {
+  // Both halves read every embedding, and the closest-pair scan is O(people^2)
+  // on top -- together they cost about a second on the owner's library. That is
+  // a second of frozen UI to print a line nobody asked for, and it would also
+  // drag the 13.8MB observations file into memory on a launch that has no other
+  // reason to touch it. Diagnostics report on data that is already loaded; they
+  // do not get to load it.
+  if (!observationsLoaded) {
+    console.warn(
+      `[PhoteoFaceIndex] ${context} people=${index.people.length} ` +
+        `(embeddings not loaded; diagnostics skipped)`,
+    );
+    return;
+  }
   logEmbeddingPath(context);
   logSimilarityStructure(context);
 }
@@ -819,17 +861,25 @@ function storedPerson(value: unknown): value is StoredPerson {
  */
 const quantizedObservations = new WeakMap<FaceObservation, string>();
 
+function storedObservationLine(observation: FaceObservation): string {
+  let embedding = quantizedObservations.get(observation);
+  if (embedding === undefined) {
+    embedding = quantizeEmbedding(observation.embedding);
+    quantizedObservations.set(observation, embedding);
+  }
+  return JSON.stringify({ ...observation, embedding });
+}
+
+/**
+ * The small file: everything the first screen needs and nothing it does not.
+ *
+ * `observations` is deliberately absent. It is the 13.8MB that made launch cost
+ * six seconds of frozen JS thread, and it now lives in its own file.
+ */
 function storedIndex(): StoredFaceIndex {
+  const { observations: _observations, ...rest } = index;
   return {
-    ...index,
-    observations: index.observations.map((observation) => {
-      let embedding = quantizedObservations.get(observation);
-      if (embedding === undefined) {
-        embedding = quantizeEmbedding(observation.embedding);
-        quantizedObservations.set(observation, embedding);
-      }
-      return { ...observation, embedding };
-    }),
+    ...rest,
     // Centroids are NOT cached: a person's centroid is recomputed on every
     // assignment and merge, so the object is live where observations are not.
     people: index.people.map((person) => ({
@@ -1128,8 +1178,12 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
     if (
       !isRecord(value) ||
       value.version !== INDEX_VERSION ||
-      !Array.isArray(value.observations) ||
-      !value.observations.every(storedObservation) ||
+      // Absent is the NEW shape: embeddings now live in their own file and are
+      // loaded on demand. An inline array is a file written before the split
+      // and is still read, once, so the upgrade costs no re-scan.
+      (value.observations !== undefined &&
+        (!Array.isArray(value.observations) ||
+          !value.observations.every(storedObservation))) ||
       !Array.isArray(value.people) ||
       !value.people.every(storedPerson) ||
       !trueRecord(value.processedAssetIds) ||
@@ -1146,7 +1200,7 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
     const stored = value as unknown as StoredFaceIndex;
     const loaded: PersistedFaceIndex = {
       ...stored,
-      observations: stored.observations.map((observation) => ({
+      observations: (stored.observations ?? []).map((observation) => ({
         ...observation,
         embedding: dequantizeEmbedding(observation.embedding),
       })),
@@ -1200,6 +1254,171 @@ async function readPersistedIndex(
   }
 }
 
+/**
+ * Whether `index.observations` reflects what is on disk.
+ *
+ * The single most dangerous piece of state in this file. When it is false the
+ * array is EMPTY BUT THE FILE IS NOT, so anything that writes the observations
+ * file while it is false would destroy every embedding in the library. Exactly
+ * one place writes that file, and it refuses unless this is true.
+ */
+let observationsLoaded = false;
+let observationsLoading: Promise<void> | null = null;
+
+/** Set by anything that adds to or prunes the observation list. */
+let observationsDirty = false;
+
+/**
+ * Loads the embeddings, once, without freezing the UI.
+ *
+ * Everything that clusters, calibrates, re-scans or diagnoses must await this
+ * first. Nothing the first screen paints has to: that is the entire point.
+ *
+ * Parsing is chunked because a single `JSON.parse` over 17,699 observations is
+ * atomic — it cannot yield, so it would freeze the thread for seconds no matter
+ * where it was called from. One object per line lets the loop hand the thread
+ * back between chunks, so a tap during the load still lands.
+ */
+async function loadObservations(): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    const fileSystem = await fileSystemModule();
+    if (!fileSystem.documentDirectory) return;
+    const uri = `${fileSystem.documentDirectory}${OBSERVATIONS_FILENAME}`;
+    let raw: string;
+    try {
+      raw = await fileSystem.readAsStringAsync(uri);
+    } catch {
+      // No file yet: either a fresh install, or a combined index that has not
+      // been split. `hydrateFaceIndex` has already loaded the inline copy in
+      // the second case, so an empty list here is correct in both.
+      observationsLoaded = true;
+      return;
+    }
+    const readMs = Date.now() - startedAt;
+    const lines = raw.split("\n");
+    const loaded: FaceObservation[] = [];
+    for (let start = 0; start < lines.length; start += OBSERVATION_LOAD_CHUNK) {
+      const end = Math.min(start + OBSERVATION_LOAD_CHUNK, lines.length);
+      for (let cursor = start; cursor < end; cursor += 1) {
+        const observation = parseObservationLine(lines[cursor]);
+        if (observation) loaded.push(observation);
+      }
+      if (end < lines.length) await yieldToEventLoop();
+    }
+    // Assigned only after the whole file is read. A partial list assigned early
+    // would look complete to `persistObservations` and truncate the file.
+    index.observations = loaded;
+    observationsLoaded = true;
+    console.warn(
+      `[PhoteoFaceIndex] observations bytes=${raw.length} readMs=${readMs} ` +
+        `parseMs=${Date.now() - startedAt - readMs} faces=${loaded.length}`,
+    );
+  } catch {
+    // Leaving `observationsLoaded` false is the safe failure: the app still
+    // shows every person it already knows, and nothing overwrites the file.
+  }
+}
+
+/**
+ * Awaits the embeddings being in memory. Cheap and safe to call repeatedly.
+ */
+function ensureObservations(): Promise<void> {
+  if (observationsLoaded) return Promise.resolve();
+  observationsLoading ??= loadObservations().finally(() => {
+    observationsLoading = null;
+  });
+  return observationsLoading;
+}
+
+/** The body of the observations file: one quantized observation per line. */
+function observationLines(observations: readonly FaceObservation[]): string {
+  return observations.map(storedObservationLine).join("\n");
+}
+
+/**
+ * Reads one line back. Returns null for anything malformed, so a single corrupt
+ * line costs one face rather than the library.
+ */
+function parseObservationLine(line: string): FaceObservation | null {
+  if (line.length === 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(line);
+    if (!storedObservation(parsed)) return null;
+    const stored = parsed as StoredFaceObservation;
+    const observation: FaceObservation = {
+      ...stored,
+      embedding: dequantizeEmbedding(stored.embedding),
+    };
+    return validObservation(observation) ? observation : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Test seam for the split-file persistence, which has no pure surface: its
+ * whole job is the decision of whether to touch a file. Exported so the offline
+ * suite can drive both states with a fake filesystem, because getting this
+ * wrong destroys the user's entire library and nothing else would catch it.
+ */
+export const __observationsFileForTest = {
+  setLoaded(loaded: boolean): void {
+    observationsLoaded = loaded;
+  },
+  setDirty(dirty: boolean): void {
+    observationsDirty = dirty;
+  },
+  setObservations(next: FaceObservation[]): void {
+    index.observations = next;
+  },
+  lines: observationLines,
+  parseLine: parseObservationLine,
+  persist: (
+    fileSystem: Parameters<typeof persistObservations>[0],
+  ): Promise<void> => persistObservations(fileSystem),
+};
+
+/**
+ * Writes the embeddings, and refuses to when they are not in memory.
+ *
+ * The refusal is the important half. `index.observations` is empty until
+ * something asks for it, so an unguarded write on a launch that never clustered
+ * would replace 17,699 faces with an empty file and silently cost the owner a
+ * five-hour re-scan.
+ */
+async function persistObservations(
+  fileSystem: typeof import("expo-file-system/legacy"),
+): Promise<void> {
+  if (!observationsLoaded || !observationsDirty) return;
+  const uri = `${fileSystem.documentDirectory}${OBSERVATIONS_FILENAME}`;
+  const temporaryUri = `${uri}.tmp`;
+  const startedAt = Date.now();
+  await fileSystem.writeAsStringAsync(
+    temporaryUri,
+    observationLines(index.observations),
+  );
+  await fileSystem.deleteAsync(uri, { idempotent: true });
+  await fileSystem.moveAsync({ from: temporaryUri, to: uri });
+  observationsDirty = false;
+  traceScanStage("persistObservations", startedAt);
+}
+
+/**
+ * Takes ownership of embeddings that arrived inline in the small file.
+ *
+ * Returns whether there were any. A pre-split index carries them in the same
+ * document, and once they are in memory they are BOTH loaded and unwritten --
+ * so this is the one place allowed to declare them loaded without reading the
+ * observations file.
+ */
+function adoptInlineObservations(): boolean {
+  if (index.observations.length === 0) return false;
+  observationsLoaded = true;
+  observationsDirty = true;
+  return true;
+}
+
 async function hydrateFaceIndex(): Promise<void> {
   try {
     const fileSystem = await fileSystemModule();
@@ -1212,12 +1431,21 @@ async function hydrateFaceIndex(): Promise<void> {
       // Recovering from a `.tmp` means the last write was interrupted, so the
       // real file is missing or stale. Stay dirty and rewrite it.
       index = temporary;
+      adoptInlineObservations();
       rebuildPersonIdsByAsset();
       return;
     }
     const saved = await readPersistedIndex(fileSystem, uri);
     if (saved) {
       index = saved;
+      if (adoptInlineObservations()) {
+        // A file from before the split. Its embeddings are in memory now, so
+        // the next write moves them into their own file and this launch is the
+        // last one that pays six seconds for them.
+        rebuildPersonIdsByAsset();
+        markIndexDirty();
+        return;
+      }
       rebuildPersonIdsByAsset();
       // Just read from disk, so by definition it matches disk. This is what
       // lets an app open that scans nothing skip the multi-second rewrite.
@@ -1352,6 +1580,11 @@ async function persistFaceIndex(force = false): Promise<void> {
       indexDirty = true;
       return;
     }
+    // Embeddings first. If the process dies between the two writes, a small
+    // file that still lists the OLD face count is recoverable -- the scan
+    // re-derives from the observations. The reverse is not: a small file
+    // promising faces the observations file does not have loses them.
+    await persistObservations(fileSystem);
     const uri = `${fileSystem.documentDirectory}${INDEX_FILENAME}`;
     const temporaryUri = `${uri}.tmp`;
     await fileSystem.writeAsStringAsync(
@@ -1431,6 +1664,10 @@ async function recordConstraint(
   const a = anchorAssetFor(index.people, personIdA);
   const b = anchorAssetFor(index.people, personIdB);
   if (!a || !b) return false;
+  // A must-link the cheap merge cannot express falls back to a full recluster,
+  // which reads every embedding. Loaded here rather than inside the callback
+  // because that callback is synchronous and cannot wait for a file.
+  if (kind === "must") await ensureObservations();
   const constraints = index.constraints ?? [];
   // A later judgement replaces an earlier one about the same pair, so a user
   // who splits what they previously merged is not fighting their own history.
@@ -1476,6 +1713,10 @@ export function faceConstraintCount(): number {
 export async function clearFaceConstraints(): Promise<void> {
   index.constraints = [];
   markIndexDirty();
+  // `rebuildPeople` re-clusters every face from scratch, so the embeddings have
+  // to be in memory. Without this it would rebuild from an empty list and wipe
+  // the whole People grid.
+  await ensureObservations();
   rebuildPeople();
   await persistFaceIndex(true);
 }
@@ -2424,13 +2665,16 @@ async function backfillCoverFaceThumbs(): Promise<number> {
     const directoryUri = `${fileSystem.documentDirectory}${FACE_THUMB_DIRECTORY}`;
     await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
 
-    const facesPerAsset = new Map<string, number>();
-    for (const observation of index.observations) {
-      facesPerAsset.set(
-        observation.assetId,
-        (facesPerAsset.get(observation.assetId) ?? 0) + 1,
-      );
-    }
+    // Ambiguity is judged from `personIdsByAsset`, not from the observation
+    // list. Two reasons, and the second is the important one:
+    //
+    //  - the embeddings are not in memory on a launch that scanned nothing, and
+    //    pulling 13.8MB off disk to count faces would undo the whole reason
+    //    startup is fast now;
+    //  - counting PEOPLE is the more accurate question anyway. A photo holding
+    //    two detections of ONE person -- a mirror, a reflection -- yields a crop
+    //    that is unambiguously them, and an observation count would have thrown
+    //    it away.
     // Biggest tiles first. They are the people the owner actually looks at, and
     // a budgeted pass has to spend its decodes where they show.
     const needing = index.people
@@ -2443,7 +2687,7 @@ async function backfillCoverFaceThumbs(): Promise<number> {
       for (const assetId of person.assetIds) {
         if (photosTried >= AVATAR_BACKFILL_PHOTOS_PER_PASS) break;
         if (index.faceThumbUris[assetId]) break;
-        if ((facesPerAsset.get(assetId) ?? 0) !== 1) continue;
+        if ((personIdsByAsset.get(assetId)?.length ?? 0) !== 1) continue;
         photosTried += 1;
         if (photosTried % AVATAR_BACKFILL_YIELD_EVERY === 0) {
           await yieldToEventLoop();
@@ -2518,6 +2762,29 @@ function seenCount(): number {
   return Object.keys(index.seenAssetIds).length;
 }
 
+/**
+ * How many faces are on record, answerable without the embeddings in memory.
+ *
+ * Every observation is either assigned to a person or seeds one, so the face
+ * counts stored on `people` sum to the same number -- and `people` lives in the
+ * small file that is always loaded. This is what lets the size-dependent
+ * decisions below be made on a launch that never touches the 13.8MB blob.
+ */
+function faceCountOnRecord(): number {
+  if (observationsLoaded) return index.observations.length;
+  let total = 0;
+  for (const person of index.people) total += person.faceCount;
+  return total;
+}
+
+/** Which clustering rule a library this size should be using. */
+function calibrationRuleForLibrary(): string {
+  return USE_CENTERED_CLUSTERING &&
+    faceCountOnRecord() >= CENTERING_MIN_OBSERVATIONS
+    ? CENTERED_CLUSTER_CALIBRATION
+    : CLUSTER_CALIBRATION;
+}
+
 /** The space and bar this library should be clustered in, given its size. */
 function calibrationForLibrary(): { rule: string; threshold: number; centered: boolean } {
   const centered =
@@ -2583,7 +2850,28 @@ function rebuildPeople(requested?: number): void {
  *
  * Returns true when it re-clustered, so the caller can persist the new grouping.
  */
-function reclusterIfCalibrationChanged(threshold?: number): boolean {
+async function reclusterIfCalibrationChanged(
+  threshold?: number,
+): Promise<boolean> {
+  // Decided WITHOUT the embeddings, because this runs on every launch and the
+  // answer is almost always "nothing changed". Measuring the calibrated bar
+  // needs all 17,699 of them, so asking for it first would put the six-second
+  // load back on the startup path to learn that there was nothing to do.
+  //
+  // Only two things can make a rebuild necessary here: a build that ships a
+  // different clustering RULE, or a caller naming an explicit threshold. The
+  // measured bar also drifts as the library grows, and that is picked up where
+  // it belongs -- `rebuildPeople` at the end of a scan, which has the
+  // embeddings in hand anyway. At rest nothing has changed, so there is nothing
+  // to recalibrate.
+  const wantedRule = calibrationRuleForLibrary();
+  const explicitBar =
+    threshold !== undefined &&
+    Math.abs(index.threshold - safeThreshold(threshold)) >=
+      RECALIBRATION_HYSTERESIS;
+  if (index.calibration === wantedRule && !explicitBar) return false;
+
+  await ensureObservations();
   if (index.observations.length === 0) return false;
   const calibration = calibrationForLibrary();
   const wanted = safeThreshold(threshold ?? calibration.threshold);
@@ -2796,7 +3084,7 @@ async function runBuild(
     // a corrected linkage). Apply it to the faces already on disk rather than
     // bumping INDEX_VERSION, which would discard every embedding and re-scan
     // the whole library to change one constant.
-    if (reclusterIfCalibrationChanged(opts.threshold)) {
+    if (await reclusterIfCalibrationChanged(opts.threshold)) {
       await persistFaceIndex();
     }
     if (!(await waitForForeground(control))) {
@@ -2859,6 +3147,13 @@ async function runBuild(
       await persistFaceIndex();
     }
 
+    // Past every early return, so there IS scanning to do -- and only now are
+    // the embeddings needed. The batches below append to this list, and a scan
+    // that appended to an EMPTY list would persist a file holding nothing but
+    // the faces found today. Loading is chunked, so the UI keeps painting
+    // through it.
+    await ensureObservations();
+
     let after = index.cursor ?? undefined;
     let hasNextPage = true;
     let newlyProcessed = 0;
@@ -2919,6 +3214,7 @@ async function runBuild(
         traceScanCount("photos", pending.length);
         traceScanCount("faces", observations.length);
         index.observations.push(...observations);
+        observationsDirty = true;
         markIndexDirty();
         const assignments = appendPeople(observations);
         await persistCoverFaceThumbs(faceCropCandidates, assignments);
@@ -2972,9 +3268,11 @@ async function runBuild(
       return;
     }
 
+    const beforePrune = index.observations.length;
     index.observations = index.observations.filter((observation) =>
       Object.hasOwn(index.seenAssetIds, observation.assetId),
     );
+    if (index.observations.length !== beforePrune) observationsDirty = true;
     // Corrections anchored to photos the user has since deleted can never
     // resolve again, so they are dropped here rather than accumulating forever
     // in a file that is rewritten on every scan.
@@ -3063,7 +3361,11 @@ export function getPeople(): FaceIndexPerson[] {
  * seconds on the phone. So this belongs behind a deliberate action with visible
  * progress, and must never be called while painting.
  */
-export function suggestedFaceMerges(limit = 20): MergeSuggestion[] {
+export async function suggestedFaceMerges(
+  limit = 20,
+): Promise<MergeSuggestion[]> {
+  // Both bars are measured over every face on record.
+  await ensureObservations();
   return suggestMerges(
     index.people,
     {
