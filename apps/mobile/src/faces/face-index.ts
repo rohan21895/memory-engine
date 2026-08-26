@@ -1424,7 +1424,29 @@ function adoptInlineObservations(): boolean {
   if (index.observations.length === 0) return false;
   observationsLoaded = true;
   observationsDirty = true;
+  pendingIndexMigration = true;
   return true;
+}
+
+/**
+ * Set when a pre-split index was just read inline, cleared once the two-file
+ * form has been written.
+ *
+ * Without it the split would land only when something else happened to persist,
+ * and a launch that scans nothing and recovers no avatar would read the 16.3MB
+ * file again next time -- six seconds, every time, forever.
+ */
+let pendingIndexMigration = false;
+
+/** Writes the two-file form immediately after a pre-split index is read. */
+async function finishIndexMigration(): Promise<void> {
+  if (!pendingIndexMigration) return;
+  pendingIndexMigration = false;
+  await persistFaceIndex(true);
+  console.warn(
+    `[PhoteoFaceIndex] split ${index.observations.length} embeddings into ` +
+      OBSERVATIONS_FILENAME,
+  );
 }
 
 async function hydrateFaceIndex(): Promise<void> {
@@ -3092,6 +3114,7 @@ async function runBuild(
   const stopWatching = await watchAppState(control);
   try {
     await loadFaceIndex();
+    await finishIndexMigration();
     // A build can ship a different clustering calibration (a new threshold, or
     // a corrected linkage). Apply it to the faces already on disk rather than
     // bumping INDEX_VERSION, which would discard every embedding and re-scan
