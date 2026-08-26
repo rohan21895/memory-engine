@@ -2693,6 +2693,31 @@ const AVATAR_BACKFILL_CHECKPOINT = 50;
  *
  * Returns how many avatars it recovered.
  */
+/**
+ * Deletes the crop FILES left behind by the person-keyed scheme.
+ *
+ * `dropPersonKeyedThumbs` removes them from the index, which is what stops them
+ * being shown -- but the JPEGs stay on disk, and on the owner's library that is
+ * 2,081 files nothing will ever reference again. Matched by filename, since the
+ * old scheme named each file after the person id it was filed under.
+ */
+async function deleteOrphanedPersonThumbs(
+  fileSystem: typeof import("expo-file-system/legacy"),
+  directoryUri: string,
+): Promise<void> {
+  try {
+    const names = await fileSystem.readDirectoryAsync(directoryUri);
+    const orphans = names.filter((name) => /^person-\d+\.jpg$/u.test(name));
+    if (orphans.length === 0) return;
+    for (const name of orphans) {
+      await fileSystem.deleteAsync(`${directoryUri}/${name}`, { idempotent: true });
+    }
+    console.warn(`[PhoteoFaceIndex] deleted ${orphans.length} orphaned person crops`);
+  } catch {
+    // Leftover files cost disk, not correctness. Never worth failing over.
+  }
+}
+
 async function backfillCoverFaceThumbs(
   control?: { cancelled: boolean; foreground: boolean },
 ): Promise<number> {
@@ -2703,6 +2728,7 @@ async function backfillCoverFaceThumbs(
     if (!fileSystem.documentDirectory) return 0;
     const directoryUri = `${fileSystem.documentDirectory}${FACE_THUMB_DIRECTORY}`;
     await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
+    await deleteOrphanedPersonThumbs(fileSystem, directoryUri);
 
     // Ambiguity is judged from `personIdsByAsset`, not from the observation
     // list. Two reasons, and the second is the important one:
