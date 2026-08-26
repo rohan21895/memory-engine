@@ -36,12 +36,42 @@ async function nativeModule(): Promise<ScanServiceNative | null> {
   return cached;
 }
 
+/**
+ * Asks for POST_NOTIFICATIONS, which Android 13+ requires before any
+ * notification is visible.
+ *
+ * The service runs either way -- a denied permission leaves it foregrounded
+ * with an invisible notification, which was verified on device. But invisible
+ * is the wrong outcome: the notification is the user's only handle on work
+ * happening while the app is closed, and it is how they can tell the scan is
+ * progressing rather than stuck. So it is requested, and a refusal is accepted
+ * silently rather than blocking the scan.
+ *
+ * Uses React Native's built-in PermissionsAndroid rather than adding
+ * expo-notifications, which would pull a whole push-notification stack in to
+ * ask one question.
+ */
+async function ensureNotificationPermission(): Promise<void> {
+  try {
+    const { PermissionsAndroid, Platform } = await import("react-native");
+    if (Platform.OS !== "android" || Number(Platform.Version) < 33) return;
+    const permission = "android.permission.POST_NOTIFICATIONS" as Parameters<
+      typeof PermissionsAndroid.request
+    >[0];
+    if (await PermissionsAndroid.check(permission)) return;
+    await PermissionsAndroid.request(permission);
+  } catch {
+    // Asking is best-effort; the scan does not depend on the answer.
+  }
+}
+
 /** Starts the service. False means the scan must stay in the foreground. */
 export async function startScanService(
   title: string,
   text: string,
 ): Promise<boolean> {
   try {
+    await ensureNotificationPermission();
     const native = await nativeModule();
     return (await native?.start(title, text)) === true;
   } catch {

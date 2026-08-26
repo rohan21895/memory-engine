@@ -2112,6 +2112,7 @@ function calibrationForLibrary(): { rule: string; threshold: number; centered: b
 }
 
 function rebuildPeople(requested?: number): void {
+  const startedAt = Date.now();
   const calibration = calibrationForLibrary();
   index.calibration = calibration.rule;
   markIndexDirty();
@@ -2124,6 +2125,18 @@ function rebuildPeople(requested?: number): void {
   index.people = peopleFromObservations(index.observations, index.threshold);
   markIndexDirty();
   rebuildPersonIdsByAsset();
+  // Greedy assignment is O(faces x people x dims). Measured offline at 7.6s for
+  // 15k faces over 600 people, entirely on the JS thread, so anything that
+  // triggers this from a tap freezes the UI for as long as it runs. Logged
+  // rather than assumed: "feels slow" reports on this app have pointed at the
+  // wrong thing before.
+  const elapsed = Date.now() - startedAt;
+  if (elapsed > 250) {
+    console.warn(
+      `[PhoteoFaceIndex] rebuildPeople ${elapsed}ms over ` +
+        `${index.observations.length} faces -> ${index.people.length} people`,
+    );
+  }
 }
 
 /**
