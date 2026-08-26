@@ -470,28 +470,20 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
           {visiblePeople.map((person) => {
             const active = selectedPerson === person.id;
             const label = peopleLabels.get(person.id) ?? "Person";
+            const openCorrection = () => onNamePerson?.({
+              id: person.id,
+              label,
+              faceThumbUri: person.faceThumbUri,
+              assetIds: assetIdsForPerson(person.id).slice(0, 8),
+            });
             return (
-              <Pressable
-                accessibilityHint="Tap to filter photos. Hold to add a name."
-                accessibilityLabel={`${label}. ${copy.filters.photoCount(person.assetIds.length)}`}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-                key={person.id}
-                onLongPress={() => onNamePerson?.({
-                  id: person.id,
-                  label,
-                  faceThumbUri: person.faceThumbUri,
-                  assetIds: assetIdsForPerson(person.id).slice(0, 8),
-                })}
-                onPress={() => {
-                  setSelectedPlace(null);
-                  setSelectedPerson(active ? null : person.id);
-                }}
-                style={styles.person}
-              >
-                <Image cachePolicy="memory-disk" contentFit="cover" source={person.faceThumbUri ?? contentUri(person.coverAssetId)} style={[styles.avatar, active ? styles.avatarActive : null]} />
-                <Text numberOfLines={1} style={[styles.personName, active ? styles.activeText : null]}>{label}</Text>
-              </Pressable>
+              <View key={person.id} style={styles.person}>
+                <Pressable accessibilityHint="Tap to filter photos. Hold to add a name." accessibilityLabel={`${label}. ${copy.filters.photoCount(person.assetIds.length)}`} accessibilityRole="button" accessibilityState={{ selected: active }} onLongPress={openCorrection} onPress={() => { setSelectedPlace(null); setSelectedPerson(active ? null : person.id); }} style={styles.personFilter}>
+                  <Image cachePolicy="memory-disk" contentFit="cover" source={person.faceThumbUri ?? contentUri(person.coverAssetId)} style={[styles.avatar, active ? styles.avatarActive : null]} />
+                  <Text numberOfLines={1} style={[styles.personName, active ? styles.activeText : null]}>{label}</Text>
+                </Pressable>
+                <Pressable accessibilityHint="Opens options to merge this tile with another person or keep them separate" accessibilityLabel={`Fix grouping for ${label}`} accessibilityRole="button" onPress={openCorrection} style={styles.personFix}><Text style={styles.personFixText}>Fix</Text></Pressable>
+              </View>
             );
           })}
         </ScrollView>
@@ -684,6 +676,9 @@ const styles = StyleSheet.create({
   peopleScan: { alignItems: "center", alignSelf: "flex-start", backgroundColor: colors.panelRaised, borderRadius: radii.pill, justifyContent: "center", marginTop: spacing.xs, minHeight: layout.minTouchTarget, paddingHorizontal: spacing.md },
   peopleScanText: { color: colors.goldPressed, fontFamily: fonts.bold, ...typeScale.small },
   person: { alignItems: "center", gap: 6, width: 66 },
+  personFilter: { alignItems: "center", gap: 6, width: 66 },
+  personFix: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderRadius: radii.pill, borderWidth: 1, height: 44, justifyContent: "center", width: 66 },
+  personFixText: { color: colors.gold, fontFamily: fonts.semibold, ...typeScale.eyebrow },
   personName: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12.5, width: 66 },
   photoRow: { flexDirection: "row", gap: GRID_GAP },
   place: { width: 132 },
