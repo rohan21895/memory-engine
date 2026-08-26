@@ -3679,7 +3679,18 @@ export function getFaceIndexPerson(personId: string): FaceIndexPerson | undefine
  * progress, and must never be called while painting.
  */
 export async function suggestedFaceMerges(
-  limit = 20,
+  // 60 rather than 20, because the cost is paid per REVIEW, not per question.
+  // Measured on the owner's phone: opening the review parses 13.8MB of
+  // embeddings (`observations bytes=13827052 parseMs=6694`) and then sweeps
+  // every pair -- about 45 seconds before the first question appears. Handing
+  // back 20 answers' worth of work for that meant sitting through it again
+  // three times to reach the same place. The sweep has already found every
+  // pair; truncating the list to 20 threw the rest away.
+  //
+  // It does not commit him to 60 questions. He can leave after one, and the
+  // ranking now puts the largest repair first, so the early answers are the
+  // ones that matter either way.
+  limit = 60,
 ): Promise<MergeSuggestion[]> {
   // Both bars are measured over every face on record.
   await ensureObservations();

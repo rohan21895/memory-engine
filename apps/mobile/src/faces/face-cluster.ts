@@ -1135,6 +1135,16 @@ export type MergeSuggestion = {
    */
   sharedAssets: number;
   /**
+   * Photos this answer would put right: the size of the smaller cluster, since
+   * that is the one absorbed.
+   *
+   * Every question costs the same tap, so this is what makes one worth asking
+   * over another. Ranking without it spent the owner's first six slots on pairs
+   * of single-face strangers -- one photo each -- while a 257-face tile split
+   * from its own 150-face other half sat at rank fourteen.
+   */
+  photosFixed: number;
+  /**
    * This pair cleared its merge bar on face evidence and is held apart ONLY by
    * having been photographed together.
    *
@@ -1252,6 +1262,7 @@ export function suggestMerges(
         similarity,
         bar,
         sharedAssets,
+        photosFixed: Math.min(first.faceCount, second.faceCount),
         blockedByCoOccurrence: vetoed && similarity >= bar,
       });
     }
@@ -1259,14 +1270,27 @@ export function suggestMerges(
 
   // Vetoed pairs first: they cleared the bar on face evidence and are held
   // apart only by co-occurrence, so they are the ones where the app is most
-  // likely to be wrong and the user's answer is worth most. Among those, the
-  // fewest shared photos first -- one shared frame is far weaker evidence of
-  // two people than ten. Ties break on id so the list does not reshuffle
-  // between identical runs.
+  // likely to be wrong and the user's answer is worth most.
+  //
+  // Within that group, the biggest repair first. These pairs have ALREADY
+  // passed the similarity test, so confidence is no longer what separates them
+  // -- what separates them is how much each answer is worth, and that is the
+  // smaller cluster's size. Ordering them by fewest-shared-photos instead
+  // treated a pair of one-face strangers as the most urgent question in the
+  // library: on the owner's index six of the first twenty slots went to pairs
+  // worth one photo each, while person-16 (257 faces) split from person-745
+  // (150 faces) ranked fourteenth. Shared photos stays as the tiebreak, since
+  // one shared frame is far weaker evidence of two people than ten.
+  //
+  // The pairs BELOW their bar keep similarity first. There confidence IS the
+  // binding constraint, and a wrong merge is unrecoverable, so a large tile is
+  // a reason for care rather than for haste.
   found.sort(
     (x, y) =>
       Number(y.blockedByCoOccurrence) - Number(x.blockedByCoOccurrence) ||
-      (x.blockedByCoOccurrence ? x.sharedAssets - y.sharedAssets : 0) ||
+      (x.blockedByCoOccurrence
+        ? y.photosFixed - x.photosFixed || x.sharedAssets - y.sharedAssets
+        : 0) ||
       y.similarity - x.similarity ||
       (x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0),
   );
