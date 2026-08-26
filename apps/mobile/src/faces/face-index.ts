@@ -2737,9 +2737,11 @@ export function getPeople(): FaceIndexPerson[] {
  * looser opinion invented for the UI. Confirming one writes a must-link, which
  * outranks every measured bar and survives future reclusters.
  *
- * O(people^2) in linkage calls -- the shape of one consolidation sweep, several
- * seconds at this library's size -- so this belongs behind a deliberate action
- * and must never be called while painting.
+ * O(people^2) in linkage calls. Measured, not guessed: 2,173 people is 2.36M
+ * pairs at 1,295ms on a laptop, which at the ratio this library's rebuild
+ * showed (306,936ms device against 27,973ms laptop) is on the order of fifteen
+ * seconds on the phone. So this belongs behind a deliberate action with visible
+ * progress, and must never be called while painting.
  */
 export function suggestedFaceMerges(limit = 20): MergeSuggestion[] {
   return suggestMerges(

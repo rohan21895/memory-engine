@@ -1156,8 +1156,24 @@ export function suggestMerges(
       ) {
         continue;
       }
-      const similarity = scaledSimilarity(a.centroid, a.inverse, b.centroid, b.inverse);
-      if (similarity < floor) continue;
+      // Nothing under the floor can become a suggestion, so the dot product is
+      // abandoned as soon as that is provable. Worth having, but modestly:
+      // measured over 2.36M pairs at the device's shape it is 1,655ms -> 1,295ms
+      // with an identical suggestion list. Only 1.28x, because the floor sits
+      // far below the bar and the Cauchy-Schwarz remainder over 512 near-
+      // orthogonal dimensions stays larger than it until the sixth block of
+      // eight. Assignment prunes far harder, since there the bar climbs to the
+      // best match found so far rather than staying at a fixed floor.
+      const similarity = boundedSimilarity(
+        a.centroid,
+        a.inverse,
+        a.suffix,
+        b.centroid,
+        b.inverse,
+        b.suffix,
+        floor,
+      );
+      if (similarity === Number.NEGATIVE_INFINITY || similarity < floor) continue;
       // The same bar `scanPair` would have applied, so a suggestion is exactly
       // "this pair failed the test the app actually ran" -- not a second,
       // looser opinion invented for the UI.
