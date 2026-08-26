@@ -1,5 +1,9 @@
 import type { PickedPhoto } from "../import/picked-photo";
-import { decodeBlurhashGrayscale } from "./candidate-quality-probe";
+// Explicit extension, matching face-index.ts: a bare specifier is fine for the
+// bundler but unresolvable to Node's TS runner, and it left this module's own
+// test suite unable to load at all.
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { decodeBlurhashGrayscale } from "./candidate-quality-probe.ts";
 import type { MeasuredImageQuality } from "./image-quality";
 
 /** Normal-sized picks keep the existing all-photo analysis path unchanged. */
@@ -19,6 +23,31 @@ type RankedCandidate = ProbedCandidate & {
   qualityScore: number;
   timeBucket?: number;
   contentKey?: string;
+  /**
+   * This photo's people, already filtered to the ones that recur. Precomputed
+   * here rather than inside the O(limit x remaining) scoring loop, for the same
+   * reason `contentKey` is.
+   */
+  familiarPersonIds?: readonly string[];
+};
+
+export type PrepassOptions = {
+  /**
+   * Whether a face cluster belongs to somebody who recurs across the library,
+   * rather than somebody who was simply also there.
+   *
+   * Required for the person axis to do anything, and absent it stays completely
+   * inert -- callers that pass nothing get exactly the previous behaviour.
+   *
+   * It exists because the two obvious substitutes are both wrong. Face count
+   * ranks a stranger photographed forty times at one wedding above a relative
+   * photographed four times across two years. Rarity is worse: this library
+   * resolved 17,699 faces into 2,173 clusters, roughly 2,161 of which hold
+   * about six faces each, and most of those are other guests and passers-by --
+   * so "prefer the rarest people" seeds an album with people the owner has
+   * never met. See faces/person-recurrence.ts, which counts occasions.
+   */
+  isFamiliar?: (personId: string) => boolean;
 };
 
 const MAX_TIME_BUCKETS = 40;
@@ -88,6 +117,7 @@ function contentKeyForQuality(
 export function chooseHeavyAnalysisCandidates(
   probed: readonly ProbedCandidate[],
   limit = HEAVY_ANALYSIS_CANDIDATE_LIMIT,
+  options: PrepassOptions = {},
 ): ProbedCandidate[] {
   const normalizedLimit = Math.max(0, Math.floor(limit));
   if (normalizedLimit === 0 || probed.length === 0) return [];
@@ -95,11 +125,12 @@ export function chooseHeavyAnalysisCandidates(
   const unique = deduplicate(probed);
   if (unique.length <= normalizedLimit) return unique;
 
-  const ranked = addTimeBuckets(unique, normalizedLimit);
+  const ranked = addTimeBuckets(unique, normalizedLimit, options.isFamiliar);
   const selectedIds = new Set<string>();
   const timeCounts = new Map<number, number>();
   const placeCounts = new Map<string, number>();
   const contentCounts = new Map<string, number>();
+  const personCounts = new Map<string, number>();
 
   // User pins remain sovereign when a future edit flow feeds them into a
   // capped rebuild. The safety cap still wins if more than the limit are pinned.
@@ -108,7 +139,7 @@ export function chooseHeavyAnalysisCandidates(
     .sort(compareRankedCandidates)
     .slice(0, normalizedLimit);
   for (const candidate of pinned) {
-    select(candidate, selectedIds, timeCounts, placeCounts, contentCounts);
+    select(candidate, selectedIds, timeCounts, placeCounts, contentCounts, personCounts);
   }
 
   const remaining = ranked.filter(({ photo }) => !selectedIds.has(photo.id));
@@ -119,6 +150,7 @@ export function chooseHeavyAnalysisCandidates(
       timeCounts,
       placeCounts,
       contentCounts,
+      personCounts,
     );
 
     for (let index = 1; index < remaining.length; index += 1) {
@@ -127,6 +159,7 @@ export function chooseHeavyAnalysisCandidates(
         timeCounts,
         placeCounts,
         contentCounts,
+        personCounts,
       );
       if (
         priority > bestPriority ||
@@ -139,7 +172,7 @@ export function chooseHeavyAnalysisCandidates(
     }
 
     const [winner] = remaining.splice(bestIndex, 1);
-    select(winner, selectedIds, timeCounts, placeCounts, contentCounts);
+    select(winner, selectedIds, timeCounts, placeCounts, contentCounts, personCounts);
   }
 
   return unique.filter(({ photo }) => selectedIds.has(photo.id));
@@ -157,6 +190,7 @@ function deduplicate(probed: readonly ProbedCandidate[]): ProbedCandidate[] {
 function addTimeBuckets(
   candidates: readonly ProbedCandidate[],
   limit: number,
+  isFamiliar?: (personId: string) => boolean,
 ): RankedCandidate[] {
   const timed = candidates
     .filter(({ photo }) => validTimestamp(photo.creationTime))
@@ -186,6 +220,9 @@ function addTimeBuckets(
     // Decoded once here rather than inside the O(limit x remaining) scoring
     // loop, where the same hash would be decoded tens of thousands of times.
     contentKey: contentKeyForQuality(candidate.quality),
+    familiarPersonIds: isFamiliar
+      ? candidate.photo.personIds?.filter((personId) => isFamiliar(personId))
+      : undefined,
   }));
 }
 
@@ -215,6 +252,7 @@ function candidatePriority(
   timeCounts: ReadonlyMap<number, number>,
   placeCounts: ReadonlyMap<string, number>,
   contentCounts: ReadonlyMap<string, number>,
+  personCounts: ReadonlyMap<string, number>,
 ): number {
   const timeCount =
     candidate.timeBucket === undefined
@@ -250,8 +288,28 @@ function candidatePriority(
       : contentCount === 0
         ? 0.9
         : 0.14 / (contentCount + 1);
+  // A photo is worth as much as the least-covered person it brings, so one
+  // frame holding three still-missing people satisfies all three at once.
+  //
+  // Weighted above every other axis, deliberately. An album missing a look is
+  // duller; an album missing a PERSON is wrong, and it is the failure the
+  // planner's own per-person floor exists to prevent -- a floor it cannot
+  // enforce over people this gate already discarded. Ranked, not measured:
+  // these constants are all hand-chosen, and the test asserts that recurring
+  // people survive the cap rather than asserting any particular number.
+  let leastCovered: number | undefined;
+  for (const personId of candidate.familiarPersonIds ?? []) {
+    const count = personCounts.get(personId) ?? 0;
+    if (leastCovered === undefined || count < leastCovered) leastCovered = count;
+  }
+  const personCoverage =
+    leastCovered === undefined ? 0 : leastCovered === 0 ? 1.2 : 0.12 / (leastCovered + 1);
   return (
-    candidate.qualityScore + timeCoverage + placeCoverage + contentCoverage
+    candidate.qualityScore +
+    timeCoverage +
+    placeCoverage +
+    contentCoverage +
+    personCoverage
   );
 }
 
@@ -261,8 +319,12 @@ function select(
   timeCounts: Map<number, number>,
   placeCounts: Map<string, number>,
   contentCounts: Map<string, number>,
+  personCounts: Map<string, number>,
 ): void {
   selectedIds.add(candidate.photo.id);
+  for (const personId of candidate.familiarPersonIds ?? []) {
+    personCounts.set(personId, (personCounts.get(personId) ?? 0) + 1);
+  }
   if (candidate.timeBucket !== undefined) {
     timeCounts.set(
       candidate.timeBucket,

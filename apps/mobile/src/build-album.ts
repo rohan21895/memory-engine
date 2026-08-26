@@ -57,6 +57,40 @@ const EDGE_FRACTION = 0.01;
  * serialize only the inference itself.
  */
 const ANALYZE_CONCURRENCY = 6;
+
+/**
+ * Who recurs across the whole library, for the candidate cap to protect.
+ *
+ * Library-wide on purpose. Judged within one album a wedding guest and a
+ * grandparent both appear on a single day, so the distinction this exists to
+ * draw would vanish exactly where it is needed.
+ *
+ * Imported lazily, matching how this file already reaches native-backed
+ * modules: `face-index` and `photo-index` pull in expo-media-library at module
+ * scope, which the offline test runner cannot load. Any failure degrades to
+ * "nobody is protected", which is the previous behaviour rather than a broken
+ * album.
+ */
+async function familiarPersonPredicate(): Promise<
+  ((personId: string) => boolean) | undefined
+> {
+  try {
+    const [{ getPeople }, { monthIdForAsset }, { buildPersonRecurrence, monthStartMs }] =
+      await Promise.all([
+        import("./faces/face-index"),
+        import("./import/photo-index"),
+        import("./faces/person-recurrence"),
+      ]);
+    const people = getPeople();
+    if (people.length === 0) return undefined;
+    const recurrence = buildPersonRecurrence(people, (assetId) =>
+      monthStartMs(monthIdForAsset(assetId)),
+    );
+    return (personId: string) => recurrence.isFamiliar(personId);
+  } catch {
+    return undefined;
+  }
+}
 // The 32 px platform thumbnail is substantially smaller than any model input. A little
 // extra concurrency keeps large library screening I/O-bound without allowing
 // hundreds of image-manipulator operations to accumulate.
@@ -332,9 +366,16 @@ export async function buildAlbum(
       },
     );
     throwIfCancelled(options.signal);
-    analysisInputs = chooseHeavyAnalysisCandidates(probed).map(
-      ({ photo, quality }) => ({ photo, quality }),
-    );
+    // The cap is where an album silently loses people: nothing downstream can
+    // recover a photo that never reached heavy analysis, including the
+    // planner's own per-person floor. Recurrence decides who is worth a
+    // protected seat -- somebody who turns up across separate occasions rather
+    // than somebody who was merely also at one event.
+    analysisInputs = chooseHeavyAnalysisCandidates(
+      probed,
+      HEAVY_ANALYSIS_CANDIDATE_LIMIT,
+      { isFamiliar: await familiarPersonPredicate() },
+    ).map(({ photo, quality }) => ({ photo, quality }));
     console.info(
       `[album-build] Candidate cap engaged: analyzing the best ${analysisInputs.length} of ${photos.length} photos.`,
     );
