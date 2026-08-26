@@ -1,5 +1,6 @@
 import {
   isAvatarFace,
+  reattachAvatars,
   summariesForPeople,
   // @ts-expect-error Node's TypeScript runner requires the source extension.
 } from "./face-index.ts";
@@ -200,6 +201,93 @@ const ben = person("person-2", ["ben-a", "ben-b"], 4, {
     isAvatarFace({ ...box, leftEyeOpen: undefined, rightEyeOpen: undefined }),
     "absent metadata reads as acceptable",
   );
+}
+
+/**
+ * A rebuild must CARRY avatars, not drop them.
+ *
+ * `rebuildPeople` runs at the end of every scan, so without this a scan that
+ * found five new photos would throw away all 913 avatars and force a
+ * multi-minute recovery pass. But carrying them is exactly where a wrong face
+ * could sneak back in, so the rule is: only the person the old centroid
+ * actually matches, and only when the match is unambiguous.
+ */
+{
+  const solo = { assetId: "solo", embedding: [1, 0], embeddingKind: "identity" as const };
+  const solo2 = { assetId: "solo-2", embedding: [0.999, 0.045], embeddingKind: "identity" as const };
+  const rebuilt = clusterFaces([solo, solo2], {});
+  assert(rebuilt.length === 1, "one person to reattach to");
+  const previous = [
+    person("person-1", ["solo", "solo-2"], 2, {
+      avatarUri: "file://carried.jpg",
+      avatarAssetId: "solo",
+    }),
+  ];
+  previous[0].centroid = rebuilt[0].centroid.slice();
+  const kept = reattachAvatars(previous, rebuilt);
+  assert(kept === 1, `the avatar must survive the rebuild, kept ${kept}`);
+  assert(
+    rebuilt[0].avatarUri === "file://carried.jpg" &&
+      rebuilt[0].avatarAssetId === "solo",
+    "and it must land on the person who holds that photo",
+  );
+}
+
+// Two people in the avatar's photo whose centroids are indistinguishable: the
+// crop could belong to either, so it belongs to neither. An empty tile is
+// honest; a coin flip is the original bug.
+{
+  const twins: Person[] = [
+    person("person-1", ["group"], 4),
+    person("person-2", ["group"], 4),
+  ];
+  const previous = [
+    person("person-9", ["group"], 4, {
+      avatarUri: "file://ambiguous.jpg",
+      avatarAssetId: "group",
+    }),
+  ];
+  const kept = reattachAvatars(previous, twins);
+  assert(kept === 0, `an ambiguous claim must be declined, kept ${kept}`);
+  assert(
+    twins.every((p) => p.avatarUri === undefined),
+    "and neither twin may end up wearing it",
+  );
+}
+
+// The same photo with two people who look nothing alike is NOT ambiguous, and
+// declining there would strand avatars for every family group shot. Vacuity
+// guard for the case above: it must be the similarity that decides, not the
+// mere presence of a second candidate.
+{
+  const near = person("person-1", ["group"], 4);
+  const far = person("person-2", ["group"], 4);
+  far.centroid = [0, 1];
+  const holders = [near, far];
+  const previous = [
+    person("person-9", ["group"], 4, {
+      avatarUri: "file://clear.jpg",
+      avatarAssetId: "group",
+    }),
+  ];
+  const kept = reattachAvatars(previous, holders);
+  assert(kept === 1, `a clear winner must claim it, kept ${kept}`);
+  assert(near.avatarUri === "file://clear.jpg", "and it is the matching person");
+  assert(far.avatarUri === undefined, "not the one who happens to share the frame");
+}
+
+// A photo that no longer belongs to anybody -- deleted, or reassigned -- takes
+// its avatar with it rather than attaching to an unrelated person.
+{
+  const orphan = [person("person-1", ["elsewhere"], 3)];
+  const previous = [
+    person("person-9", ["gone"], 3, {
+      avatarUri: "file://gone.jpg",
+      avatarAssetId: "gone",
+    }),
+  ];
+  assert(reattachAvatars(previous, orphan) === 0, "a vanished photo claims nothing");
+  assert(orphan[0].avatarUri === undefined, "and nobody inherits it");
 }
 
 console.log("face thumbnail self-check passed");

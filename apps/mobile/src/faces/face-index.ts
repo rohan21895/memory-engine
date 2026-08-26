@@ -2927,8 +2927,74 @@ function calibrationForLibrary(): { rule: string; threshold: number; centered: b
   return { rule: CLUSTER_CALIBRATION, threshold: calibrated.threshold, centered };
 }
 
+/**
+ * How much closer the winning candidate must be than the runner-up before an
+ * avatar is handed to it. Same reasoning as the backfill's margin: an unclaimed
+ * avatar costs one re-derivation, a misclaimed one shows a stranger.
+ */
+const AVATAR_REATTACH_MARGIN = 0.05;
+
+/**
+ * Carries avatars across a rebuild.
+ *
+ * Necessary because `rebuildPeople` runs at the END OF EVERY SCAN, and it
+ * clusters from scratch -- so without this, finding five new photos would throw
+ * away all 913 avatars and force a multi-minute recovery pass every time.
+ *
+ * An avatar cannot simply be matched by photo: a group shot belongs to several
+ * people, and handing the crop to the wrong one is the exact failure this whole
+ * change set exists to eliminate. So candidates are restricted to the people
+ * who actually hold that photo -- usually one or two -- and the old person's
+ * CENTROID decides between them, which is the same comparison clustering uses
+ * for identity. A near-tie claims nothing and the backfill re-derives it.
+ */
+export function reattachAvatars(previous: readonly Person[], next: Person[]): number {
+  const byAsset = new Map<string, Person[]>();
+  for (const person of next) {
+    for (const assetId of person.assetIds) {
+      const holders = byAsset.get(assetId);
+      if (holders) holders.push(person);
+      else byAsset.set(assetId, [person]);
+    }
+  }
+  let kept = 0;
+  for (const old of previous) {
+    if (!old.avatarUri || !old.avatarAssetId) continue;
+    const holders = byAsset.get(old.avatarAssetId);
+    if (!holders || holders.length === 0) continue;
+    let best: Person | undefined;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    let runnerUp = Number.NEGATIVE_INFINITY;
+    for (const candidate of holders) {
+      if (candidate.avatarUri) continue;
+      if (candidate.embeddingKind !== old.embeddingKind) continue;
+      if (candidate.centroid.length !== old.centroid.length) continue;
+      const score = cosine(candidate.centroid, old.centroid);
+      if (score > bestScore) {
+        runnerUp = bestScore;
+        bestScore = score;
+        best = candidate;
+      } else if (score > runnerUp) {
+        runnerUp = score;
+      }
+    }
+    if (!best) continue;
+    if (
+      Number.isFinite(runnerUp) &&
+      bestScore - runnerUp < AVATAR_REATTACH_MARGIN
+    ) {
+      continue;
+    }
+    best.avatarUri = old.avatarUri;
+    best.avatarAssetId = old.avatarAssetId;
+    kept += 1;
+  }
+  return kept;
+}
+
 function rebuildPeople(requested?: number): void {
   const startedAt = Date.now();
+  const previousPeople = index.people;
   const calibration = calibrationForLibrary();
   index.calibration = calibration.rule;
   markIndexDirty();
@@ -2939,6 +3005,15 @@ function rebuildPeople(requested?: number): void {
     : undefined;
   index.threshold = safeThreshold(requested ?? calibration.threshold);
   index.people = peopleFromObservations(index.observations, index.threshold);
+  const keptAvatars = reattachAvatars(previousPeople, index.people);
+  if (previousPeople.length > 0) {
+    const had = previousPeople.filter((person) => person.avatarUri).length;
+    if (had > 0) {
+      console.warn(
+        `[PhoteoFaceIndex] carried ${keptAvatars}/${had} avatars across the rebuild`,
+      );
+    }
+  }
   markIndexDirty();
   rebuildPersonIdsByAsset();
   // Greedy assignment is O(faces x people x dims). Measured offline at 7.6s for

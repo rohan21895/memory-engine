@@ -29,7 +29,11 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
   const [suggestions, setSuggestions] = useState<MergeSuggestion[]>([]);
   const [answering, setAnswering] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const personCount = faceIndexStatus().people;
+  // Read ONCE, not per render. `faceIndexStatus` walks every observation and
+  // every seen asset id -- 17,699 and 11,828 of them on the owner's library --
+  // and this number only decorates the intro copy. Answering a pair re-renders
+  // this screen, so a per-render call would pay that walk on every tap.
+  const [personCount] = useState(() => faceIndexStatus().people);
   const pair = suggestions[0]
     ? faceMergeReviewPair(suggestions[0], getFaceIndexPerson)
     : undefined;
