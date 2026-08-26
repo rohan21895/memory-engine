@@ -55,10 +55,13 @@ export type MeasuredImageQuality = {
    * Present only on the probe path; the uncapped path never needs it.
    */
   blurhash?: string;
+  /** Exact focus inside the detected face box. */
+  faceSharpness?: number;
   /**
-   * Sharpness measured inside the caller-supplied subject box. Present only
-   * when a usable box was supplied. Prefer this over `sharpness` for portraits:
-   * a well-shot shallow-depth-of-field frame is globally "blurry" on purpose.
+   * Sharpness across an expanded dominant-subject region: hair above the face,
+   * shoulders, arms and upper torso below it. The detector currently supplies
+   * a face box, so this conservative region is the only subject evidence that
+   * exists without pretending the sharp background says anything about limbs.
    */
   subjectSharpness?: number;
   /**
@@ -116,6 +119,77 @@ export function sharpnessFromPixels(
   // an unusable or off-image box degrades to the frame score rather than to 0.
   const { inside } = laplacianStats(gray, width, height, region);
   return normalizeSharpness(varianceOf(inside));
+}
+
+export type SubjectImageQuality = Pick<
+  MeasuredImageQuality,
+  "faceSharpness" | "subjectSharpness" | "subjectBackgroundRatio"
+>;
+
+/**
+ * Measure the face and its surrounding upper-body region separately.
+ *
+ * A face detector deliberately returns a tight skin/feature box. Hair, hands
+ * and shoulders sit outside it, yet motion blur there is conspicuous in a
+ * social post. Expanding 0.75 face widths sideways, 0.45 heights upward and
+ * 3.8 heights downward covers that visible portrait subject while remaining
+ * bounded by the image. This is a proxy, not segmentation: a future body mask
+ * can replace the region without changing the selection contract.
+ */
+export function subjectQualityFromPixels(
+  gray: Uint8Array | number[],
+  width: number,
+  height: number,
+  faceRegion: PixelRegion | undefined,
+): SubjectImageQuality {
+  return subjectQualityFromPixelStats(gray, width, height, faceRegion);
+}
+
+function subjectQualityFromPixelStats(
+  gray: Uint8Array | number[],
+  width: number,
+  height: number,
+  faceRegion: PixelRegion | undefined,
+  measuredFace?: ReturnType<typeof laplacianStats>,
+): SubjectImageQuality {
+  if (
+    !faceRegion ||
+    !hasCompleteBuffer(gray, width, height) ||
+    width < 3 ||
+    height < 3
+  ) {
+    return {};
+  }
+
+  const face = measuredFace ?? laplacianStats(gray, width, height, faceRegion);
+  const subjectRegion = expandedSubjectRegion(faceRegion);
+  const subject = laplacianStats(gray, width, height, subjectRegion);
+  if (face.outside.count === 0 || subject.outside.count === 0) {
+    return {};
+  }
+
+  const subjectStdDev = Math.sqrt(varianceOf(subject.inside));
+  const backgroundStdDev = Math.sqrt(varianceOf(subject.outside));
+  return {
+    faceSharpness: normalizeSharpness(varianceOf(face.inside)),
+    subjectSharpness: normalizeSharpness(varianceOf(subject.inside)),
+    ...(subjectStdDev + backgroundStdDev > 0
+      ? {
+          subjectBackgroundRatio: clamp01(
+            subjectStdDev / (subjectStdDev + backgroundStdDev),
+          ),
+        }
+      : {}),
+  };
+}
+
+function expandedSubjectRegion(face: PixelRegion): PixelRegion {
+  return {
+    x: face.x - face.width * 0.75,
+    y: face.y - face.height * 0.45,
+    width: face.width * 2.5,
+    height: face.height * 4.25,
+  };
 }
 
 /**
@@ -336,29 +410,22 @@ export async function measureImageQuality(
       decoded.height,
       region,
     );
-    // `outside` is only populated when the box clipped to a usable interior and
-    // left some frame around it, so it doubles as the "is the split meaningful"
-    // test. Without it the subject fields stay undefined, as they were before.
-    const hasSubject = region !== undefined && outside.count > 0;
-    const subjectStdDev = Math.sqrt(varianceOf(inside));
-    const backgroundStdDev = Math.sqrt(varianceOf(outside));
+    // Reuse the exact-face split for full-frame sharpness, then measure the
+    // expanded subject independently so blurred hair/body cannot hide in the
+    // frame average.
+    const subjectQuality = subjectQualityFromPixelStats(
+      gray,
+      decoded.width,
+      decoded.height,
+      region,
+      { inside, outside },
+    );
 
     return {
       sharpness: normalizeSharpness(varianceOf(combine(inside, outside))),
       exposure: exposure.exposure,
       clippedFraction: exposure.clippedFraction,
-      ...(hasSubject
-        ? {
-            subjectSharpness: normalizeSharpness(varianceOf(inside)),
-            ...(subjectStdDev + backgroundStdDev > 0
-              ? {
-                  subjectBackgroundRatio: clamp01(
-                    subjectStdDev / (subjectStdDev + backgroundStdDev),
-                  ),
-                }
-              : {}),
-          }
-        : {}),
+      ...subjectQuality,
     };
   } catch {
     return {};

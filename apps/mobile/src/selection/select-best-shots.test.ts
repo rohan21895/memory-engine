@@ -3,6 +3,8 @@ import type { PickedPhoto } from "../import/picked-photo";
 import type { FaceSignal, QualitySignals } from "./quality-signals.ts";
 // @ts-expect-error Node's native TypeScript runner requires the extension.
 import { albumQualityFloor, selectBestShots } from "./select-best-shots.ts";
+// @ts-expect-error Node's native TypeScript runner requires the extension.
+import "./selection-quality-regression.test.ts";
 
 type TestPhoto = PickedPhoto & {
   embedding?: number[];

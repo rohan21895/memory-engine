@@ -14,6 +14,12 @@ export type Category =
 
 export type QualitySignals = {
   sharpness?: number;
+  /** Exact detected-face focus, measured independently of a sharp background. */
+  faceSharpness?: number;
+  /** Hair/shoulder/upper-body focus around the dominant detected face. */
+  subjectSharpness?: number;
+  /** Subject detail divided by subject plus surrounding-background detail. */
+  subjectBackgroundRatio?: number;
   exposure?: number;
   clippedFraction?: number;
   faces: FaceSignal[];
