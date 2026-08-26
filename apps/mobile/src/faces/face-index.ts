@@ -50,7 +50,7 @@ const INDEX_FILENAME = "face-index.json";
  * every launch, which is exactly his report -- "i click on something, nothing
  * happens, app hangs". 13.8MB of those 16.3 are observation embeddings, and
  * nothing the first screen draws needs a single one of them: the People grid
- * reads `people` and `faceThumbUris`, both of which live in the small file.
+ * reads `people`, which lives in the small file and carries each avatar.
  *
  * One JSON object per LINE rather than one array, so the load can parse a
  * chunk, hand the thread back to the UI, and continue. A single `JSON.parse`
@@ -383,7 +383,6 @@ type PersistedFaceIndex = {
    * time, so re-asking cannot succeed and only annoys.
    */
   backgroundPromptShown?: boolean;
-  faceThumbUris: Record<string, string>;
 };
 
 type StoredFaceObservation = Omit<FaceObservation, "embedding"> & {
@@ -416,7 +415,6 @@ function emptyIndex(): PersistedFaceIndex {
     total: 0,
     threshold: DEFAULT_FACE_INDEX_THRESHOLD,
     calibration: CLUSTER_CALIBRATION,
-    faceThumbUris: {},
   };
 }
 
@@ -1180,13 +1178,6 @@ function trueRecord(value: unknown): value is Record<string, true> {
   return isRecord(value) && Object.values(value).every((entry) => entry === true);
 }
 
-function stringRecord(value: unknown): value is Record<string, string> {
-  return (
-    isRecord(value) &&
-    Object.values(value).every((entry) => typeof entry === "string")
-  );
-}
-
 function parseIndex(contents: string): PersistedFaceIndex | null {
   try {
     const value: unknown = JSON.parse(contents);
@@ -1223,9 +1214,6 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
         ...person,
         centroid: dequantizeEmbedding(person.centroid),
       })),
-      faceThumbUris: stringRecord(value.faceThumbUris)
-        ? dropPersonKeyedThumbs(value.faceThumbUris)
-        : {},
       // A malformed constraint list is dropped rather than rejecting the whole
       // index: losing the user's corrections is bad, but discarding every
       // embedding and re-scanning the library over them is far worse.
@@ -1549,7 +1537,7 @@ function indexShape(): string {
     index.people.length,
     Object.keys(index.processedAssetIds).length,
     Object.keys(index.seenAssetIds).length,
-    Object.keys(index.faceThumbUris).length,
+    index.people.filter((person) => person.avatarUri !== undefined).length,
     index.threshold,
     index.calibration,
     // Included so a correction the user just made forces a write even though
@@ -2537,34 +2525,6 @@ async function createFaceEmbedding(
 }
 
 /**
- * Discards face crops saved under the old person-id key.
- *
- * They cannot be salvaged. The key was a person id, person ids are renumbered
- * from person-1 by every recluster, and nothing records which photo a crop came
- * from -- so there is no way to work out who any of them actually shows. On the
- * owner's library 2,081 were stored and 2,066 still "matched" a live id, which
- * is precisely what made the bug invisible: the avatars looked populated and
- * were showing strangers.
- *
- * Dropping them degrades the UI to each person's own cover photo, which is
- * uncropped but at least genuinely them. New crops are written per asset and
- * repopulate as photos are scanned.
- *
- * Done here rather than by bumping INDEX_VERSION, which would reject the whole
- * file and re-scan 17,699 embeddings to fix an avatar.
- */
-function dropPersonKeyedThumbs(
-  stored: Record<string, string>,
-): Record<string, string> {
-  const kept: Record<string, string> = {};
-  for (const [key, uri] of Object.entries(stored)) {
-    if (/^person-\d+$/u.test(key)) continue;
-    kept[key] = uri;
-  }
-  return kept;
-}
-
-/**
  * Whether this crop may be stored as somebody's avatar, given everything the
  * scan already knows about the photo it came from.
  *
@@ -3513,9 +3473,7 @@ export function getPeople(): FaceIndexPerson[] {
 /** One person summary, including low-support groups hidden from the main rail. */
 export function getFaceIndexPerson(personId: string): FaceIndexPerson | undefined {
   const person = index.people.find((candidate) => candidate.id === personId);
-  return person
-    ? summariesForPeople([person], index.faceThumbUris, false)[0]
-    : undefined;
+  return person ? summariesForPeople([person], false)[0] : undefined;
 }
 
 /**
