@@ -2237,16 +2237,27 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
   // Marked before the call, not after: onMerge mutates faceThumbUris as it
   // goes, so a throw partway through still leaves the index dirty.
   markIndexDirty();
+  // Timed separately from `cluster` below because they grow at different rates
+  // and only one of them is worth fixing. Calibration walks every observation on
+  // record, so it is O(faces); the clustering call assigns the new faces O(new x
+  // people) and then sweeps every person PAIR, which is O(people^2). Without
+  // splitting them, a slow batch cannot say which. The scan trace previously
+  // timed frame/detect/embed/crop/persist and nothing here at all, so late-scan
+  // clustering cost was invisible and easy to attribute to the wrong stage.
+  const calibrateStartedAt = Date.now();
+  const clusterOptions = faceClusterOptions(index.threshold, {
+    evidencedMergeThreshold: evidencedMergeBar(index.observations),
+    temporalMergeThreshold: temporalMergeBar(index.observations),
+    constraints: index.constraints ?? [],
+  });
+  traceScanStage("calibrate", calibrateStartedAt);
+  const clusterStartedAt = Date.now();
   index.people = extendFaceClusters(index.people, centeredForClustering(observations), {
     // Calibrated from every face on record, not just the arriving batch: an
     // incremental append sees a handful of faces, far too few to measure a bar
     // from, and would otherwise fall back to the strict constant and merge
     // differently than a full rebuild over the same library.
-    ...faceClusterOptions(index.threshold, {
-      evidencedMergeThreshold: evidencedMergeBar(index.observations),
-      temporalMergeThreshold: temporalMergeBar(index.observations),
-      constraints: index.constraints ?? [],
-    }),
+    ...clusterOptions,
     onAssign: (observation, personId) => assignments.set(observation, personId),
       onMerge: (absorbedPersonId, survivingPersonId) => {
         for (const [observation, personId] of assignments) {
@@ -2259,6 +2270,11 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
     threshold: index.threshold,
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
   });
+  traceScanStage("cluster", clusterStartedAt);
+  // Counted so a slow `cluster` can be read against the thing that drives it:
+  // the merge sweep compares every person pair, so its cost is this number
+  // squared, and it only ever grows during a scan.
+  traceScanCount("people", index.people.length);
   rebuildPersonIdsByAsset();
   return assignments;
 }

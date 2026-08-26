@@ -174,6 +174,59 @@ function centroidScale(centroid: number[]): number {
   return length > Number.EPSILON ? Math.min(1, length) : 1;
 }
 
+/**
+ * The per-vector half of a scaled similarity, computed ONCE per vector.
+ *
+ * Both places that compare vectors want `cosine(a,b)` multiplied by the scale
+ * of each side, and that product collapses:
+ *
+ *   dot/(|a|*|b|) * min(1,|a|) * min(1,|b|)  ==  dot/(max(1,|a|) * max(1,|b|))
+ *
+ * because min(1,x)/x is exactly 1/max(1,x). So each vector contributes one
+ * number, 1/max(1,|v|), and the comparison itself is a bare dot product.
+ *
+ * This is not a micro-optimisation. `cosine` recomputed BOTH norms on every
+ * call, so a rebuild recomputed each face's norm once per person and each
+ * centroid's norm once per face: three accumulators and two isFinite checks per
+ * dimension where one multiply-add would do. Measured on a real library that
+ * rebuild took 304 SECONDS over 7,937 faces and 1,010 people, freezing the app.
+ *
+ * Returns 0 for a vector that cannot be compared, which makes the similarity 0
+ * exactly as `cosine`'s own non-finite and zero-norm guards did.
+ */
+function comparisonInverse(values: number[]): number {
+  let squared = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (!Number.isFinite(value)) return 0;
+    squared += value * value;
+  }
+  if (!Number.isFinite(squared) || squared === 0) return 0;
+  return 1 / Math.max(1, Math.sqrt(squared));
+}
+
+/**
+ * Scaled similarity from two vectors and their precomputed inverses.
+ *
+ * The guards live here rather than in the loop so the hot path stays a single
+ * multiply-add per dimension. A zero inverse means the vector already failed
+ * validation, so it short-circuits before the dot product can produce NaN.
+ */
+function scaledSimilarity(
+  a: number[],
+  aInverse: number,
+  b: number[],
+  bInverse: number,
+): number {
+  if (aInverse === 0 || bInverse === 0) return 0;
+  if (a.length === 0 || a.length !== b.length) return 0;
+  let dot = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    dot += a[index] * b[index];
+  }
+  return dot * aInverse * bInverse;
+}
+
 export function cosine(a: number[], b: number[]): number {
   if (a.length === 0 || a.length !== b.length) {
     return 0;
@@ -266,7 +319,8 @@ function spanGap(a: MutablePerson, b: MutablePerson): number | undefined {
 
 type MutablePerson = Person & {
   assetIdSet: Set<string>;
-  scale: number;
+  /** 1/max(1,|centroid|): the centroid's half of a scaled similarity. */
+  inverse: number;
   /** Sum of quality weights behind `centroid`, which is a weighted mean. */
   weightSum: number;
   /** Capture-time span of this cluster; undefined when no face carried a time. */
@@ -286,7 +340,7 @@ function mutablePerson(person: Person): MutablePerson {
     assetIds: person.assetIds.slice(),
     centroid: person.centroid.slice(),
     assetIdSet: new Set(person.assetIds),
-    scale: centroidScale(person.centroid),
+    inverse: comparisonInverse(person.centroid),
     // New clusters retain their quality-weighted sum in memory and on disk.
     // Legacy records do not have it, so faceCount reproduces their historical
     // unweighted centroid semantics exactly.
@@ -308,7 +362,7 @@ function mutablePerson(person: Person): MutablePerson {
 }
 
 function publicPerson(person: MutablePerson): Person {
-  const { assetIdSet: _assetIdSet, scale: _scale, ...record } = person;
+  const { assetIdSet: _assetIdSet, inverse: _inverse, ...record } = person;
   return record;
 }
 
@@ -404,6 +458,10 @@ export function extendFaceClusters(
 
   for (const observation of observations) {
     const embedding = unitEmbedding(observation.embedding);
+    // Hoisted deliberately. This face is compared against EVERY person, and the
+    // old code recomputed its norm inside each of those comparisons: on the
+    // measured library that was 1,010 redundant 512-dimension passes per face.
+    const embeddingInverse = comparisonInverse(embedding);
     let bestIndex = -1;
     let bestSimilarity = Number.NEGATIVE_INFINITY;
 
@@ -420,7 +478,7 @@ export function extendFaceClusters(
       // Average linkage: the mean cosine between this face and every face
       // already in the person, NOT the cosine against their mean. See
       // `centroidScale`.
-      const similarity = cosine(embedding, person.centroid) * person.scale;
+      const similarity = scaledSimilarity(embedding, embeddingInverse, person.centroid, person.inverse);
       // Cannot-link: this person already owns a face from this very photo, so
       // joining would fuse two people who merely posed together. Only the
       // mirror/panorama exception may cross it, and on average linkage that
@@ -454,7 +512,7 @@ export function extendFaceClusters(
         centroid: embedding.slice(),
         embeddingKind: observation.embeddingKind,
         assetIdSet: new Set([observation.assetId]),
-        scale: centroidScale(embedding),
+        inverse: comparisonInverse(embedding),
         weightSum: centroidWeight(observation),
         firstAt: observation.capturedAt,
         lastAt: observation.capturedAt,
@@ -471,7 +529,7 @@ export function extendFaceClusters(
       person.weightSum,
       weight,
     );
-    person.scale = centroidScale(person.centroid);
+    person.inverse = comparisonInverse(person.centroid);
     person.weightSum += weight;
     person.faceCount += 1;
     widenSpan(person, observation.capturedAt);
@@ -611,7 +669,7 @@ function mergeSimilarPeople(
     a.centroid.length === b.centroid.length;
   /** Mean cosine between every face of `a` and every face of `b`. */
   const linkage = (a: MutablePerson, b: MutablePerson): number =>
-    cosine(a.centroid, b.centroid) * a.scale * b.scale;
+    scaledSimilarity(a.centroid, a.inverse, b.centroid, b.inverse);
   /** Order-free name for a pair, used only to settle exact ties. */
   const pairKey = (a: MutablePerson, b: MutablePerson): string =>
     a.id < b.id ? `${a.id} ${b.id}` : `${b.id} ${a.id}`;
@@ -758,7 +816,7 @@ function absorb(
       (value * survivor.weightSum + absorbed.centroid[index] * absorbed.weightSum) /
       totalWeight,
   );
-  survivor.scale = centroidScale(survivor.centroid);
+  survivor.inverse = comparisonInverse(survivor.centroid);
   survivor.faceCount = survivor.faceCount + absorbed.faceCount;
   survivor.weightSum += absorbed.weightSum;
   widenSpan(survivor, absorbed.firstAt);
