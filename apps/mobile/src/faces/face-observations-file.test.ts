@@ -216,3 +216,59 @@ const library = [observation("a", 0), observation("b", 30), observation("c", 61)
 assert(file.parseLine("") === null, "an empty line yields nothing");
 
 console.log("observations-file self-check passed");
+
+/**
+ * The other half of the lazy-load hazard.
+ *
+ * `persistObservations` refusing to write an empty list protects the FILE.
+ * This protects the PEOPLE: `rebuildPeople` clusters from `index.observations`,
+ * and on a launch that never needed the embeddings that array is empty -- so an
+ * unguarded rebuild turns 2,172 people into zero and then persists it. The file
+ * would survive; the grid the owner actually looks at would not.
+ */
+{
+  // Seeded FIRST. An earlier version asserted against the singleton's default
+  // state, where `people` is already empty -- so removing the guard entirely
+  // still "passed", because zero people stayed zero people. The whole point is
+  // that a populated grid survives, so the grid has to be populated.
+  file.setPeople([
+    {
+      id: "person-1",
+      faceCount: 9,
+      assetIds: ["a", "b"],
+      centroid: [1, 0],
+      embeddingKind: "identity" as const,
+    },
+    {
+      id: "person-2",
+      faceCount: 4,
+      assetIds: ["c"],
+      centroid: [0, 1],
+      embeddingKind: "identity" as const,
+    },
+  ]);
+  file.setObservations([]);
+  file.setLoaded(false);
+  const before = file.peopleCount();
+  assert(before === 2, `the grid must start populated, got ${before}`);
+  file.rebuild();
+  assert(
+    file.peopleCount() === before,
+    `rebuilding without the embeddings must change nothing, ` +
+      `people went ${before} -> ${file.peopleCount()}`,
+  );
+}
+
+// Vacuity guard: with the embeddings present it DOES rebuild, so the refusal
+// above is about the missing data and not about a rebuild that never works.
+{
+  file.setObservations(library.slice());
+  file.setLoaded(true);
+  file.rebuild();
+  assert(
+    file.peopleCount() > 0,
+    `a loaded library must actually produce people, got ${file.peopleCount()}`,
+  );
+}
+
+console.log("observations-file rebuild guard passed");

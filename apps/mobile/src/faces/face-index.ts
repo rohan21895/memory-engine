@@ -1382,6 +1382,11 @@ export const __observationsFileForTest = {
   persist: (
     fileSystem: Parameters<typeof persistObservations>[0],
   ): Promise<void> => persistObservations(fileSystem),
+  rebuild: (): void => rebuildPeople(),
+  peopleCount: (): number => index.people.length,
+  setPeople: (people: Person[]): void => {
+    index.people = people;
+  },
 };
 
 /**
@@ -2995,6 +3000,23 @@ export function reattachAvatars(previous: readonly Person[], next: Person[]): nu
 }
 
 function rebuildPeople(requested?: number): void {
+  // Refuses rather than rebuilding from nothing.
+  //
+  // `index.observations` is EMPTY until something loads it, so a caller that
+  // reached here on a launch that never needed the embeddings would cluster
+  // zero faces into zero people -- and then persist that, wiping all 2,172
+  // people off the owner's phone. The observations FILE would survive, but the
+  // grid would be empty until a full recluster.
+  //
+  // Structural rather than a check at each call site, because there are four of
+  // them and the next one added would not know. Same shape as the guard on
+  // `persistObservations`, and for the same reason.
+  if (!observationsLoaded) {
+    console.warn(
+      "[PhoteoFaceIndex] refused to rebuild people without the embeddings loaded",
+    );
+    return;
+  }
   const startedAt = Date.now();
   const previousPeople = index.people;
   const calibration = calibrationForLibrary();
@@ -3357,13 +3379,6 @@ async function runBuild(
       await persistFaceIndex();
     }
 
-    // Past every early return, so there IS scanning to do -- and only now are
-    // the embeddings needed. The batches below append to this list, and a scan
-    // that appended to an EMPTY list would persist a file holding nothing but
-    // the faces found today. Loading is chunked, so the UI keeps painting
-    // through it.
-    await ensureObservations();
-
     let after = index.cursor ?? undefined;
     let hasNextPage = true;
     let newlyProcessed = 0;
@@ -3423,17 +3438,29 @@ async function runBuild(
         });
         traceScanCount("photos", pending.length);
         traceScanCount("faces", observations.length);
+        // Everything below is skipped entirely when the batch found no faces,
+        // and that is the single biggest win in this loop.
+        //
+        // `appendPeople` copies every person -- 2,172 of them, each with a
+        // 512-float centroid whose norms get recomputed -- before it looks at
+        // the batch. Measured at 175ms per batch on the owner's device, paid
+        // 370 times over a library re-walk, to assign nothing: about a minute
+        // of frozen JS thread per launch for photos that were all already
+        // processed.
         if (observations.length > 0) {
+          // Loaded HERE rather than before the loop, so a pass that turns out
+          // to have nothing new never pulls 13.8MB off disk at all.
+          await ensureObservations();
           index.observations.push(...observations);
           // Only when something actually arrived. Marking it unconditionally
           // meant every empty batch rewrote the whole 13.8MB embeddings file --
           // measured at `persistObservations=5580ms` for a batch that added
           // nothing at all.
           observationsDirty = true;
+          markIndexDirty();
+          const assignments = appendPeople(observations);
+          await persistCoverFaceThumbs(faceCropCandidates, assignments);
         }
-        markIndexDirty();
-        const assignments = appendPeople(observations);
-        await persistCoverFaceThumbs(faceCropCandidates, assignments);
         for (const asset of pending) {
           index.processedAssetIds[asset.id] = true;
           markIndexDirty();
@@ -3510,7 +3537,13 @@ async function runBuild(
     // launch reached `reclusterIfCalibrationChanged`. An explicit
     // `opts.threshold` still wins; absent one, this is the moment the library
     // has the most evidence it will ever have, so it is the moment to use it.
-    rebuildPeople(opts.threshold);
+    // Only when the scan actually found something. A pass that processed no new
+    // photo cannot have changed the grouping, and re-clustering 17,722 faces to
+    // arrive back where it started is half a minute of frozen JS thread -- on
+    // top of the 5s it would spend loading the embeddings it did not otherwise
+    // need. `rebuildPeople` refuses on its own if they are absent; this is what
+    // keeps the common case from asking.
+    if (newlyProcessed > 0) rebuildPeople(opts.threshold);
     index.cursor = null;
     index.scanComplete = true;
     markIndexDirty();
