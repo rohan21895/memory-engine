@@ -22,4 +22,20 @@ export type Person = {
   assetIds: string[];
   centroid: number[];
   embeddingKind: FaceEmbeddingKind;
+  /**
+   * The saved face crop shown for this person, and the photo it came from.
+   *
+   * Carried ON the person rather than in a map keyed by person id, and that
+   * distinction is the whole point. Person ids are renumbered from `person-1`
+   * by every recluster, so a side map keyed by id outlives the person it
+   * described and hands their face to whoever inherits the number. On the
+   * owner's library 2,081 crops were stored that way and 2,066 still matched a
+   * live id -- the grid looked populated and was showing strangers.
+   *
+   * Here the avatar dies with the person that owned it. A recluster loses it
+   * and the backfill re-derives one, which is a missing face for a moment
+   * rather than a wrong face forever.
+   */
+  avatarUri?: string;
+  avatarAssetId?: string;
 };

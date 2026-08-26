@@ -853,6 +853,9 @@ function storedPerson(value: unknown): value is StoredPerson {
     value.assetIds.every((assetId) => typeof assetId === "string") &&
     typeof value.centroid === "string" &&
     value.centroid.length > 0 &&
+    (value.avatarUri === undefined || typeof value.avatarUri === "string") &&
+    (value.avatarAssetId === undefined ||
+      typeof value.avatarAssetId === "string") &&
     (value.embeddingKind === "identity" || value.embeddingKind === "perceptual")
   );
 }
@@ -1165,6 +1168,9 @@ function validPerson(value: unknown): value is Person {
     Array.isArray(value.assetIds) &&
     value.assetIds.every((assetId) => typeof assetId === "string") &&
     validEmbedding(value.centroid) &&
+    (value.avatarUri === undefined || typeof value.avatarUri === "string") &&
+    (value.avatarAssetId === undefined ||
+      typeof value.avatarAssetId === "string") &&
     (value.embeddingKind === "identity" || value.embeddingKind === "perceptual")
   );
 }
@@ -1931,33 +1937,22 @@ function temporalMergeBar(observations: readonly FaceObservation[]): number {
 }
 
 /**
- * The stored crop to show for a person, found through their own photos.
+ * The saved face crop for a person, if they have one.
  *
- * Thumbnails are keyed by ASSET, never by person id. Person ids are rebuilt
- * from scratch on every recluster -- `rebuildPeople` renumbers from person-1 in
- * observation order -- so a person-keyed thumbnail silently starts showing a
- * different human the first time the library re-clusters, and keeps matching an
- * id that now belongs to somebody else. That is exactly the trap
- * `recordConstraint` already documents and avoids by anchoring corrections to
- * assets; this had fallen into it.
- *
- * Assets are the only stable identifier here, and one is only written when the
- * photo held a single face, so the crop cannot belong to anybody else.
+ * Read straight off the person record, which is the only place it can live
+ * safely. `rebuildPeople` renumbers every person from `person-1` in observation
+ * order, so anything keyed by person id outlives the person it described and
+ * gets handed to whoever inherits the number. That was the bug: 2,081 crops
+ * stored, 2,066 still "matching" a live id, every one of them potentially a
+ * stranger's face. Owning the field means a recluster loses the avatar instead
+ * of misattributing it, and the backfill re-derives one.
  */
-function coverThumbFor(
-  person: Person,
-  faceThumbUris: Readonly<Record<string, string>>,
-): string | undefined {
-  for (const assetId of person.assetIds) {
-    const uri = faceThumbUris[assetId];
-    if (uri) return uri;
-  }
-  return undefined;
+function coverThumbFor(person: Person): string | undefined {
+  return person.avatarUri;
 }
 
 export function summariesForPeople(
   people: Person[],
-  faceThumbUris: Readonly<Record<string, string>> = {},
   suppressLowSupport = false,
 ): FaceIndexPerson[] {
   return people
@@ -1967,15 +1962,13 @@ export function summariesForPeople(
         (!suppressLowSupport || person.faceCount >= MIN_VISIBLE_FACE_COUNT),
     )
     .map((person) => {
-      const faceThumbUri = coverThumbFor(person, faceThumbUris);
+      const faceThumbUri = coverThumbFor(person);
       return {
         id: person.id,
         faceCount: person.faceCount,
         // The cover photo follows the crop, so the avatar and the photo behind
         // it are the same moment rather than two unrelated ones.
-        coverAssetId:
-          person.assetIds.find((assetId) => faceThumbUris[assetId]) ??
-          person.assetIds[0],
+        coverAssetId: person.avatarAssetId ?? person.assetIds[0],
         assetIds: person.assetIds.slice(),
         ...(faceThumbUri ? { faceThumbUri } : {}),
       };
@@ -1992,11 +1985,9 @@ export function summariesForPeople(
 export function createFacePeopleQuery(
   observations: FaceObservation[],
   threshold = DEFAULT_FACE_INDEX_THRESHOLD,
-  faceThumbUris: Readonly<Record<string, string>> = {},
 ): FacePeopleQuery {
   const summaries = summariesForPeople(
     peopleFromObservations(observations, threshold),
-    faceThumbUris,
   );
   const byId = new Map(summaries.map((person) => [person.id, person]));
   return {
@@ -2581,18 +2572,32 @@ function dropPersonKeyedThumbs(
  * same bar, or the grid looks different depending on when a photo was indexed.
  */
 function avatarCropAcceptable(
-  facesInPhoto: number,
   seedable: boolean | undefined,
   box: FaceBox,
 ): boolean {
-  // Ambiguous photo -- more than one person in it, so this crop, filed under
-  // the photo's id, could not say which of them it shows.
-  if (facesInPhoto !== 1) return false;
   // Only a face good enough to START a person is good enough to represent one.
   // This is the tier the scanner already computed, so it costs nothing and
   // keeps tiny and steeply-turned faces off the avatars.
   if (seedable === false) return false;
   return isAvatarFace(box);
+}
+
+/**
+ * Where a face crop is stored on disk.
+ *
+ * Named after the photo AND the face's position within it, so two people
+ * photographed together get two distinct files rather than overwriting each
+ * other. Geometry is used rather than a counter because it is derived from the
+ * photo itself: re-running the backfill over the same face produces the same
+ * name instead of a second copy.
+ */
+function faceThumbDestination(
+  directoryUri: string,
+  assetId: string,
+  box: FaceBox,
+): string {
+  const at = `${Math.round(box.x)}-${Math.round(box.y)}`;
+  return `${directoryUri}/${encodeURIComponent(assetId)}-${at}.jpg`;
 }
 
 async function persistCoverFaceThumbs(
@@ -2606,12 +2611,6 @@ async function persistCoverFaceThumbs(
     }
     const directoryUri = `${fileSystem.documentDirectory}${FACE_THUMB_DIRECTORY}`;
     await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
-    // How many faces each photo contributed.
-    const facesPerAsset = new Map<string, number>();
-    for (const candidate of candidates) {
-      const assetId = candidate.observation.assetId;
-      facesPerAsset.set(assetId, (facesPerAsset.get(assetId) ?? 0) + 1);
-    }
     const peopleById = new Map(index.people.map((person) => [person.id, person]));
     for (const candidate of candidates) {
       try {
@@ -2620,29 +2619,27 @@ async function persistCoverFaceThumbs(
         const person = personId ? peopleById.get(personId) : undefined;
         if (
           !person ||
-          // Keyed by ASSET, not person: person ids are renumbered by every
-          // recluster, so a person-keyed crop starts showing a stranger.
-          index.faceThumbUris[assetId] ||
-          // One good avatar per person is the whole requirement. Without this
-          // the asset key would store a 128px JPEG for every single-face photo
-          // in the library -- thousands of files on the owner's phone to serve
-          // one tile each.
-          coverThumbFor(person, index.faceThumbUris) ||
-          !avatarCropAcceptable(
-            facesPerAsset.get(assetId) ?? 0,
-            candidate.observation.seedable,
-            candidate.box,
-          )
+          // One good avatar per person is the whole requirement, and the crop
+          // is already on the person -- so this both stops needless writes and
+          // keeps the grid stable, since a face the user has learned to
+          // recognise is not replaced by a later one.
+          person.avatarUri ||
+          !avatarCropAcceptable(candidate.observation.seedable, candidate.box)
         ) {
           continue;
         }
-        const destination = `${directoryUri}/${encodeURIComponent(assetId)}.jpg`;
+        // Assignment is what makes this crop unambiguous even in a group shot:
+        // `assignments` says which PERSON this particular face was clustered
+        // into, so a photo of three people yields three correctly-attributed
+        // crops rather than one that could belong to any of them.
+        const destination = faceThumbDestination(directoryUri, assetId, candidate.box);
         await fileSystem.deleteAsync(destination, { idempotent: true });
         await fileSystem.copyAsync({
           from: candidate.cropUri,
           to: destination,
         });
-        index.faceThumbUris[assetId] = destination;
+        person.avatarUri = destination;
+        person.avatarAssetId = assetId;
         markIndexDirty();
       } catch {
         // A missing cache crop or filesystem failure must not stop the scan.
@@ -2674,6 +2671,15 @@ const AVATAR_BACKFILL_YIELD_EVERY = 4;
 
 /** Avatars recovered between index writes, so a kill costs at most this many. */
 const AVATAR_BACKFILL_CHECKPOINT = 50;
+
+/**
+ * Photos tried per person before moving on.
+ *
+ * Someone whose every photo is a crowded group shot can burn decodes forever
+ * without ever producing a confident match. Capping them keeps the budget
+ * moving down the list rather than stalling on one hard case.
+ */
+const AVATAR_BACKFILL_TRIES_PER_PERSON = 6;
 
 /**
  * Recovers face avatars for people who have none.
@@ -2718,6 +2724,91 @@ async function deleteOrphanedPersonThumbs(
   }
 }
 
+/**
+ * How sure the backfill must be before it crops a face out of a group shot.
+ *
+ * The margin, not the absolute score, is what protects the owner. His complaint
+ * was "the thumbnails and actual person in the photos are different", so a crop
+ * that MIGHT be the right person is worse than no crop at all -- an empty tile
+ * is honest, a wrong face is not. Requiring the best candidate to beat the
+ * runner-up by this much means near-ties are declined rather than guessed.
+ */
+const AVATAR_MATCH_MARGIN = 0.08;
+
+/** Faces embedded per photo before giving up on it. Group shots get long. */
+const AVATAR_MATCH_MAX_FACES = 5;
+
+/**
+ * Picks the box in this photo that belongs to `person`, or nothing.
+ *
+ * The reason this exists: 518 of the owner's 913 visible people are NEVER
+ * photographed alone -- measured on his real index. A rule that only crops
+ * single-person photos leaves the majority of his family without a face, which
+ * is most of the People grid. So a group shot has to be usable, and the only
+ * honest way to use one is to work out which face is theirs.
+ *
+ * Each candidate face is embedded and compared against the person's own
+ * centroid, which is exactly the comparison clustering already trusts to decide
+ * identity. The winner must clear the assignment bar AND beat the runner-up by
+ * `AVATAR_MATCH_MARGIN`, so two similar-looking faces in one frame -- siblings,
+ * a parent and child -- produce no avatar rather than a coin flip.
+ */
+async function faceForPerson(
+  person: Person,
+  asset: FaceScanAsset,
+  imageUri: string,
+  frame: FaceFrame | null,
+  boxes: FaceBox[],
+): Promise<FaceBox | undefined> {
+  const usable = boxes.filter(
+    (box) =>
+      faceQualityTier(asset, box) === "seedable" && isAvatarFace(box),
+  );
+  if (usable.length === 0) return undefined;
+  // One usable face and one known person in the photo: nothing to disambiguate,
+  // and no reason to pay for an embedding.
+  if (usable.length === 1 && (personIdsByAsset.get(asset.id)?.length ?? 0) === 1) {
+    return usable[0];
+  }
+  if (person.embeddingKind !== "identity") return undefined;
+  let best: { box: FaceBox; score: number } | undefined;
+  let runnerUp = Number.NEGATIVE_INFINITY;
+  for (const box of usable.slice(0, AVATAR_MATCH_MAX_FACES)) {
+    const embedSpace = frameSpaceFace(frame, asset, box) ?? {
+      source: imageUri,
+      asset,
+      box,
+    };
+    const embedding = await embedFaceIdentity(
+      embedSpace.asset,
+      embedSpace.source,
+      embedSpace.box,
+    );
+    if (!embedding || !validEmbedding(embedding)) continue;
+    const score = cosine(
+      centeredForClustering([
+        {
+          assetId: asset.id,
+          embedding: unitEmbedding(embedding),
+          embeddingKind: "identity",
+        },
+      ])[0].embedding,
+      person.centroid,
+    );
+    if (!best || score > best.score) {
+      runnerUp = best?.score ?? runnerUp;
+      best = { box, score };
+    } else if (score > runnerUp) {
+      runnerUp = score;
+    }
+  }
+  if (!best || best.score < index.threshold) return undefined;
+  if (Number.isFinite(runnerUp) && best.score - runnerUp < AVATAR_MATCH_MARGIN) {
+    return undefined;
+  }
+  return best.box;
+}
+
 async function backfillCoverFaceThumbs(
   control?: { cancelled: boolean; foreground: boolean },
 ): Promise<number> {
@@ -2730,20 +2821,10 @@ async function backfillCoverFaceThumbs(
     await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
     await deleteOrphanedPersonThumbs(fileSystem, directoryUri);
 
-    // Ambiguity is judged from `personIdsByAsset`, not from the observation
-    // list. Two reasons, and the second is the important one:
-    //
-    //  - the embeddings are not in memory on a launch that scanned nothing, and
-    //    pulling 13.8MB off disk to count faces would undo the whole reason
-    //    startup is fast now;
-    //  - counting PEOPLE is the more accurate question anyway. A photo holding
-    //    two detections of ONE person -- a mirror, a reflection -- yields a crop
-    //    that is unambiguously them, and an observation count would have thrown
-    //    it away.
     // Biggest tiles first. They are the people the owner actually looks at, and
     // a budgeted pass has to spend its decodes where they show.
     const needing = index.people
-      .filter((person) => !coverThumbFor(person, index.faceThumbUris))
+      .filter((person) => !person.avatarUri)
       .sort((a, b) => b.faceCount - a.faceCount);
 
     let photosTried = 0;
@@ -2759,11 +2840,13 @@ async function backfillCoverFaceThumbs(
     }
     for (const person of needing) {
       if (spent()) break;
+      // Bounded per person so one photogenic-but-unmatchable subject cannot eat
+      // the whole budget while everybody after them stays blank.
+      let triedForPerson = 0;
       for (const assetId of person.assetIds) {
-        if (spent()) break;
-        if (index.faceThumbUris[assetId]) break;
-        if ((personIdsByAsset.get(assetId)?.length ?? 0) !== 1) continue;
+        if (spent() || triedForPerson >= AVATAR_BACKFILL_TRIES_PER_PERSON) break;
         photosTried += 1;
+        triedForPerson += 1;
         if (photosTried % AVATAR_BACKFILL_YIELD_EVERY === 0) {
           await yieldToEventLoop();
         }
@@ -2778,20 +2861,9 @@ async function backfillCoverFaceThumbs(
             height: frame.sourceHeight,
           };
           const boxes = dedupeFaceBoxes(await detectFacesInFrame(frame));
-          // The index said one face and the detector now says otherwise. Trust
-          // the detector: whatever this photo holds, a crop from it would not
-          // reliably be this person.
-          if (boxes.length !== 1) continue;
-          const box = boxes[0];
-          if (
-            !avatarCropAcceptable(
-              1,
-              faceQualityTier(asset, box) === "seedable",
-              box,
-            )
-          ) {
-            continue;
-          }
+          if (boxes.length === 0) continue;
+          const box = await faceForPerson(person, asset, imageUri, frame, boxes);
+          if (!box) continue;
           const cropSpace = frameSpaceFace(frame, asset, box) ?? {
             source: imageUri,
             asset,
@@ -2804,10 +2876,11 @@ async function backfillCoverFaceThumbs(
             false,
           );
           try {
-            const destination = `${directoryUri}/${encodeURIComponent(assetId)}.jpg`;
+            const destination = faceThumbDestination(directoryUri, assetId, box);
             await fileSystem.deleteAsync(destination, { idempotent: true });
             await fileSystem.copyAsync({ from: crop.uri, to: destination });
-            index.faceThumbUris[assetId] = destination;
+            person.avatarUri = destination;
+            person.avatarAssetId = assetId;
             markIndexDirty();
             recovered += 1;
             // Checkpointed as it goes, not only at the end. A pass over 913
@@ -3433,7 +3506,7 @@ export function stopFaceIndexBuild(): void {
 }
 
 export function getPeople(): FaceIndexPerson[] {
-  return summariesForPeople(index.people, index.faceThumbUris, true);
+  return summariesForPeople(index.people, true);
 }
 
 /**

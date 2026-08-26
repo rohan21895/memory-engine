@@ -1101,6 +1101,14 @@ function absorb(
       survivor.assetIds.push(assetId);
     }
   }
+  // The absorbed person's face is still a face of the same human, so it is
+  // worth inheriting -- but only into an empty slot. Overwriting the
+  // survivor's would replace a face the user has already learned to recognise
+  // with a different one, for no gain.
+  if (!survivor.avatarUri && absorbed.avatarUri) {
+    survivor.avatarUri = absorbed.avatarUri;
+    survivor.avatarAssetId = absorbed.avatarAssetId;
+  }
   for (const origin of origins[dropIndex]) origins[keepIndex].add(origin);
   for (const origin of blocked[dropIndex]) blocked[keepIndex].add(origin);
   onMerge?.(absorbed.id, survivor.id);
