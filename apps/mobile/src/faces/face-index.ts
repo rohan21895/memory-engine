@@ -276,6 +276,11 @@ export type FaceScanAsset = {
   creationTime?: number;
 };
 
+export type FacePhotoEmbeddingContext = {
+  detailFrame: FaceFrame | null;
+  detailFrameBound: number | null;
+};
+
 export type FaceScanDependencies = {
   isDetectionAvailable: () => boolean;
   /**
@@ -286,6 +291,11 @@ export type FaceScanDependencies = {
   openFrame?: (
     imageUri: string,
     asset: FaceScanAsset,
+  ) => Promise<FaceFrame | null>;
+  openDetailFrame?: (
+    imageUri: string,
+    asset: FaceScanAsset,
+    maxEdge: number,
   ) => Promise<FaceFrame | null>;
   closeFrame?: (frame: FaceFrame) => Promise<void>;
   detectFaces: (
@@ -298,6 +308,7 @@ export type FaceScanDependencies = {
     imageUri: string,
     box: FaceBox,
     frame?: FaceFrame | null,
+    photo?: FacePhotoEmbeddingContext,
   ) => Promise<FaceEmbedding>;
   onFaceCrop?: (observation: FaceObservation, cropUri: string) => void;
 };
@@ -470,6 +481,8 @@ export async function probeFaceAlignment(photos = 6, faces = 3): Promise<void> {
     await scanFaceAssets(page.assets as unknown as FaceScanAsset[], {
       isDetectionAvailable: () => true,
       openFrame: (uri, asset) => openFaceFrame(uri, asset),
+      openDetailFrame: (uri, asset, bound) =>
+        openFaceFrame(uri, asset, bound),
       closeFrame: (frame) => closeFaceFrame(frame),
       detectFaces: async (_uri, _asset, frame) =>
         frame ? detectFacesInFrame(frame) : [],
@@ -1654,6 +1667,7 @@ export async function scanFaceAssets(
         const asset = assets[assetIndex];
         const imageUri = contentUri(asset.id);
         let frame: FaceFrame | null = null;
+        let detailFrame: FaceFrame | null = null;
         try {
           const frameStartedAt = Date.now();
           frame = (await dependencies.openFrame?.(imageUri, asset)) ?? null;
@@ -1667,10 +1681,43 @@ export async function scanFaceAssets(
           traceScanStage("detect", detectStartedAt);
           const boxes = dedupeFaceBoxes(detectedBoxes);
           duplicateDetectionsDropped += detectedBoxes.length - boxes.length;
-          const observations: FaceObservation[] = [];
-          for (const box of boxes) {
+          const candidates = boxes.flatMap((box) => {
             const qualityTier = faceQualityTier(asset, box);
-            if (!qualityTier) continue;
+            return qualityTier ? [{ box, qualityTier }] : [];
+          });
+          const detailPlan = planFaceDetailFrame(
+            asset,
+            frame,
+            candidates.map(({ box }) => box),
+          );
+          if (detailPlan && detailPlan.smallFaceCount > 1) {
+            traceScanCount("smallFaceMultiPhotos");
+            traceScanCount(
+              "smallFaceRedundantDecodes",
+              detailPlan.smallFaceCount - 1,
+            );
+          }
+          if (detailPlan && dependencies.openDetailFrame) {
+            const detailStartedAt = Date.now();
+            try {
+              detailFrame =
+                (await dependencies.openDetailFrame(
+                  imageUri,
+                  asset,
+                  detailPlan.bound,
+                )) ?? null;
+            } catch {
+              // A bounded-frame failure keeps the old full-resolution fallback.
+              detailFrame = null;
+            }
+            traceScanStage("detailFrame", detailStartedAt);
+          }
+          const photo: FacePhotoEmbeddingContext = {
+            detailFrame,
+            detailFrameBound: detailPlan?.bound ?? null,
+          };
+          const observations: FaceObservation[] = [];
+          for (const { box, qualityTier } of candidates) {
             try {
               const embedStartedAt = Date.now();
               const result = await dependencies.embedFace(
@@ -1678,6 +1725,7 @@ export async function scanFaceAssets(
                 imageUri,
                 box,
                 frame,
+                photo,
               );
               traceScanStage("embed", embedStartedAt);
               if (
@@ -1714,7 +1762,14 @@ export async function scanFaceAssets(
         } catch {
           perAsset[assetIndex] = [];
         } finally {
-          if (frame) await dependencies.closeFrame?.(frame);
+          try {
+            // The detail bitmap can be full-size and must not outlive its photo.
+            if (detailFrame && detailFrame !== frame) {
+              await dependencies.closeFrame?.(detailFrame);
+            }
+          } finally {
+            if (frame) await dependencies.closeFrame?.(frame);
+          }
         }
       }
     };
@@ -1994,23 +2049,65 @@ function frameSpaceFace(
   };
 }
 
+function frameKeepsFaceDetail(
+  frame: FaceFrame | null | undefined,
+  asset: FaceScanAsset,
+  box: FaceBox,
+): boolean {
+  const framed = frameSpaceFace(frame, asset, box);
+  return (
+    framed !== undefined &&
+    ((frame?.scale ?? 0) >= 1 ||
+      Math.min(framed.box.width, framed.box.height) >=
+        MIN_FRAME_EMBED_FACE_PX)
+  );
+}
+
+function planFaceDetailFrame(
+  asset: FaceScanAsset,
+  frame: FaceFrame | null | undefined,
+  boxes: readonly FaceBox[],
+): { bound: number; smallFaceCount: number } | null {
+  if (!frame) return null;
+  const smallFaces = boxes.filter(
+    (box) => !frameKeepsFaceDetail(frame, asset, box),
+  );
+  if (smallFaces.length === 0) return null;
+  // One decode must satisfy every face, so the smallest face sets the largest
+  // bound any face in the photo would have requested on its own.
+  const smallestFaceSide = Math.max(
+    1,
+    Math.min(
+      ...smallFaces.map((box) => Math.min(box.width, box.height)),
+    ),
+  );
+  const sourceLong = Math.max(asset.width, asset.height);
+  return {
+    bound: Math.min(
+      sourceLong,
+      Math.ceil(
+        (sourceLong * MIN_FRAME_EMBED_FACE_PX) / smallestFaceSide,
+      ),
+    ),
+    smallFaceCount: smallFaces.length,
+  };
+}
+
 /** Uses identity-grade MobileFaceNet first, then the legacy visual fallback. */
 async function createFaceEmbedding(
   asset: FaceScanAsset,
   imageUri: string,
   box: FaceBox,
   frame?: FaceFrame | null,
+  photo?: FacePhotoEmbeddingContext,
 ): Promise<FaceEmbedding> {
   const original: FaceCropSpace = { source: imageUri, asset, box };
   const framed = frameSpaceFace(frame, asset, box);
   // Identity is the only consumer that needs real resolution: a face already
   // wider than the 112px alignment target loses nothing to the frame, a smaller
   // one would be upscaled into the template and lose detail it will never get
-  // back, so that face alone falls back to decoding the original.
-  const frameKeepsDetail =
-    framed !== undefined &&
-    ((frame?.scale ?? 0) >= 1 ||
-      Math.min(framed.box.width, framed.box.height) >= MIN_FRAME_EMBED_FACE_PX);
+  // back, so that face uses the photo's shared detail frame instead.
+  const frameKeepsDetail = frameKeepsFaceDetail(frame, asset, box);
   let embedSpace = frameKeepsDetail && framed ? framed : original;
   // A face too small to embed from the shared 1280px frame used to fall back to
   // the raw content:// URI, which ImageManipulator loads at SIZE_ORIGINAL — a
@@ -2019,20 +2116,12 @@ async function createFaceEmbedding(
   // user's thumbnails queue behind them and the tab appears not to load.
   //
   // Nothing here needs the original: it needs the FACE at >=112px. Opening a
-  // second bounded frame, sized so the face just clears the template, gets the
-  // same pixels for a fraction of the decode. A 200px face in a 4032px photo
-  // needs a ~2258px bound, not 4032.
-  let detailFrame: FaceFrame | null = null;
+  // second bounded frame per photo, sized so its smallest face just clears the
+  // template, gets every face at least the pixels its individual decode had.
+  // A 200px face in a 4032px photo needs a ~2258px bound, not 4032.
   if (!frameKeepsDetail && framed) {
     traceScanCount("smallFaceFullRes");
-    const faceSide = Math.max(1, Math.min(box.width, box.height));
-    const sourceLong = Math.max(asset.width, asset.height);
-    const bound = Math.min(
-      sourceLong,
-      Math.ceil((sourceLong * MIN_FRAME_EMBED_FACE_PX) / faceSide),
-    );
-    detailFrame = await openFaceFrame(imageUri, asset, bound);
-    const detailSpace = frameSpaceFace(detailFrame, asset, box);
+    const detailSpace = frameSpaceFace(photo?.detailFrame, asset, box);
     if (detailSpace) {
       embedSpace = detailSpace;
       traceScanCount("smallFaceBounded");
@@ -2089,9 +2178,6 @@ async function createFaceEmbedding(
     };
   } finally {
     if (!returned) await deleteFaceCrop(crop.uri);
-    // The bounded detail frame is ours alone: the shared frame belongs to the
-    // caller, but this one was opened here and must not outlive the face.
-    if (detailFrame) await closeFaceFrame(detailFrame);
   }
 }
 
@@ -2486,6 +2572,8 @@ async function runBuild(
         const observations = await scanFaceAssets(pending, {
           isDetectionAvailable: () => true,
           openFrame: (uri, asset) => openFaceFrame(uri, asset),
+          openDetailFrame: (uri, asset, bound) =>
+            openFaceFrame(uri, asset, bound),
           closeFrame: (frame) => closeFaceFrame(frame),
           // A frame that would not open is an unreadable asset: the previous
           // code reached the same empty result through detectFaces' own guard.

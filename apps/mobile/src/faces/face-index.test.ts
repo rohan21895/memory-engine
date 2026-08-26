@@ -4,6 +4,8 @@ import { SAME_PHOTO_EXCEPTION_SIMILARITY } from "./face-cluster.ts";
 import { CENTERED_FACE_INDEX_THRESHOLD, DEFAULT_FACE_INDEX_THRESHOLD, FACE_INDEX_IDENTITY_MERGE_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, applyConstraintToPeople, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { CALIBRATION_MAX_THRESHOLD, CALIBRATION_MIN_THRESHOLD } from "./face-calibration.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { takeScanTrace, type FaceFrame } from "./face-detector.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -398,5 +400,79 @@ assert(
   assert(
     createFacePeopleQuery(observations).getPeople().length === 0,
     "an empty library should expose no people",
+  );
+}
+
+{
+  takeScanTrace();
+  const asset = { id: "group-photo", width: 4000, height: 3000 };
+  const primaryFrame: FaceFrame = {
+    image: undefined,
+    uri: "primary-frame",
+    width: 1280,
+    height: 960,
+    sourceWidth: asset.width,
+    sourceHeight: asset.height,
+    scale: 0.32,
+    temporary: true,
+  };
+  const detailBounds: number[] = [];
+  const closedFrames: string[] = [];
+  const embeddedDetailFrames: Array<FaceFrame | null> = [];
+  const observations = await scanFaceAssets([asset], {
+    isDetectionAvailable: () => true,
+    openFrame: async () => primaryFrame,
+    openDetailFrame: async (_uri, _asset, bound) => {
+      detailBounds.push(bound);
+      return {
+        image: undefined,
+        uri: "detail-frame",
+        width: bound,
+        height: Math.round((bound * asset.height) / asset.width),
+        sourceWidth: asset.width,
+        sourceHeight: asset.height,
+        scale: bound / asset.width,
+        temporary: true,
+      };
+    },
+    closeFrame: async (frame) => {
+      closedFrames.push(frame.uri);
+    },
+    detectFaces: async () => [
+      { x: 100, y: 100, width: 250, height: 250 },
+      { x: 1000, y: 100, width: 150, height: 150 },
+    ],
+    embedFace: async (_asset, _uri, box, frame, photo) => {
+      assert(frame === primaryFrame, "every face should retain the primary frame");
+      assert(
+        photo?.detailFrameBound === 2987,
+        "every face should receive the smallest face's detail bound",
+      );
+      embeddedDetailFrames.push(photo?.detailFrame ?? null);
+      return {
+        embedding: box.x < 500 ? [1, 0] : [0, 1],
+        kind: "identity",
+      };
+    },
+  });
+  const trace = takeScanTrace();
+  assert(observations.length === 2, "both group-photo faces should be embedded");
+  assert(
+    detailBounds.join(",") === "2987",
+    "one detail frame should use the smallest face's largest required bound",
+  );
+  assert(
+    embeddedDetailFrames.length === 2 &&
+      embeddedDetailFrames.every((frame) => frame?.uri === "detail-frame"),
+    "every small face should reuse the same detail frame",
+  );
+  assert(
+    closedFrames.join(",") === "detail-frame,primary-frame",
+    "the shared detail frame should close when its photo is done",
+  );
+  assert(
+    trace.includes("smallFaceMultiPhotos=1") &&
+      trace.includes("smallFaceRedundantDecodes=1"),
+    "the scan trace should measure multi-face photos and avoided decodes",
   );
 }
