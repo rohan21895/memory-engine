@@ -142,7 +142,7 @@ function PhotoTile({ assetId, size }: { assetId: string; size: number }) {
   );
 }
 
-export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePersonTarget) => void }) {
+export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerson?: (person: NamePersonTarget) => void; onReviewFaceMerges?: () => void }) {
   const { width } = useWindowDimensions();
   const tileSize = Math.floor((width - GRID_GAP * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
   const [query, setQuery] = useState("");
@@ -489,6 +489,11 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
       <View style={styles.sectionHeading}>
         <Text style={styles.section}>People</Text>
         {peopleStatus ? <Text accessibilityLiveRegion="polite" style={styles.sectionStatus}>{peopleStatus}</Text> : null}
+        {people.length > 1 && onReviewFaceMerges ? (
+          <Pressable accessibilityHint="Opens a review where you decide whether similar People tiles should be combined" accessibilityRole="button" onPress={onReviewFaceMerges} style={styles.reviewMatches}>
+            <Text style={styles.reviewMatchesText}>Review matches</Text>
+          </Pressable>
+        ) : null}
       </View>
       {visiblePeople.length > 0 ? (
         /*
@@ -737,6 +742,8 @@ const styles = StyleSheet.create({
   // height the parent imposes. Pinned to its content, it cannot be squeezed into
   // the heading above it.
   rail: { flexGrow: 0, flexShrink: 0 },
+  reviewMatches: { alignItems: "center", backgroundColor: colors.panelRaised, borderCurve: "continuous", borderRadius: radii.pill, justifyContent: "center", minHeight: layout.minTouchTarget, paddingHorizontal: spacing.md },
+  reviewMatchesText: { color: colors.goldPressed, fontFamily: fonts.bold, ...typeScale.small },
   root: { backgroundColor: colors.background, flex: 1 },
   scanDisabled: { opacity: 0.55 },
   search: { alignItems: "center", backgroundColor: "#f0eee8", borderRadius: radii.pill, flexDirection: "row", gap: spacing.xs, height: 48, marginTop: 14, paddingHorizontal: spacing.md },

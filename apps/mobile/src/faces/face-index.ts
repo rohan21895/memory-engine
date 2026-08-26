@@ -1121,7 +1121,21 @@ function boxIntersection(a: FaceBox, b: FaceBox): number {
   return width * height;
 }
 
-/** Suppresses repeated ML Kit boxes without conflating neighboring faces. */
+/**
+ * Suppresses repeated ML Kit boxes without conflating neighboring faces.
+ *
+ * This is deliberately geometry-only. On the owner's real index, 32
+ * same-photo embedding pairs sit in the 0.60-0.72 band across 22 photos. Only
+ * four are the twin-singleton detector failure; lowering the embedding rule to
+ * 0.65 would catch those four while also crossing 15 non-singleton co-face
+ * pairs. Box overlap identifies the detector failure before an embedding can
+ * turn it into a second person, without spending those real co-faces.
+ *
+ * The old centre-distance fallback could suppress two neighbouring faces whose
+ * boxes barely overlapped: equal 40px boxes only 25px apart cleared its 28px
+ * tolerance despite an IoU of 0.23. A duplicate now needs substantial shared
+ * area (or near-containment for ML Kit's same-head boxes at different scales).
+ */
 export function dedupeFaceBoxes(boxes: FaceBox[]): FaceBox[] {
   const kept: FaceBox[] = [];
   for (const box of boxes) {
@@ -1135,20 +1149,7 @@ export function dedupeFaceBoxes(boxes: FaceBox[]): FaceBox[] {
         Math.min(area, candidateArea) > 0
           ? intersection / Math.min(area, candidateArea)
           : 0;
-      const centerDistance = Math.hypot(
-        box.x + box.width / 2 - (candidate.x + candidate.width / 2),
-        box.y + box.height / 2 - (candidate.y + candidate.height / 2),
-      );
-      const centerTolerance =
-        Math.min(
-          Math.max(box.width, box.height),
-          Math.max(candidate.width, candidate.height),
-        ) * 0.7;
-      return (
-        iou >= 0.65 ||
-        containment >= 0.85 ||
-        centerDistance <= centerTolerance
-      );
+      return iou >= 0.5 || containment >= 0.8;
     });
     if (!duplicate) kept.push(box);
   }
@@ -3380,6 +3381,14 @@ export function stopFaceIndexBuild(): void {
 
 export function getPeople(): FaceIndexPerson[] {
   return summariesForPeople(index.people, index.faceThumbUris, true);
+}
+
+/** One person summary, including low-support groups hidden from the main rail. */
+export function getFaceIndexPerson(personId: string): FaceIndexPerson | undefined {
+  const person = index.people.find((candidate) => candidate.id === personId);
+  return person
+    ? summariesForPeople([person], index.faceThumbUris, false)[0]
+    : undefined;
 }
 
 /**

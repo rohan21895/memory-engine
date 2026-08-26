@@ -229,6 +229,21 @@ assert(
 }
 
 {
+  const boxes = dedupeFaceBoxes([
+    { x: 10, y: 10, width: 40, height: 40 },
+    // IoU 0.648: two slightly shifted detections of the same head.
+    { x: 16, y: 13, width: 40, height: 40 },
+    // Its centre is within the old distance tolerance, but IoU is only 0.231:
+    // this is a neighbouring face, not another detection of the first one.
+    { x: 35, y: 10, width: 40, height: 40 },
+  ]);
+  assert(
+    boxes.length === 2 && boxes[1].x === 35,
+    "box dedupe removes a heavily overlapping repeat without deleting an adjacent face",
+  );
+}
+
+{
   // CHANGED (face-index v20): the dedupe bar moved 0.75 -> 0.85 to match
   // SAME_PHOTO_EXCEPTION_SIMILARITY. Both rules answer "are these two boxes in
   // one photo the same person?" and they used to disagree across the whole
