@@ -3597,6 +3597,22 @@ async function runBuild(
     await persistFaceIndex(true);
     logEmbeddingPath("scan complete");
     notifyFaceProgress(index.total, index.total);
+    // The avatar pass belongs here too, not only on the nothing-to-scan return.
+    //
+    // Measured on the owner's phone: a launch that found ONE new photo took this
+    // path instead, and the 1,788 people without a face were skipped for the
+    // whole launch -- `photos=1 faces=0` and not a single avatar cut. A phone
+    // that keeps taking photos reaches this branch nearly every time, so the
+    // early return the backfill used to live behind was the branch it almost
+    // never got. A rebuild here has also just dropped every avatar that could
+    // not be reattached, which makes this the moment they are most needed.
+    {
+      const recovered = await backfillCoverFaceThumbs(control);
+      if (recovered > 0) {
+        notifyFaceProgress(index.total, index.total);
+        console.log(`[faces] recovered ${recovered} avatars`);
+      }
+    }
   } catch {
     await persistFaceIndex(true);
   } finally {
