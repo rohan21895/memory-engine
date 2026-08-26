@@ -527,15 +527,25 @@ export function clusterFaces(
  * Adds one resumable scan batch to existing clusters without waiting for the
  * complete photo library. Existing ids remain stable and all inputs are copied.
  */
-export function extendFaceClusters(
-  existing: Person[],
-  observations: FaceObservation[],
-  opts: ClusterOptions = {},
-): Person[] {
-  const identityThreshold = Number.isFinite(opts.threshold)
+/**
+ * Every bar in one place, derived once.
+ *
+ * Extracted so `suggestMerges` cannot answer "why did this pair not merge?"
+ * with a different set of numbers than the merge pass actually used. A second
+ * copy of this arithmetic would drift, and the symptom would be a suggestion
+ * list that disagrees with the grouping it is meant to explain.
+ */
+function mergeBars(opts: ClusterOptions): {
+  identity: number;
+  perceptual: number;
+  evidenced: number;
+  temporal: number;
+  assignment: number;
+} {
+  const assignment = Number.isFinite(opts.threshold)
     ? (opts.threshold as number)
     : DEFAULT_IDENTITY_THRESHOLD;
-  const perceptualThreshold = Number.isFinite(opts.perceptualThreshold)
+  const perceptual = Number.isFinite(opts.perceptualThreshold)
     ? (opts.perceptualThreshold as number)
     : DEFAULT_PERCEPTUAL_THRESHOLD;
   // Merging must never be looser than assignment: if two faces were too far
@@ -546,29 +556,43 @@ export function extendFaceClusters(
   // and the whole recalibration to 0.72 was silently inert on the only path
   // that ships. A caller asking for a looser bar than assignment is asking for
   // a bug, so raise it rather than obey it.
-  const identityMergeThreshold = Math.max(
-    identityThreshold,
+  const identity = Math.max(
+    assignment,
     Number.isFinite(opts.identityMergeThreshold)
       ? (opts.identityMergeThreshold as number)
       : DEFAULT_MERGE_THRESHOLD,
   );
-  // Not clamped to `identityThreshold` -- see `evidencedMergeThreshold` above.
+  // Not clamped to the assignment bar -- see `evidencedMergeThreshold` above.
   // Defaults to the strict bar, so a caller that says nothing gets exactly
   // today's behaviour and this stays inert until someone opts in.
-  const evidencedMergeThreshold = Math.min(
-    identityMergeThreshold,
+  const evidenced = Math.min(
+    identity,
     Number.isFinite(opts.evidencedMergeThreshold)
       ? (opts.evidencedMergeThreshold as number)
-      : identityMergeThreshold,
+      : identity,
   );
   // Also uncapped by the assignment bar, for the same reason as the evidenced
   // bar: it governs two averages, not a face against a group.
-  const temporalMergeThreshold = Math.min(
-    evidencedMergeThreshold,
+  const temporal = Math.min(
+    evidenced,
     Number.isFinite(opts.temporalMergeThreshold)
       ? (opts.temporalMergeThreshold as number)
-      : evidencedMergeThreshold,
+      : evidenced,
   );
+  return { identity, perceptual, evidenced, temporal, assignment };
+}
+
+export function extendFaceClusters(
+  existing: Person[],
+  observations: FaceObservation[],
+  opts: ClusterOptions = {},
+): Person[] {
+  const bars = mergeBars(opts);
+  const identityThreshold = bars.assignment;
+  const perceptualThreshold = bars.perceptual;
+  const identityMergeThreshold = bars.identity;
+  const evidencedMergeThreshold = bars.evidenced;
+  const temporalMergeThreshold = bars.temporal;
   const people: MutablePerson[] = existing.map(mutablePerson);
   let nextPersonNumber = people.reduce((largest, person) => {
     const match = /^person-(\d+)$/u.exec(person.id);
@@ -1063,6 +1087,115 @@ function absorb(
   people.splice(dropIndex, 1);
   origins.splice(dropIndex, 1);
   blocked.splice(dropIndex, 1);
+}
+
+export type MergeSuggestion = {
+  /** The larger cluster, so the UI can lead with the more recognisable face. */
+  a: string;
+  b: string;
+  /** Mean cosine between the two clusters: the same number merging judges on. */
+  similarity: number;
+  /** The bar this pair actually failed, so the gap can be shown honestly. */
+  bar: number;
+};
+
+/**
+ * Pairs of people that ALMOST merged, ranked by how close they came.
+ *
+ * Getting a threshold exactly right for every face in a library is not
+ * achievable -- this codebase has already proved that in both directions, with
+ * a bar so tight one person became several and a past relaxation that produced
+ * a single tile holding 2,164 photos. The way out is not a better constant. It
+ * is to stop guessing on the pairs the measurement cannot call, and ask.
+ *
+ * So this returns exactly the pairs sitting just under the bar that governs
+ * them: close enough to be worth a human glance, not close enough for the app
+ * to act alone. A confirmed pair becomes a must-link, which outranks every
+ * measured bar and survives future reclusters, so each answer is permanent.
+ *
+ * Deliberately excluded, because they are answers rather than questions:
+ *   - pairs already OVER their bar, which merge on their own
+ *   - two faces from one photo below the mirror/panorama exception, which is
+ *     near-certain evidence of two different people
+ *   - anything the user has already ruled out
+ *
+ * O(people^2) in linkage calls, the same shape as one consolidation sweep, so
+ * this belongs behind a deliberate action and not on a startup path.
+ */
+export function suggestMerges(
+  people: readonly Person[],
+  opts: ClusterOptions & { limit?: number; floor?: number } = {},
+): MergeSuggestion[] {
+  const limit = Number.isFinite(opts.limit) ? Math.max(0, opts.limit as number) : 20;
+  if (limit === 0 || people.length < 2) return [];
+  const bars = mergeBars(opts);
+  // Below this a pair is not a near miss, it is two different people, and
+  // offering it wastes the one thing this feature spends: the user's judgement.
+  const floor = Number.isFinite(opts.floor)
+    ? (opts.floor as number)
+    : bars.evidenced * 0.6;
+
+  const mutable = people.map(mutablePerson);
+  const blocked = new Set<string>();
+  const pairName = (i: number, j: number): string => `${i}:${j}`;
+  const resolved = resolveConstraints(mutable, opts.constraints ?? []);
+  for (const [i, j] of resolved.cannot) {
+    blocked.add(pairName(Math.min(i, j), Math.max(i, j)));
+  }
+
+  const found: MergeSuggestion[] = [];
+  for (let i = 0; i < mutable.length; i += 1) {
+    for (let j = i + 1; j < mutable.length; j += 1) {
+      if (blocked.has(pairName(i, j))) continue;
+      const a = mutable[i];
+      const b = mutable[j];
+      if (
+        a.embeddingKind !== b.embeddingKind ||
+        a.centroid.length === 0 ||
+        a.centroid.length !== b.centroid.length
+      ) {
+        continue;
+      }
+      const similarity = scaledSimilarity(a.centroid, a.inverse, b.centroid, b.inverse);
+      if (similarity < floor) continue;
+      // The same bar `scanPair` would have applied, so a suggestion is exactly
+      // "this pair failed the test the app actually ran" -- not a second,
+      // looser opinion invented for the UI.
+      const evidenced =
+        a.faceCount >= MERGE_EVIDENCE_MIN_FACES &&
+        b.faceCount >= MERGE_EVIDENCE_MIN_FACES;
+      const gap = spanGap(a, b);
+      const nearInTime = gap !== undefined && gap <= TEMPORAL_MERGE_WINDOW_MS;
+      const identityBar = evidenced
+        ? nearInTime
+          ? Math.min(bars.evidenced, bars.temporal)
+          : bars.evidenced
+        : bars.identity;
+      const bar = a.embeddingKind === "identity" ? identityBar : bars.perceptual;
+      // Already over its bar: merging handles it, so it is not a question.
+      if (similarity >= bar) continue;
+      // Two faces in one photo below the exception are two people. That is
+      // evidence, not uncertainty, and the merge pass treats it as a hard
+      // cannot-link -- so it must not come back as a suggestion.
+      if (
+        sharesAsset(a.assetIdSet, b.assetIdSet) &&
+        similarity < SAME_PHOTO_EXCEPTION_SIMILARITY
+      ) {
+        continue;
+      }
+      const [first, second] =
+        a.faceCount >= b.faceCount ? [a, b] : [b, a];
+      found.push({ a: first.id, b: second.id, similarity, bar });
+    }
+  }
+
+  // Ties break on id so the list does not reshuffle between identical runs.
+  found.sort(
+    (x, y) =>
+      y.similarity - x.similarity ||
+      (x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0),
+  );
+  return found.slice(0, limit);
 }
 
 export type { FaceObservation, Person } from "./types";
