@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { buildPersonRecurrence } from "./person-recurrence.ts";
+import { buildPersonRecurrence, monthStartMs } from "./person-recurrence.ts";
 
 function assert(value: unknown, message: string): void {
   if (!value) throw new Error(`person-recurrence self-check failed: ${message}`);
@@ -133,6 +133,61 @@ assert(
 assert(
   straddling.sessionCount("night-owl") === 1,
   "but one night out is still a single occasion",
+);
+
+/**
+ * Month buckets, which is the resolution the photo index actually stores.
+ *
+ * The property that has to hold is the one the whole signal rests on: a person
+ * confined to a single month cannot look familiar however many photos they are
+ * in, and a person appearing in separate months does.
+ */
+const monthly = new Map<string, string>([
+  // One wedding, 50 frames, all in the same month.
+  ...Array.from({ length: 50 }, (_v, i) => [`w${i}`, "2025-03"] as [string, string]),
+  // A relative in four different months, one photo each.
+  ["r1", "2025-01"],
+  ["r2", "2025-04"],
+  ["r3", "2025-09"],
+  ["r4", "2026-02"],
+  // Someone photographed either side of a month boundary at one new-year party.
+  ["n1", "2025-12"],
+  ["n2", "2026-01"],
+]);
+const byMonth = buildPersonRecurrence(
+  [
+    { id: "wedding-guest", assetIds: Array.from({ length: 50 }, (_v, i) => `w${i}`) },
+    { id: "relative", assetIds: ["r1", "r2", "r3", "r4"] },
+    { id: "new-year", assetIds: ["n1", "n2"] },
+    { id: "no-month", assetIds: ["missing"] },
+  ],
+  (assetId) => monthStartMs(monthly.get(assetId)),
+);
+assert(
+  byMonth.sessionCount("wedding-guest") === 1,
+  `50 frames in one month is one occasion, got ${byMonth.sessionCount("wedding-guest")}`,
+);
+assert(!byMonth.isFamiliar("wedding-guest"), "one month is never familiar, at any photo count");
+assert(
+  byMonth.sessionCount("relative") === 4 && byMonth.isFamiliar("relative"),
+  "four separate months, four occasions, familiar -- on FOUR photos against the guest's 50",
+);
+// Honest about the edge: consecutive months are always more than a fortnight
+// apart, so a party straddling new year reads as two occasions. It buys one
+// extra protected person, which is the cheap direction to be wrong in.
+assert(
+  byMonth.sessionCount("new-year") === 2,
+  "a month boundary splits one party in two -- a known, deliberate over-count",
+);
+assert(byMonth.sessionCount("no-month") === 0, "an asset with no month contributes nothing");
+
+assert(monthStartMs(undefined) === undefined, "no month id, no timestamp");
+assert(monthStartMs("2025-13") === undefined, "month 13 is rejected, not wrapped into next year");
+assert(monthStartMs("2025-00") === undefined, "month 0 is rejected");
+assert(monthStartMs("garbage") === undefined, "a non-month string is rejected");
+assert(
+  (monthStartMs("2025-06") ?? 0) > (monthStartMs("2025-05") ?? 0),
+  "months order correctly",
 );
 
 console.log("person-recurrence self-check passed");

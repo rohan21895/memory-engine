@@ -55,6 +55,31 @@ export type PersonRecurrence = {
   ranked(): readonly string[];
 };
 
+/**
+ * Turns a photo index `YYYY-MM` bucket into a timestamp, so month-resolution
+ * data can feed `buildPersonRecurrence` unchanged.
+ *
+ * The photo index stores a month per asset, not a capture time, and giving it
+ * one would bump its version and force a full re-index. Feeding month starts
+ * through the same code gives exactly month-resolution occasions: everything
+ * inside one month collapses to a single day, and consecutive months are always
+ * more than a fortnight apart so they stay separate occasions. That is the
+ * honest resolution of what is stored -- two visits in one month count once.
+ *
+ * Coarse in the safe direction: it can only ever UNDERSTATE how much somebody
+ * recurs, so it cannot promote a stranger. When per-asset capture times exist,
+ * passing them instead gives finer occasions with no change here.
+ */
+export function monthStartMs(monthId: string | null | undefined): number | undefined {
+  if (typeof monthId !== "string") return undefined;
+  const match = /^(\d{4})-(\d{2})$/u.exec(monthId);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return undefined;
+  return new Date(year, month - 1, 1, 12).getTime();
+}
+
 /** Local calendar day. Photos are taken in local time; a UTC day boundary would
  *  split one evening in two and inflate an occasion into several. */
 function localDay(timestamp: number): number {

@@ -993,6 +993,21 @@ export function placeKeyForAsset(assetId: string): string | undefined {
   return entry?.cityId || entry?.countryId || undefined;
 }
 
+/**
+ * The `YYYY-MM` bucket an asset was captured in, or undefined when it has no
+ * usable time.
+ *
+ * The index deliberately stores a month rather than a timestamp, and this
+ * exposes exactly what is stored rather than inviting a schema change: adding a
+ * per-asset capture time would bump INDEX_VERSION, which throws away the whole
+ * index and re-scans the library. Month resolution is enough for the thing that
+ * needs it -- telling somebody who recurs across the year apart from somebody
+ * who was at one event.
+ */
+export function monthIdForAsset(assetId: string): string | undefined {
+  return index.assets[assetId]?.monthId ?? undefined;
+}
+
 export function indexStatus(): PhotoIndexStatus {
   return { indexed: Object.keys(index.assets).length, total: index.total };
 }
