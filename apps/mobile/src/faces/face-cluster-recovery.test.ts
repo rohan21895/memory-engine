@@ -354,7 +354,6 @@ const solo = (identity: number, face: number) => `solo-${identity}-${face}`;
       person("person-4", 9),
       person("person-5", 2),
     ],
-    {},
     true,
   ) as Cluster[];
   assert(
@@ -365,7 +364,7 @@ const solo = (identity: number, face: number) => `solo-${identity}-${face}`;
     surfaced[0].id === "person-1",
     "the People UI still sorts by support",
   );
-  const singleton = summariesForPeople([person("person-1", 1)], {}, true) as Cluster[];
+  const singleton = summariesForPeople([person("person-1", 1)], true) as Cluster[];
   assert(
     singleton.length === 0,
     "a single uncorroborated face is still withheld as a likely fragment",

@@ -21,13 +21,13 @@ async function settled(promise: Promise<void>): Promise<boolean> {
 const held = holdScanTask();
 assert(!(await settled(held)), "a fresh hold must stay pending while the scan runs");
 
-// A redundant service start must not hand out a second resolver: the previous
-// one would be dropped, leaving a task nothing could ever finish and a service
-// that never stops itself.
+// A redundant service start must share the live hold. Its own never-resolving
+// promise would leave a task nothing could finish, and the service only stops
+// itself once every task has -- so the notification would outlive the scan.
 const second = holdScanTask();
 await stopScanService();
 assert(await settled(held), "stopping the scan must let the original task finish");
-assert(!(await settled(second)), "a duplicate hold must not become the live resolver");
+assert(await settled(second), "and must finish a duplicate hold with it");
 
 // Scans run more than once per app launch, so releasing must not be a one-shot.
 const again = holdScanTask();

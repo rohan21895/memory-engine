@@ -14,6 +14,12 @@ import type { AlbumData, Alt, Pool, Selected } from "./types";
 const DESKTOP_QUALITY_FLOOR = 0.35;
 const NEAR_DUPLICATE_COSINE = 0.92;
 const LUMA_FEATURE_COUNT = 64;
+const PERCEPTUAL_FEATURE_COUNT = 76;
+const LUMA_GRID_EDGE = 8;
+const BURST_REFRAME_WINDOW_MS = 8_000;
+const TRANSLATED_LUMA_COSINE = 0.92;
+const ROTATED_LUMA_COSINE = 0.9;
+const ORIENTATION_COLOR_COSINE = 0.98;
 const SIGNIFICANT_FACE_AREA = 0.005;
 const ALL_EYES_OPEN_THRESHOLD = 0.5;
 const BLINK_REJECTION_THRESHOLD = 0.35;
@@ -92,6 +98,8 @@ type Candidate = {
   photo: AnalyzedPhoto;
   inputIndex: number;
   embedding?: number[];
+  /** Stub model's documented 8x8 luma + 12-bin color fingerprint. */
+  perceptualEmbedding?: number[];
   analysis?: QualitySignals;
   quality: number;
   detailScore?: number;
@@ -162,10 +170,10 @@ export function selectBestShots(
       capturedAt: rankedTake.winner.photo.creationTime,
       placeKey: rankedTake.winner.photo.placeKey,
       personIds: rankedTake.winner.photo.personIds,
-        embedding: rankedTake.winner.embedding,
-        embeddingSpace: rankedTake.winner.photo.semantic
-          ? "tinyclip-vit-8m16-yfcc15m-v1"
-          : "phone-perceptual-v1",
+      embedding: rankedTake.winner.embedding,
+      embeddingSpace: rankedTake.winner.photo.semantic
+        ? "tinyclip-vit-8m16-yfcc15m-v1"
+        : "phone-perceptual-v1",
       comparisonClass: rankedTake.winner.analysis?.category,
       category: rankedTake.winner.analysis?.category,
       shotGroup: `take:${rankedTake.winner.photo.id}`,
@@ -176,16 +184,28 @@ export function selectBestShots(
       pinned: rankedTake.winner.photo.pinned,
       excluded: rankedTake.winner.photo.excluded,
       cutFace: rankedTake.winner.cutFace,
-        smile: rankedTake.winner.smile,
-        eyesOpen: rankedTake.winner.eyesOpen,
-        screenshotDocument:
-          rankedTake.winner.analysis?.isScreenshotOrDocument,
-        aesthetic: rankedTake.winner.photo.semantic?.aesthetic,
-        composed: rankedTake.winner.photo.semantic?.composed,
-        cleanFrame: rankedTake.winner.photo.semantic?.cleanFrame,
-        sleeping: rankedTake.winner.photo.semantic?.sleeping,
-        awake: rankedTake.winner.photo.semantic?.awake,
-        embraceContext: rankedTake.winner.photo.semantic?.embraceContext,
+      // A soft cut-face rejection can be waived for a rare moment or scarce
+      // person. The owner explicitly disallows automatic half-face picks, so
+      // make this hard; an explicit user pin still bypasses planner gates.
+      hardRejected:
+        rankedTake.winner.cutFace && !rankedTake.winner.photo.pinned,
+      hardRejectionReason: rankedTake.winner.cutFace
+        ? "face cut at frame edge"
+        : undefined,
+      faceSharpness: rankedTake.winner.analysis?.faceSharpness,
+      // The expanded region includes hair and upper body; the planner's
+      // second regional gate is the closest existing contract for it.
+      headSharpness: rankedTake.winner.analysis?.subjectSharpness,
+      smile: rankedTake.winner.smile,
+      eyesOpen: rankedTake.winner.eyesOpen,
+      screenshotDocument:
+        rankedTake.winner.analysis?.isScreenshotOrDocument,
+      aesthetic: rankedTake.winner.photo.semantic?.aesthetic,
+      composed: rankedTake.winner.photo.semantic?.composed,
+      cleanFrame: rankedTake.winner.photo.semantic?.cleanFrame,
+      sleeping: rankedTake.winner.photo.semantic?.sleeping,
+      awake: rankedTake.winner.photo.semantic?.awake,
+      embraceContext: rankedTake.winner.photo.semantic?.embraceContext,
     })),
     Math.min(requestedCount, rankedTakes.length),
     {
@@ -312,8 +332,9 @@ function buildCandidates(photos: AnalyzedPhoto[]): Candidate[] {
     seenIds.add(photo.id);
 
     const embedding = readEmbedding(photo);
+    const perceptualEmbedding = readEmbeddingValue(photo.perceptualEmbedding);
     const detailScore = thumbnailDetailScore(
-      readEmbeddingValue(photo.perceptualEmbedding) ?? embedding,
+      perceptualEmbedding ?? embedding,
     );
     const pixels = sourcePixels(photo);
     const analysis = photo.analysis;
@@ -322,12 +343,18 @@ function buildCandidates(photos: AnalyzedPhoto[]): Candidate[] {
       : [];
     const eyesOpen = analysis ? worstEyesOpen(faces) : undefined;
     const smile = analysis ? bestSmile(faces) : undefined;
-    const sharpness = unitSignal(analysis?.sharpness);
+    const frameSharpness = unitSignal(analysis?.sharpness);
+    const subjectSharpness = subjectFocusSharpness(analysis);
+    // A detected subject owns portrait focus. Falling back to the whole frame
+    // only when regional evidence is unavailable prevents a sharp background
+    // from laundering a motion-blurred face into the album.
+    const sharpness = subjectSharpness ?? frameSharpness;
     const cutFace = faces.some((face) => face.cutAtEdge);
     candidates.push({
       photo,
       inputIndex,
       embedding,
+      perceptualEmbedding,
       analysis,
       quality: analysis
         ? enhancedQualityScore({
@@ -357,11 +384,7 @@ function buildTakes(candidates: Candidate[]): Take[] {
 
   for (const candidate of candidates) {
     const matchingTake = takes.find((take) =>
-      take.candidates.every(
-        (member) =>
-          cosineSimilarity(candidate.embedding, member.embedding) >=
-          NEAR_DUPLICATE_COSINE,
-      ),
+      take.candidates.every((member) => sameTake(candidate, member)),
     );
 
     if (matchingTake) {
@@ -375,6 +398,126 @@ function buildTakes(candidates: Candidate[]): Take[] {
   }
 
   return takes;
+}
+
+/**
+ * Decide duplicate identity from either direct visual agreement or the extra
+ * evidence available inside an actual camera burst.
+ *
+ * The 0.92 full-vector rule is still the safest path. It fails after a small
+ * reframe because the stub fingerprint stores an 8x8 spatial grid, and fails
+ * harder when the phone rotates. Inside eight seconds we can use mechanisms
+ * invariant to those operations: best translated-grid agreement for a reframe,
+ * or the fingerprint's color-distribution tail when orientation changed.
+ * Requiring every member of a take to pass still prevents transitive chains.
+ */
+function sameTake(left: Candidate, right: Candidate): boolean {
+  if (
+    cosineSimilarity(left.embedding, right.embedding) >=
+    NEAR_DUPLICATE_COSINE
+  ) {
+    return true;
+  }
+
+  if (!insideBurstWindow(left.photo, right.photo)) {
+    return false;
+  }
+  const leftPerceptual = left.perceptualEmbedding;
+  const rightPerceptual = right.perceptualEmbedding;
+  if (
+    !leftPerceptual ||
+    !rightPerceptual ||
+    leftPerceptual.length !== PERCEPTUAL_FEATURE_COUNT ||
+    rightPerceptual.length !== PERCEPTUAL_FEATURE_COUNT
+  ) {
+    return false;
+  }
+
+  if (sameOrientation(left.photo, right.photo)) {
+    return (
+      translatedLumaSimilarity(leftPerceptual, rightPerceptual) >=
+      TRANSLATED_LUMA_COSINE
+    );
+  }
+  return (
+    orientationLumaSimilarity(leftPerceptual, rightPerceptual) >=
+      ROTATED_LUMA_COSINE &&
+    cosineSimilarity(
+      leftPerceptual.slice(LUMA_FEATURE_COUNT),
+      rightPerceptual.slice(LUMA_FEATURE_COUNT),
+    ) >= ORIENTATION_COLOR_COSINE
+  );
+}
+
+function insideBurstWindow(left: PickedPhoto, right: PickedPhoto): boolean {
+  return (
+    validCaptureTime(left.creationTime) !== undefined &&
+    validCaptureTime(right.creationTime) !== undefined &&
+    Math.abs(left.creationTime! - right.creationTime!) <=
+      BURST_REFRAME_WINDOW_MS
+  );
+}
+
+function sameOrientation(left: PickedPhoto, right: PickedPhoto): boolean {
+  const leftWidth = positiveNumber(left.width);
+  const leftHeight = positiveNumber(left.height);
+  const rightWidth = positiveNumber(right.width);
+  const rightHeight = positiveNumber(right.height);
+  if (!leftWidth || !leftHeight || !rightWidth || !rightHeight) return true;
+  return (leftWidth >= leftHeight) === (rightWidth >= rightHeight);
+}
+
+/** Best overlap cosine after moving an 8x8 thumbprint by up to two cells. */
+function translatedLumaSimilarity(left: number[], right: number[]): number {
+  let best = -1;
+  for (let dy = -2; dy <= 2; dy += 1) {
+    for (let dx = -2; dx <= 2; dx += 1) {
+      const leftOverlap: number[] = [];
+      const rightOverlap: number[] = [];
+      for (let y = 0; y < LUMA_GRID_EDGE; y += 1) {
+        for (let x = 0; x < LUMA_GRID_EDGE; x += 1) {
+          const rightX = x + dx;
+          const rightY = y + dy;
+          if (
+            rightX < 0 ||
+            rightX >= LUMA_GRID_EDGE ||
+            rightY < 0 ||
+            rightY >= LUMA_GRID_EDGE
+          ) {
+            continue;
+          }
+          leftOverlap.push(left[y * LUMA_GRID_EDGE + x]);
+          rightOverlap.push(right[rightY * LUMA_GRID_EDGE + rightX]);
+        }
+      }
+      best = Math.max(best, cosineSimilarity(leftOverlap, rightOverlap));
+    }
+  }
+  return best;
+}
+
+function orientationLumaSimilarity(left: number[], right: number[]): number {
+  const luma = right.slice(0, LUMA_FEATURE_COUNT);
+  const clockwise = rotateLumaClockwise(luma);
+  const counterClockwise = rotateLumaClockwise(
+    rotateLumaClockwise(rotateLumaClockwise(luma)),
+  );
+  return Math.max(
+    // Most camera APIs apply EXIF orientation before fingerprinting, so a
+    // portrait reframe remains upright even though source dimensions flipped.
+    translatedLumaSimilarity(left, luma),
+    // Keep both quarter-turns for fingerprints made before EXIF normalization.
+    translatedLumaSimilarity(left, clockwise),
+    translatedLumaSimilarity(left, counterClockwise),
+  );
+}
+
+function rotateLumaClockwise(luma: number[]): number[] {
+  return Array.from({ length: LUMA_FEATURE_COUNT }, (_, index) => {
+    const y = Math.floor(index / LUMA_GRID_EDGE);
+    const x = index % LUMA_GRID_EDGE;
+    return luma[(LUMA_GRID_EDGE - 1 - x) * LUMA_GRID_EDGE + y];
+  });
 }
 
 function rankTake(take: Take): RankedTake {
@@ -394,11 +537,33 @@ function rankTake(take: Take): RankedTake {
           .map((candidate) => candidate.photo.id)
       : [],
   );
+  // The later planner can reject a cut face, but it sees only this take's
+  // winner. If the cut frame wins here, the clean alternative is already gone.
+  // Preserve explicit user pins; for automatic picks, a clean same-take frame
+  // is categorically preferable to any face bisected by the image boundary.
+  const cleanFaceAvailable = take.candidates.some(
+    (candidate) =>
+      !candidate.cutFace && !blinkRejectedIds.has(candidate.photo.id),
+  );
+  const cutFaceRejectedIds = new Set(
+    cleanFaceAvailable
+      ? take.candidates
+          .filter((candidate) => candidate.cutFace && !candidate.photo.pinned)
+          .map((candidate) => candidate.photo.id)
+      : [],
+  );
   const eligible = take.candidates.filter(
-    (candidate) => !blinkRejectedIds.has(candidate.photo.id),
+    (candidate) =>
+      !blinkRejectedIds.has(candidate.photo.id) &&
+      !cutFaceRejectedIds.has(candidate.photo.id),
   );
   const winner = [...eligible].sort(compareCandidates)[0];
-  return { take, winner, blinkGateEnabled, blinkRejectedIds };
+  return {
+    take,
+    winner,
+    blinkGateEnabled,
+    blinkRejectedIds,
+  };
 }
 
 /**
@@ -813,7 +978,34 @@ function isSmileCategory(category: Category | undefined): boolean {
   return category === "portrait" || category === "couple";
 }
 
+/**
+ * Regional focus is conservative: both the exact face and expanded subject
+ * must be sharp when both exist. A ratio below 0.5 means more Laplacian detail
+ * lives in the background, so scale the result down proportionally; deliberate
+ * portrait bokeh at or above 0.5 is never boosted beyond the measured focus.
+ */
+function subjectFocusSharpness(
+  analysis: QualitySignals | undefined,
+): number | undefined {
+  if (!analysis) return undefined;
+  const face = unitSignal(analysis.faceSharpness);
+  const subject = unitSignal(analysis.subjectSharpness);
+  const regional =
+    face !== undefined && subject !== undefined
+      ? Math.min(face, subject)
+      : face ?? subject;
+  if (regional === undefined) return undefined;
+  const ratio = unitSignal(analysis.subjectBackgroundRatio);
+  return ratio === undefined ? regional : regional * Math.min(1, ratio / 0.5);
+}
+
 function positiveNumber(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function validCaptureTime(value: number | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
     : undefined;

@@ -19,7 +19,7 @@ import { embedFaceIdentity, traceNextAlignments, type FaceImageSource } from "..
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { incrementalScanTarget } from "../import/incremental-index.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { startScanService, stopScanService, updateScanService } from "../../modules/photeo-scan-service/src/index.ts";
+import { isBatteryUnrestricted, requestBatteryUnrestricted, startScanService, stopScanService, updateScanService } from "../../modules/photeo-scan-service/src/index.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
 // v18 stores aligned embeddings as int8/base64. Older versions contain
@@ -41,6 +41,33 @@ import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 // is the correct call rather than the lazy one.
 const INDEX_VERSION = 22;
 const INDEX_FILENAME = "face-index.json";
+
+/**
+ * The embeddings, kept OUT of the file the app opens with.
+ *
+ * Measured on the owner's device, not guessed: hydrating the combined 16.3MB
+ * index cost `readMs=84 parseMs=5993`. Six seconds of a frozen JS thread on
+ * every launch, which is exactly his report -- "i click on something, nothing
+ * happens, app hangs". 13.8MB of those 16.3 are observation embeddings, and
+ * nothing the first screen draws needs a single one of them: the People grid
+ * reads `people`, which lives in the small file and carries each avatar.
+ *
+ * One JSON object per LINE rather than one array, so the load can parse a
+ * chunk, hand the thread back to the UI, and continue. A single `JSON.parse`
+ * over 17,699 observations cannot be interrupted no matter which thread wants
+ * it.
+ */
+const OBSERVATIONS_FILENAME = "face-observations.jsonl";
+
+/**
+ * Observations parsed per turn before yielding to the UI.
+ *
+ * Small enough that a tap lands within a frame or two of asking; large enough
+ * that the yields themselves are not the cost. Measured on the owner's library:
+ * the whole 17,722-face file parses in about 5.4s, so 500 per turn is roughly
+ * 150ms of work between yields.
+ */
+const OBSERVATION_LOAD_CHUNK = 500;
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
 /**
@@ -310,7 +337,17 @@ export type FaceScanDependencies = {
     frame?: FaceFrame | null,
     photo?: FacePhotoEmbeddingContext,
   ) => Promise<FaceEmbedding>;
-  onFaceCrop?: (observation: FaceObservation, cropUri: string) => void;
+  /**
+   * The box travels with the crop because the avatar gate needs it and the
+   * observation deliberately does not carry it. Storing per-face geometry on
+   * every observation would grow the on-disk index by tens of thousands of
+   * boxes to serve one thumbnail per person.
+   */
+  onFaceCrop?: (
+    observation: FaceObservation,
+    cropUri: string,
+    box: FaceBox,
+  ) => void;
 };
 
 export type FaceEmbedding = {
@@ -340,7 +377,14 @@ type PersistedFaceIndex = {
   embeddingMean?: number[];
   /** What the user said about who is who. Survives every recluster. */
   constraints?: FaceConstraint[];
-  faceThumbUris: Record<string, string>;
+  /**
+   * Whether Android's background-activity dialog has already been shown.
+   *
+   * Persisted, because the alternative is a system dialog on EVERY launch for
+   * anyone who declined it once -- Android only honours the request the first
+   * time, so re-asking cannot succeed and only annoys.
+   */
+  backgroundPromptShown?: boolean;
 };
 
 type StoredFaceObservation = Omit<FaceObservation, "embedding"> & {
@@ -353,7 +397,11 @@ type StoredFaceIndex = Omit<
   PersistedFaceIndex,
   "observations" | "people"
 > & {
-  observations: StoredFaceObservation[];
+  /**
+   * Only present in files written before embeddings moved to their own line-
+   * delimited file. Read for the one launch that upgrades, never written.
+   */
+  observations?: StoredFaceObservation[];
   people: StoredPerson[];
 };
 
@@ -369,7 +417,6 @@ function emptyIndex(): PersistedFaceIndex {
     total: 0,
     threshold: DEFAULT_FACE_INDEX_THRESHOLD,
     calibration: CLUSTER_CALIBRATION,
-    faceThumbUris: {},
   };
 }
 
@@ -516,6 +563,19 @@ export async function probeFaceAlignment(photos = 6, faces = 3): Promise<void> {
 
 /** Emits anonymous centroid diagnostics for on-device clustering calibration. */
 export function logFaceIndexDiagnostics(context = "status"): void {
+  // Both halves read every embedding, and the closest-pair scan is O(people^2)
+  // on top -- together they cost about a second on the owner's library. That is
+  // a second of frozen UI to print a line nobody asked for, and it would also
+  // drag the 13.8MB observations file into memory on a launch that has no other
+  // reason to touch it. Diagnostics report on data that is already loaded; they
+  // do not get to load it.
+  if (!observationsLoaded) {
+    console.warn(
+      `[PhoteoFaceIndex] ${context} people=${index.people.length} ` +
+        `(embeddings not loaded; diagnostics skipped)`,
+    );
+    return;
+  }
   logEmbeddingPath(context);
   logSimilarityStructure(context);
 }
@@ -793,6 +853,9 @@ function storedPerson(value: unknown): value is StoredPerson {
     value.assetIds.every((assetId) => typeof assetId === "string") &&
     typeof value.centroid === "string" &&
     value.centroid.length > 0 &&
+    (value.avatarUri === undefined || typeof value.avatarUri === "string") &&
+    (value.avatarAssetId === undefined ||
+      typeof value.avatarAssetId === "string") &&
     (value.embeddingKind === "identity" || value.embeddingKind === "perceptual")
   );
 }
@@ -809,17 +872,25 @@ function storedPerson(value: unknown): value is StoredPerson {
  */
 const quantizedObservations = new WeakMap<FaceObservation, string>();
 
+function storedObservationLine(observation: FaceObservation): string {
+  let embedding = quantizedObservations.get(observation);
+  if (embedding === undefined) {
+    embedding = quantizeEmbedding(observation.embedding);
+    quantizedObservations.set(observation, embedding);
+  }
+  return JSON.stringify({ ...observation, embedding });
+}
+
+/**
+ * The small file: everything the first screen needs and nothing it does not.
+ *
+ * `observations` is deliberately absent. It is the 13.8MB that made launch cost
+ * six seconds of frozen JS thread, and it now lives in its own file.
+ */
 function storedIndex(): StoredFaceIndex {
+  const { observations: _observations, ...rest } = index;
   return {
-    ...index,
-    observations: index.observations.map((observation) => {
-      let embedding = quantizedObservations.get(observation);
-      if (embedding === undefined) {
-        embedding = quantizeEmbedding(observation.embedding);
-        quantizedObservations.set(observation, embedding);
-      }
-      return { ...observation, embedding };
-    }),
+    ...rest,
     // Centroids are NOT cached: a person's centroid is recomputed on every
     // assignment and merge, so the object is live where observations are not.
     people: index.people.map((person) => ({
@@ -928,6 +999,62 @@ export function faceQualityTier(
 }
 
 /**
+ * How open an eye must read before the face is fit to be somebody's avatar.
+ *
+ * ML Kit reports this as a probability, and it is the only occlusion signal the
+ * detector gives us at all: there is no "is something in front of this face?"
+ * output. A hand over the eyes, hair across them, sunglasses, a blink and a
+ * mid-laugh squint all push it down, which is most of what the owner meant by
+ * asking for a thumbnail "without any hand on it".
+ *
+ * 0.4 rather than 0.5 because a genuine smile narrows the eyes and a smiling
+ * portrait is exactly the avatar people want. The gate is meant to reject
+ * OBSCURED faces, not expressive ones.
+ */
+const AVATAR_MIN_EYE_OPEN = 0.4;
+
+/**
+ * A head tilted further than this reads as a candid, not a portrait. Deliberately
+ * generous: the crop is square and centred, so a moderate tilt still frames well.
+ */
+const AVATAR_MAX_ROLL_DEGREES = 30;
+
+/**
+ * Whether this face is good enough to represent a person in the People grid.
+ *
+ * Stricter than `seedable`, and for a different reason. Seedable asks "is there
+ * enough of this face to identify someone from" -- a question about pixels.
+ * This asks "would the owner recognise this tile at a glance", which is a
+ * question about occlusion and pose.
+ *
+ * Every signal it uses is OPTIONAL metadata, and an absent signal always reads
+ * as acceptable. A detector build without classification would otherwise reject
+ * every face in the library and leave the whole grid with no avatars at all --
+ * a far worse outcome than an occasional half-blink.
+ *
+ * Honest limit: this catches a hand over the EYES and nothing else. A hand on
+ * the chin or a cheek leaves both eye probabilities high and passes. ML Kit
+ * exposes no general occlusion or blur score, so closing that gap needs a
+ * second model, not a tighter constant here.
+ */
+export function isAvatarFace(box: FaceBox): boolean {
+  const eyes = [box.leftEyeOpen, box.rightEyeOpen];
+  for (const eye of eyes) {
+    if (Number.isFinite(eye) && (eye as number) < AVATAR_MIN_EYE_OPEN) {
+      return false;
+    }
+  }
+  const reportedRoll = box.headEulerAngleZ;
+  if (
+    Number.isFinite(reportedRoll) &&
+    Math.abs(reportedRoll as number) > AVATAR_MAX_ROLL_DEGREES
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Removes repeat detections of one face while preserving distinct co-faces.
  *
  * Tied to SAME_PHOTO_EXCEPTION_SIMILARITY on purpose: this rule and the
@@ -997,7 +1124,21 @@ function boxIntersection(a: FaceBox, b: FaceBox): number {
   return width * height;
 }
 
-/** Suppresses repeated ML Kit boxes without conflating neighboring faces. */
+/**
+ * Suppresses repeated ML Kit boxes without conflating neighboring faces.
+ *
+ * This is deliberately geometry-only. On the owner's real index, 32
+ * same-photo embedding pairs sit in the 0.60-0.72 band across 22 photos. Only
+ * four are the twin-singleton detector failure; lowering the embedding rule to
+ * 0.65 would catch those four while also crossing 15 non-singleton co-face
+ * pairs. Box overlap identifies the detector failure before an embedding can
+ * turn it into a second person, without spending those real co-faces.
+ *
+ * The old centre-distance fallback could suppress two neighbouring faces whose
+ * boxes barely overlapped: equal 40px boxes only 25px apart cleared its 28px
+ * tolerance despite an IoU of 0.23. A duplicate now needs substantial shared
+ * area (or near-containment for ML Kit's same-head boxes at different scales).
+ */
 export function dedupeFaceBoxes(boxes: FaceBox[]): FaceBox[] {
   const kept: FaceBox[] = [];
   for (const box of boxes) {
@@ -1011,20 +1152,7 @@ export function dedupeFaceBoxes(boxes: FaceBox[]): FaceBox[] {
         Math.min(area, candidateArea) > 0
           ? intersection / Math.min(area, candidateArea)
           : 0;
-      const centerDistance = Math.hypot(
-        box.x + box.width / 2 - (candidate.x + candidate.width / 2),
-        box.y + box.height / 2 - (candidate.y + candidate.height / 2),
-      );
-      const centerTolerance =
-        Math.min(
-          Math.max(box.width, box.height),
-          Math.max(candidate.width, candidate.height),
-        ) * 0.7;
-      return (
-        iou >= 0.65 ||
-        containment >= 0.85 ||
-        centerDistance <= centerTolerance
-      );
+      return iou >= 0.5 || containment >= 0.8;
     });
     if (!duplicate) kept.push(box);
   }
@@ -1041,6 +1169,9 @@ function validPerson(value: unknown): value is Person {
     Array.isArray(value.assetIds) &&
     value.assetIds.every((assetId) => typeof assetId === "string") &&
     validEmbedding(value.centroid) &&
+    (value.avatarUri === undefined || typeof value.avatarUri === "string") &&
+    (value.avatarAssetId === undefined ||
+      typeof value.avatarAssetId === "string") &&
     (value.embeddingKind === "identity" || value.embeddingKind === "perceptual")
   );
 }
@@ -1049,21 +1180,18 @@ function trueRecord(value: unknown): value is Record<string, true> {
   return isRecord(value) && Object.values(value).every((entry) => entry === true);
 }
 
-function stringRecord(value: unknown): value is Record<string, string> {
-  return (
-    isRecord(value) &&
-    Object.values(value).every((entry) => typeof entry === "string")
-  );
-}
-
 function parseIndex(contents: string): PersistedFaceIndex | null {
   try {
     const value: unknown = JSON.parse(contents);
     if (
       !isRecord(value) ||
       value.version !== INDEX_VERSION ||
-      !Array.isArray(value.observations) ||
-      !value.observations.every(storedObservation) ||
+      // Absent is the NEW shape: embeddings now live in their own file and are
+      // loaded on demand. An inline array is a file written before the split
+      // and is still read, once, so the upgrade costs no re-scan.
+      (value.observations !== undefined &&
+        (!Array.isArray(value.observations) ||
+          !value.observations.every(storedObservation))) ||
       !Array.isArray(value.people) ||
       !value.people.every(storedPerson) ||
       !trueRecord(value.processedAssetIds) ||
@@ -1080,7 +1208,7 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
     const stored = value as unknown as StoredFaceIndex;
     const loaded: PersistedFaceIndex = {
       ...stored,
-      observations: stored.observations.map((observation) => ({
+      observations: (stored.observations ?? []).map((observation) => ({
         ...observation,
         embedding: dequantizeEmbedding(observation.embedding),
       })),
@@ -1088,9 +1216,6 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
         ...person,
         centroid: dequantizeEmbedding(person.centroid),
       })),
-      faceThumbUris: stringRecord(value.faceThumbUris)
-        ? value.faceThumbUris
-        : {},
       // A malformed constraint list is dropped rather than rejecting the whole
       // index: losing the user's corrections is bad, but discarding every
       // embedding and re-scanning the library over them is far worse.
@@ -1134,6 +1259,198 @@ async function readPersistedIndex(
   }
 }
 
+/**
+ * Whether `index.observations` reflects what is on disk.
+ *
+ * The single most dangerous piece of state in this file. When it is false the
+ * array is EMPTY BUT THE FILE IS NOT, so anything that writes the observations
+ * file while it is false would destroy every embedding in the library. Exactly
+ * one place writes that file, and it refuses unless this is true.
+ */
+let observationsLoaded = false;
+let observationsLoading: Promise<void> | null = null;
+
+/** Set by anything that adds to or prunes the observation list. */
+let observationsDirty = false;
+
+/**
+ * Loads the embeddings, once, without freezing the UI.
+ *
+ * Everything that clusters, calibrates, re-scans or diagnoses must await this
+ * first. Nothing the first screen paints has to: that is the entire point.
+ *
+ * Parsing is chunked because a single `JSON.parse` over 17,699 observations is
+ * atomic — it cannot yield, so it would freeze the thread for seconds no matter
+ * where it was called from. One object per line lets the loop hand the thread
+ * back between chunks, so a tap during the load still lands.
+ */
+async function loadObservations(): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    const fileSystem = await fileSystemModule();
+    if (!fileSystem.documentDirectory) return;
+    const uri = `${fileSystem.documentDirectory}${OBSERVATIONS_FILENAME}`;
+    let raw: string;
+    try {
+      raw = await fileSystem.readAsStringAsync(uri);
+    } catch {
+      // No file yet: either a fresh install, or a combined index that has not
+      // been split. `hydrateFaceIndex` has already loaded the inline copy in
+      // the second case, so an empty list here is correct in both.
+      observationsLoaded = true;
+      return;
+    }
+    const readMs = Date.now() - startedAt;
+    const lines = raw.split("\n");
+    const loaded: FaceObservation[] = [];
+    for (let start = 0; start < lines.length; start += OBSERVATION_LOAD_CHUNK) {
+      const end = Math.min(start + OBSERVATION_LOAD_CHUNK, lines.length);
+      for (let cursor = start; cursor < end; cursor += 1) {
+        const observation = parseObservationLine(lines[cursor]);
+        if (observation) loaded.push(observation);
+      }
+      if (end < lines.length) await yieldToEventLoop();
+    }
+    // Assigned only after the whole file is read. A partial list assigned early
+    // would look complete to `persistObservations` and truncate the file.
+    index.observations = loaded;
+    observationsLoaded = true;
+    console.warn(
+      `[PhoteoFaceIndex] observations bytes=${raw.length} readMs=${readMs} ` +
+        `parseMs=${Date.now() - startedAt - readMs} faces=${loaded.length}`,
+    );
+  } catch {
+    // Leaving `observationsLoaded` false is the safe failure: the app still
+    // shows every person it already knows, and nothing overwrites the file.
+  }
+}
+
+/**
+ * Awaits the embeddings being in memory. Cheap and safe to call repeatedly.
+ */
+function ensureObservations(): Promise<void> {
+  if (observationsLoaded) return Promise.resolve();
+  observationsLoading ??= loadObservations().finally(() => {
+    observationsLoading = null;
+  });
+  return observationsLoading;
+}
+
+/** The body of the observations file: one quantized observation per line. */
+function observationLines(observations: readonly FaceObservation[]): string {
+  return observations.map(storedObservationLine).join("\n");
+}
+
+/**
+ * Reads one line back. Returns null for anything malformed, so a single corrupt
+ * line costs one face rather than the library.
+ */
+function parseObservationLine(line: string): FaceObservation | null {
+  if (line.length === 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(line);
+    if (!storedObservation(parsed)) return null;
+    const stored = parsed as StoredFaceObservation;
+    const observation: FaceObservation = {
+      ...stored,
+      embedding: dequantizeEmbedding(stored.embedding),
+    };
+    return validObservation(observation) ? observation : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Test seam for the split-file persistence, which has no pure surface: its
+ * whole job is the decision of whether to touch a file. Exported so the offline
+ * suite can drive both states with a fake filesystem, because getting this
+ * wrong destroys the user's entire library and nothing else would catch it.
+ */
+export const __observationsFileForTest = {
+  setLoaded(loaded: boolean): void {
+    observationsLoaded = loaded;
+  },
+  setDirty(dirty: boolean): void {
+    observationsDirty = dirty;
+  },
+  setObservations(next: FaceObservation[]): void {
+    index.observations = next;
+  },
+  lines: observationLines,
+  parseLine: parseObservationLine,
+  persist: (
+    fileSystem: Parameters<typeof persistObservations>[0],
+  ): Promise<void> => persistObservations(fileSystem),
+  rebuild: (): void => rebuildPeople(),
+  peopleCount: (): number => index.people.length,
+  setPeople: (people: Person[]): void => {
+    index.people = people;
+  },
+};
+
+/**
+ * Writes the embeddings, and refuses to when they are not in memory.
+ *
+ * The refusal is the important half. `index.observations` is empty until
+ * something asks for it, so an unguarded write on a launch that never clustered
+ * would replace 17,699 faces with an empty file and silently cost the owner a
+ * five-hour re-scan.
+ */
+async function persistObservations(
+  fileSystem: typeof import("expo-file-system/legacy"),
+): Promise<void> {
+  if (!observationsLoaded || !observationsDirty) return;
+  const uri = `${fileSystem.documentDirectory}${OBSERVATIONS_FILENAME}`;
+  const temporaryUri = `${uri}.tmp`;
+  const startedAt = Date.now();
+  await fileSystem.writeAsStringAsync(
+    temporaryUri,
+    observationLines(index.observations),
+  );
+  await fileSystem.deleteAsync(uri, { idempotent: true });
+  await fileSystem.moveAsync({ from: temporaryUri, to: uri });
+  observationsDirty = false;
+  traceScanStage("persistObservations", startedAt);
+}
+
+/**
+ * Takes ownership of embeddings that arrived inline in the small file.
+ *
+ * Returns whether there were any. A pre-split index carries them in the same
+ * document, and once they are in memory they are BOTH loaded and unwritten --
+ * so this is the one place allowed to declare them loaded without reading the
+ * observations file.
+ */
+function adoptInlineObservations(): boolean {
+  if (index.observations.length === 0) return false;
+  observationsLoaded = true;
+  observationsDirty = true;
+  pendingIndexMigration = true;
+  return true;
+}
+
+/**
+ * Set when a pre-split index was just read inline, cleared once the two-file
+ * form has been written.
+ *
+ * Without it the split would land only when something else happened to persist,
+ * and a launch that scans nothing and recovers no avatar would read the 16.3MB
+ * file again next time -- six seconds, every time, forever.
+ */
+let pendingIndexMigration = false;
+
+/** Writes the two-file form immediately after a pre-split index is read. */
+async function finishIndexMigration(): Promise<void> {
+  if (!pendingIndexMigration) return;
+  pendingIndexMigration = false;
+  await persistFaceIndex(true);
+  console.warn(
+    `[PhoteoFaceIndex] split ${index.observations.length} embeddings into ` +
+      OBSERVATIONS_FILENAME,
+  );
+}
+
 async function hydrateFaceIndex(): Promise<void> {
   try {
     const fileSystem = await fileSystemModule();
@@ -1146,12 +1463,21 @@ async function hydrateFaceIndex(): Promise<void> {
       // Recovering from a `.tmp` means the last write was interrupted, so the
       // real file is missing or stale. Stay dirty and rewrite it.
       index = temporary;
+      adoptInlineObservations();
       rebuildPersonIdsByAsset();
       return;
     }
     const saved = await readPersistedIndex(fileSystem, uri);
     if (saved) {
       index = saved;
+      if (adoptInlineObservations()) {
+        // A file from before the split. Its embeddings are in memory now, so
+        // the next write moves them into their own file and this launch is the
+        // last one that pays six seconds for them.
+        rebuildPersonIdsByAsset();
+        markIndexDirty();
+        return;
+      }
       rebuildPersonIdsByAsset();
       // Just read from disk, so by definition it matches disk. This is what
       // lets an app open that scans nothing skip the multi-second rewrite.
@@ -1218,7 +1544,7 @@ function indexShape(): string {
     index.people.length,
     Object.keys(index.processedAssetIds).length,
     Object.keys(index.seenAssetIds).length,
-    Object.keys(index.faceThumbUris).length,
+    index.people.filter((person) => person.avatarUri !== undefined).length,
     index.threshold,
     index.calibration,
     // Included so a correction the user just made forces a write even though
@@ -1286,6 +1612,11 @@ async function persistFaceIndex(force = false): Promise<void> {
       indexDirty = true;
       return;
     }
+    // Embeddings first. If the process dies between the two writes, a small
+    // file that still lists the OLD face count is recoverable -- the scan
+    // re-derives from the observations. The reverse is not: a small file
+    // promising faces the observations file does not have loses them.
+    await persistObservations(fileSystem);
     const uri = `${fileSystem.documentDirectory}${INDEX_FILENAME}`;
     const temporaryUri = `${uri}.tmp`;
     await fileSystem.writeAsStringAsync(
@@ -1303,20 +1634,6 @@ async function persistFaceIndex(force = false): Promise<void> {
   }
 }
 
-function keepFaceThumbOnMerge(
-  absorbedPersonId: string,
-  survivingPersonId: string,
-): void {
-  if (
-    !index.faceThumbUris[survivingPersonId] &&
-    index.faceThumbUris[absorbedPersonId]
-  ) {
-    index.faceThumbUris[survivingPersonId] =
-      index.faceThumbUris[absorbedPersonId];
-  }
-  delete index.faceThumbUris[absorbedPersonId];
-}
-
 /**
  * Applies a correction to the current people without losing the split path.
  *
@@ -1330,7 +1647,6 @@ export function applyConstraintToPeople(
   personIdA: string,
   personIdB: string,
   recluster: () => void,
-  onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
 ): boolean {
   if (kind === "cannot") {
     // Nothing to do now, and that is not a shortcut -- it is what the answer
@@ -1350,7 +1666,7 @@ export function applyConstraintToPeople(
   }
   const firstIndex = people.findIndex((person) => person.id === personIdA);
   const secondIndex = people.findIndex((person) => person.id === personIdB);
-  const merged = mergeExistingPeople(people, firstIndex, secondIndex, onMerge);
+  const merged = mergeExistingPeople(people, firstIndex, secondIndex);
   // The fast path refuses pairs it cannot join safely -- most reachably an
   // identity person and a perceptual one, whose centroids live in different
   // spaces. Falling back to the full recluster keeps the user's answer worth
@@ -1380,6 +1696,10 @@ async function recordConstraint(
   const a = anchorAssetFor(index.people, personIdA);
   const b = anchorAssetFor(index.people, personIdB);
   if (!a || !b) return false;
+  // A must-link the cheap merge cannot express falls back to a full recluster,
+  // which reads every embedding. Loaded here rather than inside the callback
+  // because that callback is synchronous and cannot wait for a file.
+  if (kind === "must") await ensureObservations();
   const constraints = index.constraints ?? [];
   // A later judgement replaces an earlier one about the same pair, so a user
   // who splits what they previously merged is not fighting their own history.
@@ -1400,7 +1720,6 @@ async function recordConstraint(
     personIdA,
     personIdB,
     rebuildPeople,
-    keepFaceThumbOnMerge,
   );
   if (merged) rebuildPersonIdsByAsset();
   await persistFaceIndex(true);
@@ -1426,6 +1745,10 @@ export function faceConstraintCount(): number {
 export async function clearFaceConstraints(): Promise<void> {
   index.constraints = [];
   markIndexDirty();
+  // `rebuildPeople` re-clusters every face from scratch, so the embeddings have
+  // to be in memory. Without this it would rebuild from an empty list and wipe
+  // the whole People grid.
+  await ensureObservations();
   rebuildPeople();
   await persistFaceIndex(true);
 }
@@ -1609,9 +1932,23 @@ function temporalMergeBar(observations: readonly FaceObservation[]): number {
   ).threshold;
 }
 
+/**
+ * The saved face crop for a person, if they have one.
+ *
+ * Read straight off the person record, which is the only place it can live
+ * safely. `rebuildPeople` renumbers every person from `person-1` in observation
+ * order, so anything keyed by person id outlives the person it described and
+ * gets handed to whoever inherits the number. That was the bug: 2,081 crops
+ * stored, 2,066 still "matching" a live id, every one of them potentially a
+ * stranger's face. Owning the field means a recluster loses the avatar instead
+ * of misattributing it, and the backfill re-derives one.
+ */
+function coverThumbFor(person: Person): string | undefined {
+  return person.avatarUri;
+}
+
 export function summariesForPeople(
   people: Person[],
-  faceThumbUris: Readonly<Record<string, string>> = {},
   suppressLowSupport = false,
 ): FaceIndexPerson[] {
   return people
@@ -1620,15 +1957,18 @@ export function summariesForPeople(
         person.assetIds.length > 0 &&
         (!suppressLowSupport || person.faceCount >= MIN_VISIBLE_FACE_COUNT),
     )
-    .map((person) => ({
-      id: person.id,
-      faceCount: person.faceCount,
-      coverAssetId: person.assetIds[0],
-      assetIds: person.assetIds.slice(),
-      ...(faceThumbUris[person.id]
-        ? { faceThumbUri: faceThumbUris[person.id] }
-        : {}),
-    }))
+    .map((person) => {
+      const faceThumbUri = coverThumbFor(person);
+      return {
+        id: person.id,
+        faceCount: person.faceCount,
+        // The cover photo follows the crop, so the avatar and the photo behind
+        // it are the same moment rather than two unrelated ones.
+        coverAssetId: person.avatarAssetId ?? person.assetIds[0],
+        assetIds: person.assetIds.slice(),
+        ...(faceThumbUri ? { faceThumbUri } : {}),
+      };
+    })
     .sort(
       (a, b) =>
         b.faceCount - a.faceCount ||
@@ -1641,11 +1981,9 @@ export function summariesForPeople(
 export function createFacePeopleQuery(
   observations: FaceObservation[],
   threshold = DEFAULT_FACE_INDEX_THRESHOLD,
-  faceThumbUris: Readonly<Record<string, string>> = {},
 ): FacePeopleQuery {
   const summaries = summariesForPeople(
     peopleFromObservations(observations, threshold),
-    faceThumbUris,
   );
   const byId = new Map(summaries.map((person) => [person.id, person]));
   return {
@@ -1756,7 +2094,7 @@ export async function scanFaceAssets(
                 observations.push(observation);
                 if (result.cropUri) {
                   try {
-                    dependencies.onFaceCrop?.(observation, result.cropUri);
+                    dependencies.onFaceCrop?.(observation, result.cropUri, box);
                   } catch {
                     // Thumbnail bookkeeping is optional scan metadata.
                   }
@@ -2193,8 +2531,45 @@ async function createFaceEmbedding(
   }
 }
 
+/**
+ * Whether this crop may be stored as somebody's avatar, given everything the
+ * scan already knows about the photo it came from.
+ *
+ * Shared by the live scan and the backfill so the two cannot drift: an avatar
+ * that appears during a scan and one recovered afterwards must be held to the
+ * same bar, or the grid looks different depending on when a photo was indexed.
+ */
+function avatarCropAcceptable(
+  seedable: boolean | undefined,
+  box: FaceBox,
+): boolean {
+  // Only a face good enough to START a person is good enough to represent one.
+  // This is the tier the scanner already computed, so it costs nothing and
+  // keeps tiny and steeply-turned faces off the avatars.
+  if (seedable === false) return false;
+  return isAvatarFace(box);
+}
+
+/**
+ * Where a face crop is stored on disk.
+ *
+ * Named after the photo AND the face's position within it, so two people
+ * photographed together get two distinct files rather than overwriting each
+ * other. Geometry is used rather than a counter because it is derived from the
+ * photo itself: re-running the backfill over the same face produces the same
+ * name instead of a second copy.
+ */
+function faceThumbDestination(
+  directoryUri: string,
+  assetId: string,
+  box: FaceBox,
+): string {
+  const at = `${Math.round(box.x)}-${Math.round(box.y)}`;
+  return `${directoryUri}/${encodeURIComponent(assetId)}-${at}.jpg`;
+}
+
 async function persistCoverFaceThumbs(
-  candidates: Array<{ observation: FaceObservation; cropUri: string }>,
+  candidates: Array<{ observation: FaceObservation; cropUri: string; box: FaceBox }>,
   assignments: ReadonlyMap<FaceObservation, string>,
 ): Promise<void> {
   try {
@@ -2204,22 +2579,35 @@ async function persistCoverFaceThumbs(
     }
     const directoryUri = `${fileSystem.documentDirectory}${FACE_THUMB_DIRECTORY}`;
     await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
+    const peopleById = new Map(index.people.map((person) => [person.id, person]));
     for (const candidate of candidates) {
       try {
         const personId = assignments.get(candidate.observation);
+        const assetId = candidate.observation.assetId;
+        const person = personId ? peopleById.get(personId) : undefined;
         if (
-          !personId ||
-          index.faceThumbUris[personId]
+          !person ||
+          // One good avatar per person is the whole requirement, and the crop
+          // is already on the person -- so this both stops needless writes and
+          // keeps the grid stable, since a face the user has learned to
+          // recognise is not replaced by a later one.
+          person.avatarUri ||
+          !avatarCropAcceptable(candidate.observation.seedable, candidate.box)
         ) {
           continue;
         }
-        const destination = `${directoryUri}/${encodeURIComponent(personId)}.jpg`;
+        // Assignment is what makes this crop unambiguous even in a group shot:
+        // `assignments` says which PERSON this particular face was clustered
+        // into, so a photo of three people yields three correctly-attributed
+        // crops rather than one that could belong to any of them.
+        const destination = faceThumbDestination(directoryUri, assetId, candidate.box);
         await fileSystem.deleteAsync(destination, { idempotent: true });
         await fileSystem.copyAsync({
           from: candidate.cropUri,
           to: destination,
         });
-        index.faceThumbUris[personId] = destination;
+        person.avatarUri = destination;
+        person.avatarAssetId = assetId;
         markIndexDirty();
       } catch {
         // A missing cache crop or filesystem failure must not stop the scan.
@@ -2232,12 +2620,294 @@ async function persistCoverFaceThumbs(
   }
 }
 
+/**
+ * How many photos one backfill pass may decode.
+ *
+ * Generous on purpose. The upgrade that keys crops by photo starts every person
+ * with no avatar -- 913 of them on the owner's library -- and a small budget
+ * would take sixteen launches to fill the grid. Nobody would read that as
+ * "recovering"; they would read it as broken.
+ *
+ * It is safe to be generous because the pass yields every few photos and only
+ * runs when the scan has nothing else to do, so it never blocks a tap. It also
+ * stops the moment the app leaves the foreground, exactly like the scan.
+ */
+const AVATAR_BACKFILL_PHOTOS_PER_PASS = 1200;
+
+/** Yields to the UI after this many photos so taps stay responsive. */
+const AVATAR_BACKFILL_YIELD_EVERY = 4;
+
+/** Avatars recovered between index writes, so a kill costs at most this many. */
+const AVATAR_BACKFILL_CHECKPOINT = 50;
+
+/**
+ * Photos tried per person before moving on.
+ *
+ * Someone whose every photo is a crowded group shot can burn decodes forever
+ * without ever producing a confident match. Capping them keeps the budget
+ * moving down the list rather than stalling on one hard case.
+ */
+const AVATAR_BACKFILL_TRIES_PER_PERSON = 6;
+
+/**
+ * Recovers face avatars for people who have none.
+ *
+ * Needed because avatars are a by-product of SCANNING: the crop exists only
+ * because a photo was being decoded for detection anyway. A library that is
+ * already fully indexed never decodes another photo, so without this pass a
+ * person who lost their avatar -- to the person-keyed thumbnails being dropped,
+ * to a recluster, or to never having had one -- would keep the fallback cover
+ * photo forever.
+ *
+ * Re-detects rather than trusting stored data because the box is the one thing
+ * the observation does not keep. That costs one bounded decode per photo tried,
+ * which is why the pass is budgeted and why it only considers photos the index
+ * already says hold exactly ONE face: a group shot cannot produce a crop that
+ * identifies anybody, so decoding one would be pure waste.
+ *
+ * Returns how many avatars it recovered.
+ */
+/**
+ * Deletes the crop FILES left behind by the person-keyed scheme.
+ *
+ * `dropPersonKeyedThumbs` removes them from the index, which is what stops them
+ * being shown -- but the JPEGs stay on disk, and on the owner's library that is
+ * 2,081 files nothing will ever reference again. Matched by filename, since the
+ * old scheme named each file after the person id it was filed under.
+ */
+async function deleteOrphanedPersonThumbs(
+  fileSystem: typeof import("expo-file-system/legacy"),
+  directoryUri: string,
+): Promise<void> {
+  try {
+    const names = await fileSystem.readDirectoryAsync(directoryUri);
+    const orphans = names.filter((name) => /^person-\d+\.jpg$/u.test(name));
+    if (orphans.length === 0) return;
+    for (const name of orphans) {
+      await fileSystem.deleteAsync(`${directoryUri}/${name}`, { idempotent: true });
+    }
+    console.warn(`[PhoteoFaceIndex] deleted ${orphans.length} orphaned person crops`);
+  } catch {
+    // Leftover files cost disk, not correctness. Never worth failing over.
+  }
+}
+
+/**
+ * How sure the backfill must be before it crops a face out of a group shot.
+ *
+ * The margin, not the absolute score, is what protects the owner. His complaint
+ * was "the thumbnails and actual person in the photos are different", so a crop
+ * that MIGHT be the right person is worse than no crop at all -- an empty tile
+ * is honest, a wrong face is not. Requiring the best candidate to beat the
+ * runner-up by this much means near-ties are declined rather than guessed.
+ */
+const AVATAR_MATCH_MARGIN = 0.08;
+
+/** Faces embedded per photo before giving up on it. Group shots get long. */
+const AVATAR_MATCH_MAX_FACES = 5;
+
+/**
+ * Picks the box in this photo that belongs to `person`, or nothing.
+ *
+ * The reason this exists: 518 of the owner's 913 visible people are NEVER
+ * photographed alone -- measured on his real index. A rule that only crops
+ * single-person photos leaves the majority of his family without a face, which
+ * is most of the People grid. So a group shot has to be usable, and the only
+ * honest way to use one is to work out which face is theirs.
+ *
+ * Each candidate face is embedded and compared against the person's own
+ * centroid, which is exactly the comparison clustering already trusts to decide
+ * identity. The winner must clear the assignment bar AND beat the runner-up by
+ * `AVATAR_MATCH_MARGIN`, so two similar-looking faces in one frame -- siblings,
+ * a parent and child -- produce no avatar rather than a coin flip.
+ */
+async function faceForPerson(
+  person: Person,
+  asset: FaceScanAsset,
+  imageUri: string,
+  frame: FaceFrame | null,
+  boxes: FaceBox[],
+): Promise<FaceBox | undefined> {
+  const usable = boxes.filter(
+    (box) =>
+      faceQualityTier(asset, box) === "seedable" && isAvatarFace(box),
+  );
+  if (usable.length === 0) return undefined;
+  // One usable face and one known person in the photo: nothing to disambiguate,
+  // and no reason to pay for an embedding.
+  if (usable.length === 1 && (personIdsByAsset.get(asset.id)?.length ?? 0) === 1) {
+    return usable[0];
+  }
+  if (person.embeddingKind !== "identity") return undefined;
+  let best: { box: FaceBox; score: number } | undefined;
+  let runnerUp = Number.NEGATIVE_INFINITY;
+  for (const box of usable.slice(0, AVATAR_MATCH_MAX_FACES)) {
+    const embedSpace = frameSpaceFace(frame, asset, box) ?? {
+      source: imageUri,
+      asset,
+      box,
+    };
+    const embedding = await embedFaceIdentity(
+      embedSpace.asset,
+      embedSpace.source,
+      embedSpace.box,
+    );
+    if (!embedding || !validEmbedding(embedding)) continue;
+    const score = cosine(
+      centeredForClustering([
+        {
+          assetId: asset.id,
+          embedding: unitEmbedding(embedding),
+          embeddingKind: "identity",
+        },
+      ])[0].embedding,
+      person.centroid,
+    );
+    if (!best || score > best.score) {
+      runnerUp = best?.score ?? runnerUp;
+      best = { box, score };
+    } else if (score > runnerUp) {
+      runnerUp = score;
+    }
+  }
+  if (!best || best.score < index.threshold) return undefined;
+  if (Number.isFinite(runnerUp) && best.score - runnerUp < AVATAR_MATCH_MARGIN) {
+    return undefined;
+  }
+  return best.box;
+}
+
+async function backfillCoverFaceThumbs(
+  control?: { cancelled: boolean; foreground: boolean },
+): Promise<number> {
+  let recovered = 0;
+  let checkpointedAt = 0;
+  try {
+    const fileSystem = await fileSystemModule();
+    if (!fileSystem.documentDirectory) return 0;
+    const directoryUri = `${fileSystem.documentDirectory}${FACE_THUMB_DIRECTORY}`;
+    await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
+    await deleteOrphanedPersonThumbs(fileSystem, directoryUri);
+
+    // Biggest tiles first. They are the people the owner actually looks at, and
+    // a budgeted pass has to spend its decodes where they show.
+    const needing = index.people
+      .filter((person) => !person.avatarUri)
+      .sort((a, b) => b.faceCount - a.faceCount);
+
+    let photosTried = 0;
+    const spent = () =>
+      photosTried >= AVATAR_BACKFILL_PHOTOS_PER_PASS ||
+      control?.cancelled === true ||
+      // Backgrounded means the user is elsewhere and the foreground service is
+      // not holding this work. Stop and resume on the next launch rather than
+      // decoding photos nobody is waiting for.
+      (control !== undefined && !control.foreground && !scanServiceHolding);
+    if (needing.length > 0) {
+      console.warn(`[PhoteoFaceIndex] recovering avatars for ${needing.length} people`);
+    }
+    for (const person of needing) {
+      if (spent()) break;
+      // Bounded per person so one photogenic-but-unmatchable subject cannot eat
+      // the whole budget while everybody after them stays blank.
+      let triedForPerson = 0;
+      for (const assetId of person.assetIds) {
+        if (spent() || triedForPerson >= AVATAR_BACKFILL_TRIES_PER_PERSON) break;
+        photosTried += 1;
+        triedForPerson += 1;
+        if (photosTried % AVATAR_BACKFILL_YIELD_EVERY === 0) {
+          await yieldToEventLoop();
+        }
+        const imageUri = contentUri(assetId);
+        let frame: FaceFrame | null = null;
+        try {
+          frame = await openFaceFrame(imageUri);
+          if (!frame) continue;
+          const asset: FaceScanAsset = {
+            id: assetId,
+            width: frame.sourceWidth,
+            height: frame.sourceHeight,
+          };
+          const boxes = dedupeFaceBoxes(await detectFacesInFrame(frame));
+          if (boxes.length === 0) continue;
+          const box = await faceForPerson(person, asset, imageUri, frame, boxes);
+          if (!box) continue;
+          const cropSpace = frameSpaceFace(frame, asset, box) ?? {
+            source: imageUri,
+            asset,
+            box,
+          };
+          const crop = await prepareFaceCrop(
+            cropSpace.asset,
+            cropSpace.source,
+            cropSpace.box,
+            false,
+          );
+          try {
+            const destination = faceThumbDestination(directoryUri, assetId, box);
+            await fileSystem.deleteAsync(destination, { idempotent: true });
+            await fileSystem.copyAsync({ from: crop.uri, to: destination });
+            person.avatarUri = destination;
+            person.avatarAssetId = assetId;
+            markIndexDirty();
+            recovered += 1;
+            // Checkpointed as it goes, not only at the end. A pass over 913
+            // people is minutes long, and a process killed partway through
+            // would otherwise repeat every decode it had already paid for.
+            // Counted against the last checkpoint rather than tested with a
+            // modulo, which would re-fire on every failed photo in between.
+            if (recovered - checkpointedAt >= AVATAR_BACKFILL_CHECKPOINT) {
+              checkpointedAt = recovered;
+              await persistFaceIndex(true);
+            }
+          } finally {
+            await deleteFaceCrop(crop.uri);
+          }
+          break;
+        } catch {
+          // An unreadable photo costs this person one attempt, not the pass.
+        } finally {
+          if (frame) await closeFaceFrame(frame);
+        }
+      }
+    }
+    if (recovered > 0) await persistFaceIndex(true);
+  } catch {
+    // Avatars are optional; the cover-photo fallback still shows the right
+    // person, just uncropped.
+  }
+  return recovered;
+}
+
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function seenCount(): number {
   return Object.keys(index.seenAssetIds).length;
+}
+
+/**
+ * How many faces are on record, answerable without the embeddings in memory.
+ *
+ * Every observation is either assigned to a person or seeds one, so the face
+ * counts stored on `people` sum to the same number -- and `people` lives in the
+ * small file that is always loaded. This is what lets the size-dependent
+ * decisions below be made on a launch that never touches the 13.8MB blob.
+ */
+function faceCountOnRecord(): number {
+  if (observationsLoaded) return index.observations.length;
+  let total = 0;
+  for (const person of index.people) total += person.faceCount;
+  return total;
+}
+
+/** Which clustering rule a library this size should be using. */
+function calibrationRuleForLibrary(): string {
+  return USE_CENTERED_CLUSTERING &&
+    faceCountOnRecord() >= CENTERING_MIN_OBSERVATIONS
+    ? CENTERED_CLUSTER_CALIBRATION
+    : CLUSTER_CALIBRATION;
 }
 
 /** The space and bar this library should be clustered in, given its size. */
@@ -2264,8 +2934,91 @@ function calibrationForLibrary(): { rule: string; threshold: number; centered: b
   return { rule: CLUSTER_CALIBRATION, threshold: calibrated.threshold, centered };
 }
 
+/**
+ * How much closer the winning candidate must be than the runner-up before an
+ * avatar is handed to it. Same reasoning as the backfill's margin: an unclaimed
+ * avatar costs one re-derivation, a misclaimed one shows a stranger.
+ */
+const AVATAR_REATTACH_MARGIN = 0.05;
+
+/**
+ * Carries avatars across a rebuild.
+ *
+ * Necessary because `rebuildPeople` runs at the END OF EVERY SCAN, and it
+ * clusters from scratch -- so without this, finding five new photos would throw
+ * away all 913 avatars and force a multi-minute recovery pass every time.
+ *
+ * An avatar cannot simply be matched by photo: a group shot belongs to several
+ * people, and handing the crop to the wrong one is the exact failure this whole
+ * change set exists to eliminate. So candidates are restricted to the people
+ * who actually hold that photo -- usually one or two -- and the old person's
+ * CENTROID decides between them, which is the same comparison clustering uses
+ * for identity. A near-tie claims nothing and the backfill re-derives it.
+ */
+export function reattachAvatars(previous: readonly Person[], next: Person[]): number {
+  const byAsset = new Map<string, Person[]>();
+  for (const person of next) {
+    for (const assetId of person.assetIds) {
+      const holders = byAsset.get(assetId);
+      if (holders) holders.push(person);
+      else byAsset.set(assetId, [person]);
+    }
+  }
+  let kept = 0;
+  for (const old of previous) {
+    if (!old.avatarUri || !old.avatarAssetId) continue;
+    const holders = byAsset.get(old.avatarAssetId);
+    if (!holders || holders.length === 0) continue;
+    let best: Person | undefined;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    let runnerUp = Number.NEGATIVE_INFINITY;
+    for (const candidate of holders) {
+      if (candidate.avatarUri) continue;
+      if (candidate.embeddingKind !== old.embeddingKind) continue;
+      if (candidate.centroid.length !== old.centroid.length) continue;
+      const score = cosine(candidate.centroid, old.centroid);
+      if (score > bestScore) {
+        runnerUp = bestScore;
+        bestScore = score;
+        best = candidate;
+      } else if (score > runnerUp) {
+        runnerUp = score;
+      }
+    }
+    if (!best) continue;
+    if (
+      Number.isFinite(runnerUp) &&
+      bestScore - runnerUp < AVATAR_REATTACH_MARGIN
+    ) {
+      continue;
+    }
+    best.avatarUri = old.avatarUri;
+    best.avatarAssetId = old.avatarAssetId;
+    kept += 1;
+  }
+  return kept;
+}
+
 function rebuildPeople(requested?: number): void {
+  // Refuses rather than rebuilding from nothing.
+  //
+  // `index.observations` is EMPTY until something loads it, so a caller that
+  // reached here on a launch that never needed the embeddings would cluster
+  // zero faces into zero people -- and then persist that, wiping all 2,172
+  // people off the owner's phone. The observations FILE would survive, but the
+  // grid would be empty until a full recluster.
+  //
+  // Structural rather than a check at each call site, because there are four of
+  // them and the next one added would not know. Same shape as the guard on
+  // `persistObservations`, and for the same reason.
+  if (!observationsLoaded) {
+    console.warn(
+      "[PhoteoFaceIndex] refused to rebuild people without the embeddings loaded",
+    );
+    return;
+  }
   const startedAt = Date.now();
+  const previousPeople = index.people;
   const calibration = calibrationForLibrary();
   index.calibration = calibration.rule;
   markIndexDirty();
@@ -2276,6 +3029,15 @@ function rebuildPeople(requested?: number): void {
     : undefined;
   index.threshold = safeThreshold(requested ?? calibration.threshold);
   index.people = peopleFromObservations(index.observations, index.threshold);
+  const keptAvatars = reattachAvatars(previousPeople, index.people);
+  if (previousPeople.length > 0) {
+    const had = previousPeople.filter((person) => person.avatarUri).length;
+    if (had > 0) {
+      console.warn(
+        `[PhoteoFaceIndex] carried ${keptAvatars}/${had} avatars across the rebuild`,
+      );
+    }
+  }
   markIndexDirty();
   rebuildPersonIdsByAsset();
   // Greedy assignment is O(faces x people x dims). Measured offline at 7.6s for
@@ -2305,7 +3067,28 @@ function rebuildPeople(requested?: number): void {
  *
  * Returns true when it re-clustered, so the caller can persist the new grouping.
  */
-function reclusterIfCalibrationChanged(threshold?: number): boolean {
+async function reclusterIfCalibrationChanged(
+  threshold?: number,
+): Promise<boolean> {
+  // Decided WITHOUT the embeddings, because this runs on every launch and the
+  // answer is almost always "nothing changed". Measuring the calibrated bar
+  // needs all 17,699 of them, so asking for it first would put the six-second
+  // load back on the startup path to learn that there was nothing to do.
+  //
+  // Only two things can make a rebuild necessary here: a build that ships a
+  // different clustering RULE, or a caller naming an explicit threshold. The
+  // measured bar also drifts as the library grows, and that is picked up where
+  // it belongs -- `rebuildPeople` at the end of a scan, which has the
+  // embeddings in hand anyway. At rest nothing has changed, so there is nothing
+  // to recalibrate.
+  const wantedRule = calibrationRuleForLibrary();
+  const explicitBar =
+    threshold !== undefined &&
+    Math.abs(index.threshold - safeThreshold(threshold)) >=
+      RECALIBRATION_HYSTERESIS;
+  if (index.calibration === wantedRule && !explicitBar) return false;
+
+  await ensureObservations();
   if (index.observations.length === 0) return false;
   const calibration = calibrationForLibrary();
   const wanted = safeThreshold(threshold ?? calibration.threshold);
@@ -2348,11 +3131,22 @@ let batchesSinceConsolidation = 0;
 
 function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
   const assignments = new Map<FaceObservation, string>();
-  batchesSinceConsolidation += 1;
-  const consolidate = batchesSinceConsolidation >= CONSOLIDATE_EVERY_BATCHES;
+  // A batch that found NO faces cannot have changed a single cluster, so the
+  // merge sweep over every person pair cannot find anything it did not find
+  // last time. Counting those batches was costing the whole sweep for nothing.
+  //
+  // Measured on the owner's device: a consolidating batch with `photos=0
+  // faces=0` cost `cluster=35463ms` -- thirty-five seconds of frozen JS thread
+  // to re-derive an unchanged answer. Re-scanning a library that is already
+  // complete walks hundreds of empty batches, so this fired repeatedly.
+  if (observations.length > 0) batchesSinceConsolidation += 1;
+  const consolidate =
+    observations.length > 0 &&
+    batchesSinceConsolidation >= CONSOLIDATE_EVERY_BATCHES;
   if (consolidate) batchesSinceConsolidation = 0;
-  // Marked before the call, not after: onMerge mutates faceThumbUris as it
-  // goes, so a throw partway through still leaves the index dirty.
+  // Marked before the call, not after: the clustering pass mutates
+  // `index.people` in place, so a throw partway through still leaves the index
+  // dirty and the partial result gets persisted rather than silently lost.
   markIndexDirty();
   // Timed separately from `cluster` below because they grow at different rates
   // and only one of them is worth fixing. Calibration walks every observation on
@@ -2390,7 +3184,6 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
             assignments.set(observation, survivingPersonId);
           }
         }
-        keepFaceThumbOnMerge(absorbedPersonId, survivingPersonId);
       },
     threshold: index.threshold,
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
@@ -2426,6 +3219,40 @@ function notifyFaceProgress(done: number, total: number): void {
  */
 let scanServiceHolding = false;
 
+/**
+ * Asked at most once per app run, and only when the OS would actually stop the
+ * scan.
+ *
+ * The foreground service and the wake lock are only half of staying alive: the
+ * OEM battery layer can still freeze the process once the screen has been off a
+ * while, which silently undoes the background scanning this app depends on.
+ *
+ * Asked HERE rather than at launch, because this is the one moment the request
+ * explains itself -- a scan has just started, so "keep working while the screen
+ * is off" is about something the user can see happening. A permission prompt on
+ * first open, before the app has done anything, is the kind users refuse by
+ * reflex, and Android only shows this dialog once.
+ *
+ * Everything degrades quietly: no native module, a refused dialog, or an OEM
+ * that will not show it all leave the scan running exactly as it does today,
+ * just interruptible.
+ */
+async function askForBackgroundPermissionOnce(): Promise<void> {
+  // Asked at most once EVER, not once per process. A refusal leaves
+  // `isBatteryUnrestricted` false forever, so a process-scoped flag would put
+  // the system dialog in front of him on every single launch.
+  if (index.backgroundPromptShown || !scanServiceHolding) return;
+  try {
+    if (await isBatteryUnrestricted()) return;
+    index.backgroundPromptShown = true;
+    markIndexDirty();
+    await requestBatteryUnrestricted();
+    await persistFaceIndex(true);
+  } catch {
+    // Never worth interrupting a scan over.
+  }
+}
+
 async function watchAppState(
   control: { cancelled: boolean; foreground: boolean },
 ): Promise<() => void> {
@@ -2436,6 +3263,7 @@ async function watchAppState(
     "Photeo",
     "Organising your photos",
   );
+  await askForBackgroundPermissionOnce();
   try {
     const { AppState } = await import("react-native");
     control.foreground = AppState.currentState === "active";
@@ -2483,11 +3311,12 @@ async function runBuild(
   const stopWatching = await watchAppState(control);
   try {
     await loadFaceIndex();
+    await finishIndexMigration();
     // A build can ship a different clustering calibration (a new threshold, or
     // a corrected linkage). Apply it to the faces already on disk rather than
     // bumping INDEX_VERSION, which would discard every embedding and re-scan
     // the whole library to change one constant.
-    if (reclusterIfCalibrationChanged(opts.threshold)) {
+    if (await reclusterIfCalibrationChanged(opts.threshold)) {
       await persistFaceIndex();
     }
     if (!(await waitForForeground(control))) {
@@ -2532,6 +3361,16 @@ async function runBuild(
         // could calibrate for free was the one run that reported nothing.
         await probeFaceAlignment();
         logFaceIndexDiagnostics("hydrated");
+        // The only moment the backfill can ever run: a fully indexed library
+        // reaches this return on every launch and decodes nothing else, so an
+        // avatar missing here would stay missing forever.
+        const recovered = await backfillCoverFaceThumbs(control);
+        if (recovered > 0) {
+          // The People grid redraws off the progress channel, so this is what
+          // makes the recovered avatars appear without a restart.
+          notifyFaceProgress(index.total, index.total);
+          console.log(`[faces] recovered ${recovered} avatars`);
+        }
         return;
       }
       index.cursor = null;
@@ -2580,6 +3419,7 @@ async function runBuild(
         const faceCropCandidates: Array<{
           observation: FaceObservation;
           cropUri: string;
+          box: FaceBox;
         }> = [];
         const observations = await scanFaceAssets(pending, {
           isDetectionAvailable: () => true,
@@ -2592,16 +3432,35 @@ async function runBuild(
           detectFaces: async (_uri, _asset, frame) =>
             frame ? detectFacesInFrame(frame) : [],
           embedFace: createFaceEmbedding,
-          onFaceCrop: (observation, cropUri) => {
-            faceCropCandidates.push({ observation, cropUri });
+          onFaceCrop: (observation, cropUri, box) => {
+            faceCropCandidates.push({ observation, cropUri, box });
           },
         });
         traceScanCount("photos", pending.length);
         traceScanCount("faces", observations.length);
-        index.observations.push(...observations);
-        markIndexDirty();
-        const assignments = appendPeople(observations);
-        await persistCoverFaceThumbs(faceCropCandidates, assignments);
+        // Everything below is skipped entirely when the batch found no faces,
+        // and that is the single biggest win in this loop.
+        //
+        // `appendPeople` copies every person -- 2,172 of them, each with a
+        // 512-float centroid whose norms get recomputed -- before it looks at
+        // the batch. Measured at 175ms per batch on the owner's device, paid
+        // 370 times over a library re-walk, to assign nothing: about a minute
+        // of frozen JS thread per launch for photos that were all already
+        // processed.
+        if (observations.length > 0) {
+          // Loaded HERE rather than before the loop, so a pass that turns out
+          // to have nothing new never pulls 13.8MB off disk at all.
+          await ensureObservations();
+          index.observations.push(...observations);
+          // Only when something actually arrived. Marking it unconditionally
+          // meant every empty batch rewrote the whole 13.8MB embeddings file --
+          // measured at `persistObservations=5580ms` for a batch that added
+          // nothing at all.
+          observationsDirty = true;
+          markIndexDirty();
+          const assignments = appendPeople(observations);
+          await persistCoverFaceThumbs(faceCropCandidates, assignments);
+        }
         for (const asset of pending) {
           index.processedAssetIds[asset.id] = true;
           markIndexDirty();
@@ -2652,9 +3511,11 @@ async function runBuild(
       return;
     }
 
+    const beforePrune = index.observations.length;
     index.observations = index.observations.filter((observation) =>
       Object.hasOwn(index.seenAssetIds, observation.assetId),
     );
+    if (index.observations.length !== beforePrune) observationsDirty = true;
     // Corrections anchored to photos the user has since deleted can never
     // resolve again, so they are dropped here rather than accumulating forever
     // in a file that is rewritten on every scan.
@@ -2676,7 +3537,13 @@ async function runBuild(
     // launch reached `reclusterIfCalibrationChanged`. An explicit
     // `opts.threshold` still wins; absent one, this is the moment the library
     // has the most evidence it will ever have, so it is the moment to use it.
-    rebuildPeople(opts.threshold);
+    // Only when the scan actually found something. A pass that processed no new
+    // photo cannot have changed the grouping, and re-clustering 17,722 faces to
+    // arrive back where it started is half a minute of frozen JS thread -- on
+    // top of the 5s it would spend loading the embeddings it did not otherwise
+    // need. `rebuildPeople` refuses on its own if they are absent; this is what
+    // keeps the common case from asking.
+    if (newlyProcessed > 0) rebuildPeople(opts.threshold);
     index.cursor = null;
     index.scanComplete = true;
     markIndexDirty();
@@ -2726,7 +3593,13 @@ export function stopFaceIndexBuild(): void {
 }
 
 export function getPeople(): FaceIndexPerson[] {
-  return summariesForPeople(index.people, index.faceThumbUris, true);
+  return summariesForPeople(index.people, true);
+}
+
+/** One person summary, including low-support groups hidden from the main rail. */
+export function getFaceIndexPerson(personId: string): FaceIndexPerson | undefined {
+  const person = index.people.find((candidate) => candidate.id === personId);
+  return person ? summariesForPeople([person], false)[0] : undefined;
 }
 
 /**
@@ -2743,7 +3616,11 @@ export function getPeople(): FaceIndexPerson[] {
  * seconds on the phone. So this belongs behind a deliberate action with visible
  * progress, and must never be called while painting.
  */
-export function suggestedFaceMerges(limit = 20): MergeSuggestion[] {
+export async function suggestedFaceMerges(
+  limit = 20,
+): Promise<MergeSuggestion[]> {
+  // Both bars are measured over every face on record.
+  await ensureObservations();
   return suggestMerges(
     index.people,
     {

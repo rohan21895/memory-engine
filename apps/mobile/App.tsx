@@ -47,6 +47,7 @@ import { AlbumsScreen, type SharedAlbumPreview } from "./src/ui/screens/AlbumsSc
 import { BuildErrorScreen } from "./src/ui/screens/BuildErrorScreen";
 import { BuildingScreen } from "./src/ui/screens/BuildingScreen";
 import { FamilyScreen } from "./src/ui/screens/FamilyScreen";
+import { FaceMergeReviewScreen } from "./src/ui/screens/FaceMergeReviewScreen";
 import { LoginScreen } from "./src/ui/screens/LoginScreen";
 import { NamePersonScreen, type NamePersonTarget } from "./src/ui/screens/NamePersonScreen";
 import { PhotosScreen } from "./src/ui/screens/PhotosScreen";
@@ -77,6 +78,7 @@ type NavigationState = {
   libraryRoute: LibraryRoute;
   actionRoute: AlbumActionRoute;
   familyOpen: boolean;
+  faceMergeReviewOpen: boolean;
   personToName: NamePersonTarget | null;
   sharedAlbum: SharedAlbumPreview | null;
 };
@@ -87,6 +89,7 @@ const ALBUMS_ROOT: NavigationState = {
   libraryRoute: null,
   actionRoute: null,
   familyOpen: false,
+  faceMergeReviewOpen: false,
   personToName: null,
   sharedAlbum: null,
 };
@@ -98,6 +101,7 @@ function isAlbumsRoot(navigation: NavigationState): boolean {
     navigation.libraryRoute === null &&
     navigation.actionRoute === null &&
     !navigation.familyOpen &&
+    !navigation.faceMergeReviewOpen &&
     navigation.personToName === null &&
     navigation.sharedAlbum === null
   );
@@ -145,7 +149,7 @@ function PhoteoApp() {
   // second finalize (Back from Album Ready, or a double tap) sees it
   // synchronously and updates that album instead of minting a duplicate.
   const sessionAlbumId = useRef<string | null>(null);
-  const { actionRoute, createStep, familyOpen, libraryRoute, personToName, sharedAlbum, tab } = navigation;
+  const { actionRoute, createStep, faceMergeReviewOpen, familyOpen, libraryRoute, personToName, sharedAlbum, tab } = navigation;
 
   const pushNavigation = useCallback((update: Partial<NavigationState>) => {
     setNavigation((current) => {
@@ -481,6 +485,7 @@ function whenIdle(timeout: number): Promise<void> {
   if (familyOpen) return <FamilyScreen onBack={popNavigation} />;
 
   if (personToName) return <NamePersonScreen onBack={popNavigation} person={personToName} />;
+  if (faceMergeReviewOpen) return <FaceMergeReviewScreen onBack={popNavigation} />;
 
   if (sharedAlbum) return <SharedAlbumScreen album={sharedAlbum} onBack={popNavigation} onShare={() => undefined} />;
 
@@ -594,7 +599,7 @@ function whenIdle(timeout: number): Promise<void> {
             onOpen={(selected) => pushNavigation({ libraryRoute: { albumId: selected.id, screen: "detail" } })}
           />
         ) : null}
-        {tab === "photos" ? <PhotosScreen onNamePerson={(person) => pushNavigation({ personToName: person })} /> : null}
+        {tab === "photos" ? <PhotosScreen onNamePerson={(person) => pushNavigation({ personToName: person })} onReviewFaceMerges={() => pushNavigation({ faceMergeReviewOpen: true })} /> : null}
         {tab === "account" ? <AccountScreen albumCount={albums.length} onFamily={() => pushNavigation({ familyOpen: true })} /> : null}
       </View>
       <TabBar

@@ -15,21 +15,19 @@ const observations = [
   },
 ];
 
-{
-  const people = createFacePeopleQuery(observations, undefined, {
-    "person-1": "file:///documents/face-thumbnails/person-1.jpg",
-  }).getPeople();
-  assert(
-    people[0]?.faceThumbUri ===
-      "file:///documents/face-thumbnails/person-1.jpg",
-    "people projection should expose a supplied face crop URI",
-  );
-}
-
+// A person built from scratch has no saved crop, and the projection must say so
+// rather than inventing one. face-thumbnails.test.ts covers where a crop DOES
+// come from; this checks the empty case survives the whole query projection.
 {
   const people = createFacePeopleQuery(observations).getPeople();
   assert(
     people[0]?.faceThumbUri === undefined,
-    "people projection should omit faceThumbUri when no crop URI is supplied",
+    "people projection should omit faceThumbUri when the person has no crop",
+  );
+  assert(
+    people[0]?.coverAssetId === "cover-photo",
+    "and should fall back to the person's own photo",
   );
 }
+
+console.log("face thumbnail projection self-check passed");

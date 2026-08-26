@@ -1,4 +1,4 @@
-import { Modal, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, StatusBar, StyleSheet, Text, View } from "react-native";
 
 import { fonts } from "../fonts";
 import { colors, layout, spacing, typeScale } from "../tokens";
@@ -40,7 +40,10 @@ export function FaceFilterModal({
             <Text style={styles.closeText}>✕</Text>
           </Pressable>
         </View>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {/* No ScrollView: the face grid virtualizes itself and must own the
+            scroll, or a 913-person library mounts 913 tiles the moment this
+            sheet opens. Same shape as LocationFilterModal. */}
+        <View style={styles.content}>
           <FaceFilterPanel
             expanded
             loadingText={loadingText}
@@ -67,7 +70,7 @@ export function FaceFilterModal({
             selectionHint="Pick as many people as you like. Tap a face again to remove it."
             showHeading={false}
           />
-        </ScrollView>
+        </View>
         <View style={styles.footer}>
           <PrimaryButton
             accessibilityHint="Applies the person filter"
@@ -83,7 +86,8 @@ export function FaceFilterModal({
 const styles = StyleSheet.create({
   close: { alignItems: "center", backgroundColor: "#f0eee8", borderRadius: 17, height: 34, justifyContent: "center", width: 34 },
   closeText: { color: colors.text, fontFamily: fonts.semibold, fontSize: 15 },
-  content: { paddingBottom: spacing.lg, paddingHorizontal: layout.screenPadding },
+  // Flexed, not padded-and-scrolled: the panel inside owns the scroll now.
+  content: { flex: 1, paddingBottom: spacing.lg, paddingHorizontal: layout.screenPadding },
   footer: { borderTopColor: colors.hairline, borderTopWidth: 1, padding: spacing.md, paddingBottom: spacing.lg },
   header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingBottom: spacing.md, paddingHorizontal: layout.screenPadding, paddingTop: (StatusBar.currentHeight ?? 24) + spacing.md },
   helper: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },

@@ -19,6 +19,9 @@ type ScanServiceNative = {
   stop(): Promise<boolean>;
   isSupported(): boolean;
   exportPrivateFile?(name: string): Promise<string | null>;
+  isBatteryUnrestricted?(): boolean;
+  requestBatteryUnrestricted?(): Promise<boolean>;
+  openAppSettings?(): Promise<boolean>;
 };
 
 /** `undefined` means "not looked up yet"; `null` means "looked up, absent". */
@@ -149,6 +152,51 @@ export async function exportPrivateFile(name: string): Promise<string | null> {
     return (await native?.exportPrivateFile?.(name)) ?? null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Whether the OS will let the scan keep working with the screen off.
+ *
+ * Optimistic when it cannot tell: this only decides whether to ASK, and a
+ * prompt the user has already answered is worse than a missed one.
+ */
+export async function isBatteryUnrestricted(): Promise<boolean> {
+  try {
+    const native = await nativeModule();
+    return native?.isBatteryUnrestricted?.() ?? true;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Shows Android's own "allow background activity?" dialog.
+ *
+ * Returns whether the dialog was opened, NOT whether it was granted -- the
+ * answer arrives later, and the only honest way to learn it is to re-check
+ * `isBatteryUnrestricted` after the user comes back.
+ */
+export async function requestBatteryUnrestricted(): Promise<boolean> {
+  try {
+    const native = await nativeModule();
+    return (await native?.requestBatteryUnrestricted?.()) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Opens this app's OS settings page, where each OEM keeps its own extra
+ * background restrictions. ColorOS's "sleep standby optimisation" lives here
+ * and has no public intent -- it is deliberately not automatable.
+ */
+export async function openAppSettings(): Promise<boolean> {
+  try {
+    const native = await nativeModule();
+    return (await native?.openAppSettings?.()) === true;
+  } catch {
+    return false;
   }
 }
 

@@ -142,7 +142,7 @@ function PhotoTile({ assetId, size }: { assetId: string; size: number }) {
   );
 }
 
-export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePersonTarget) => void }) {
+export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerson?: (person: NamePersonTarget) => void; onReviewFaceMerges?: () => void }) {
   const { width } = useWindowDimensions();
   const tileSize = Math.floor((width - GRID_GAP * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
   const [query, setQuery] = useState("");
@@ -221,8 +221,29 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
     }, RAIL_REFRESH_MS - since);
   }, [refreshIndexes]);
 
+  // The people rail gets its own throttle rather than sharing the places one:
+  // the two scans run concurrently and report on different cadences, so a
+  // shared timer would let a busy face scan starve the places rail of updates.
+  const lastPeopleRefresh = useRef(0);
+  const peopleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshPeopleSoon = useCallback(() => {
+    const since = Date.now() - lastPeopleRefresh.current;
+    if (since >= RAIL_REFRESH_MS) {
+      lastPeopleRefresh.current = Date.now();
+      setPeople(getPeople());
+      return;
+    }
+    if (peopleTimer.current) return;
+    peopleTimer.current = setTimeout(() => {
+      peopleTimer.current = null;
+      lastPeopleRefresh.current = Date.now();
+      setPeople(getPeople());
+    }, RAIL_REFRESH_MS - since);
+  }, []);
+
   useEffect(() => () => {
     if (railTimer.current) clearTimeout(railTimer.current);
+    if (peopleTimer.current) clearTimeout(peopleTimer.current);
   }, []);
 
   const startScans = useCallback(() => {
@@ -236,7 +257,11 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
       onProgress: (done, total) => {
         setScanningPeople(true);
         setFaceScan({ done, total });
-        setPeople(getPeople());
+        // Throttled for the same reason the places rail is, which this line
+        // used to ignore: the scan reports once per batch, and each report
+        // rebuilt every person summary and re-rendered the whole rail. The
+        // counter above still ticks every time, so progress stays live.
+        refreshPeopleSoon();
       },
     })
       .then(() => setPeople(getPeople()))
@@ -464,10 +489,35 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
       <View style={styles.sectionHeading}>
         <Text style={styles.section}>People</Text>
         {peopleStatus ? <Text accessibilityLiveRegion="polite" style={styles.sectionStatus}>{peopleStatus}</Text> : null}
+        {people.length > 1 && onReviewFaceMerges ? (
+          <Pressable accessibilityHint="Opens a review where you decide whether similar People tiles should be combined" accessibilityRole="button" onPress={onReviewFaceMerges} style={styles.reviewMatches}>
+            <Text style={styles.reviewMatchesText}>Review matches</Text>
+          </Pressable>
+        ) : null}
       </View>
       {visiblePeople.length > 0 ? (
-        <ScrollView horizontal contentContainerStyle={styles.peopleRow} showsHorizontalScrollIndicator={false} style={styles.rail}>
-          {visiblePeople.map((person) => {
+        /*
+         * Virtualized, and it has to be. A `ScrollView` mounts every child at
+         * once: on the owner's library that is 913 people past the two-face
+         * floor, so the rail built 913 views and 913 <Image> decodes before it
+         * could paint -- on the JS thread, and again on every `setPeople`
+         * during a scan. That is the other half of "i click on something,
+         * nothing happens".
+         *
+         * `FlashList` keeps roughly a screenful mounted. `extraData` is what
+         * makes the selected tile actually redraw, since the row closure
+         * captures `selectedPerson` and the list would otherwise reuse the old
+         * cell.
+         */
+        <FlashList
+          horizontal
+          data={visiblePeople}
+          extraData={selectedPerson}
+          keyExtractor={(person) => person.id}
+          contentContainerStyle={styles.peopleRow}
+          showsHorizontalScrollIndicator={false}
+          style={styles.rail}
+          renderItem={({ item: person }) => {
             const active = selectedPerson === person.id;
             const label = peopleLabels.get(person.id) ?? "Person";
             const openCorrection = () => onNamePerson?.({
@@ -477,7 +527,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
               assetIds: assetIdsForPerson(person.id).slice(0, 8),
             });
             return (
-              <View key={person.id} style={styles.person}>
+              <View style={styles.person}>
                 <Pressable accessibilityHint="Tap to filter photos. Hold to add a name." accessibilityLabel={`${label}. ${copy.filters.photoCount(person.assetIds.length)}`} accessibilityRole="button" accessibilityState={{ selected: active }} onLongPress={openCorrection} onPress={() => { setSelectedPlace(null); setSelectedPerson(active ? null : person.id); }} style={styles.personFilter}>
                   <Image cachePolicy="memory-disk" contentFit="cover" source={person.faceThumbUri ?? contentUri(person.coverAssetId)} style={[styles.avatar, active ? styles.avatarActive : null]} />
                   <Text numberOfLines={1} style={[styles.personName, active ? styles.activeText : null]}>{label}</Text>
@@ -485,8 +535,8 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
                 {active ? <Pressable accessibilityHint="Opens options to merge this tile with another person or keep them separate" accessibilityLabel={`Fix grouping for ${label}`} accessibilityRole="button" onPress={openCorrection} style={styles.personFix}><Text style={styles.personFixText}>Fix</Text></Pressable> : null}
               </View>
             );
-          })}
-        </ScrollView>
+          }}
+        />
       ) : searching && people.length > 0 ? (
         <Text style={styles.noMatch}>No people match “{query.trim()}”.</Text>
       ) : (
@@ -692,6 +742,8 @@ const styles = StyleSheet.create({
   // height the parent imposes. Pinned to its content, it cannot be squeezed into
   // the heading above it.
   rail: { flexGrow: 0, flexShrink: 0 },
+  reviewMatches: { alignItems: "center", backgroundColor: colors.panelRaised, borderCurve: "continuous", borderRadius: radii.pill, justifyContent: "center", minHeight: layout.minTouchTarget, paddingHorizontal: spacing.md },
+  reviewMatchesText: { color: colors.goldPressed, fontFamily: fonts.bold, ...typeScale.small },
   root: { backgroundColor: colors.background, flex: 1 },
   scanDisabled: { opacity: 0.55 },
   search: { alignItems: "center", backgroundColor: "#f0eee8", borderRadius: radii.pill, flexDirection: "row", gap: spacing.xs, height: 48, marginTop: 14, paddingHorizontal: spacing.md },

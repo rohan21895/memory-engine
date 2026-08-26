@@ -12,6 +12,15 @@
        its keep: it is what lets the scan continue with the screen off, and the
        base class releases it in onDestroy. -->
   <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <!-- Lets the app show Android's own "allow background activity?" dialog
+       instead of asking the user to hunt through OEM settings menus. Declaring
+       it grants nothing: the user still answers the system prompt.
+
+       Google Play restricts this permission to a short list of app categories,
+       and a photo app is not on it. That is acceptable here and should be
+       revisited before any Play listing: without it the app still works, it
+       just has to send the user to the settings page by hand. -->
+  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
   <application>
     <service
       android:name=".ScanForegroundService"

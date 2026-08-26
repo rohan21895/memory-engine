@@ -1,8 +1,13 @@
 package expo.modules.photeoscanservice
 
 import android.app.NotificationManager
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.exception.Exceptions
@@ -82,6 +87,86 @@ class PhoteoScanServiceModule : Module() {
     }
 
     Function("isSupported") { Build.VERSION.SDK_INT >= Build.VERSION_CODES.O }
+
+    /**
+     * Whether Android will already let this app work with the screen off.
+     *
+     * Cheap and side-effect free, so the caller can ask every time and prompt
+     * only when the answer is no.
+     */
+    Function("isBatteryUnrestricted") {
+      try {
+        val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        power.isIgnoringBatteryOptimizations(context.packageName)
+      } catch (error: Throwable) {
+        // Unknown reads as "already fine": this only gates whether to ASK, and
+        // nagging on every launch is worse than missing one prompt.
+        true
+      }
+    }
+
+    /**
+     * Asks Android to exempt this app from battery optimisation.
+     *
+     * This is the system dialog, so the user grants or refuses in one tap and
+     * the app never sees a credential or writes a setting itself.
+     *
+     * Two honest limits, both handled rather than hidden:
+     *
+     * 1. ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is the direct "allow?"
+     *    dialog, but some OEM builds refuse it. The fallback opens the settings
+     *    list instead, which always resolves.
+     * 2. It covers Android's own Doze whitelist and NOT ColorOS's separate
+     *    "sleep standby optimisation", which is a proprietary layer on top. So
+     *    granting this is necessary and may not be sufficient on this device;
+     *    `openOemBatterySettings` exists for the rest.
+     */
+    AsyncFunction("requestBatteryUnrestricted") {
+      val direct =
+        Intent(
+          Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+          Uri.parse("package:${context.packageName}"),
+        )
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      val fallback =
+        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      for (intent in listOf(direct, fallback)) {
+        try {
+          context.startActivity(intent)
+          return@AsyncFunction true
+        } catch (error: ActivityNotFoundException) {
+          // Try the next one.
+        } catch (error: Throwable) {
+          return@AsyncFunction false
+        }
+      }
+      false
+    }
+
+    /**
+     * Opens this app's own OS settings page, which is where every OEM's extra
+     * background restrictions live.
+     *
+     * ColorOS keeps "sleep standby optimisation" and auto-start behind its own
+     * screens, and there is no public intent that toggles them -- they are
+     * deliberately not automatable, which is why they cannot be set from adb
+     * either. Landing the user on the right page is the most any app can do.
+     */
+    AsyncFunction("openAppSettings") {
+      try {
+        context.startActivity(
+          Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}"),
+          )
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        true
+      } catch (error: Throwable) {
+        false
+      }
+    }
 
     /**
      * Copies a file out of the app's private storage into its external files
