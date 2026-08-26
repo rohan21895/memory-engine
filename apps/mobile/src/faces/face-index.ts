@@ -19,7 +19,7 @@ import { embedFaceIdentity, traceNextAlignments, type FaceImageSource } from "..
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { incrementalScanTarget } from "../import/incremental-index.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { startScanService, stopScanService, updateScanService } from "../../modules/photeo-scan-service/src/index.ts";
+import { isBatteryUnrestricted, requestBatteryUnrestricted, startScanService, stopScanService, updateScanService } from "../../modules/photeo-scan-service/src/index.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
 // v18 stores aligned embeddings as int8/base64. Older versions contain
@@ -2426,6 +2426,36 @@ function notifyFaceProgress(done: number, total: number): void {
  */
 let scanServiceHolding = false;
 
+/**
+ * Asked at most once per app run, and only when the OS would actually stop the
+ * scan.
+ *
+ * The foreground service and the wake lock are only half of staying alive: the
+ * OEM battery layer can still freeze the process once the screen has been off a
+ * while, which silently undoes the background scanning this app depends on.
+ *
+ * Asked HERE rather than at launch, because this is the one moment the request
+ * explains itself -- a scan has just started, so "keep working while the screen
+ * is off" is about something the user can see happening. A permission prompt on
+ * first open, before the app has done anything, is the kind users refuse by
+ * reflex, and Android only shows this dialog once.
+ *
+ * Everything degrades quietly: no native module, a refused dialog, or an OEM
+ * that will not show it all leave the scan running exactly as it does today,
+ * just interruptible.
+ */
+let backgroundPermissionAsked = false;
+async function askForBackgroundPermissionOnce(): Promise<void> {
+  if (backgroundPermissionAsked || !scanServiceHolding) return;
+  backgroundPermissionAsked = true;
+  try {
+    if (await isBatteryUnrestricted()) return;
+    await requestBatteryUnrestricted();
+  } catch {
+    // Never worth interrupting a scan over.
+  }
+}
+
 async function watchAppState(
   control: { cancelled: boolean; foreground: boolean },
 ): Promise<() => void> {
@@ -2436,6 +2466,7 @@ async function watchAppState(
     "Photeo",
     "Organising your photos",
   );
+  await askForBackgroundPermissionOnce();
   try {
     const { AppState } = await import("react-native");
     control.foreground = AppState.currentState === "active";
