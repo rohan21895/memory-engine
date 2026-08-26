@@ -38,4 +38,17 @@ export type Person = {
    */
   avatarUri?: string;
   avatarAssetId?: string;
+  /**
+   * How many backfill passes have tried and failed to cut an avatar for this
+   * person. Persisted, because the budget is per-launch and the pass has to
+   * pick up where the last one left off.
+   *
+   * Without it the pass starves its own tail: the queue is sorted by tile size,
+   * a person whose only photos are ambiguous group shots fails every time and
+   * keeps their place at the front, and so 1,200 decodes go to the same few
+   * hundred hopeless people on every launch while the rest stay blank forever.
+   * Sorting on this first means everybody gets a first attempt before anybody
+   * gets a second.
+   */
+  avatarTries?: number;
 };

@@ -2777,10 +2777,35 @@ async function faceForPerson(
   return best.box;
 }
 
+/**
+ * Who the next budgeted avatar pass should look at, in order.
+ *
+ * Fewest previous attempts first, then biggest tile. Tile size alone looks
+ * right and starves the tail: the budget is spent per launch, a person whose
+ * only photos are ambiguous group shots fails every pass, and failing does not
+ * move them out of the way -- so the same few hundred hopeless people absorb
+ * all 1,200 decodes on every launch and the rest of the grid never gets a first
+ * look. Measured on the owner's library: 449 avatars cut, 1,788 people still
+ * waiting, the same names at the front each time.
+ *
+ * Ordering on the attempt count makes it a round robin -- everybody is looked
+ * at once before anybody is looked at twice -- and the retries that remain are
+ * still spent biggest-tile-first, because those are the tiles he sees.
+ */
+export function avatarBackfillQueue(people: readonly Person[]): Person[] {
+  return people
+    .filter((person) => !person.avatarUri)
+    .sort(
+      (a, b) =>
+        (a.avatarTries ?? 0) - (b.avatarTries ?? 0) || b.faceCount - a.faceCount,
+    );
+}
+
 async function backfillCoverFaceThumbs(
   control?: { cancelled: boolean; foreground: boolean },
 ): Promise<number> {
   let recovered = 0;
+  let attempted = 0;
   let checkpointedAt = 0;
   try {
     const fileSystem = await fileSystemModule();
@@ -2789,11 +2814,7 @@ async function backfillCoverFaceThumbs(
     await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
     await deleteOrphanedPersonThumbs(fileSystem, directoryUri);
 
-    // Biggest tiles first. They are the people the owner actually looks at, and
-    // a budgeted pass has to spend its decodes where they show.
-    const needing = index.people
-      .filter((person) => !person.avatarUri)
-      .sort((a, b) => b.faceCount - a.faceCount);
+    const needing = avatarBackfillQueue(index.people);
 
     let photosTried = 0;
     const spent = () =>
@@ -2870,8 +2891,26 @@ async function backfillCoverFaceThumbs(
           if (frame) await closeFaceFrame(frame);
         }
       }
+      // Only a person we actually finished looking at is marked as tried. When
+      // the budget ran out mid-person `spent()` is already true, the loop above
+      // is about to break, and leaving their count alone puts them first in the
+      // queue next launch -- which is where an interrupted attempt belongs.
+      if (!person.avatarUri && !spent()) {
+        person.avatarTries = (person.avatarTries ?? 0) + 1;
+        attempted += 1;
+        markIndexDirty();
+      }
     }
-    if (recovered > 0) await persistFaceIndex(true);
+    // Persisted even when nothing was recovered: the attempt counts ARE the
+    // progress on a pass that found nobody, and dropping them would restart the
+    // round robin from the top on the next launch.
+    if (recovered > 0 || attempted > 0) await persistFaceIndex(true);
+    if (needing.length > 0) {
+      console.warn(
+        `[PhoteoFaceIndex] avatar pass recovered=${recovered} ` +
+          `failed=${attempted} decodes=${photosTried} left=${needing.length - recovered}`,
+      );
+    }
   } catch {
     // Avatars are optional; the cover-photo fallback still shows the right
     // person, just uncropped.
