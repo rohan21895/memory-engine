@@ -3,41 +3,58 @@ package expo.modules.photeoscanservice
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.facebook.react.HeadlessJsTaskService
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.jstasks.HeadlessJsTaskConfig
 
 /**
  * Keeps the face scan running while the app is not on screen.
  *
- * Without this the scan simply stops. Android does not suspend a thread on
- * purpose, but it does put backgrounded processes into the cached state and,
- * from Android 12, freezes them outright -- so the JS thread doing detection
- * and embedding just stops being scheduled. A user who wants an 11,828-photo
- * library indexed would have to sit and watch it for half an hour, which is not
- * something anyone will do.
+ * This does TWO things, and both are needed. Keeping the process alive was the
+ * obvious half and it was never sufficient: measured on device, a backgrounded
+ * scan advanced 4 photos in 100 seconds where ~530 were expected, with the
+ * service reporting itself foregrounded the whole time and zero face
+ * detections attempted.
  *
- * A foreground service is the sanctioned exception, and the notification is the
- * price: Android allows unbounded work precisely because the user can see it
- * happening and can stop it. That is the same bargain behind the "Backing up
- * photos" notification every gallery app shows.
+ * The reason is that React Native stops the JS timer loop when the Activity
+ * pauses. `JavaTimerManager.onHostPause` calls `clearFrameCallback`, so
+ * `setTimeout` stops firing, and the scan loop awaits a `setTimeout(0)` yield
+ * once per batch -- it parks there forever. The process was alive the whole
+ * time; nothing was scheduled to run in it.
  *
- * Deliberately NOT START_STICKY. If the OS kills this service under memory
- * pressure, restarting it with a null intent would resume a scan the user never
- * asked to resume, with no UI attached to it. Scan progress is persisted to a
- * cursor, so the next launch continues where this left off -- losing the
- * service is recoverable, silently reviving it is surprising.
+ * The sanctioned way to hold that loop open is a headless JS task, so this is
+ * a `HeadlessJsTaskService` as well as a foreground service.
+ * `JavaTimerManager.onHeadlessJsTaskStart` calls `setChoreographerCallback`,
+ * the exact counterpart of the `onHostPause` teardown. The task runs on the
+ * app's EXISTING React context when the process is alive, which is what makes
+ * this cheap: the scan cursor, the in-memory face index and every native
+ * module are already there, so nothing has to be rehydrated or reconciled.
+ *
+ * The notification is the price of the foreground service: Android allows
+ * unbounded background work precisely because the user can see it happening
+ * and stop it. Same bargain as every gallery app's "Backing up photos".
+ *
+ * Deliberately NOT START_STICKY, and deliberately not the base class's
+ * START_REDELIVER_INTENT. If the OS kills this under memory pressure,
+ * restarting it would resume a scan the user never asked to resume, with no UI
+ * attached. Progress is persisted to a cursor, so the next launch continues
+ * where this left off -- losing the service is recoverable, silently reviving
+ * it is surprising.
  */
-class ScanForegroundService : Service() {
+class ScanForegroundService : HeadlessJsTaskService() {
   companion object {
     const val CHANNEL_ID = "photeo-scan"
     const val NOTIFICATION_ID = 4711
     const val EXTRA_TITLE = "title"
     const val EXTRA_TEXT = "text"
+
+    /** Must match the key JS registers with `AppRegistry.registerHeadlessTask`. */
+    const val TASK_KEY = "PhoteoScan"
 
     fun intent(context: Context, title: String, text: String): Intent =
       Intent(context, ScanForegroundService::class.java)
@@ -45,7 +62,20 @@ class ScanForegroundService : Service() {
         .putExtra(EXTRA_TEXT, text)
   }
 
-  override fun onBind(intent: Intent?): IBinder? = null
+  private var taskStarted = false
+
+  /**
+   * timeout 0: the task lives as long as the scan does, and an 11,828-photo
+   * library takes about half an hour. The safeguard the timeout normally
+   * provides is served instead by JS resolving the task when the scan ends, and
+   * by the user being able to stop a visible foreground service.
+   *
+   * allowedInForeground: a scan usually STARTS on screen and only later gets
+   * backgrounded. The base class crashes rather than running a task while a
+   * host is resumed, so without this the common path is a crash on launch.
+   */
+  override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig =
+    HeadlessJsTaskConfig(TASK_KEY, Arguments.createMap(), 0L, true)
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Photeo"
@@ -58,6 +88,12 @@ class ScanForegroundService : Service() {
       startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     } else {
       startForeground(NOTIFICATION_ID, notification)
+    }
+    // Guarded because a redundant start would register a SECOND never-resolving
+    // task, and the base class only stops itself once every task has finished.
+    if (!taskStarted) {
+      taskStarted = true
+      super.onStartCommand(intent, flags, startId)
     }
     return START_NOT_STICKY
   }

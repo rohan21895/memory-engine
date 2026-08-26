@@ -23,6 +23,42 @@ type ScanServiceNative = {
 /** `undefined` means "not looked up yet"; `null` means "looked up, absent". */
 let cached: ScanServiceNative | null | undefined;
 
+/** Must match `ScanForegroundService.TASK_KEY`. */
+export const SCAN_TASK_KEY = "PhoteoScan";
+
+let releaseHold: (() => void) | null = null;
+
+/**
+ * The body of the headless task, and the reason a backgrounded scan progresses
+ * at all.
+ *
+ * It does no work. Its only job is to stay pending: React Native keeps the JS
+ * timer loop alive for exactly as long as a headless task is unresolved
+ * (`JavaTimerManager.onHeadlessJsTaskStart` restores the choreographer callback
+ * that `onHostPause` tore down). The scan loop yields through `setTimeout` once
+ * per batch, so without this it parks at the first batch boundary after the app
+ * leaves the screen.
+ *
+ * Registered from the app entry rather than here, so that this module never
+ * imports `react-native` at module scope -- doing so executes React Native's
+ * global setup, which is fine on a device and fatal in the offline test runner.
+ */
+export function holdScanTask(): Promise<void> {
+  // A scan that is already holding must not be replaced: dropping the previous
+  // resolver would leave a task nothing can ever finish.
+  if (releaseHold) return new Promise<void>(() => {});
+  return new Promise<void>((resolve) => {
+    releaseHold = resolve;
+  });
+}
+
+/** Lets the headless task finish, which lets the service stop itself. */
+function releaseScanTask(): void {
+  const resolve = releaseHold;
+  releaseHold = null;
+  resolve?.();
+}
+
 async function nativeModule(): Promise<ScanServiceNative | null> {
   if (cached !== undefined) return cached;
   try {
@@ -93,6 +129,10 @@ export async function updateScanService(
 }
 
 export async function stopScanService(): Promise<void> {
+  // Released first and unconditionally. If the native stop throws, or the
+  // native side is absent entirely, an unresolved task would go on holding the
+  // timer loop -- and therefore the CPU -- for a scan that has already ended.
+  releaseScanTask();
   try {
     const native = await nativeModule();
     await native?.stop();
