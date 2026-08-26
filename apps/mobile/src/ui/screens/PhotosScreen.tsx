@@ -482,7 +482,7 @@ export function PhotosScreen({ onNamePerson }: { onNamePerson?: (person: NamePer
                   <Image cachePolicy="memory-disk" contentFit="cover" source={person.faceThumbUri ?? contentUri(person.coverAssetId)} style={[styles.avatar, active ? styles.avatarActive : null]} />
                   <Text numberOfLines={1} style={[styles.personName, active ? styles.activeText : null]}>{label}</Text>
                 </Pressable>
-                <Pressable accessibilityHint="Opens options to merge this tile with another person or keep them separate" accessibilityLabel={`Fix grouping for ${label}`} accessibilityRole="button" onPress={openCorrection} style={styles.personFix}><Text style={styles.personFixText}>Fix</Text></Pressable>
+                {active ? <Pressable accessibilityHint="Opens options to merge this tile with another person or keep them separate" accessibilityLabel={`Fix grouping for ${label}`} accessibilityRole="button" onPress={openCorrection} style={styles.personFix}><Text style={styles.personFixText}>Fix</Text></Pressable> : null}
               </View>
             );
           })}
