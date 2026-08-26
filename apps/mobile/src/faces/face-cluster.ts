@@ -1,4 +1,6 @@
 import type { FaceObservation, Person } from "./types";
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { resolveConstraints, type FaceConstraint } from "./face-constraints.ts";
 
 /**
  * Cosine bar for "same person" when assigning an aligned face to an existing
@@ -42,6 +44,35 @@ export const DEFAULT_MERGE_THRESHOLD = 0.6;
  * imports this one; putting it there would close an import cycle.
  */
 export const MERGE_EVIDENCE_MIN_FACES = 4;
+
+/**
+ * How much an ASSIGNABLE (lower-quality) face counts toward a centroid.
+ *
+ * A blurry, small or steeply-profiled face is still that person and still
+ * belongs in their album, so it is assigned normally. But letting it move the
+ * centroid as hard as a sharp frontal shot drags the cluster toward whatever
+ * the bad frames have in common -- motion blur and profile geometry -- which is
+ * a direction shared with OTHER people's bad frames. Contributing at a reduced
+ * weight keeps the face and drops its vote.
+ */
+export const ASSIGNABLE_CENTROID_WEIGHT = 0.3;
+
+/**
+ * How far apart two clusters may sit in time and still be judged on the relaxed
+ * temporal bar.
+ *
+ * An infant is the case no fixed threshold survives: a face at one month and
+ * the same face at a year are barely related in embedding space, so no bar
+ * joins them directly. Adjacent months DO match, and because merging runs
+ * iteratively and closest-first, joining neighbours lets the union span a wider
+ * window and reach the next neighbour -- the chain assembles itself without any
+ * explicit path search.
+ *
+ * Sixty days is a compromise: wide enough that a gap in shooting does not break
+ * the chain, narrow enough that two different people photographed the same
+ * summer are not handed a discount for it.
+ */
+export const TEMPORAL_MERGE_WINDOW_MS = 60 * 24 * 60 * 60 * 1000;
 
 export const DEFAULT_PERCEPTUAL_THRESHOLD = 0.92;
 
@@ -170,30 +201,85 @@ export function cosine(a: number[], b: number[]): number {
   return dot / Math.sqrt(normA * normB);
 }
 
+/**
+ * Folds one face into a centroid as a WEIGHTED mean.
+ *
+ * `previousWeight` was a plain face count before quality weighting existed, and
+ * an omitted `weight` still reproduces that exactly, so every existing caller
+ * and test keeps its old behaviour.
+ */
 export function updateCentroid(
   centroid: number[],
   embedding: number[],
-  previousCount: number,
+  previousWeight: number,
+  weight = 1,
 ): number[] {
   if (
     centroid.length === 0 ||
     centroid.length !== embedding.length ||
-    previousCount < 1
+    previousWeight <= 0 ||
+    !(weight > 0)
   ) {
     return centroid.slice();
   }
 
-  const nextCount = previousCount + 1;
+  const total = previousWeight + weight;
   return centroid.map(
     (value, index) =>
-      (value * previousCount + embedding[index]) / nextCount,
+      (value * previousWeight + embedding[index] * weight) / total,
   );
 }
 
-type MutablePerson = Person & { assetIdSet: Set<string>; scale: number };
+/**
+ * A face's vote over its cluster's centroid.
+ *
+ * `seedable` is the quality tier the scanner already assigns -- a face good
+ * enough to START a person. Anything below that is kept and assigned but only
+ * partly trusted to steer the average.
+ */
+function centroidWeight(observation: FaceObservation): number {
+  return observation.seedable === false ? ASSIGNABLE_CENTROID_WEIGHT : 1;
+}
+
+/** Grows a cluster's capture-time span to include one more face. */
+function widenSpan(person: MutablePerson, capturedAt: number | undefined): void {
+  if (!Number.isFinite(capturedAt)) return;
+  const at = capturedAt as number;
+  person.firstAt = person.firstAt === undefined ? at : Math.min(person.firstAt, at);
+  person.lastAt = person.lastAt === undefined ? at : Math.max(person.lastAt, at);
+}
+
+/**
+ * Gap in milliseconds between two clusters' capture spans, or undefined when
+ * either has no time at all. Overlapping spans give 0.
+ */
+function spanGap(a: MutablePerson, b: MutablePerson): number | undefined {
+  if (
+    a.firstAt === undefined || a.lastAt === undefined ||
+    b.firstAt === undefined || b.lastAt === undefined
+  ) {
+    return undefined;
+  }
+  if (a.lastAt >= b.firstAt && b.lastAt >= a.firstAt) return 0;
+  return a.lastAt < b.firstAt ? b.firstAt - a.lastAt : a.firstAt - b.lastAt;
+}
+
+type MutablePerson = Person & {
+  assetIdSet: Set<string>;
+  scale: number;
+  /** Sum of quality weights behind `centroid`, which is a weighted mean. */
+  weightSum: number;
+  /** Capture-time span of this cluster; undefined when no face carried a time. */
+  firstAt?: number;
+  lastAt?: number;
+};
 
 type ClusterOptions = {
+  /** User judgements about who is who. They outrank every measured bar. */
+  constraints?: readonly FaceConstraint[];
   identityMergeThreshold?: number;
+  /** Merge bar for clusters within TEMPORAL_MERGE_WINDOW_MS of each other. */
+  temporalMergeThreshold?: number;
   /**
    * Merge bar for two clusters that BOTH clear MERGE_EVIDENCE_MIN_FACES.
    *
@@ -264,11 +350,25 @@ export function extendFaceClusters(
       ? (opts.evidencedMergeThreshold as number)
       : identityMergeThreshold,
   );
+  // Also uncapped by the assignment bar, for the same reason as the evidenced
+  // bar: it governs two averages, not a face against a group.
+  const temporalMergeThreshold = Math.min(
+    evidencedMergeThreshold,
+    Number.isFinite(opts.temporalMergeThreshold)
+      ? (opts.temporalMergeThreshold as number)
+      : evidencedMergeThreshold,
+  );
   const people: MutablePerson[] = existing.map((person) => ({
     ...person,
     assetIds: person.assetIds.slice(),
     centroid: person.centroid.slice(),
     assetIdSet: new Set(person.assetIds),
+    // Persisted people carry no weight sum or capture span: `Person` stores
+    // neither. The face count is the right reconstruction of the weight (it is
+    // what the sum was before quality weighting existed), and an absent span
+    // simply leaves temporal merging inert for this person until the next full
+    // rebuild computes one from the observations.
+    weightSum: person.faceCount,
     scale: centroidScale(person.centroid),
   }));
   let nextPersonNumber = people.reduce((largest, person) => {
@@ -329,19 +429,26 @@ export function extendFaceClusters(
         embeddingKind: observation.embeddingKind,
         assetIdSet: new Set([observation.assetId]),
         scale: centroidScale(embedding),
+        weightSum: centroidWeight(observation),
+        firstAt: observation.capturedAt,
+        lastAt: observation.capturedAt,
       });
       opts.onAssign?.(observation, id);
       continue;
     }
 
     const person = people[bestIndex];
+    const weight = centroidWeight(observation);
     person.centroid = updateCentroid(
       person.centroid,
       embedding,
-      person.faceCount,
+      person.weightSum,
+      weight,
     );
     person.scale = centroidScale(person.centroid);
+    person.weightSum += weight;
     person.faceCount += 1;
+    widenSpan(person, observation.capturedAt);
     if (!person.assetIdSet.has(observation.assetId)) {
       person.assetIdSet.add(observation.assetId);
       person.assetIds.push(observation.assetId);
@@ -354,6 +461,8 @@ export function extendFaceClusters(
     identityMergeThreshold,
     perceptualThreshold,
     evidencedMergeThreshold,
+    temporalMergeThreshold,
+    opts.constraints ?? [],
     opts.onMerge,
   );
 
@@ -415,6 +524,8 @@ function mergeSimilarPeople(
   identityMergeThreshold: number,
   perceptualThreshold: number,
   evidencedMergeThreshold: number,
+  temporalMergeThreshold: number,
+  constraints: readonly FaceConstraint[],
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
 ): void {
   const comparable = (a: MutablePerson, b: MutablePerson): boolean =>
@@ -448,6 +559,36 @@ function mergeSimilarPeople(
     }
   }
 
+  // The user's own judgements, layered on top of the measured ones. A "not the
+  // same person" joins the same `blocked` structure the same-photo rule uses,
+  // so it inherits through merges for free. A "same person" is applied as a
+  // forced merge below, before any similarity is consulted at all — the whole
+  // point is that it holds where the numbers disagree.
+  const resolved = resolveConstraints(people, constraints);
+  for (const [i, j] of resolved.cannot) {
+    blocked[i].add(j);
+    blocked[j].add(i);
+  }
+  // Every forced pair is translated to IDs before the first merge runs, because
+  // `absorb` splices `people` and every later index would otherwise address a
+  // different person than the one the constraint named. Positions are re-found
+  // per pair; ids are stable, positions are not.
+  const forced = resolved.must.map(
+    ([ai, bi]) => [people[ai]?.id, people[bi]?.id] as const,
+  );
+  for (const [aId, bId] of forced) {
+    if (!aId || !bId) continue;
+    const i = people.findIndex((person) => person.id === aId);
+    const j = people.findIndex((person) => person.id === bId);
+    // A missing id means an earlier forced merge already absorbed it, which is
+    // the transitive case (A=B and B=C makes A, B and C one person) and needs
+    // no special handling beyond not treating it as an error.
+    if (i === -1 || j === -1 || i === j) continue;
+    if (!comparable(people[i], people[j])) continue;
+    const [keep, drop] = i < j ? [i, j] : [j, i];
+    absorb(people, origins, blocked, keep, drop, onMerge);
+  }
+
   for (;;) {
     let bestI = -1;
     let bestJ = -1;
@@ -464,12 +605,22 @@ function mergeSimilarPeople(
         const evidenced =
           a.faceCount >= MERGE_EVIDENCE_MIN_FACES &&
           b.faceCount >= MERGE_EVIDENCE_MIN_FACES;
+        // Clusters that overlap or nearly touch in time get the temporal bar,
+        // which is how an infant's months chain together: each neighbouring
+        // pair clears it, the union spans wider, and the next neighbour comes
+        // into range on the following iteration. Requires BOTH to carry real
+        // evidence, so a stray two-face cluster cannot ride a date into
+        // somebody else.
+        const gap = spanGap(a, b);
+        const nearInTime =
+          gap !== undefined && gap <= TEMPORAL_MERGE_WINDOW_MS;
+        const identityBar = evidenced
+          ? nearInTime
+            ? Math.min(evidencedMergeThreshold, temporalMergeThreshold)
+            : evidencedMergeThreshold
+          : identityMergeThreshold;
         const threshold =
-          a.embeddingKind === "identity"
-            ? evidenced
-              ? evidencedMergeThreshold
-              : identityMergeThreshold
-            : perceptualThreshold;
+          a.embeddingKind === "identity" ? identityBar : perceptualThreshold;
         const similarity = linkage(a, b);
         if (similarity < threshold || similarity < bestSimilarity) {
           continue;
@@ -498,29 +649,55 @@ function mergeSimilarPeople(
       return;
     }
 
-    const survivor = people[bestI];
-    const absorbed = people[bestJ];
-    const total = survivor.faceCount + absorbed.faceCount;
-    survivor.centroid = survivor.centroid.map(
-      (value, index) =>
-        (value * survivor.faceCount + absorbed.centroid[index] * absorbed.faceCount) /
-        total,
-    );
-    survivor.scale = centroidScale(survivor.centroid);
-    survivor.faceCount = total;
-    for (const assetId of absorbed.assetIds) {
-      if (!survivor.assetIdSet.has(assetId)) {
-        survivor.assetIdSet.add(assetId);
-        survivor.assetIds.push(assetId);
-      }
-    }
-    for (const origin of origins[bestJ]) origins[bestI].add(origin);
-    for (const origin of blocked[bestJ]) blocked[bestI].add(origin);
-    onMerge?.(absorbed.id, survivor.id);
-    people.splice(bestJ, 1);
-    origins.splice(bestJ, 1);
-    blocked.splice(bestJ, 1);
+    absorb(people, origins, blocked, bestI, bestJ, onMerge);
   }
+}
+
+/**
+ * Folds `dropIndex` into `keepIndex`, in place.
+ *
+ * Shared by measured merges and user-forced ones so a constraint cannot drift
+ * from the normal path: the centroid is a face-count-weighted mean of the two,
+ * and both the origin and cannot-link sets union, which is what makes a
+ * constraint inherit through later merges instead of being re-derived from a
+ * centroid that has since moved.
+ */
+function absorb(
+  people: MutablePerson[],
+  origins: Array<Set<number>>,
+  blocked: Array<Set<number>>,
+  keepIndex: number,
+  dropIndex: number,
+  onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
+): void {
+  const survivor = people[keepIndex];
+  const absorbed = people[dropIndex];
+  // Blended by WEIGHT, not face count: both centroids are weighted means, so
+  // combining them on counts would quietly restore full influence to the
+  // low-quality faces that were deliberately discounted on the way in.
+  const totalWeight = survivor.weightSum + absorbed.weightSum;
+  survivor.centroid = survivor.centroid.map(
+    (value, index) =>
+      (value * survivor.weightSum + absorbed.centroid[index] * absorbed.weightSum) /
+      totalWeight,
+  );
+  survivor.scale = centroidScale(survivor.centroid);
+  survivor.faceCount = survivor.faceCount + absorbed.faceCount;
+  survivor.weightSum += absorbed.weightSum;
+  widenSpan(survivor, absorbed.firstAt);
+  widenSpan(survivor, absorbed.lastAt);
+  for (const assetId of absorbed.assetIds) {
+    if (!survivor.assetIdSet.has(assetId)) {
+      survivor.assetIdSet.add(assetId);
+      survivor.assetIds.push(assetId);
+    }
+  }
+  for (const origin of origins[dropIndex]) origins[keepIndex].add(origin);
+  for (const origin of blocked[dropIndex]) blocked[keepIndex].add(origin);
+  onMerge?.(absorbed.id, survivor.id);
+  people.splice(dropIndex, 1);
+  origins.splice(dropIndex, 1);
+  blocked.splice(dropIndex, 1);
 }
 
 export type { FaceObservation, Person } from "./types";

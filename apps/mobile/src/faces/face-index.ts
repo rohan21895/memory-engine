@@ -8,7 +8,9 @@ import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } f
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { calibrateMergeThreshold, calibrateThreshold } from "./face-calibration.ts";
+import { anchorAssetFor, isFaceConstraint, pruneConstraints, type FaceConstraint } from "./face-constraints.ts";
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { MERGE_SIGMA, calibrateMergeThreshold, calibrateThreshold } from "./face-calibration.ts";
 
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { closeFaceFrame, deleteImageFile, frameOrientationCounts, landmarkRejectCounts, detectFacesInFrame, isFaceDetectionAvailable, openFaceFrame, scaleFaceBox, takeScanTrace, traceScanCount, traceScanStage, type FaceBox, type FaceFrame } from "./face-detector.ts";
@@ -264,6 +266,12 @@ export type FaceScanAsset = {
   id: string;
   width: number;
   height: number;
+  /**
+   * Named to match expo-media-library's own field, because the scan casts its
+   * asset pages straight to this type -- so the time arrives with no mapping
+   * code and cannot silently go missing on one path but not another.
+   */
+  creationTime?: number;
 };
 
 export type FaceScanDependencies = {
@@ -317,6 +325,8 @@ type PersistedFaceIndex = {
   calibration?: string;
   /** Frozen population mean the stored centroids are centered against. */
   embeddingMean?: number[];
+  /** What the user said about who is who. Survives every recluster. */
+  constraints?: FaceConstraint[];
   faceThumbUris: Record<string, string>;
 };
 
@@ -752,7 +762,8 @@ function storedObservation(value: unknown): value is StoredFaceObservation {
     typeof value.embedding === "string" &&
     value.embedding.length > 0 &&
     (value.embeddingKind === "identity" || value.embeddingKind === "perceptual") &&
-    (value.seedable === undefined || typeof value.seedable === "boolean")
+    (value.seedable === undefined || typeof value.seedable === "boolean") &&
+    (value.capturedAt === undefined || typeof value.capturedAt === "number")
   );
 }
 
@@ -1065,6 +1076,12 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
       faceThumbUris: stringRecord(value.faceThumbUris)
         ? value.faceThumbUris
         : {},
+      // A malformed constraint list is dropped rather than rejecting the whole
+      // index: losing the user's corrections is bad, but discarding every
+      // embedding and re-scanning the library over them is far worse.
+      constraints: Array.isArray(stored.constraints)
+        ? stored.constraints.filter(isFaceConstraint)
+        : [],
     };
     return loaded.observations.every(validObservation) &&
       loaded.people.every(validPerson)
@@ -1189,6 +1206,10 @@ function indexShape(): string {
     Object.keys(index.faceThumbUris).length,
     index.threshold,
     index.calibration,
+    // Included so a correction the user just made forces a write even though
+    // no count changed -- two people merging by hand leaves the face total
+    // identical and would otherwise look clean to the fingerprint.
+    index.constraints?.length ?? 0,
     index.scanComplete,
     index.cursor,
     index.total,
@@ -1267,6 +1288,66 @@ async function persistFaceIndex(force = false): Promise<void> {
   }
 }
 
+/**
+ * Records that two people are (or are not) the same, and re-groups immediately.
+ *
+ * The constraint is stored against ANCHOR ASSETS rather than person ids, which
+ * are rebuilt from scratch on every recluster. Returns false when no unambiguous
+ * anchor exists -- every one of that person's photos also containing somebody
+ * else -- because a guess here attaches the correction to the wrong face and is
+ * worse than declining.
+ */
+async function recordConstraint(
+  kind: FaceConstraint["kind"],
+  personIdA: string,
+  personIdB: string,
+): Promise<boolean> {
+  if (personIdA === personIdB) return false;
+  const a = anchorAssetFor(index.people, personIdA);
+  const b = anchorAssetFor(index.people, personIdB);
+  if (!a || !b) return false;
+  const constraints = index.constraints ?? [];
+  // A later judgement replaces an earlier one about the same pair, so a user
+  // who splits what they previously merged is not fighting their own history.
+  index.constraints = [
+    ...constraints.filter(
+      (existing) =>
+        !(
+          (existing.a === a && existing.b === b) ||
+          (existing.a === b && existing.b === a)
+        ),
+    ),
+    { kind, a, b },
+  ];
+  markIndexDirty();
+  rebuildPeople();
+  await persistFaceIndex(true);
+  return true;
+}
+
+/** "These two are the same person." Outranks every measured threshold. */
+export function markSamePerson(a: string, b: string): Promise<boolean> {
+  return recordConstraint("must", a, b);
+}
+
+/** "These two are NOT the same person." Blocks them from ever merging. */
+export function markNotSamePerson(a: string, b: string): Promise<boolean> {
+  return recordConstraint("cannot", a, b);
+}
+
+/** How many corrections the user has made. Drives the UI's undo affordance. */
+export function faceConstraintCount(): number {
+  return index.constraints?.length ?? 0;
+}
+
+/** Forgets every correction, returning grouping to the measured bars alone. */
+export async function clearFaceConstraints(): Promise<void> {
+  index.constraints = [];
+  markIndexDirty();
+  rebuildPeople();
+  await persistFaceIndex(true);
+}
+
 export function contentUri(assetId: string): string {
   return `content://media/external/images/media/${assetId}`;
 }
@@ -1288,13 +1369,20 @@ function safeThreshold(value: number | undefined): number {
  */
 export function faceClusterOptions(
   threshold: number = DEFAULT_FACE_INDEX_THRESHOLD,
-  evidencedMergeThreshold?: number,
+  extras?: {
+    evidencedMergeThreshold?: number;
+    temporalMergeThreshold?: number;
+    constraints?: readonly FaceConstraint[];
+  },
 ): {
+  constraints: readonly FaceConstraint[];
   evidencedMergeThreshold: number;
   identityMergeThreshold: number;
   perceptualThreshold: number;
+  temporalMergeThreshold: number;
   threshold: number;
 } {
+  const evidencedMergeThreshold = extras?.evidencedMergeThreshold;
   const identityThreshold = safeThreshold(threshold);
   const identityMerge = Math.max(
     identityThreshold,
@@ -1323,6 +1411,10 @@ export function faceClusterOptions(
     evidencedMergeThreshold: Number.isFinite(evidencedMergeThreshold)
       ? Math.min(identityMerge, evidencedMergeThreshold as number)
       : identityMerge,
+    temporalMergeThreshold: Number.isFinite(extras?.temporalMergeThreshold)
+      ? Math.min(identityMerge, extras?.temporalMergeThreshold as number)
+      : identityMerge,
+    constraints: extras?.constraints ?? [],
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
     threshold: identityThreshold,
   };
@@ -1399,7 +1491,11 @@ function peopleFromObservations(
 ): Person[] {
   return clusterFaces(
     centeredForClustering(observations),
-    faceClusterOptions(threshold, evidencedMergeBar(observations)),
+    faceClusterOptions(threshold, {
+      evidencedMergeThreshold: evidencedMergeBar(observations),
+      temporalMergeThreshold: temporalMergeBar(observations),
+      constraints: index.constraints ?? [],
+    }),
   );
 }
 
@@ -1413,6 +1509,21 @@ function evidencedMergeBar(observations: readonly FaceObservation[]): number {
   return calibrateMergeThreshold(
     observations,
     FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
+  ).threshold;
+}
+
+/**
+ * The relaxed bar for clusters that sit close together in capture time.
+ *
+ * Proximity in time is independent evidence, so it buys exactly one sigma off
+ * the evidenced bar -- the same statistic, read one step less conservatively,
+ * rather than a second hand-picked constant.
+ */
+function temporalMergeBar(observations: readonly FaceObservation[]): number {
+  return calibrateMergeThreshold(
+    observations,
+    FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
+    { sigma: MERGE_SIGMA - 1 },
   ).threshold;
 }
 
@@ -1521,6 +1632,9 @@ export async function scanFaceAssets(
                   embedding: unitEmbedding(result.embedding),
                   embeddingKind: result.kind,
                   seedable: qualityTier === "seedable",
+                  ...(Number.isFinite(asset.creationTime)
+                    ? { capturedAt: asset.creationTime }
+                    : {}),
                 };
                 observations.push(observation);
                 if (result.cropUri) {
@@ -2058,10 +2172,11 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
     // incremental append sees a handful of faces, far too few to measure a bar
     // from, and would otherwise fall back to the strict constant and merge
     // differently than a full rebuild over the same library.
-    ...faceClusterOptions(
-      index.threshold,
-      evidencedMergeBar(index.observations),
-    ),
+    ...faceClusterOptions(index.threshold, {
+      evidencedMergeThreshold: evidencedMergeBar(index.observations),
+      temporalMergeThreshold: temporalMergeBar(index.observations),
+      constraints: index.constraints ?? [],
+    }),
     onAssign: (observation, personId) => assignments.set(observation, personId),
     onMerge: (absorbedPersonId, survivingPersonId) => {
       for (const [observation, personId] of assignments) {
@@ -2294,6 +2409,13 @@ async function runBuild(
 
     index.observations = index.observations.filter((observation) =>
       Object.hasOwn(index.seenAssetIds, observation.assetId),
+    );
+    // Corrections anchored to photos the user has since deleted can never
+    // resolve again, so they are dropped here rather than accumulating forever
+    // in a file that is rewritten on every scan.
+    index.constraints = pruneConstraints(
+      index.constraints ?? [],
+      new Set(Object.keys(index.seenAssetIds)),
     );
     index.processedAssetIds = Object.fromEntries(
       Object.keys(index.processedAssetIds)
