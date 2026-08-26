@@ -64,6 +64,69 @@ export type CalibrationResult = {
   calibrated: boolean;
 };
 
+/**
+ * How many standard deviations above the different-person mean two CLUSTERS
+ * must sit before they are considered the same person.
+ *
+ * Merging compares averages, not faces. Average linkage between two clusters is
+ * the mean cosine over every cross pair, so for two clusters of different people
+ * it concentrates near the impostor MEAN (0.091 measured on the maternity
+ * library) rather than near the impostor tail (0.264 p99) that governs a single
+ * assignment. Averaging over n*m pairs suppresses the tail instead of exposing
+ * it, which is why a bar borrowed from single-pair statistics is far too strict
+ * here: measured across 120 cluster pairs, the shipped 0.60 joined ZERO of them,
+ * and the highest-scoring pair in the whole library was 0.466.
+ *
+ * Five sigma, not the conventional three or four, and the extra margin is the
+ * whole point. On the maternity library four sigma lands near 0.34, which joins
+ * roughly 16 of 120 cluster pairs -- well into the range (0.32-0.35) where
+ * same-person and different-person pairs are no longer separable by eye or by
+ * statistic. Five sigma lands near 0.41 and joins about six, all of them at
+ * 3x the different-person median or better, including the 113-face and
+ * 105-face halves of one person that sat at 0.442 and could never rejoin.
+ *
+ * The asymmetry is deliberate: a person left in two groups is one tap from
+ * correct, while two people fused is unrecoverable, so the bar belongs above
+ * the ambiguous band rather than inside it.
+ */
+export const MERGE_SIGMA = 5;
+
+/** Never merge below this, whatever the statistics claim. */
+export const CALIBRATION_MIN_MERGE_THRESHOLD = 0.3;
+
+/**
+ * The bar at which two well-evidenced clusters are the same person.
+ *
+ * Derived from the SAME same-photo negatives as the assignment bar, but read as
+ * a mean plus spread rather than a tail quantile, because that is the statistic
+ * a cluster-to-cluster average actually follows. Returns `fallback` unchanged
+ * when the evidence is too thin, exactly like `calibrateThreshold`.
+ */
+export function calibrateMergeThreshold(
+  faces: readonly CalibrationFace[],
+  fallback: number,
+  options?: { sigma?: number; minPairs?: number },
+): CalibrationResult {
+  const sigma = options?.sigma ?? MERGE_SIGMA;
+  const minPairs = options?.minPairs ?? CALIBRATION_MIN_PAIRS;
+  const scores = samePhotoImpostorScores(faces);
+  if (scores.length < minPairs) {
+    return { threshold: fallback, pairs: scores.length, calibrated: false };
+  }
+  const mean = scores.reduce((sum, value) => sum + value, 0) / scores.length;
+  const variance =
+    scores.reduce((sum, value) => sum + (value - mean) * (value - mean), 0) /
+    scores.length;
+  const raw = mean + sigma * Math.sqrt(variance);
+  // Never LOOSER than the floor, and never stricter than the bar it replaces --
+  // this may only relax merging, never tighten it past today's behaviour.
+  const threshold = Math.min(
+    fallback,
+    Math.max(CALIBRATION_MIN_MERGE_THRESHOLD, raw),
+  );
+  return { threshold, pairs: scores.length, calibrated: true };
+}
+
 function cosine(a: readonly number[], b: readonly number[]): number {
   if (a.length === 0 || a.length !== b.length) {
     return 0;

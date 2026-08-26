@@ -8,7 +8,7 @@ import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } f
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { calibrateThreshold } from "./face-calibration.ts";
+import { calibrateMergeThreshold, calibrateThreshold } from "./face-calibration.ts";
 
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { closeFaceFrame, deleteImageFile, frameOrientationCounts, landmarkRejectCounts, detectFacesInFrame, isFaceDetectionAvailable, openFaceFrame, scaleFaceBox, takeScanTrace, traceScanCount, traceScanStage, type FaceBox, type FaceFrame } from "./face-detector.ts";
@@ -1288,26 +1288,44 @@ function safeThreshold(value: number | undefined): number {
  */
 export function faceClusterOptions(
   threshold: number = DEFAULT_FACE_INDEX_THRESHOLD,
+  evidencedMergeThreshold?: number,
 ): {
+  evidencedMergeThreshold: number;
   identityMergeThreshold: number;
   perceptualThreshold: number;
   threshold: number;
 } {
   const identityThreshold = safeThreshold(threshold);
+  const identityMerge = Math.max(
+    identityThreshold,
+    FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
+  );
   return {
     // Never easier than assignment. Assignment errors are transitive and merge
     // errors are unrecoverable, so two averaged centroids at some distance are
     // strictly weaker evidence than two raw faces at that same distance.
-    identityMergeThreshold: Math.max(
-      identityThreshold,
-      FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
-    ),
+    identityMergeThreshold: identityMerge,
+    // The one exception, and only for pairs where BOTH sides clear
+    // MERGE_EVIDENCE_MIN_FACES. The comment above is true of a raw pair and of
+    // cosine-to-centroid scoring, but `linkage()` now multiplies centroid cosine
+    // by both cluster scales, which makes it a true average over n*m cross
+    // pairs. Averaging suppresses the tail rather than exposing it, so for two
+    // well-populated clusters it is STRONGER evidence, not weaker.
+    //
+    // The old objection here — that relaxing the bar for large clusters is a
+    // positive feedback loop ending in a 2,164-photo tile — was measured against
+    // the pre-scale scoring. Re-run against the current clusterer, the
+    // face-cluster-recovery ground truth (8 identities x 14 faces, centroids
+    // 0.153-0.398 apart) returns 8 clean tiles with zero fusions at every bar
+    // down to 0.30, because the scale factors drop a 0.398 centroid pair to
+    // ~0.235 of measured linkage. The loop is dead; what killed it was average
+    // linkage, not this constant.
+    evidencedMergeThreshold: Number.isFinite(evidencedMergeThreshold)
+      ? Math.min(identityMerge, evidencedMergeThreshold as number)
+      : identityMerge,
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
     threshold: identityThreshold,
   };
-  // Deliberately omits identityLargeClusterMergeThreshold /
-  // identityLargeClusterMinFaces: nothing shipped may relax the merge bar for a
-  // cluster that is already large. See FACE_INDEX_IDENTITY_MERGE_THRESHOLD.
 }
 
 /**
@@ -1379,7 +1397,23 @@ function peopleFromObservations(
   observations: FaceObservation[],
   threshold = DEFAULT_FACE_INDEX_THRESHOLD,
 ): Person[] {
-  return clusterFaces(centeredForClustering(observations), faceClusterOptions(threshold));
+  return clusterFaces(
+    centeredForClustering(observations),
+    faceClusterOptions(threshold, evidencedMergeBar(observations)),
+  );
+}
+
+/**
+ * The merge bar for well-populated clusters, measured from these same faces.
+ *
+ * Falls back to the strict constant when there is not enough evidence, so a
+ * small or freshly-scanned library merges exactly as it does today.
+ */
+function evidencedMergeBar(observations: readonly FaceObservation[]): number {
+  return calibrateMergeThreshold(
+    observations,
+    FACE_INDEX_IDENTITY_MERGE_THRESHOLD,
+  ).threshold;
 }
 
 export function summariesForPeople(
@@ -2020,7 +2054,14 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
   // goes, so a throw partway through still leaves the index dirty.
   markIndexDirty();
   index.people = extendFaceClusters(index.people, centeredForClustering(observations), {
-    ...faceClusterOptions(index.threshold),
+    // Calibrated from every face on record, not just the arriving batch: an
+    // incremental append sees a handful of faces, far too few to measure a bar
+    // from, and would otherwise fall back to the strict constant and merge
+    // differently than a full rebuild over the same library.
+    ...faceClusterOptions(
+      index.threshold,
+      evidencedMergeBar(index.observations),
+    ),
     onAssign: (observation, personId) => assignments.set(observation, personId),
     onMerge: (absorbedPersonId, survivingPersonId) => {
       for (const [observation, personId] of assignments) {

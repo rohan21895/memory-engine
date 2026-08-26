@@ -1,5 +1,5 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { CALIBRATION_MAX_THRESHOLD, CALIBRATION_MIN_PAIRS, CALIBRATION_MIN_THRESHOLD, calibrateThreshold, samePhotoImpostorScores } from "./face-calibration.ts";
+import { CALIBRATION_MAX_THRESHOLD, CALIBRATION_MIN_PAIRS, CALIBRATION_MIN_THRESHOLD, calibrateMergeThreshold, calibrateThreshold, samePhotoImpostorScores } from "./face-calibration.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { SAME_PHOTO_EXCEPTION_SIMILARITY } from "./face-cluster.ts";
 
@@ -109,6 +109,49 @@ const FALLBACK = 0.44;
   const result = calibrateThreshold(singles, FALLBACK);
   assert(result.pairs === 0, `single-face photos yield no pairs (got ${result.pairs})`);
   assert(!result.calibrated, "no pairs means no calibration");
+}
+
+// The merge bar reads the SAME negatives as a mean plus spread, not as a tail
+// quantile, because a cluster-to-cluster average follows the different-person
+// mean rather than its tail. It must therefore land well below the assignment
+// bar on the same data -- that gap is the entire fix for one person showing up
+// as two people.
+{
+  const faces = [...pairsAt(0.1, 990), ...pairsAt(0.5, 10, 990)];
+  const assign = calibrateThreshold(faces, FALLBACK);
+  const merge = calibrateMergeThreshold(faces, 0.6);
+  assert(merge.calibrated, "1000 pairs is enough to calibrate a merge bar");
+  assert(
+    merge.threshold < 0.6,
+    `the measured merge bar must relax the shipped constant (got ${merge.threshold})`,
+  );
+  assert(
+    merge.threshold < assign.threshold,
+    "averaging over many cross pairs is stronger evidence than one pair, so " +
+      "the merge bar belongs BELOW the assignment bar, not above it",
+  );
+}
+
+// It may only ever relax the bar it is given. A library whose negatives are so
+// spread that the formula exceeds the fallback must not end up merging MORE
+// easily than the strict constant would have.
+{
+  const wild = [...pairsAt(0.05, 300), ...pairsAt(0.65, 300, 300)];
+  const merge = calibrateMergeThreshold(wild, 0.6);
+  assert(
+    merge.threshold <= 0.6,
+    `must never exceed the fallback (got ${merge.threshold})`,
+  );
+}
+
+// Thin evidence holds the strict constant, exactly like the assignment bar.
+{
+  const merge = calibrateMergeThreshold(
+    pairsAt(0.1, CALIBRATION_MIN_PAIRS - 1),
+    0.6,
+  );
+  assert(!merge.calibrated, "must not calibrate a merge bar below the minimum");
+  assert(merge.threshold === 0.6, "must hold the strict constant unchanged");
 }
 
 // eslint-disable-next-line no-console

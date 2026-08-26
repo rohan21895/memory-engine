@@ -27,6 +27,22 @@ export const DEFAULT_IDENTITY_THRESHOLD = 0.39;
  */
 export const DEFAULT_MERGE_THRESHOLD = 0.6;
 
+/**
+ * Both clusters must hold at least this many faces to use the EVIDENCED merge
+ * bar instead of this strict one.
+ *
+ * The case for a lower merge bar is that average linkage over n*m cross pairs
+ * concentrates near the different-person mean rather than its tail, so a bar
+ * inherited from single-pair statistics is far too strict. That argument
+ * evaporates for a two-face cluster, whose "average" is one or two numbers and
+ * whose tail behaves like a raw pair. Small clusters therefore keep the strict
+ * bar, and only groups with real evidence behind them get the relaxed one.
+ *
+ * Lives here rather than in face-calibration.ts because that module already
+ * imports this one; putting it there would close an import cycle.
+ */
+export const MERGE_EVIDENCE_MIN_FACES = 4;
+
 export const DEFAULT_PERCEPTUAL_THRESHOLD = 0.92;
 
 /**
@@ -178,6 +194,18 @@ type MutablePerson = Person & { assetIdSet: Set<string>; scale: number };
 
 type ClusterOptions = {
   identityMergeThreshold?: number;
+  /**
+   * Merge bar for two clusters that BOTH clear MERGE_EVIDENCE_MIN_FACES.
+   *
+   * Unlike `identityMergeThreshold` this is deliberately NOT raised to the
+   * assignment bar. Assignment weighs one face against a group; this weighs two
+   * groups against each other, over n*m cross pairs, and that average follows
+   * the different-person MEAN rather than its tail. Being looser than
+   * assignment is therefore correct here, not the bug the clamp below guards
+   * against -- but only once both sides have enough faces for the average to
+   * mean anything, which is what the size gate enforces.
+   */
+  evidencedMergeThreshold?: number;
   onAssign?: (observation: FaceObservation, personId: string) => void;
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void;
   threshold?: number;
@@ -226,6 +254,15 @@ export function extendFaceClusters(
     Number.isFinite(opts.identityMergeThreshold)
       ? (opts.identityMergeThreshold as number)
       : DEFAULT_MERGE_THRESHOLD,
+  );
+  // Not clamped to `identityThreshold` -- see `evidencedMergeThreshold` above.
+  // Defaults to the strict bar, so a caller that says nothing gets exactly
+  // today's behaviour and this stays inert until someone opts in.
+  const evidencedMergeThreshold = Math.min(
+    identityMergeThreshold,
+    Number.isFinite(opts.evidencedMergeThreshold)
+      ? (opts.evidencedMergeThreshold as number)
+      : identityMergeThreshold,
   );
   const people: MutablePerson[] = existing.map((person) => ({
     ...person,
@@ -316,6 +353,7 @@ export function extendFaceClusters(
     people,
     identityMergeThreshold,
     perceptualThreshold,
+    evidencedMergeThreshold,
     opts.onMerge,
   );
 
@@ -376,6 +414,7 @@ function mergeSimilarPeople(
   people: MutablePerson[],
   identityMergeThreshold: number,
   perceptualThreshold: number,
+  evidencedMergeThreshold: number,
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
 ): void {
   const comparable = (a: MutablePerson, b: MutablePerson): boolean =>
@@ -419,9 +458,17 @@ function mergeSimilarPeople(
         const a = people[i];
         const b = people[j];
         if (!comparable(a, b)) continue;
+        // Two clusters that each carry real evidence are judged on the bar
+        // measured for AVERAGES; anything smaller is judged on the strict bar,
+        // which is the one that behaves like a single pair.
+        const evidenced =
+          a.faceCount >= MERGE_EVIDENCE_MIN_FACES &&
+          b.faceCount >= MERGE_EVIDENCE_MIN_FACES;
         const threshold =
           a.embeddingKind === "identity"
-            ? identityMergeThreshold
+            ? evidenced
+              ? evidencedMergeThreshold
+              : identityMergeThreshold
             : perceptualThreshold;
         const similarity = linkage(a, b);
         if (similarity < threshold || similarity < bestSimilarity) {
