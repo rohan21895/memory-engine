@@ -1,0 +1,197 @@
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { DEFAULT_IDENTITY_THRESHOLD, DEFAULT_MERGE_THRESHOLD, clusterFaces, extendFaceClusters } from "./face-cluster.ts";
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+{
+  const people = clusterFaces([
+    { assetId: "photo-a", embedding: [1, 0, 0], embeddingKind: "identity" },
+    { assetId: "photo-b", embedding: [0.999, 0.01, 0], embeddingKind: "identity" },
+  ]);
+  assert(people.length === 1, "near-identical faces should form one person");
+  assert(people[0].faceCount === 2, "both faces should be counted");
+  assert(
+    people[0].assetIds.join(",") === "photo-a,photo-b",
+    "asset IDs should retain deterministic observation order",
+  );
+}
+
+{
+  const people = clusterFaces([
+    { assetId: "photo-a", embedding: [1, 0], embeddingKind: "identity" },
+    { assetId: "photo-b", embedding: [0, 1], embeddingKind: "identity" },
+  ]);
+  assert(people.length === 2, "orthogonal faces should form two people");
+}
+
+{
+  const observations = [
+    { assetId: "photo-a", embedding: [1, 0], embeddingKind: "identity" as const },
+    { assetId: "photo-b", embedding: [0.8, 0.6], embeddingKind: "identity" as const },
+  ];
+  assert(
+    clusterFaces(observations, { threshold: 0.7 }).length === 1,
+    "a pair above the threshold should cluster",
+  );
+  assert(
+    clusterFaces(observations, { threshold: 0.9 }).length === 2,
+    "raising the threshold should produce smaller clusters",
+  );
+}
+
+assert(clusterFaces([]).length === 0, "empty input should return an empty array");
+
+{
+  const firstBatch = clusterFaces([
+    { assetId: "photo-a", embedding: [1, 0], embeddingKind: "identity" },
+  ]);
+  const people = extendFaceClusters(firstBatch, [
+    { assetId: "photo-b", embedding: [0.9, 0.1], embeddingKind: "identity" },
+    { assetId: "photo-c", embedding: [0, 1], embeddingKind: "identity" },
+  ]);
+  assert(people.length === 2, "incremental batches should extend existing clusters");
+  assert(people[0].id === "person-1", "existing person ids must remain stable");
+  assert(people[0].faceCount === 2, "the incremental match updates the centroid cluster");
+  assert(people[1].id === "person-2", "new people receive deterministic ids");
+}
+
+{
+  const people = clusterFaces([
+    { assetId: "photo-a", embedding: [1, 0], embeddingKind: "identity" },
+    { assetId: "photo-b", embedding: [1, 0, 0], embeddingKind: "identity" },
+  ]);
+  assert(
+    people.length === 2,
+    "mismatched embedding lengths should be treated as dissimilar",
+  );
+}
+
+{
+  const people = clusterFaces([
+    { assetId: "identity", embedding: [1, 0], embeddingKind: "identity" },
+    { assetId: "fallback", embedding: [1, 0], embeddingKind: "perceptual" },
+  ]);
+  assert(
+    people.length === 2,
+    "identity and perceptual spaces must never be mixed into one person",
+  );
+}
+
+// The merge bar is the transitive step and must be the tightest number in the
+// system. It is clamped up to the assignment bar UNCONDITIONALLY, including on
+// the explicit-caller path: the guard used to sit only on the default branch,
+// so face-index.ts passing an explicit 0.37 bypassed it entirely and a
+// recalibration of the default to 0.72 had no effect on the only path that
+// ships. A caller asking for a looser bar is asking for a bug.
+{
+  assert(
+    DEFAULT_MERGE_THRESHOLD >= DEFAULT_IDENTITY_THRESHOLD,
+    "the default merge bar is at least the default assignment bar",
+  );
+
+  const atCosine = (similarity: number) => [
+    similarity,
+    Math.sqrt(1 - similarity * similarity),
+  ];
+  // Positioned relative to the live bar rather than written as a literal: the
+  // pair clears the requested merge bar but NOT the assignment bar, so the
+  // clamp is the only thing standing between these two and one tile.
+  const underBar = Number((DEFAULT_IDENTITY_THRESHOLD - 0.03).toFixed(4));
+  const requestedMerge = Number((DEFAULT_IDENTITY_THRESHOLD - 0.08).toFixed(4));
+  const clamped = clusterFaces(
+    [
+      { assetId: "a", embedding: [1, 0], embeddingKind: "identity" },
+      { assetId: "b", embedding: atCosine(underBar), embeddingKind: "identity" },
+    ],
+    { identityMergeThreshold: requestedMerge },
+  );
+  assert(
+    clamped.length === 2,
+    "an explicit merge threshold below the identity threshold is clamped up",
+  );
+
+  // The clamp only ever raises: an explicit bar ABOVE assignment is obeyed.
+  const honoured = clusterFaces(
+    [
+      { assetId: "a", embedding: [1, 0], embeddingKind: "identity" },
+      { assetId: "b", embedding: atCosine(0.7), embeddingKind: "identity" },
+    ],
+    { identityMergeThreshold: 0.95, threshold: 0.9 },
+  );
+  assert(
+    honoured.length === 2,
+    "an explicit merge threshold above the identity threshold is honoured",
+  );
+}
+
+// AVERAGE LINKAGE, and why cosine-against-a-centroid is not a similarity.
+//
+// A centroid is the arithmetic MEAN of its members' unit embeddings, so
+// cos(face, centroid) is the mean cosine to the members divided by the
+// centroid's own length — and that length shrinks as a cluster gets sloppier.
+// The score therefore RISES as a cluster gets worse, which is a positive
+// feedback loop: absorb a junk face, get shorter, look closer to everything,
+// absorb the next one. It is the mechanism behind a library that collapses into
+// one tile no matter what threshold is set, and no threshold can stop it
+// because the quantity being compared is not bounded by anything real.
+//
+// Two members 40 degrees either side of the centroid direction: a probe sitting
+// exactly on that direction resembles NEITHER member more than cos 40 = 0.766,
+// yet cos(probe, centroid) is 1.0 — a perfect score against a cluster it only
+// half matches. Multiplying by |centroid| recovers the honest number.
+{
+  const spread = Math.cos((40 * Math.PI) / 180);
+  const loose = {
+    id: "person-1",
+    faceCount: 2,
+    assetIds: ["member-a", "member-b"],
+    // The mean of unit vectors at +40 and -40 degrees.
+    centroid: [spread, 0],
+    embeddingKind: "identity" as const,
+  };
+  const probe = {
+    assetId: "probe",
+    embedding: [1, 0],
+    embeddingKind: "identity" as const,
+  };
+
+  assert(
+    extendFaceClusters([loose], [probe], { threshold: 0.8 })[0].faceCount === 2,
+    "a face cannot join a cluster it matches at 0.766 when the bar is 0.80",
+  );
+  assert(
+    extendFaceClusters([loose], [probe], { threshold: 0.75 })[0].faceCount === 3,
+    "and it does join once the bar drops below its true mean similarity",
+  );
+
+  // The runaway law, stated directly: of two clusters the same size, the one
+  // whose members agree with each other must be the more attractive. Under
+  // centroid cosine it is the other way round.
+  const tight = { ...loose, centroid: [1, 0] };
+  assert(
+    extendFaceClusters([tight], [probe], { threshold: 0.8 })[0].faceCount === 3,
+    "the tight cluster admits the same face the loose one rejected",
+  );
+}
+
+{
+  const fallback = [
+    { assetId: "base", embedding: [1, 0], embeddingKind: "perceptual" as const },
+    { assetId: "near", embedding: [0.94, 0.341], embeddingKind: "perceptual" as const },
+  ];
+  assert(
+    clusterFaces(fallback).length === 1,
+    "the fallback should retain its stricter perceptual calibration",
+  );
+  assert(
+    clusterFaces([
+      fallback[0],
+      { assetId: "different", embedding: [0.8, 0.6], embeddingKind: "perceptual" },
+    ]).length === 2,
+    "the fallback should not use the looser identity threshold",
+  );
+}

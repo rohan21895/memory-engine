@@ -1,0 +1,62 @@
+{
+  "expo": {
+    "name": "Photeo",
+    "slug": "photeo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": [
+      "photeo",
+      "com.photeo.app",
+      "com.googleusercontent.apps.57259320253-m9j92su88vg5naql3405aesbgq7mmo9v"
+    ],
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#faf8f5",
+    "plugins": [
+      "expo-web-browser",
+      "expo-secure-store",
+      "expo-image",
+      "expo-asset",
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Photeo uses photo locations to group your library by place. Nothing leaves the phone.",
+          "locationAlwaysPermission": false,
+          "locationAlwaysAndWhenInUsePermission": false
+        }
+      ],
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Photeo reads your photos on this device to find your best shots. Nothing leaves the phone.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      "react-native-fast-tflite"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.photeo.app"
+    },
+    "android": {
+      "package": "com.photeo.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#faf8f5",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": true,
+      "permissions": [
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
