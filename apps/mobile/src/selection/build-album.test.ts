@@ -13,6 +13,13 @@ function assert(value: unknown, message: string): asserts value {
 
 const source = readFileSync(new URL("../build-album.ts", import.meta.url), "utf8");
 
+const initialYield = source.indexOf("await yieldToEventLoop();");
+const cacheLoad = source.indexOf("loadCandidateProbeCache()");
+assert(
+  initialYield >= 0 && cacheLoad >= 0 && initialYield < cacheLoad,
+  "the building screen must receive a paint turn before cache/native work starts",
+);
+
 assert(
   source.includes("const boxesPromise = detectFaces(analysisUri"),
   "face detection must be shared with quality measurement",
@@ -77,4 +84,12 @@ assert(
   source.includes("return hasPerceptualEmbedding") &&
     source.includes(": semanticEmbedding ?? [];"),
   "semantic embedding must remain the fallback when perceptual data is absent",
+);
+assert(
+  source.includes("model.run(analysisUri),"),
+  "the real heavy-analysis bridge must produce the perceptual fingerprint",
+);
+assert(
+  !source.includes("? Promise.resolve({ embedding: [], faces: 0 })"),
+  "the >500-photo path must not bypass the perceptual fingerprint used by CX-16 dedupe",
 );

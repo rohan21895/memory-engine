@@ -106,6 +106,49 @@ async function main(): Promise<void> {
   assert(message === "boom", `the original failure is rethrown (got "${message}")`);
   assert(cleanups >= 3, "sibling workers still ran their cleanup before unwinding");
 
+  // Background pause is checked before a worker claims work. The first
+  // assertion is the vacuity guard: it proves this fixture really can observe
+  // work starting too early.
+  let releaseForeground: () => void = () => undefined;
+  const foreground = new Promise<void>((resolve) => {
+    releaseForeground = resolve;
+  });
+  let backgroundStarted = 0;
+  const paused = mapLimit([1, 2, 3], 2, async () => {
+    backgroundStarted += 1;
+  }, { waitUntilRunnable: () => foreground });
+  await tick();
+  assert(
+    backgroundStarted === 0,
+    `backgrounded work must not start (started ${backgroundStarted})`,
+  );
+  releaseForeground();
+  await paused;
+  assert(Number(backgroundStarted) === 3, "foregrounding resumes every queued item");
+
+  // Resolved promises only drain microtasks; they do not give React a paint
+  // turn. This control proves the fixture distinguishes the new macrotask
+  // yield from ordinary async scheduling.
+  let paintedWithoutYield = false;
+  const noYieldTimer = setTimeout(() => { paintedWithoutYield = true; }, 0);
+  await mapLimit([1, 2, 3, 4], 2, async () => undefined);
+  assert(!paintedWithoutYield, "the no-yield control must finish before a timer");
+  clearTimeout(noYieldTimer);
+  let paintedWithYield = false;
+  const yieldTimer = setTimeout(() => { paintedWithYield = true; }, 0);
+  const checkpoints: number[] = [];
+  await mapLimit([1, 2, 3, 4], 2, async () => undefined, {
+    checkpointEvery: 2,
+    onCheckpoint: async (done) => { checkpoints.push(done); },
+    yieldEvery: 2,
+  });
+  clearTimeout(yieldTimer);
+  assert(paintedWithYield, "an explicit batch yield gives React a paint turn");
+  assert(
+    JSON.stringify(checkpoints) === JSON.stringify([2, 4]),
+    `checkpoint boundaries must be resumable and exact (${checkpoints})`,
+  );
+
   // Empty input is a no-op, and throwIfCancelled ignores a missing signal.
   assert(
     JSON.stringify(await mapLimit([], 4, async () => 1)) === "[]",
