@@ -375,6 +375,14 @@ type PersistedFaceIndex = {
   embeddingMean?: number[];
   /** What the user said about who is who. Survives every recluster. */
   constraints?: FaceConstraint[];
+  /**
+   * Whether Android's background-activity dialog has already been shown.
+   *
+   * Persisted, because the alternative is a system dialog on EVERY launch for
+   * anyone who declined it once -- Android only honours the request the first
+   * time, so re-asking cannot succeed and only annoys.
+   */
+  backgroundPromptShown?: boolean;
   faceThumbUris: Record<string, string>;
 };
 
@@ -3010,13 +3018,17 @@ let scanServiceHolding = false;
  * that will not show it all leave the scan running exactly as it does today,
  * just interruptible.
  */
-let backgroundPermissionAsked = false;
 async function askForBackgroundPermissionOnce(): Promise<void> {
-  if (backgroundPermissionAsked || !scanServiceHolding) return;
-  backgroundPermissionAsked = true;
+  // Asked at most once EVER, not once per process. A refusal leaves
+  // `isBatteryUnrestricted` false forever, so a process-scoped flag would put
+  // the system dialog in front of him on every single launch.
+  if (index.backgroundPromptShown || !scanServiceHolding) return;
   try {
     if (await isBatteryUnrestricted()) return;
+    index.backgroundPromptShown = true;
+    markIndexDirty();
     await requestBatteryUnrestricted();
+    await persistFaceIndex(true);
   } catch {
     // Never worth interrupting a scan over.
   }
