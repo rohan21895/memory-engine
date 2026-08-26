@@ -2631,8 +2631,15 @@ async function persistCoverFaceThumbs(
  * It is safe to be generous because the pass yields every few photos and only
  * runs when the scan has nothing else to do, so it never blocks a tap. It also
  * stops the moment the app leaves the foreground, exactly like the scan.
+ *
+ * Sized from the real queue rather than guessed. On the owner's library the
+ * 1,788 people still without a face hold 2,648 photos between them once the
+ * per-person cap is applied -- so a budget above that drains the whole queue in
+ * a single launch, and every launch after it costs nothing because there is
+ * nobody left to try. At 1,200 it took three, and the grid stayed part-empty in
+ * between for no reason other than an arbitrary constant.
  */
-const AVATAR_BACKFILL_PHOTOS_PER_PASS = 1200;
+const AVATAR_BACKFILL_PHOTOS_PER_PASS = 3200;
 
 /** Yields to the UI after this many photos so taps stay responsive. */
 const AVATAR_BACKFILL_YIELD_EVERY = 4;
