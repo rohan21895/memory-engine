@@ -4,7 +4,7 @@ import { registerRootComponent } from 'expo';
 import { AppRegistry } from 'react-native';
 
 import App from './App';
-import { SCAN_TASK_KEY, holdScanTask } from './modules/photeo-scan-service/src/index';
+import { SCAN_TASK_KEY, exportPrivateFile, holdScanTask } from './modules/photeo-scan-service/src/index';
 
 // Registered here, at the entry, for two reasons. The native service can start
 // the task at any point after boot, so registration has to have already
@@ -15,6 +15,15 @@ import { SCAN_TASK_KEY, holdScanTask } from './modules/photeo-scan-service/src/i
 // Without it the scan stalls at its first batch boundary; see
 // ScanForegroundService.
 AppRegistry.registerHeadlessTask(SCAN_TASK_KEY, () => holdScanTask);
+
+// Puts the persisted face index somewhere `adb pull` can reach on a release
+// build, so clustering can be tuned against the real library instead of against
+// synthetic embeddings -- which have disagreed with the device every time. The
+// native side skips the copy unless the index actually changed, and a failure
+// is silent because nothing the user does depends on it.
+void exportPrivateFile('face-index.json').then((path) => {
+  if (path) console.log(`[PhoteoFaceIndex] exported ${path}`);
+});
 
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);
 // It also ensures that whether you load the app in Expo Go or in a native build,

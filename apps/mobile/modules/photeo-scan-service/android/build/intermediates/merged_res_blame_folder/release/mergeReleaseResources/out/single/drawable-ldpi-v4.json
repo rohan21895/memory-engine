@@ -1,0 +1,26 @@
+[
+    {
+        "merged": "expo.modules.photeoscanservice.photeo-scan-service-release-28:/drawable-ldpi-v4/ic_call_answer_low.png",
+        "source": "expo.modules.photeoscanservice.photeo-scan-service-core-1.13.1-2:/drawable-ldpi-v4/ic_call_answer_low.png"
+    },
+    {
+        "merged": "expo.modules.photeoscanservice.photeo-scan-service-release-28:/drawable-ldpi-v4/ic_call_decline.png",
+        "source": "expo.modules.photeoscanservice.photeo-scan-service-core-1.13.1-2:/drawable-ldpi-v4/ic_call_decline.png"
+    },
+    {
+        "merged": "expo.modules.photeoscanservice.photeo-scan-service-release-28:/drawable-ldpi-v4/ic_call_answer_video_low.png",
+        "source": "expo.modules.photeoscanservice.photeo-scan-service-core-1.13.1-2:/drawable-ldpi-v4/ic_call_answer_video_low.png"
+    },
+    {
+        "merged": "expo.modules.photeoscanservice.photeo-scan-service-release-28:/drawable-ldpi-v4/ic_call_answer_video.png",
+        "source": "expo.modules.photeoscanservice.photeo-scan-service-core-1.13.1-2:/drawable-ldpi-v4/ic_call_answer_video.png"
+    },
+    {
+        "merged": "expo.modules.photeoscanservice.photeo-scan-service-release-28:/drawable-ldpi-v4/ic_call_decline_low.png",
+        "source": "expo.modules.photeoscanservice.photeo-scan-service-core-1.13.1-2:/drawable-ldpi-v4/ic_call_decline_low.png"
+    },
+    {
+        "merged": "expo.modules.photeoscanservice.photeo-scan-service-release-28:/drawable-ldpi-v4/ic_call_answer.png",
+        "source": "expo.modules.photeoscanservice.photeo-scan-service-core-1.13.1-2:/drawable-ldpi-v4/ic_call_answer.png"
+    }
+]

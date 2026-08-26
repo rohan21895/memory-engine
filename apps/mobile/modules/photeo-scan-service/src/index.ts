@@ -18,6 +18,7 @@ type ScanServiceNative = {
   update(title: string, text: string): Promise<boolean>;
   stop(): Promise<boolean>;
   isSupported(): boolean;
+  exportPrivateFile?(name: string): Promise<string | null>;
 };
 
 /** `undefined` means "not looked up yet"; `null` means "looked up, absent". */
@@ -26,6 +27,7 @@ let cached: ScanServiceNative | null | undefined;
 /** Must match `ScanForegroundService.TASK_KEY`. */
 export const SCAN_TASK_KEY = "PhoteoScan";
 
+let holdPromise: Promise<void> | null = null;
 let releaseHold: (() => void) | null = null;
 
 /**
@@ -44,18 +46,22 @@ let releaseHold: (() => void) | null = null;
  * global setup, which is fine on a device and fatal in the offline test runner.
  */
 export function holdScanTask(): Promise<void> {
-  // A scan that is already holding must not be replaced: dropping the previous
-  // resolver would leave a task nothing can ever finish.
-  if (releaseHold) return new Promise<void>(() => {});
-  return new Promise<void>((resolve) => {
+  // A redundant start shares the live hold rather than getting one of its own.
+  // Handing back a fresh never-resolving promise would leave a task nothing can
+  // finish, and the service only stops itself once EVERY task has -- so the
+  // notification would outlive the scan. Sharing means one release ends both.
+  if (holdPromise) return holdPromise;
+  holdPromise = new Promise<void>((resolve) => {
     releaseHold = resolve;
   });
+  return holdPromise;
 }
 
 /** Lets the headless task finish, which lets the service stop itself. */
 function releaseScanTask(): void {
   const resolve = releaseHold;
   releaseHold = null;
+  holdPromise = null;
   resolve?.();
 }
 
@@ -125,6 +131,24 @@ export async function updateScanService(
     await native?.update(title, text);
   } catch {
     // A stale progress line is cosmetic.
+  }
+}
+
+/**
+ * Copies a file from the app's private storage to its external files directory,
+ * so `adb pull` can retrieve it from a release build. Returns the path, or null
+ * when the copy did not happen.
+ *
+ * The face index is the only interesting subject: tuning clustering against
+ * synthetic embeddings has repeatedly disagreed with what the real library does,
+ * and without this every experiment costs a rebuild and a five-minute recluster.
+ */
+export async function exportPrivateFile(name: string): Promise<string | null> {
+  try {
+    const native = await nativeModule();
+    return (await native?.exportPrivateFile?.(name)) ?? null;
+  } catch {
+    return null;
   }
 }
 

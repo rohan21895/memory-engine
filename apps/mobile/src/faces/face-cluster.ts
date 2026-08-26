@@ -206,6 +206,82 @@ function comparisonInverse(values: number[]): number {
 }
 
 /**
+ * Width of one early-exit block. 64 of 512 dimensions, so a hopeless comparison
+ * is abandoned after an eighth of the work at best, and costs one extra multiply
+ * and compare per block at worst.
+ */
+const BOUND_BLOCK = 64;
+
+/**
+ * Norms of each trailing slice of a vector, at `BOUND_BLOCK` boundaries.
+ *
+ * `suffix[k]` is the length of everything from dimension `k * BOUND_BLOCK`
+ * onward, which by Cauchy-Schwarz bounds how much the rest of a dot product can
+ * still contribute: |sum_{i>=P} a_i b_i| <= ||a_{>=P}|| * ||b_{>=P}||. That is
+ * what lets `boundedSimilarity` stop early without ever changing an answer.
+ */
+function suffixNorms(values: number[]): Float64Array {
+  const blocks = Math.ceil(values.length / BOUND_BLOCK);
+  const suffix = new Float64Array(blocks + 1);
+  let squared = 0;
+  for (let block = blocks - 1; block >= 0; block -= 1) {
+    const start = block * BOUND_BLOCK;
+    const end = Math.min(start + BOUND_BLOCK, values.length);
+    for (let index = start; index < end; index += 1) {
+      squared += values[index] * values[index];
+    }
+    suffix[block] = Math.sqrt(squared);
+  }
+  return suffix;
+}
+
+/**
+ * `scaledSimilarity`, but allowed to give up once the answer provably cannot
+ * reach `required`. Returns NEGATIVE_INFINITY when it gave up.
+ *
+ * Assignment compares one face against every person and keeps the best match
+ * over a bar, so the vast majority of those dot products exist only to be
+ * discarded. This runs them a block at a time and, after each block, adds the
+ * largest contribution the remaining dimensions could possibly make. If even
+ * that optimistic total falls short, the remaining dimensions cannot change the
+ * outcome and are skipped.
+ *
+ * The bound is Cauchy-Schwarz, so this is EXACT, not approximate: it returns the
+ * same value as `scaledSimilarity` for every comparison that could have been
+ * chosen, and abandons only ones that could not. `face-cluster-bound.test.ts`
+ * asserts that equivalence directly, and the offline bench compares partition
+ * hashes -- a faster pass that groups differently is not a fix.
+ */
+function boundedSimilarity(
+  a: number[],
+  aInverse: number,
+  aSuffix: Float64Array,
+  b: number[],
+  bInverse: number,
+  bSuffix: Float64Array,
+  required: number,
+): number {
+  if (aInverse === 0 || bInverse === 0) return 0;
+  if (a.length === 0 || a.length !== b.length) return 0;
+  const scale = aInverse * bInverse;
+  // Work in raw dot-product units so the bound needs no division per block.
+  const requiredDot = required / scale;
+  let dot = 0;
+  let block = 0;
+  for (let index = 0; index < a.length; ) {
+    const end = Math.min(index + BOUND_BLOCK, a.length);
+    for (; index < end; index += 1) {
+      dot += a[index] * b[index];
+    }
+    block += 1;
+    if (dot + aSuffix[block] * bSuffix[block] < requiredDot) {
+      return Number.NEGATIVE_INFINITY;
+    }
+  }
+  return dot * scale;
+}
+
+/**
  * Scaled similarity from two vectors and their precomputed inverses.
  *
  * The guards live here rather than in the loop so the hot path stays a single
@@ -321,12 +397,31 @@ type MutablePerson = Person & {
   assetIdSet: Set<string>;
   /** 1/max(1,|centroid|): the centroid's half of a scaled similarity. */
   inverse: number;
+  /** Trailing-slice norms of `centroid`, for the assignment loop's early exit. */
+  suffix: Float64Array;
   /** Sum of quality weights behind `centroid`, which is a weighted mean. */
   weightSum: number;
   /** Capture-time span of this cluster; undefined when no face carried a time. */
   firstAt?: number;
   lastAt?: number;
 };
+
+/**
+ * Refreshes both cached magnitudes of a moved centroid.
+ *
+ * Always together, and only here. `inverse` and `suffix` are two views of the
+ * same vector's length, and updating one without the other leaves the
+ * assignment loop pruning against a centroid that no longer exists. That
+ * failure is silent -- a stale suffix is usually LARGER than the true one,
+ * which merely wastes work, so it survives a test suite and then bites on the
+ * one library where it is smaller and a real match gets abandoned. Construction
+ * sites are already safe: `suffix` is a required field, so a literal that omits
+ * it does not compile.
+ */
+function refreshCentroidMagnitudes(person: MutablePerson): void {
+  person.inverse = comparisonInverse(person.centroid);
+  person.suffix = suffixNorms(person.centroid);
+}
 
 /** Restores the merge-only state hidden behind the public `Person` shape. */
 function mutablePerson(person: Person): MutablePerson {
@@ -341,6 +436,7 @@ function mutablePerson(person: Person): MutablePerson {
     centroid: person.centroid.slice(),
     assetIdSet: new Set(person.assetIds),
     inverse: comparisonInverse(person.centroid),
+    suffix: suffixNorms(person.centroid),
     // New clusters retain their quality-weighted sum in memory and on disk.
     // Legacy records do not have it, so faceCount reproduces their historical
     // unweighted centroid semantics exactly.
@@ -362,7 +458,12 @@ function mutablePerson(person: Person): MutablePerson {
 }
 
 function publicPerson(person: MutablePerson): Person {
-  const { assetIdSet: _assetIdSet, inverse: _inverse, ...record } = person;
+  const {
+    assetIdSet: _assetIdSet,
+    inverse: _inverse,
+    suffix: _suffix,
+    ...record
+  } = person;
   return record;
 }
 
@@ -480,6 +581,13 @@ export function extendFaceClusters(
     // old code recomputed its norm inside each of those comparisons: on the
     // measured library that was 1,010 redundant 512-dimension passes per face.
     const embeddingInverse = comparisonInverse(embedding);
+    const embeddingSuffix = suffixNorms(embedding);
+    // Fixed for this face: a person only reaches the comparison when its kind
+    // already matches, so this cannot vary within the loop below.
+    const threshold =
+      observation.embeddingKind === "identity"
+        ? identityThreshold
+        : perceptualThreshold;
     let bestIndex = -1;
     let bestSimilarity = Number.NEGATIVE_INFINITY;
 
@@ -493,10 +601,32 @@ export function extendFaceClusters(
         continue;
       }
 
+      // A person can only win by clearing the bar AND beating the best match so
+      // far, so the bar rises as the loop finds better candidates and later
+      // comparisons get cheaper. Everything below this cannot be chosen, which
+      // is what makes abandoning it early lossless.
+      const required =
+        bestSimilarity > threshold ? bestSimilarity : threshold;
       // Average linkage: the mean cosine between this face and every face
       // already in the person, NOT the cosine against their mean. See
       // `centroidScale`.
-      const similarity = scaledSimilarity(embedding, embeddingInverse, person.centroid, person.inverse);
+      const similarity = boundedSimilarity(
+        embedding,
+        embeddingInverse,
+        embeddingSuffix,
+        person.centroid,
+        person.inverse,
+        person.suffix,
+        // A person holding a face from this photo needs the much higher
+        // mirror/panorama bar, so asking for `required` here would abandon the
+        // dot product before it could be compared against that bar. Only the
+        // exception is at stake -- such a person can never be chosen on
+        // `required` alone -- so it is the exception that must be cleared.
+        person.assetIdSet.has(observation.assetId)
+          ? SAME_PHOTO_EXCEPTION_SIMILARITY
+          : required,
+      );
+      if (similarity === Number.NEGATIVE_INFINITY) continue;
       // Cannot-link: this person already owns a face from this very photo, so
       // joining would fuse two people who merely posed together. Only the
       // mirror/panorama exception may cross it, and on average linkage that
@@ -508,10 +638,6 @@ export function extendFaceClusters(
       ) {
         continue;
       }
-      const threshold =
-        observation.embeddingKind === "identity"
-          ? identityThreshold
-          : perceptualThreshold;
       if (similarity >= threshold && similarity > bestSimilarity) {
         bestIndex = index;
         bestSimilarity = similarity;
@@ -531,6 +657,11 @@ export function extendFaceClusters(
         embeddingKind: observation.embeddingKind,
         assetIdSet: new Set([observation.assetId]),
         inverse: comparisonInverse(embedding),
+        // The centroid IS this embedding at birth, so its suffix norms are the
+        // ones already computed above. Shared rather than recomputed because
+        // neither array is ever mutated in place -- `suffix` is reassigned
+        // wholesale whenever the centroid moves.
+        suffix: embeddingSuffix,
         weightSum: centroidWeight(observation),
         firstAt: observation.capturedAt,
         lastAt: observation.capturedAt,
@@ -547,7 +678,7 @@ export function extendFaceClusters(
       person.weightSum,
       weight,
     );
-    person.inverse = comparisonInverse(person.centroid);
+    refreshCentroidMagnitudes(person);
     person.weightSum += weight;
     person.faceCount += 1;
     widenSpan(person, observation.capturedAt);
@@ -915,7 +1046,7 @@ function absorb(
       (value * survivor.weightSum + absorbed.centroid[index] * absorbed.weightSum) /
       totalWeight,
   );
-  survivor.inverse = comparisonInverse(survivor.centroid);
+  refreshCentroidMagnitudes(survivor);
   survivor.faceCount = survivor.faceCount + absorbed.faceCount;
   survivor.weightSum += absorbed.weightSum;
   widenSpan(survivor, absorbed.firstAt);

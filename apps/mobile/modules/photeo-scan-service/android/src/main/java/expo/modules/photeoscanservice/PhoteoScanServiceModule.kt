@@ -8,6 +8,7 @@ import androidx.core.content.ContextCompat
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.io.File
 
 /**
  * JS control over the scan's foreground service.
@@ -81,5 +82,33 @@ class PhoteoScanServiceModule : Module() {
     }
 
     Function("isSupported") { Build.VERSION.SDK_INT >= Build.VERSION_CODES.O }
+
+    /**
+     * Copies a file out of the app's private storage into its external files
+     * directory, where `adb pull` can reach it without a debuggable build.
+     *
+     * This exists so clustering can be tuned against the real library offline.
+     * Every threshold experiment otherwise costs a rebuild plus a five-minute
+     * on-device recluster, which is why guesses kept winning over measurements.
+     * Returns the destination path, or null when there is nothing to copy.
+     */
+    AsyncFunction("exportPrivateFile") { name: String ->
+      try {
+        val source = File(context.filesDir, name)
+        if (!source.isFile) return@AsyncFunction null
+        val directory = context.getExternalFilesDir(null) ?: return@AsyncFunction null
+        val destination = File(directory, name)
+        // The index runs to tens of megabytes, so an unconditional copy on every
+        // launch is a real cost on the user's phone for a diagnostic they did
+        // not ask for. Copy only what is actually new.
+        if (destination.isFile && destination.lastModified() >= source.lastModified()) {
+          return@AsyncFunction destination.absolutePath
+        }
+        source.copyTo(destination, overwrite = true)
+        destination.absolutePath
+      } catch (error: Throwable) {
+        null
+      }
+    }
   }
 }
