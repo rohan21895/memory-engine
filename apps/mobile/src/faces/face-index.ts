@@ -6,7 +6,7 @@ import { faceEmbeddingPathCounts } from "../ml/facenet.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } from "../ml/face-align.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters, mergeExistingPeople } from "./face-cluster.ts";
+import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters, mergeExistingPeople, suggestMerges, type MergeSuggestion } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { anchorAssetFor, isFaceConstraint, pruneConstraints, type FaceConstraint } from "./face-constraints.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
@@ -2727,6 +2727,32 @@ export function stopFaceIndexBuild(): void {
 
 export function getPeople(): FaceIndexPerson[] {
   return summariesForPeople(index.people, index.faceThumbUris, true);
+}
+
+/**
+ * People the app came close to grouping together but would not do on its own.
+ *
+ * Uses the SAME calibrated bars a real consolidation would, so a suggestion
+ * means "this pair failed the test the app actually ran" rather than a second,
+ * looser opinion invented for the UI. Confirming one writes a must-link, which
+ * outranks every measured bar and survives future reclusters.
+ *
+ * O(people^2) in linkage calls -- the shape of one consolidation sweep, several
+ * seconds at this library's size -- so this belongs behind a deliberate action
+ * and must never be called while painting.
+ */
+export function suggestedFaceMerges(limit = 20): MergeSuggestion[] {
+  return suggestMerges(
+    index.people,
+    {
+      ...faceClusterOptions(index.threshold, {
+        evidencedMergeThreshold: evidencedMergeBar(index.observations),
+        temporalMergeThreshold: temporalMergeBar(index.observations),
+        constraints: index.constraints ?? [],
+      }),
+      limit,
+    },
+  );
 }
 
 export function assetIdsForPerson(personId: string): string[] {
