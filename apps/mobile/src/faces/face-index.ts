@@ -6,7 +6,7 @@ import { faceEmbeddingPathCounts } from "../ml/facenet.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } from "../ml/face-align.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters } from "./face-cluster.ts";
+import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters, mergeExistingPeople } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { anchorAssetFor, isFaceConstraint, pruneConstraints, type FaceConstraint } from "./face-constraints.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
@@ -1290,8 +1290,55 @@ async function persistFaceIndex(force = false): Promise<void> {
   }
 }
 
+function keepFaceThumbOnMerge(
+  absorbedPersonId: string,
+  survivingPersonId: string,
+): void {
+  if (
+    !index.faceThumbUris[survivingPersonId] &&
+    index.faceThumbUris[absorbedPersonId]
+  ) {
+    index.faceThumbUris[survivingPersonId] =
+      index.faceThumbUris[absorbedPersonId];
+  }
+  delete index.faceThumbUris[absorbedPersonId];
+}
+
 /**
- * Records that two people are (or are not) the same, and re-groups immediately.
+ * Applies a correction to the current people without losing the split path.
+ *
+ * A must-link joins two existing records directly. A cannot-link can mean that
+ * observations currently inside one transitive cluster must separate, so only
+ * a genuine recluster can apply it safely.
+ */
+export function applyConstraintToPeople(
+  people: Person[],
+  kind: FaceConstraint["kind"],
+  personIdA: string,
+  personIdB: string,
+  recluster: () => void,
+  onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
+): boolean {
+  if (kind === "cannot") {
+    recluster();
+    return false;
+  }
+  const firstIndex = people.findIndex((person) => person.id === personIdA);
+  const secondIndex = people.findIndex((person) => person.id === personIdB);
+  const merged = mergeExistingPeople(people, firstIndex, secondIndex, onMerge);
+  // The fast path refuses pairs it cannot join safely -- most reachably an
+  // identity person and a perceptual one, whose centroids live in different
+  // spaces. Falling back to the full recluster keeps the user's answer worth
+  // something: `resolveConstraints` applies the stored must-link there, or
+  // honestly declines it. Returning false without this would report a merge
+  // that never happened and leave the correction dormant until some unrelated
+  // rebuild. Slow, but only for the pairs the cheap merge cannot express.
+  if (!merged) recluster();
+  return merged;
+}
+
+/**
+ * Records that two people are (or are not) the same, and applies it immediately.
  *
  * The constraint is stored against ANCHOR ASSETS rather than person ids, which
  * are rebuilt from scratch on every recluster. Returns false when no unambiguous
@@ -1322,7 +1369,15 @@ async function recordConstraint(
     { kind, a, b },
   ];
   markIndexDirty();
-  rebuildPeople();
+  const merged = applyConstraintToPeople(
+    index.people,
+    kind,
+    personIdA,
+    personIdB,
+    rebuildPeople,
+    keepFaceThumbOnMerge,
+  );
+  if (merged) rebuildPersonIdsByAsset();
   await persistFaceIndex(true);
   return true;
 }
@@ -2193,21 +2248,14 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
       constraints: index.constraints ?? [],
     }),
     onAssign: (observation, personId) => assignments.set(observation, personId),
-    onMerge: (absorbedPersonId, survivingPersonId) => {
-      for (const [observation, personId] of assignments) {
-        if (personId === absorbedPersonId) {
-          assignments.set(observation, survivingPersonId);
+      onMerge: (absorbedPersonId, survivingPersonId) => {
+        for (const [observation, personId] of assignments) {
+          if (personId === absorbedPersonId) {
+            assignments.set(observation, survivingPersonId);
+          }
         }
-      }
-      if (
-        !index.faceThumbUris[survivingPersonId] &&
-        index.faceThumbUris[absorbedPersonId]
-      ) {
-        index.faceThumbUris[survivingPersonId] =
-          index.faceThumbUris[absorbedPersonId];
-      }
-      delete index.faceThumbUris[absorbedPersonId];
-    },
+        keepFaceThumbOnMerge(absorbedPersonId, survivingPersonId);
+      },
     threshold: index.threshold,
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
   });

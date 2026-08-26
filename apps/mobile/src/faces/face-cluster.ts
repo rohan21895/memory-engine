@@ -274,6 +274,44 @@ type MutablePerson = Person & {
   lastAt?: number;
 };
 
+/** Restores the merge-only state hidden behind the public `Person` shape. */
+function mutablePerson(person: Person): MutablePerson {
+  const stored = person as Person & {
+    firstAt?: unknown;
+    lastAt?: unknown;
+    weightSum?: unknown;
+  };
+  return {
+    ...person,
+    assetIds: person.assetIds.slice(),
+    centroid: person.centroid.slice(),
+    assetIdSet: new Set(person.assetIds),
+    scale: centroidScale(person.centroid),
+    // New clusters retain their quality-weighted sum in memory and on disk.
+    // Legacy records do not have it, so faceCount reproduces their historical
+    // unweighted centroid semantics exactly.
+    weightSum:
+      typeof stored.weightSum === "number" &&
+      Number.isFinite(stored.weightSum) &&
+      stored.weightSum > 0
+        ? stored.weightSum
+        : person.faceCount,
+    firstAt:
+      typeof stored.firstAt === "number" && Number.isFinite(stored.firstAt)
+        ? stored.firstAt
+        : undefined,
+    lastAt:
+      typeof stored.lastAt === "number" && Number.isFinite(stored.lastAt)
+        ? stored.lastAt
+        : undefined,
+  };
+}
+
+function publicPerson(person: MutablePerson): Person {
+  const { assetIdSet: _assetIdSet, scale: _scale, ...record } = person;
+  return record;
+}
+
 type ClusterOptions = {
   /** User judgements about who is who. They outrank every measured bar. */
   constraints?: readonly FaceConstraint[];
@@ -358,19 +396,7 @@ export function extendFaceClusters(
       ? (opts.temporalMergeThreshold as number)
       : evidencedMergeThreshold,
   );
-  const people: MutablePerson[] = existing.map((person) => ({
-    ...person,
-    assetIds: person.assetIds.slice(),
-    centroid: person.centroid.slice(),
-    assetIdSet: new Set(person.assetIds),
-    // Persisted people carry no weight sum or capture span: `Person` stores
-    // neither. The face count is the right reconstruction of the weight (it is
-    // what the sum was before quality weighting existed), and an absent span
-    // simply leaves temporal merging inert for this person until the next full
-    // rebuild computes one from the observations.
-    weightSum: person.faceCount,
-    scale: centroidScale(person.centroid),
-  }));
+  const people: MutablePerson[] = existing.map(mutablePerson);
   let nextPersonNumber = people.reduce((largest, person) => {
     const match = /^person-(\d+)$/u.exec(person.id);
     return match ? Math.max(largest, Number(match[1])) : largest;
@@ -466,9 +492,60 @@ export function extendFaceClusters(
     opts.onMerge,
   );
 
-  return people.map(
-    ({ assetIdSet: _assetIdSet, scale: _scale, ...person }) => person,
+  return people.map(publicPerson);
+}
+
+/**
+ * Directly merges two people that already exist in the current index.
+ *
+ * This deliberately routes through `absorb`, the same operation used by both
+ * measured and constraint-forced clustering merges. It is O(embedding dims +
+ * absorbed assets), independent of the number of observations and people in
+ * the library. The older array position survives, matching the full merge pass.
+ */
+export function mergeExistingPeople(
+  people: Person[],
+  firstIndex: number,
+  secondIndex: number,
+  onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
+): boolean {
+  if (
+    !Number.isInteger(firstIndex) ||
+    !Number.isInteger(secondIndex) ||
+    firstIndex < 0 ||
+    secondIndex < 0 ||
+    firstIndex >= people.length ||
+    secondIndex >= people.length ||
+    firstIndex === secondIndex
+  ) {
+    return false;
+  }
+  const keepIndex = Math.min(firstIndex, secondIndex);
+  const dropIndex = Math.max(firstIndex, secondIndex);
+  const survivor = people[keepIndex];
+  const absorbed = people[dropIndex];
+  if (
+    survivor.embeddingKind !== absorbed.embeddingKind ||
+    survivor.centroid.length === 0 ||
+    survivor.centroid.length !== absorbed.centroid.length
+  ) {
+    return false;
+  }
+
+  // A two-element working set lets the existing absorb operation carry every
+  // merge semantic without allocating structures proportional to all people.
+  const pair = [mutablePerson(survivor), mutablePerson(absorbed)];
+  absorb(
+    pair,
+    [new Set([0]), new Set([1])],
+    [new Set<number>(), new Set<number>()],
+    0,
+    1,
+    onMerge,
   );
+  people[keepIndex] = publicPerson(pair[0]);
+  people.splice(dropIndex, 1);
+  return true;
 }
 
 /**
@@ -657,7 +734,7 @@ function mergeSimilarPeople(
  * Folds `dropIndex` into `keepIndex`, in place.
  *
  * Shared by measured merges and user-forced ones so a constraint cannot drift
- * from the normal path: the centroid is a face-count-weighted mean of the two,
+ * from the normal path: the centroid is a weightSum-weighted mean of the two,
  * and both the origin and cannot-link sets union, which is what makes a
  * constraint inherit through later merges instead of being re-derived from a
  * centroid that has since moved.

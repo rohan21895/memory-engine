@@ -1,7 +1,7 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { SAME_PHOTO_EXCEPTION_SIMILARITY } from "./face-cluster.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { CENTERED_FACE_INDEX_THRESHOLD, DEFAULT_FACE_INDEX_THRESHOLD, FACE_INDEX_IDENTITY_MERGE_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
+import { CENTERED_FACE_INDEX_THRESHOLD, DEFAULT_FACE_INDEX_THRESHOLD, FACE_INDEX_IDENTITY_MERGE_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, applyConstraintToPeople, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { CALIBRATION_MAX_THRESHOLD, CALIBRATION_MIN_THRESHOLD } from "./face-calibration.ts";
 
@@ -39,6 +39,109 @@ assert(
     { id: "person-1", assetIds: ["a", "shared"] },
   ]);
   assert(reverse.get("shared")?.join(",") === "person-1,person-2", "reverse person lookup is precomputed and sorted");
+}
+
+{
+  const people = [
+    {
+      id: "person-1",
+      faceCount: 2,
+      assetIds: ["a", "shared"],
+      centroid: [1, 0],
+      embeddingKind: "identity" as const,
+    },
+    {
+      id: "person-2",
+      faceCount: 3,
+      assetIds: ["b", "shared"],
+      centroid: [0, 1],
+      embeddingKind: "identity" as const,
+    },
+  ];
+  Object.assign(people[0], { weightSum: 0.5, firstAt: 200, lastAt: 300 });
+  Object.assign(people[1], { weightSum: 2.5, firstAt: 100, lastAt: 400 });
+  let reclusters = 0;
+  const merged = applyConstraintToPeople(
+    people,
+    "must",
+    "person-2",
+    "person-1",
+    () => {
+      reclusters += 1;
+    },
+  );
+  const mergedState = people[0] as typeof people[number] & {
+    firstAt?: number;
+    lastAt?: number;
+    weightSum?: number;
+  };
+  assert(merged, "must-link should directly merge two existing people");
+  assert(reclusters === 0, "must-link must not trigger a full recluster");
+  assert(people.length === 1, "must-link should remove the absorbed person record");
+  assert(people[0].id === "person-1", "the older person record should survive");
+  assert(people[0].faceCount === 5, "must-link should add face counts");
+  assert(
+    people[0].assetIds.join(",") === "a,shared,b",
+    "must-link should union asset ids without duplicates",
+  );
+  assert(
+    Math.abs(people[0].centroid[0] - 1 / 6) < 1e-12 &&
+      Math.abs(people[0].centroid[1] - 5 / 6) < 1e-12,
+    "must-link should blend centroids by quality weightSum",
+  );
+  assert(
+    mergedState.weightSum === 3 &&
+      mergedState.firstAt === 100 &&
+      mergedState.lastAt === 400,
+    "must-link should carry merge weight and widen the capture span",
+  );
+
+  const splitPeople = [
+    {
+      id: "person-1",
+      faceCount: 1,
+      assetIds: ["a"],
+      centroid: [1, 0],
+      embeddingKind: "identity" as const,
+    },
+    {
+      id: "person-2",
+      faceCount: 1,
+      assetIds: ["b"],
+      centroid: [0, 1],
+      embeddingKind: "identity" as const,
+    },
+  ];
+  let splitReclusters = 0;
+  const directlySplit = applyConstraintToPeople(
+    splitPeople,
+    "cannot",
+    "person-1",
+    "person-2",
+    () => {
+      splitReclusters += 1;
+    },
+  );
+  assert(
+    !directlySplit && splitReclusters === 1,
+    "cannot-link should retain the genuine full-recluster path",
+  );
+
+  // An identity centroid and a perceptual one live in different spaces, so the
+  // cheap merge refuses the pair. The answer must still count: without the
+  // fallback the caller reports a merge that never happened.
+  const mixedPeople = [
+    { id: "person-1", faceCount: 4, assetIds: ["a"], centroid: [1, 0], embeddingKind: "identity" as const },
+    { id: "person-2", faceCount: 4, assetIds: ["b"], centroid: [0, 1, 0], embeddingKind: "perceptual" as const },
+  ];
+  let mixedReclusters = 0;
+  const mixedMerged = applyConstraintToPeople(mixedPeople, "must", "person-1", "person-2", () => {
+    mixedReclusters += 1;
+  });
+  assert(
+    !mixedMerged && mixedReclusters === 1 && mixedPeople.length === 2,
+    "a must-link the fast path cannot express must fall back to a full recluster",
+  );
 }
 assert(
   faceQualityTier({ id: "assign", width: 1000, height: 1000 }, { ...boxA, width: 40, height: 40, headEulerAngleY: 45 }) === "assignable",
