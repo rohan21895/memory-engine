@@ -20,7 +20,17 @@ import {
   HEAVY_ANALYSIS_CANDIDATE_LIMIT,
   type ProbedCandidate,
 } from "./selection/candidate-prepass";
-import { mapLimit, throwIfCancelled } from "./selection/concurrent-map";
+import {
+  mapLimit,
+  throwIfCancelled,
+  yieldToEventLoop,
+} from "./selection/concurrent-map";
+import { watchAlbumBuildLifecycle } from "./selection/album-build-lifecycle";
+import {
+  loadCandidateProbeCache,
+  probeCandidateWithCache,
+  type CandidateProbeCache,
+} from "./selection/candidate-probe-cache";
 import {
   prepareCandidateAnalysisProxy,
   probeCandidateQuality,
@@ -96,6 +106,9 @@ async function familiarPersonPredicate(): Promise<
 // hundreds of image-manipulator operations to accumulate.
 const PREPASS_CONCURRENCY = 32;
 const MAX_PREPASS_PROGRESS_UPDATES = 200;
+const PREPASS_YIELD_ITEMS = 32;
+const PREPASS_CHECKPOINT_ITEMS = 128;
+const ANALYSIS_YIELD_ITEMS = 4;
 /**
  * How much one deep-analysis photo costs relative to one prepass photo, used
  * only to weight the progress bar.
@@ -119,9 +132,27 @@ export type BuildAlbumProgress = {
   phase: string;
 };
 
+export type BuildAlbumTiming = {
+  stage:
+    | "cache-load"
+    | "candidate-probe"
+    | "candidate-rank"
+    | "model-ready-wait"
+    | "deep-analysis"
+    | "pose-and-enrich"
+    | "choose-best-shots"
+    | "review-assembly"
+    | "total";
+  elapsedMs: number;
+  itemCount: number;
+  cacheHits?: number;
+};
+
 export type BuildAlbumOptions = {
   signal?: AbortSignal;
   onProgress?: (progress: BuildAlbumProgress) => void;
+  /** Always-on console trace also emits through here for device benchmarks. */
+  onTiming?: (timing: BuildAlbumTiming) => void;
 };
 
 /**
@@ -165,6 +196,15 @@ function emitProgress(
 function shouldReportPrepass(done: number, total: number): boolean {
   const step = Math.max(1, Math.ceil(total / MAX_PREPASS_PROGRESS_UPDATES));
   return done === 1 || done === total || done % step === 0;
+}
+
+function reportTiming(
+  options: BuildAlbumOptions,
+  timings: BuildAlbumTiming[],
+  timing: BuildAlbumTiming,
+): void {
+  timings.push(timing);
+  options.onTiming?.(timing);
 }
 
 /**
@@ -315,6 +355,64 @@ export async function buildAlbum(
   count = 24,
   options: BuildAlbumOptions = {},
 ): Promise<ReviewData> {
+  const totalStartedAt = Date.now();
+  const timings: BuildAlbumTiming[] = [];
+  // `processPhotos` has just navigated to BuildingScreen. A macrotask boundary
+  // lets React commit that screen before any cache parsing or native image work
+  // begins, so the confirm button can never look frozen.
+  await yieldToEventLoop();
+  throwIfCancelled(options.signal);
+  const capEngaged = photos.length > CANDIDATE_PREPASS_THRESHOLD;
+  const cacheStartedAt = Date.now();
+  const probeCache = capEngaged ? await loadCandidateProbeCache() : undefined;
+  if (probeCache) {
+    reportTiming(options, timings, {
+      stage: "cache-load",
+      elapsedMs: Date.now() - cacheStartedAt,
+      itemCount: photos.length,
+    });
+  }
+  const lifecycle = await watchAlbumBuildLifecycle(
+    options.signal,
+    async () => probeCache?.persist(),
+  );
+  try {
+    return await buildAlbumImpl(
+      photos,
+      count,
+      options,
+      timings,
+      probeCache,
+      lifecycle.waitUntilForeground,
+    );
+  } finally {
+    await probeCache?.persist();
+    lifecycle.dispose();
+    const total: BuildAlbumTiming = {
+      stage: "total",
+      elapsedMs: Date.now() - totalStartedAt,
+      itemCount: photos.length,
+    };
+    reportTiming(options, timings, total);
+    console.info(
+      `[album-build-timing] ${timings
+        .map((timing) =>
+          `${timing.stage}=${timing.elapsedMs}ms/${timing.itemCount}` +
+          (timing.cacheHits === undefined ? "" : `/hits:${timing.cacheHits}`),
+        )
+        .join(" ")}`,
+    );
+  }
+}
+
+async function buildAlbumImpl(
+  photos: PickedPhoto[],
+  count: number,
+  options: BuildAlbumOptions,
+  timings: BuildAlbumTiming[],
+  probeCache: CandidateProbeCache | undefined,
+  waitUntilForeground: () => Promise<void>,
+): Promise<ReviewData> {
   throwIfCancelled(options.signal);
   const model = getModel();
   // Started here so it overlaps the prepass, awaited before the heavy pass.
@@ -339,6 +437,8 @@ export async function buildAlbum(
   let completedWork = 0;
 
   if (capEngaged) {
+    const probeStartedAt = Date.now();
+    let cacheHits = 0;
     emitProgress(options.onProgress, {
       done: 0,
       total: totalWork,
@@ -347,12 +447,21 @@ export async function buildAlbum(
     const probed = await mapLimit(
       photos,
       PREPASS_CONCURRENCY,
-      async (photo): Promise<ProbedCandidate> => ({
-        photo,
-        quality: await probeCandidateQuality(photo.uri),
-      }),
+      async (photo): Promise<ProbedCandidate> => {
+        const result = await probeCandidateWithCache(
+          photo,
+          probeCache,
+          probeCandidateQuality,
+        );
+        if (result.cacheHit) cacheHits += 1;
+        return { photo, quality: result.quality };
+      },
       {
         signal: options.signal,
+        waitUntilRunnable: waitUntilForeground,
+        yieldEvery: PREPASS_YIELD_ITEMS,
+        checkpointEvery: PREPASS_CHECKPOINT_ITEMS,
+        onCheckpoint: async () => probeCache?.persist(),
         onComplete: (done) => {
           completedWork = done;
           if (shouldReportPrepass(done, photos.length)) {
@@ -365,17 +474,29 @@ export async function buildAlbum(
         },
       },
     );
+    reportTiming(options, timings, {
+      stage: "candidate-probe",
+      elapsedMs: Date.now() - probeStartedAt,
+      itemCount: photos.length,
+      cacheHits,
+    });
     throwIfCancelled(options.signal);
     // The cap is where an album silently loses people: nothing downstream can
     // recover a photo that never reached heavy analysis, including the
     // planner's own per-person floor. Recurrence decides who is worth a
     // protected seat -- somebody who turns up across separate occasions rather
     // than somebody who was merely also at one event.
+    const rankStartedAt = Date.now();
     analysisInputs = chooseHeavyAnalysisCandidates(
       probed,
       HEAVY_ANALYSIS_CANDIDATE_LIMIT,
       { isFamiliar: await familiarPersonPredicate() },
     ).map(({ photo, quality }) => ({ photo, quality }));
+    reportTiming(options, timings, {
+      stage: "candidate-rank",
+      elapsedMs: Date.now() - rankStartedAt,
+      itemCount: probed.length,
+    });
     console.info(
       `[album-build] Candidate cap engaged: analyzing the best ${analysisInputs.length} of ${photos.length} photos.`,
     );
@@ -393,7 +514,14 @@ export async function buildAlbum(
     });
   }
 
+  const modelWaitStartedAt = Date.now();
   await modelHealth;
+  reportTiming(options, timings, {
+    stage: "model-ready-wait",
+    elapsedMs: Date.now() - modelWaitStartedAt,
+    itemCount: 1,
+  });
+  const analysisStartedAt = Date.now();
   const analyzed = await mapLimit(analysisInputs, ANALYZE_CONCURRENCY, async ({
     photo,
     quality: probedQuality,
@@ -448,9 +576,11 @@ export async function buildAlbum(
         })
         .catch(() => probedQuality ?? {});
       const [result, boxes, quality, detectedPose, semantic] = await Promise.all([
-        capEngaged
-          ? Promise.resolve({ embedding: [], faces: 0 })
-          : model.run(analysisUri),
+        // CX-16's orientation/reframe duplicate logic requires this documented
+        // 76-value perceptual fingerprint. The capped path used to inject []
+        // here, so its regression fixture passed only because it began after the
+        // real bridge. Running it for the already-capped 64 restores that path.
+        model.run(analysisUri),
         // Dimensions supplied so the detector neither re-measures nor
         // re-manipulates: the proxy is already a file:// image inside its
         // detection bound, so boxes come back 1:1 in proxy coordinates — the
@@ -485,6 +615,8 @@ export async function buildAlbum(
     }
   }, {
     signal: options.signal,
+    waitUntilRunnable: waitUntilForeground,
+    yieldEvery: ANALYSIS_YIELD_ITEMS,
     onComplete: (done) => {
       completedWork = prepassWork + done * ANALYSIS_WORK_UNITS;
       emitProgress(options.onProgress, {
@@ -496,8 +628,14 @@ export async function buildAlbum(
       });
     },
   });
+  reportTiming(options, timings, {
+    stage: "deep-analysis",
+    elapsedMs: Date.now() - analysisStartedAt,
+    itemCount: analysisInputs.length,
+  });
   throwIfCancelled(options.signal);
 
+  const enrichStartedAt = Date.now();
   const poseLabels = clusterPoses(
     analyzed
       .map(({ photo, pose }) => [photo.id, pose] as const)
@@ -547,17 +685,29 @@ export async function buildAlbum(
     };
     },
   );
+  reportTiming(options, timings, {
+    stage: "pose-and-enrich",
+    elapsedMs: Date.now() - enrichStartedAt,
+    itemCount: analyzed.length,
+  });
 
   emitProgress(options.onProgress, {
     done: completedWork,
     total: totalWork,
     phase: "Choosing the best shots",
   });
+  const selectionStartedAt = Date.now();
   const album: AlbumData = selectBestShots(enriched, {
     count: Math.min(count, Math.max(1, enriched.length)),
   });
+  reportTiming(options, timings, {
+    stage: "choose-best-shots",
+    elapsedMs: Date.now() - selectionStartedAt,
+    itemCount: enriched.length,
+  });
   throwIfCancelled(options.signal);
 
+  const reviewStartedAt = Date.now();
   const uriById = new Map(photos.map((photo) => [photo.id, photo.uri]));
   const uri = (id: string) => uriById.get(id) ?? "";
 
@@ -584,6 +734,11 @@ export async function buildAlbum(
   }));
 
   const review = { album_id: album.album_id, selected, pool };
+  reportTiming(options, timings, {
+    stage: "review-assembly",
+    elapsedMs: Date.now() - reviewStartedAt,
+    itemCount: album.selected.length + album.pool.length,
+  });
   emitProgress(options.onProgress, {
     done: totalWork,
     total: totalWork,
