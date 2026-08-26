@@ -63,9 +63,11 @@ const OBSERVATIONS_FILENAME = "face-observations.jsonl";
  * Observations parsed per turn before yielding to the UI.
  *
  * Small enough that a tap lands within a frame or two of asking; large enough
- * that the yields themselves are not the cost.
+ * that the yields themselves are not the cost. Measured on the owner's library:
+ * the whole 17,722-face file parses in about 5.4s, so 500 per turn is roughly
+ * 150ms of work between yields.
  */
-const OBSERVATION_LOAD_CHUNK = 2000;
+const OBSERVATION_LOAD_CHUNK = 500;
 const FACE_THUMB_DIRECTORY = "face-thumbnails";
 const PAGE_SIZE = 100;
 /**
@@ -3107,8 +3109,18 @@ let batchesSinceConsolidation = 0;
 
 function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
   const assignments = new Map<FaceObservation, string>();
-  batchesSinceConsolidation += 1;
-  const consolidate = batchesSinceConsolidation >= CONSOLIDATE_EVERY_BATCHES;
+  // A batch that found NO faces cannot have changed a single cluster, so the
+  // merge sweep over every person pair cannot find anything it did not find
+  // last time. Counting those batches was costing the whole sweep for nothing.
+  //
+  // Measured on the owner's device: a consolidating batch with `photos=0
+  // faces=0` cost `cluster=35463ms` -- thirty-five seconds of frozen JS thread
+  // to re-derive an unchanged answer. Re-scanning a library that is already
+  // complete walks hundreds of empty batches, so this fired repeatedly.
+  if (observations.length > 0) batchesSinceConsolidation += 1;
+  const consolidate =
+    observations.length > 0 &&
+    batchesSinceConsolidation >= CONSOLIDATE_EVERY_BATCHES;
   if (consolidate) batchesSinceConsolidation = 0;
   // Marked before the call, not after: the clustering pass mutates
   // `index.people` in place, so a throw partway through still leaves the index
@@ -3411,8 +3423,14 @@ async function runBuild(
         });
         traceScanCount("photos", pending.length);
         traceScanCount("faces", observations.length);
-        index.observations.push(...observations);
-        observationsDirty = true;
+        if (observations.length > 0) {
+          index.observations.push(...observations);
+          // Only when something actually arrived. Marking it unconditionally
+          // meant every empty batch rewrote the whole 13.8MB embeddings file --
+          // measured at `persistObservations=5580ms` for a batch that added
+          // nothing at all.
+          observationsDirty = true;
+        }
         markIndexDirty();
         const assignments = appendPeople(observations);
         await persistCoverFaceThumbs(faceCropCandidates, assignments);
