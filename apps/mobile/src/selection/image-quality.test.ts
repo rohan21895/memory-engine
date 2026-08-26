@@ -1,5 +1,5 @@
 // @ts-expect-error Node's native TypeScript runner requires the extension.
-import { exposureFromPixels, relativeQualityFloor, sharpnessFromPixels } from "./image-quality.ts";
+import { exposureFromPixels, relativeQualityFloor, sharpnessFromPixels, subjectQualityFromPixels } from "./image-quality.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -116,6 +116,56 @@ assert(
   sharpnessFromPixels(crispEdges, width, height) ===
     sharpnessFromPixels(crispEdges, width, height, undefined),
   "omitting the region must match passing undefined",
+);
+
+// A tight face box alone cannot see motion-blurred hair, hands or shoulders.
+// Keep the face pixels identical and alter only the expanded upper-body region:
+// the exact face score must stay fixed while subject sharpness falls.
+const portraitWidth = 96;
+const portraitHeight = 128;
+const portraitFace = { x: 40, y: 16, width: 16, height: 16 };
+function portraitFixture(blurUpperBody: boolean): Uint8Array {
+  return Uint8Array.from(
+    { length: portraitWidth * portraitHeight },
+    (_, index) => {
+      const x = index % portraitWidth;
+      const y = Math.floor(index / portraitWidth);
+      const inFace = x >= 40 && x < 56 && y >= 16 && y < 32;
+      const inUpperBody = x >= 28 && x < 68 && y >= 9 && y < 84;
+      if (inFace) return (x + y) % 2 === 0 ? 124 : 132;
+      if (inUpperBody) {
+        return blurUpperBody ? 128 : (x + y) % 2 === 0 ? 126 : 130;
+      }
+      return (x + y) % 2 === 0 ? 122 : 134;
+    },
+  );
+}
+const sharpPortrait = subjectQualityFromPixels(
+  portraitFixture(false),
+  portraitWidth,
+  portraitHeight,
+  portraitFace,
+);
+const blurredUpperBody = subjectQualityFromPixels(
+  portraitFixture(true),
+  portraitWidth,
+  portraitHeight,
+  portraitFace,
+);
+console.log(
+  `CX-16 regional sharpness measurements ${JSON.stringify({ sharpPortrait, blurredUpperBody })}`,
+);
+assert(
+  Math.abs(
+    (sharpPortrait.faceSharpness ?? 0) -
+      (blurredUpperBody.faceSharpness ?? 0),
+  ) < 0.02,
+  "identical face pixels should keep exact-face sharpness within the one-pixel boundary effect",
+);
+assert(
+  (sharpPortrait.subjectSharpness ?? 0) >
+    (blurredUpperBody.subjectSharpness ?? 0) * 1.5,
+  "blur outside the face but inside hair/upper-body region must lower subject sharpness",
 );
 
 // relativeQualityFloor always keeps someone, which is what makes the empty
