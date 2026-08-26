@@ -1,0 +1,38 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:1:1-15:12
+INJECTED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:1:1-15:12
+	package
+		INJECTED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:1:11-69
+uses-permission#android.permission.FOREGROUND_SERVICE
+ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:2:3-75
+	android:name
+		ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:2:20-72
+uses-permission#android.permission.FOREGROUND_SERVICE_DATA_SYNC
+ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:5:3-85
+	android:name
+		ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:5:20-82
+uses-permission#android.permission.POST_NOTIFICATIONS
+ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:8:3-75
+	android:name
+		ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:8:20-72
+application
+ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:9:3-14:17
+service#expo.modules.photeoscanservice.ScanForegroundService
+ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:10:5-13:50
+	android:exported
+		ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:12:7-31
+	android:foregroundServiceType
+		ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:13:7-47
+	android:name
+		ADDED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:11:7-44
+uses-sdk
+INJECTED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml
+INJECTED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml

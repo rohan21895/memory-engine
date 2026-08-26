@@ -1,0 +1,37 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="expo.modules.photeoscanservice" >
+4
+5    <uses-sdk android:minSdkVersion="24" />
+6
+7    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+7-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:2:3-75
+7-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:2:20-72
+8    <!--
+9       Android 14 requires the specific type as its own permission. dataSync is
+10       the honest category: this indexes local photos, it does not sync.
+11    -->
+12    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+12-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:5:3-85
+12-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:5:20-82
+13    <!--
+14       Android 13+ gates the notification itself. Without it the service still
+15       runs, it is just invisible, so this is requested but never required.
+16    -->
+17    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+17-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:8:3-75
+17-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:8:20-72
+18
+19    <application>
+19-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:9:3-14:17
+20        <service
+20-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:10:5-13:50
+21            android:name="expo.modules.photeoscanservice.ScanForegroundService"
+21-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:11:7-44
+22            android:exported="false"
+22-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:12:7-31
+23            android:foregroundServiceType="dataSync" />
+23-->/Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/AndroidManifest.xml:13:7-47
+24    </application>
+25
+26</manifest>

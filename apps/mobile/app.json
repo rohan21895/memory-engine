@@ -17,7 +17,7 @@
       "expo-secure-store",
       "expo-image",
       "expo-asset",
-        "expo-font",
+      "expo-font",
       [
         "expo-location",
         {
@@ -43,12 +43,17 @@
     "android": {
       "package": "com.photeo.app",
       "adaptiveIcon": {
-          "backgroundColor": "#faf8f5",
+        "backgroundColor": "#faf8f5",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": true
+      "predictiveBackGestureEnabled": true,
+      "permissions": [
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"

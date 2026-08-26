@@ -18,6 +18,8 @@ import { closeFaceFrame, deleteImageFile, frameOrientationCounts, landmarkReject
 import { embedFaceIdentity, traceNextAlignments, type FaceImageSource } from "../ml/facenet.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { incrementalScanTarget } from "../import/incremental-index.ts";
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { startScanService, stopScanService, updateScanService } from "../../modules/photeo-scan-service/src/index.ts";
 import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
 // v18 stores aligned embeddings as int8/base64. Older versions contain
@@ -2210,9 +2212,26 @@ function notifyFaceProgress(done: number, total: number): void {
   }
 }
 
+/**
+ * True while the foreground service is holding the process alive.
+ *
+ * Module-scoped rather than carried on `control` because it describes the
+ * PROCESS, not one scan: two overlapping builds share the same service, and the
+ * second must not conclude it has no protection just because the first started
+ * it.
+ */
+let scanServiceHolding = false;
+
 async function watchAppState(
   control: { cancelled: boolean; foreground: boolean },
 ): Promise<() => void> {
+  // Started before the AppState subscription so a scan launched from a screen
+  // that is already backgrounding is protected on its first batch rather than
+  // stalling until the user returns.
+  scanServiceHolding = await startScanService(
+    "Photeo",
+    "Organising your photos",
+  );
   try {
     const { AppState } = await import("react-native");
     control.foreground = AppState.currentState === "active";
@@ -2231,10 +2250,23 @@ async function watchAppState(
   }
 }
 
+/**
+ * Blocks until the scan is allowed to proceed.
+ *
+ * Waiting for the app to come back on screen was the only option before the
+ * foreground service existed: Android puts backgrounded processes into the
+ * cached state and, from Android 12, freezes them, so continuing was not
+ * something this code could choose. With the service holding the process the
+ * restriction is lifted and the scan simply carries on -- which is the whole
+ * point, because nobody watches a phone for the half hour an 11,828-photo
+ * library takes.
+ *
+ * Cancellation still wins over both.
+ */
 async function waitForForeground(
   control: { cancelled: boolean; foreground: boolean },
 ): Promise<boolean> {
-  while (!control.cancelled && !control.foreground) {
+  while (!control.cancelled && !control.foreground && !scanServiceHolding) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return !control.cancelled;
@@ -2381,6 +2413,13 @@ async function runBuild(
           lastCheckpointAt = Date.now();
         }
         notifyFaceProgress(Math.min(seenCount(), index.total), index.total);
+        // Same numbers the in-app progress line shows. A service notification
+        // that sat unchanged for the half hour this takes would read as hung,
+        // and "stuck" is the one impression that gets an app force-stopped.
+        void updateScanService(
+          "Organising your photos",
+          `${Math.min(seenCount(), index.total).toLocaleString()} of ${index.total.toLocaleString()} photos`,
+        );
         const trace = takeScanTrace();
         if (trace) console.warn(`[PhoteoFaceScan] ${trace}`);
         await yieldToEventLoop();
@@ -2443,6 +2482,11 @@ async function runBuild(
     await persistFaceIndex(true);
   } finally {
     stopWatching();
+    // The notification is the user's only handle on this work, so it must not
+    // outlive it -- including when the scan threw or was cancelled, which is
+    // exactly when a stuck "Organising your photos" would be most alarming.
+    scanServiceHolding = false;
+    await stopScanService();
   }
 }
 

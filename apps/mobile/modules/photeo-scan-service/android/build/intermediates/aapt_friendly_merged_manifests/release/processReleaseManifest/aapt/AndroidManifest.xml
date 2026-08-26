@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="expo.modules.photeoscanservice" >
+
+    <uses-sdk android:minSdkVersion="24" />
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!--
+       Android 14 requires the specific type as its own permission. dataSync is
+       the honest category: this indexes local photos, it does not sync.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!--
+       Android 13+ gates the notification itself. Without it the service still
+       runs, it is just invisible, so this is requested but never required.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <service
+            android:name="expo.modules.photeoscanservice.ScanForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+
+</manifest>

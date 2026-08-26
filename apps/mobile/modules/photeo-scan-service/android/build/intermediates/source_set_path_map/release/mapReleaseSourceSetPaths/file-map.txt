@@ -1,0 +1,7 @@
+expo.modules.photeoscanservice.photeo-scan-service-pngs-0 /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/build/generated/res/pngs/release
+expo.modules.photeoscanservice.photeo-scan-service-resValues-1 /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/build/generated/res/resValues/release
+expo.modules.photeoscanservice.photeo-scan-service-mergeReleaseResources-2 /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/build/intermediates/incremental/release/mergeReleaseResources/merged.dir
+expo.modules.photeoscanservice.photeo-scan-service-mergeReleaseResources-3 /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/build/intermediates/incremental/release/mergeReleaseResources/stripped.dir
+expo.modules.photeoscanservice.photeo-scan-service-release-4 /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/build/intermediates/merged_res/release/mergeReleaseResources
+expo.modules.photeoscanservice.photeo-scan-service-main-5 /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/main/res
+expo.modules.photeoscanservice.photeo-scan-service-release-6 /Users/rohantomar/Downloads/Documents/Photeo/me-redesign/apps/mobile/modules/photeo-scan-service/android/src/release/res
