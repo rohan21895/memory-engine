@@ -776,6 +776,13 @@ function mergeSimilarPeople(
           : identityMergeThreshold;
         const threshold =
           a.embeddingKind === "identity" ? identityBar : perceptualThreshold;
+        // Checked BEFORE the linkage, not after. `blocked` is a hard exclusion,
+        // so a pair it rejects can never be merged no matter how it scores, and
+        // computing a 512-dimension dot product to then throw it away is pure
+        // cost -- paid on every sweep, and this sweep runs once per merge.
+        // Moving it earlier cannot change any outcome, only how long the
+        // rejection takes.
+        if (intersects(blocked[i], origins[j])) continue;
         const similarity = linkage(a, b);
         if (similarity < threshold || similarity < bestSimilarity) {
           continue;
@@ -791,9 +798,6 @@ function mergeSimilarPeople(
         ) {
           continue;
         }
-        // `blocked` and `origins` are both unions over the same pre-merge
-        // clusters, so this single test is symmetric in i and j.
-        if (intersects(blocked[i], origins[j])) continue;
         bestSimilarity = similarity;
         bestI = i;
         bestJ = j;
