@@ -310,7 +310,17 @@ export type FaceScanDependencies = {
     frame?: FaceFrame | null,
     photo?: FacePhotoEmbeddingContext,
   ) => Promise<FaceEmbedding>;
-  onFaceCrop?: (observation: FaceObservation, cropUri: string) => void;
+  /**
+   * The box travels with the crop because the avatar gate needs it and the
+   * observation deliberately does not carry it. Storing per-face geometry on
+   * every observation would grow the on-disk index by tens of thousands of
+   * boxes to serve one thumbnail per person.
+   */
+  onFaceCrop?: (
+    observation: FaceObservation,
+    cropUri: string,
+    box: FaceBox,
+  ) => void;
 };
 
 export type FaceEmbedding = {
@@ -928,6 +938,62 @@ export function faceQualityTier(
 }
 
 /**
+ * How open an eye must read before the face is fit to be somebody's avatar.
+ *
+ * ML Kit reports this as a probability, and it is the only occlusion signal the
+ * detector gives us at all: there is no "is something in front of this face?"
+ * output. A hand over the eyes, hair across them, sunglasses, a blink and a
+ * mid-laugh squint all push it down, which is most of what the owner meant by
+ * asking for a thumbnail "without any hand on it".
+ *
+ * 0.4 rather than 0.5 because a genuine smile narrows the eyes and a smiling
+ * portrait is exactly the avatar people want. The gate is meant to reject
+ * OBSCURED faces, not expressive ones.
+ */
+const AVATAR_MIN_EYE_OPEN = 0.4;
+
+/**
+ * A head tilted further than this reads as a candid, not a portrait. Deliberately
+ * generous: the crop is square and centred, so a moderate tilt still frames well.
+ */
+const AVATAR_MAX_ROLL_DEGREES = 30;
+
+/**
+ * Whether this face is good enough to represent a person in the People grid.
+ *
+ * Stricter than `seedable`, and for a different reason. Seedable asks "is there
+ * enough of this face to identify someone from" -- a question about pixels.
+ * This asks "would the owner recognise this tile at a glance", which is a
+ * question about occlusion and pose.
+ *
+ * Every signal it uses is OPTIONAL metadata, and an absent signal always reads
+ * as acceptable. A detector build without classification would otherwise reject
+ * every face in the library and leave the whole grid with no avatars at all --
+ * a far worse outcome than an occasional half-blink.
+ *
+ * Honest limit: this catches a hand over the EYES and nothing else. A hand on
+ * the chin or a cheek leaves both eye probabilities high and passes. ML Kit
+ * exposes no general occlusion or blur score, so closing that gap needs a
+ * second model, not a tighter constant here.
+ */
+export function isAvatarFace(box: FaceBox): boolean {
+  const eyes = [box.leftEyeOpen, box.rightEyeOpen];
+  for (const eye of eyes) {
+    if (Number.isFinite(eye) && (eye as number) < AVATAR_MIN_EYE_OPEN) {
+      return false;
+    }
+  }
+  const reportedRoll = box.headEulerAngleZ;
+  if (
+    Number.isFinite(reportedRoll) &&
+    Math.abs(reportedRoll as number) > AVATAR_MAX_ROLL_DEGREES
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Removes repeat detections of one face while preserving distinct co-faces.
  *
  * Tied to SAME_PHOTO_EXCEPTION_SIMILARITY on purpose: this rule and the
@@ -1089,7 +1155,7 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
         centroid: dequantizeEmbedding(person.centroid),
       })),
       faceThumbUris: stringRecord(value.faceThumbUris)
-        ? value.faceThumbUris
+        ? dropPersonKeyedThumbs(value.faceThumbUris)
         : {},
       // A malformed constraint list is dropped rather than rejecting the whole
       // index: losing the user's corrections is bad, but discarding every
@@ -1303,20 +1369,6 @@ async function persistFaceIndex(force = false): Promise<void> {
   }
 }
 
-function keepFaceThumbOnMerge(
-  absorbedPersonId: string,
-  survivingPersonId: string,
-): void {
-  if (
-    !index.faceThumbUris[survivingPersonId] &&
-    index.faceThumbUris[absorbedPersonId]
-  ) {
-    index.faceThumbUris[survivingPersonId] =
-      index.faceThumbUris[absorbedPersonId];
-  }
-  delete index.faceThumbUris[absorbedPersonId];
-}
-
 /**
  * Applies a correction to the current people without losing the split path.
  *
@@ -1330,7 +1382,6 @@ export function applyConstraintToPeople(
   personIdA: string,
   personIdB: string,
   recluster: () => void,
-  onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
 ): boolean {
   if (kind === "cannot") {
     // Nothing to do now, and that is not a shortcut -- it is what the answer
@@ -1350,7 +1401,7 @@ export function applyConstraintToPeople(
   }
   const firstIndex = people.findIndex((person) => person.id === personIdA);
   const secondIndex = people.findIndex((person) => person.id === personIdB);
-  const merged = mergeExistingPeople(people, firstIndex, secondIndex, onMerge);
+  const merged = mergeExistingPeople(people, firstIndex, secondIndex);
   // The fast path refuses pairs it cannot join safely -- most reachably an
   // identity person and a perceptual one, whose centroids live in different
   // spaces. Falling back to the full recluster keeps the user's answer worth
@@ -1400,7 +1451,6 @@ async function recordConstraint(
     personIdA,
     personIdB,
     rebuildPeople,
-    keepFaceThumbOnMerge,
   );
   if (merged) rebuildPersonIdsByAsset();
   await persistFaceIndex(true);
@@ -1609,6 +1659,31 @@ function temporalMergeBar(observations: readonly FaceObservation[]): number {
   ).threshold;
 }
 
+/**
+ * The stored crop to show for a person, found through their own photos.
+ *
+ * Thumbnails are keyed by ASSET, never by person id. Person ids are rebuilt
+ * from scratch on every recluster -- `rebuildPeople` renumbers from person-1 in
+ * observation order -- so a person-keyed thumbnail silently starts showing a
+ * different human the first time the library re-clusters, and keeps matching an
+ * id that now belongs to somebody else. That is exactly the trap
+ * `recordConstraint` already documents and avoids by anchoring corrections to
+ * assets; this had fallen into it.
+ *
+ * Assets are the only stable identifier here, and one is only written when the
+ * photo held a single face, so the crop cannot belong to anybody else.
+ */
+function coverThumbFor(
+  person: Person,
+  faceThumbUris: Readonly<Record<string, string>>,
+): string | undefined {
+  for (const assetId of person.assetIds) {
+    const uri = faceThumbUris[assetId];
+    if (uri) return uri;
+  }
+  return undefined;
+}
+
 export function summariesForPeople(
   people: Person[],
   faceThumbUris: Readonly<Record<string, string>> = {},
@@ -1620,15 +1695,20 @@ export function summariesForPeople(
         person.assetIds.length > 0 &&
         (!suppressLowSupport || person.faceCount >= MIN_VISIBLE_FACE_COUNT),
     )
-    .map((person) => ({
-      id: person.id,
-      faceCount: person.faceCount,
-      coverAssetId: person.assetIds[0],
-      assetIds: person.assetIds.slice(),
-      ...(faceThumbUris[person.id]
-        ? { faceThumbUri: faceThumbUris[person.id] }
-        : {}),
-    }))
+    .map((person) => {
+      const faceThumbUri = coverThumbFor(person, faceThumbUris);
+      return {
+        id: person.id,
+        faceCount: person.faceCount,
+        // The cover photo follows the crop, so the avatar and the photo behind
+        // it are the same moment rather than two unrelated ones.
+        coverAssetId:
+          person.assetIds.find((assetId) => faceThumbUris[assetId]) ??
+          person.assetIds[0],
+        assetIds: person.assetIds.slice(),
+        ...(faceThumbUri ? { faceThumbUri } : {}),
+      };
+    })
     .sort(
       (a, b) =>
         b.faceCount - a.faceCount ||
@@ -1756,7 +1836,7 @@ export async function scanFaceAssets(
                 observations.push(observation);
                 if (result.cropUri) {
                   try {
-                    dependencies.onFaceCrop?.(observation, result.cropUri);
+                    dependencies.onFaceCrop?.(observation, result.cropUri, box);
                   } catch {
                     // Thumbnail bookkeeping is optional scan metadata.
                   }
@@ -2193,8 +2273,59 @@ async function createFaceEmbedding(
   }
 }
 
+/**
+ * Discards face crops saved under the old person-id key.
+ *
+ * They cannot be salvaged. The key was a person id, person ids are renumbered
+ * from person-1 by every recluster, and nothing records which photo a crop came
+ * from -- so there is no way to work out who any of them actually shows. On the
+ * owner's library 2,081 were stored and 2,066 still "matched" a live id, which
+ * is precisely what made the bug invisible: the avatars looked populated and
+ * were showing strangers.
+ *
+ * Dropping them degrades the UI to each person's own cover photo, which is
+ * uncropped but at least genuinely them. New crops are written per asset and
+ * repopulate as photos are scanned.
+ *
+ * Done here rather than by bumping INDEX_VERSION, which would reject the whole
+ * file and re-scan 17,699 embeddings to fix an avatar.
+ */
+function dropPersonKeyedThumbs(
+  stored: Record<string, string>,
+): Record<string, string> {
+  const kept: Record<string, string> = {};
+  for (const [key, uri] of Object.entries(stored)) {
+    if (/^person-\d+$/u.test(key)) continue;
+    kept[key] = uri;
+  }
+  return kept;
+}
+
+/**
+ * Whether this crop may be stored as somebody's avatar, given everything the
+ * scan already knows about the photo it came from.
+ *
+ * Shared by the live scan and the backfill so the two cannot drift: an avatar
+ * that appears during a scan and one recovered afterwards must be held to the
+ * same bar, or the grid looks different depending on when a photo was indexed.
+ */
+function avatarCropAcceptable(
+  facesInPhoto: number,
+  seedable: boolean | undefined,
+  box: FaceBox,
+): boolean {
+  // Ambiguous photo -- more than one person in it, so this crop, filed under
+  // the photo's id, could not say which of them it shows.
+  if (facesInPhoto !== 1) return false;
+  // Only a face good enough to START a person is good enough to represent one.
+  // This is the tier the scanner already computed, so it costs nothing and
+  // keeps tiny and steeply-turned faces off the avatars.
+  if (seedable === false) return false;
+  return isAvatarFace(box);
+}
+
 async function persistCoverFaceThumbs(
-  candidates: Array<{ observation: FaceObservation; cropUri: string }>,
+  candidates: Array<{ observation: FaceObservation; cropUri: string; box: FaceBox }>,
   assignments: ReadonlyMap<FaceObservation, string>,
 ): Promise<void> {
   try {
@@ -2204,22 +2335,43 @@ async function persistCoverFaceThumbs(
     }
     const directoryUri = `${fileSystem.documentDirectory}${FACE_THUMB_DIRECTORY}`;
     await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
+    // How many faces each photo contributed.
+    const facesPerAsset = new Map<string, number>();
+    for (const candidate of candidates) {
+      const assetId = candidate.observation.assetId;
+      facesPerAsset.set(assetId, (facesPerAsset.get(assetId) ?? 0) + 1);
+    }
+    const peopleById = new Map(index.people.map((person) => [person.id, person]));
     for (const candidate of candidates) {
       try {
         const personId = assignments.get(candidate.observation);
+        const assetId = candidate.observation.assetId;
+        const person = personId ? peopleById.get(personId) : undefined;
         if (
-          !personId ||
-          index.faceThumbUris[personId]
+          !person ||
+          // Keyed by ASSET, not person: person ids are renumbered by every
+          // recluster, so a person-keyed crop starts showing a stranger.
+          index.faceThumbUris[assetId] ||
+          // One good avatar per person is the whole requirement. Without this
+          // the asset key would store a 128px JPEG for every single-face photo
+          // in the library -- thousands of files on the owner's phone to serve
+          // one tile each.
+          coverThumbFor(person, index.faceThumbUris) ||
+          !avatarCropAcceptable(
+            facesPerAsset.get(assetId) ?? 0,
+            candidate.observation.seedable,
+            candidate.box,
+          )
         ) {
           continue;
         }
-        const destination = `${directoryUri}/${encodeURIComponent(personId)}.jpg`;
+        const destination = `${directoryUri}/${encodeURIComponent(assetId)}.jpg`;
         await fileSystem.deleteAsync(destination, { idempotent: true });
         await fileSystem.copyAsync({
           from: candidate.cropUri,
           to: destination,
         });
-        index.faceThumbUris[personId] = destination;
+        index.faceThumbUris[assetId] = destination;
         markIndexDirty();
       } catch {
         // A missing cache crop or filesystem failure must not stop the scan.
@@ -2230,6 +2382,132 @@ async function persistCoverFaceThumbs(
   } finally {
     await Promise.all(candidates.map((candidate) => deleteFaceCrop(candidate.cropUri)));
   }
+}
+
+/**
+ * How many photos one backfill pass may decode.
+ *
+ * The pass only ever runs when the scan has nothing to do, so it competes with
+ * nothing -- but it still runs on the JS thread, and the owner's report that the
+ * app "hangs when I tap something" is exactly what an unbounded loop of decodes
+ * would produce. Sixty photos is a few seconds of work, spread across yields,
+ * and the next launch picks up where this one stopped.
+ */
+const AVATAR_BACKFILL_PHOTOS_PER_PASS = 60;
+
+/** Yields to the UI after this many photos so taps stay responsive. */
+const AVATAR_BACKFILL_YIELD_EVERY = 4;
+
+/**
+ * Recovers face avatars for people who have none.
+ *
+ * Needed because avatars are a by-product of SCANNING: the crop exists only
+ * because a photo was being decoded for detection anyway. A library that is
+ * already fully indexed never decodes another photo, so without this pass a
+ * person who lost their avatar -- to the person-keyed thumbnails being dropped,
+ * to a recluster, or to never having had one -- would keep the fallback cover
+ * photo forever.
+ *
+ * Re-detects rather than trusting stored data because the box is the one thing
+ * the observation does not keep. That costs one bounded decode per photo tried,
+ * which is why the pass is budgeted and why it only considers photos the index
+ * already says hold exactly ONE face: a group shot cannot produce a crop that
+ * identifies anybody, so decoding one would be pure waste.
+ *
+ * Returns how many avatars it recovered.
+ */
+async function backfillCoverFaceThumbs(): Promise<number> {
+  let recovered = 0;
+  try {
+    const fileSystem = await fileSystemModule();
+    if (!fileSystem.documentDirectory) return 0;
+    const directoryUri = `${fileSystem.documentDirectory}${FACE_THUMB_DIRECTORY}`;
+    await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
+
+    const facesPerAsset = new Map<string, number>();
+    for (const observation of index.observations) {
+      facesPerAsset.set(
+        observation.assetId,
+        (facesPerAsset.get(observation.assetId) ?? 0) + 1,
+      );
+    }
+    // Biggest tiles first. They are the people the owner actually looks at, and
+    // a budgeted pass has to spend its decodes where they show.
+    const needing = index.people
+      .filter((person) => !coverThumbFor(person, index.faceThumbUris))
+      .sort((a, b) => b.faceCount - a.faceCount);
+
+    let photosTried = 0;
+    for (const person of needing) {
+      if (photosTried >= AVATAR_BACKFILL_PHOTOS_PER_PASS) break;
+      for (const assetId of person.assetIds) {
+        if (photosTried >= AVATAR_BACKFILL_PHOTOS_PER_PASS) break;
+        if (index.faceThumbUris[assetId]) break;
+        if ((facesPerAsset.get(assetId) ?? 0) !== 1) continue;
+        photosTried += 1;
+        if (photosTried % AVATAR_BACKFILL_YIELD_EVERY === 0) {
+          await yieldToEventLoop();
+        }
+        const imageUri = contentUri(assetId);
+        let frame: FaceFrame | null = null;
+        try {
+          frame = await openFaceFrame(imageUri);
+          if (!frame) continue;
+          const asset: FaceScanAsset = {
+            id: assetId,
+            width: frame.sourceWidth,
+            height: frame.sourceHeight,
+          };
+          const boxes = dedupeFaceBoxes(await detectFacesInFrame(frame));
+          // The index said one face and the detector now says otherwise. Trust
+          // the detector: whatever this photo holds, a crop from it would not
+          // reliably be this person.
+          if (boxes.length !== 1) continue;
+          const box = boxes[0];
+          if (
+            !avatarCropAcceptable(
+              1,
+              faceQualityTier(asset, box) === "seedable",
+              box,
+            )
+          ) {
+            continue;
+          }
+          const cropSpace = frameSpaceFace(frame, asset, box) ?? {
+            source: imageUri,
+            asset,
+            box,
+          };
+          const crop = await prepareFaceCrop(
+            cropSpace.asset,
+            cropSpace.source,
+            cropSpace.box,
+            false,
+          );
+          try {
+            const destination = `${directoryUri}/${encodeURIComponent(assetId)}.jpg`;
+            await fileSystem.deleteAsync(destination, { idempotent: true });
+            await fileSystem.copyAsync({ from: crop.uri, to: destination });
+            index.faceThumbUris[assetId] = destination;
+            markIndexDirty();
+            recovered += 1;
+          } finally {
+            await deleteFaceCrop(crop.uri);
+          }
+          break;
+        } catch {
+          // An unreadable photo costs this person one attempt, not the pass.
+        } finally {
+          if (frame) await closeFaceFrame(frame);
+        }
+      }
+    }
+    if (recovered > 0) await persistFaceIndex(true);
+  } catch {
+    // Avatars are optional; the cover-photo fallback still shows the right
+    // person, just uncropped.
+  }
+  return recovered;
 }
 
 function yieldToEventLoop(): Promise<void> {
@@ -2351,8 +2629,9 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
   batchesSinceConsolidation += 1;
   const consolidate = batchesSinceConsolidation >= CONSOLIDATE_EVERY_BATCHES;
   if (consolidate) batchesSinceConsolidation = 0;
-  // Marked before the call, not after: onMerge mutates faceThumbUris as it
-  // goes, so a throw partway through still leaves the index dirty.
+  // Marked before the call, not after: the clustering pass mutates
+  // `index.people` in place, so a throw partway through still leaves the index
+  // dirty and the partial result gets persisted rather than silently lost.
   markIndexDirty();
   // Timed separately from `cluster` below because they grow at different rates
   // and only one of them is worth fixing. Calibration walks every observation on
@@ -2390,7 +2669,6 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
             assignments.set(observation, survivingPersonId);
           }
         }
-        keepFaceThumbOnMerge(absorbedPersonId, survivingPersonId);
       },
     threshold: index.threshold,
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
@@ -2563,6 +2841,16 @@ async function runBuild(
         // could calibrate for free was the one run that reported nothing.
         await probeFaceAlignment();
         logFaceIndexDiagnostics("hydrated");
+        // The only moment the backfill can ever run: a fully indexed library
+        // reaches this return on every launch and decodes nothing else, so an
+        // avatar missing here would stay missing forever.
+        const recovered = await backfillCoverFaceThumbs();
+        if (recovered > 0) {
+          // The People grid redraws off the progress channel, so this is what
+          // makes the recovered avatars appear without a restart.
+          notifyFaceProgress(index.total, index.total);
+          console.log(`[faces] recovered ${recovered} avatars`);
+        }
         return;
       }
       index.cursor = null;
@@ -2611,6 +2899,7 @@ async function runBuild(
         const faceCropCandidates: Array<{
           observation: FaceObservation;
           cropUri: string;
+          box: FaceBox;
         }> = [];
         const observations = await scanFaceAssets(pending, {
           isDetectionAvailable: () => true,
@@ -2623,8 +2912,8 @@ async function runBuild(
           detectFaces: async (_uri, _asset, frame) =>
             frame ? detectFacesInFrame(frame) : [],
           embedFace: createFaceEmbedding,
-          onFaceCrop: (observation, cropUri) => {
-            faceCropCandidates.push({ observation, cropUri });
+          onFaceCrop: (observation, cropUri, box) => {
+            faceCropCandidates.push({ observation, cropUri, box });
           },
         });
         traceScanCount("photos", pending.length);
