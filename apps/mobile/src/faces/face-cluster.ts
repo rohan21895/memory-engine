@@ -388,6 +388,24 @@ type ClusterOptions = {
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void;
   threshold?: number;
   perceptualThreshold?: number;
+  /**
+   * Assign the new faces but skip cluster-to-cluster consolidation.
+   *
+   * Merging is O(people^2) TWICE over -- once to build the same-photo
+   * cannot-link sets, once for the closest-first sweep -- and it does not care
+   * whether 40 faces arrived or 40,000. Measured mid-scan on a real library it
+   * cost 17 SECONDS per 32-photo batch at 1,235 people, more than detection and
+   * embedding put together, and it grows quadratically for the rest of the scan.
+   *
+   * Assignment is exact either way: a face still joins the best person it
+   * clears the bar against. Only the consolidation of two clusters into one is
+   * deferred, so the cost is transient -- a person may show as two tiles until
+   * the next consolidation, and the full rebuild at scan end produces exactly
+   * the grouping it always did. Skipping merges can never FUSE two people, only
+   * leave them split a while longer, which is the failure direction this
+   * codebase already prefers.
+   */
+  skipMerge?: boolean;
 };
 
 /**
@@ -540,15 +558,17 @@ export function extendFaceClusters(
     opts.onAssign?.(observation, person.id);
   }
 
-  mergeSimilarPeople(
-    people,
-    identityMergeThreshold,
-    perceptualThreshold,
-    evidencedMergeThreshold,
-    temporalMergeThreshold,
-    opts.constraints ?? [],
-    opts.onMerge,
-  );
+  if (!opts.skipMerge) {
+    mergeSimilarPeople(
+      people,
+      identityMergeThreshold,
+      perceptualThreshold,
+      evidencedMergeThreshold,
+      temporalMergeThreshold,
+      opts.constraints ?? [],
+      opts.onMerge,
+    );
+  }
 
   return people.map(publicPerson);
 }

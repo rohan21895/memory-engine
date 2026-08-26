@@ -2232,8 +2232,27 @@ function reclusterIfCalibrationChanged(threshold?: number): boolean {
   return true;
 }
 
+/**
+ * Batches assigned since the last cluster-to-cluster consolidation.
+ *
+ * Consolidation is O(people^2) and independent of how many faces arrived, so
+ * paying it per batch means paying it 370 times over an 11,829-photo library.
+ * Measured mid-scan it was 17s per 32-photo batch at 1,235 people -- more than
+ * detection and embedding combined -- and quadratic in a number that only grows.
+ *
+ * Every eighth batch keeps the People row roughly consolidated while the scan
+ * runs (256 photos is a couple of minutes) and cuts the sweep's share of scan
+ * time by about seven eighths. The rebuild at scan completion is unchanged, so
+ * the FINAL grouping is exactly what it was before this cadence existed.
+ */
+const CONSOLIDATE_EVERY_BATCHES = 8;
+let batchesSinceConsolidation = 0;
+
 function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
   const assignments = new Map<FaceObservation, string>();
+  batchesSinceConsolidation += 1;
+  const consolidate = batchesSinceConsolidation >= CONSOLIDATE_EVERY_BATCHES;
+  if (consolidate) batchesSinceConsolidation = 0;
   // Marked before the call, not after: onMerge mutates faceThumbUris as it
   // goes, so a throw partway through still leaves the index dirty.
   markIndexDirty();
@@ -2245,11 +2264,19 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
   // timed frame/detect/embed/crop/persist and nothing here at all, so late-scan
   // clustering cost was invisible and easy to attribute to the wrong stage.
   const calibrateStartedAt = Date.now();
-  const clusterOptions = faceClusterOptions(index.threshold, {
-    evidencedMergeThreshold: evidencedMergeBar(index.observations),
-    temporalMergeThreshold: temporalMergeBar(index.observations),
-    constraints: index.constraints ?? [],
-  });
+  // Both bars walk every observation on record and both feed merging alone, so
+  // on a batch that will not merge they are pure cost -- ~800ms per batch,
+  // measured, and rising with the library.
+  const clusterOptions = faceClusterOptions(
+    index.threshold,
+    consolidate
+      ? {
+          evidencedMergeThreshold: evidencedMergeBar(index.observations),
+          temporalMergeThreshold: temporalMergeBar(index.observations),
+          constraints: index.constraints ?? [],
+        }
+      : { constraints: index.constraints ?? [] },
+  );
   traceScanStage("calibrate", calibrateStartedAt);
   const clusterStartedAt = Date.now();
   index.people = extendFaceClusters(index.people, centeredForClustering(observations), {
@@ -2269,8 +2296,10 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
       },
     threshold: index.threshold,
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
+    skipMerge: !consolidate,
   });
   traceScanStage("cluster", clusterStartedAt);
+  if (consolidate) traceScanCount("consolidated");
   // Counted so a slow `cluster` can be read against the thing that drives it:
   // the merge sweep compares every person pair, so its cost is this number
   // squared, and it only ever grows during a scan.
