@@ -19,6 +19,7 @@ const suggestion: MergeSuggestion = {
   similarity: 0.539,
   bar: 0.509,
   sharedAssets: 1,
+  photosFixed: 180,
   blockedByCoOccurrence: true,
 };
 
