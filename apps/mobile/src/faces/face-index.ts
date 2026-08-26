@@ -2259,7 +2259,16 @@ async function runBuild(
         .filter((assetId) => Object.hasOwn(index.seenAssetIds, assetId))
         .map((assetId) => [assetId, true] as const),
     );
-    rebuildPeople(opts.threshold ?? index.threshold);
+    // Deliberately NOT `?? index.threshold`. `rebuildPeople` consults the
+    // calibrated bar only when no threshold is forced, so falling back to the
+    // stored one pins whatever was in effect before the scan — which, on a
+    // first run, is the cold-start default. The scan that finally produces
+    // enough same-photo pairs to measure a bar would then cluster at the bar it
+    // was trying to replace, and the measurement would not land until the next
+    // launch reached `reclusterIfCalibrationChanged`. An explicit
+    // `opts.threshold` still wins; absent one, this is the moment the library
+    // has the most evidence it will ever have, so it is the moment to use it.
+    rebuildPeople(opts.threshold);
     index.cursor = null;
     index.scanComplete = true;
     markIndexDirty();
