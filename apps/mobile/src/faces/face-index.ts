@@ -2631,8 +2631,15 @@ async function persistCoverFaceThumbs(
  * It is safe to be generous because the pass yields every few photos and only
  * runs when the scan has nothing else to do, so it never blocks a tap. It also
  * stops the moment the app leaves the foreground, exactly like the scan.
+ *
+ * Sized from the real queue rather than guessed. On the owner's library the
+ * 1,788 people still without a face hold 2,648 photos between them once the
+ * per-person cap is applied -- so a budget above that drains the whole queue in
+ * a single launch, and every launch after it costs nothing because there is
+ * nobody left to try. At 1,200 it took three, and the grid stayed part-empty in
+ * between for no reason other than an arbitrary constant.
  */
-const AVATAR_BACKFILL_PHOTOS_PER_PASS = 1200;
+const AVATAR_BACKFILL_PHOTOS_PER_PASS = 3200;
 
 /** Yields to the UI after this many photos so taps stay responsive. */
 const AVATAR_BACKFILL_YIELD_EVERY = 4;
@@ -2777,10 +2784,35 @@ async function faceForPerson(
   return best.box;
 }
 
+/**
+ * Who the next budgeted avatar pass should look at, in order.
+ *
+ * Fewest previous attempts first, then biggest tile. Tile size alone looks
+ * right and starves the tail: the budget is spent per launch, a person whose
+ * only photos are ambiguous group shots fails every pass, and failing does not
+ * move them out of the way -- so the same few hundred hopeless people absorb
+ * all 1,200 decodes on every launch and the rest of the grid never gets a first
+ * look. Measured on the owner's library: 449 avatars cut, 1,788 people still
+ * waiting, the same names at the front each time.
+ *
+ * Ordering on the attempt count makes it a round robin -- everybody is looked
+ * at once before anybody is looked at twice -- and the retries that remain are
+ * still spent biggest-tile-first, because those are the tiles he sees.
+ */
+export function avatarBackfillQueue(people: readonly Person[]): Person[] {
+  return people
+    .filter((person) => !person.avatarUri)
+    .sort(
+      (a, b) =>
+        (a.avatarTries ?? 0) - (b.avatarTries ?? 0) || b.faceCount - a.faceCount,
+    );
+}
+
 async function backfillCoverFaceThumbs(
   control?: { cancelled: boolean; foreground: boolean },
 ): Promise<number> {
   let recovered = 0;
+  let attempted = 0;
   let checkpointedAt = 0;
   try {
     const fileSystem = await fileSystemModule();
@@ -2789,11 +2821,7 @@ async function backfillCoverFaceThumbs(
     await fileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
     await deleteOrphanedPersonThumbs(fileSystem, directoryUri);
 
-    // Biggest tiles first. They are the people the owner actually looks at, and
-    // a budgeted pass has to spend its decodes where they show.
-    const needing = index.people
-      .filter((person) => !person.avatarUri)
-      .sort((a, b) => b.faceCount - a.faceCount);
+    const needing = avatarBackfillQueue(index.people);
 
     let photosTried = 0;
     const spent = () =>
@@ -2870,8 +2898,26 @@ async function backfillCoverFaceThumbs(
           if (frame) await closeFaceFrame(frame);
         }
       }
+      // Only a person we actually finished looking at is marked as tried. When
+      // the budget ran out mid-person `spent()` is already true, the loop above
+      // is about to break, and leaving their count alone puts them first in the
+      // queue next launch -- which is where an interrupted attempt belongs.
+      if (!person.avatarUri && !spent()) {
+        person.avatarTries = (person.avatarTries ?? 0) + 1;
+        attempted += 1;
+        markIndexDirty();
+      }
     }
-    if (recovered > 0) await persistFaceIndex(true);
+    // Persisted even when nothing was recovered: the attempt counts ARE the
+    // progress on a pass that found nobody, and dropping them would restart the
+    // round robin from the top on the next launch.
+    if (recovered > 0 || attempted > 0) await persistFaceIndex(true);
+    if (needing.length > 0) {
+      console.warn(
+        `[PhoteoFaceIndex] avatar pass recovered=${recovered} ` +
+          `failed=${attempted} decodes=${photosTried} left=${needing.length - recovered}`,
+      );
+    }
   } catch {
     // Avatars are optional; the cover-photo fallback still shows the right
     // person, just uncropped.
@@ -3551,6 +3597,22 @@ async function runBuild(
     await persistFaceIndex(true);
     logEmbeddingPath("scan complete");
     notifyFaceProgress(index.total, index.total);
+    // The avatar pass belongs here too, not only on the nothing-to-scan return.
+    //
+    // Measured on the owner's phone: a launch that found ONE new photo took this
+    // path instead, and the 1,788 people without a face were skipped for the
+    // whole launch -- `photos=1 faces=0` and not a single avatar cut. A phone
+    // that keeps taking photos reaches this branch nearly every time, so the
+    // early return the backfill used to live behind was the branch it almost
+    // never got. A rebuild here has also just dropped every avatar that could
+    // not be reattached, which makes this the moment they are most needed.
+    {
+      const recovered = await backfillCoverFaceThumbs(control);
+      if (recovered > 0) {
+        notifyFaceProgress(index.total, index.total);
+        console.log(`[faces] recovered ${recovered} avatars`);
+      }
+    }
   } catch {
     await persistFaceIndex(true);
   } finally {
