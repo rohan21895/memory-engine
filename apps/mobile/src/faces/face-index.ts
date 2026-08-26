@@ -1333,7 +1333,19 @@ export function applyConstraintToPeople(
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
 ): boolean {
   if (kind === "cannot") {
-    recluster();
+    // Nothing to do now, and that is not a shortcut -- it is what the answer
+    // means. The user can only have picked these two by tapping two SEPARATE
+    // tiles, so the grouping on screen already keeps them apart and a rebuild
+    // would spend a full O(faces x people) pass arriving back where it started.
+    // On this library that pass is minutes long and runs on the JS thread, from
+    // a tap.
+    //
+    // The correction is not lost: `recordConstraint` has already stored it, and
+    // `mergeSimilarPeople` reads it through `resolveConstraints` and refuses the
+    // pair at the next consolidation -- including transitively, since a merged
+    // cluster inherits every cannot-link of both sides. face-constraints.test.ts
+    // asserts that a stored cannot-link still blocks a merge the bars would
+    // otherwise make, which is the property this relies on.
     return false;
   }
   const firstIndex = people.findIndex((person) => person.id === personIdA);

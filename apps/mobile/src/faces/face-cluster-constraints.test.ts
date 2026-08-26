@@ -410,5 +410,75 @@ assert(
   }
 }
 
+// (d) A USER-RECORDED cannot-link blocks a merge the bars would otherwise make.
+//
+// This is load-bearing, not incidental. Recording "not the same person" no
+// longer re-clusters (`applyConstraintToPeople`): the two are already separate
+// tiles, so rebuilding would spend minutes reproducing the grouping it started
+// from. That is only safe because the stored constraint is honoured at the NEXT
+// consolidation -- and until now nothing asserted that it is.
+{
+  const atDegrees = (degrees: number): number[] => {
+    const radians = (degrees * Math.PI) / 180;
+    return [Math.cos(radians), Math.sin(radians)];
+  };
+  // Two tight groups, far enough apart that ASSIGNMENT keeps them separate but
+  // close enough that CONSOLIDATION joins them -- which is the only shape where
+  // a merge-time constraint can be what makes the difference.
+  //
+  // Five faces each, because that is the path where the bars allow it. The
+  // small-cluster merge bar is clamped up to the assignment bar, so for a
+  // three-face group "assignment separates them but merging joins them" is
+  // impossible by construction. `evidencedMergeThreshold` is deliberately not
+  // clamped, and applies once both sides clear MERGE_EVIDENCE_MIN_FACES.
+  const faces = [0, 0.5, 1, 1.5, 2]
+    .map((degrees, index) => ({
+      assetId: `ana-${index + 1}`,
+      embedding: atDegrees(degrees),
+      embeddingKind: "identity" as const,
+    }))
+    .concat(
+      [12, 12.5, 13, 13.5, 14].map((degrees, index) => ({
+        assetId: `cal-${index + 1}`,
+        embedding: atDegrees(degrees),
+        embeddingKind: "identity" as const,
+      })),
+    );
+  const options = { threshold: 0.999, evidencedMergeThreshold: 0.9 };
+
+  // Vacuity guard FIRST. If these did not merge on their own, the constrained
+  // run below would "pass" while proving nothing at all.
+  const unconstrained = clusterFaces(faces, options);
+  assert(
+    unconstrained.length === 1,
+    `the two groups must merge without a constraint, or this case is vacuous ` +
+      `(got ${unconstrained.length} tiles)`,
+  );
+
+  const constrained = clusterFaces(faces, {
+    ...options,
+    constraints: [{ kind: "cannot" as const, a: "ana-1", b: "cal-1" }],
+  });
+  assert(
+    constrained.length === 2,
+    `a recorded cannot-link must keep them apart (got ${constrained.length} tiles)`,
+  );
+  assert(
+    constrained.every(
+      (person) =>
+        !(person.assetIds.includes("ana-1") && person.assetIds.includes("cal-1")),
+    ),
+    "the two anchored photos must never share a tile",
+  );
+  // The constraint names two photos but must separate the whole clusters they
+  // anchor, not just those two faces.
+  const anaTile = constrained.find((person) => person.assetIds.includes("ana-1"));
+  const calTile = constrained.find((person) => person.assetIds.includes("cal-1"));
+  assert(
+    anaTile?.faceCount === 5 && calTile?.faceCount === 5,
+    "each side keeps its own faces rather than being split down to the anchors",
+  );
+}
+
 // eslint-disable-next-line no-console
 console.log("face-cluster constraints self-check passed");

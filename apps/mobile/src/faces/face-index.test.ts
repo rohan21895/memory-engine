@@ -124,9 +124,22 @@ assert(
       splitReclusters += 1;
     },
   );
+  // A cannot-link must NOT recluster, and this asserts the absence on purpose.
+  //
+  // It used to, and that was a full O(faces x people) rebuild on the JS thread
+  // -- minutes on a 17,699-face library -- fired from a tap. It bought nothing.
+  // The user can only name a pair by tapping two SEPARATE tiles, so "these are
+  // not the same person" is already true of the grouping on screen, and the
+  // rebuild spent those minutes reproducing its own input.
+  //
+  // What makes the answer stick is storage, not rebuilding: `recordConstraint`
+  // has already persisted it, and `mergeSimilarPeople` reads it through
+  // `resolveConstraints` to refuse the pair at the next consolidation. Case (d)
+  // of face-cluster-constraints.test.ts asserts exactly that, with a vacuity
+  // guard proving the pair really would have merged otherwise.
   assert(
-    !directlySplit && splitReclusters === 1,
-    "cannot-link should retain the genuine full-recluster path",
+    !directlySplit && splitReclusters === 0,
+    `a cannot-link must not trigger a rebuild (it ran ${splitReclusters} times)`,
   );
 
   // An identity centroid and a perceptual one live in different spaces, so the
