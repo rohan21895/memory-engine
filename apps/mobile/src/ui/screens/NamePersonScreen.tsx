@@ -1,8 +1,8 @@
 import { Image } from "expo-image";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from "react-native";
 
-import { contentUri } from "../../faces/face-index";
+import { contentUri, getPeople, markNotSamePerson, markSamePerson } from "../../faces/face-index";
 import { fonts } from "../fonts";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
 
@@ -19,6 +19,23 @@ export function NamePersonScreen({ onBack, person }: { onBack: () => void; perso
   const [name, setName] = useState("");
   const [relation, setRelation] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Grouping only changes when the user answers, so the candidate list is read
+  // once. Re-reading on every keystroke would reshuffle the row under a
+  // half-made choice.
+  const others = useMemo(() => getPeople().filter((candidate) => candidate.id !== person.id).slice(0, 12), [person.id]);
+  const [candidate, setCandidate] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const answer = async (same: boolean) => {
+    if (!candidate || busy) return;
+    setBusy(true);
+    const recorded = same ? await markSamePerson(person.id, candidate) : await markNotSamePerson(person.id, candidate);
+    setBusy(false);
+    setCandidate(null);
+    // A refused answer means no photo could identify one of them on its own, so
+    // there is nothing honest to store. Say so rather than failing silently.
+    if (!recorded) { setNotice("Every photo of one of them also has someone else in it, so this can’t be recorded yet."); return; }
+    setNotice(same ? "Merged. They’re one person now." : "Noted. They’ll stay separate.");
+  };
   // TODO(owner): needs backend/local schema support for persisted person names and relationships.
   return (
     <View style={styles.root}>
@@ -32,6 +49,20 @@ export function NamePersonScreen({ onBack, person }: { onBack: () => void; perso
         <Text style={styles.private}>This name stays on this phone.</Text>
         <Text style={styles.eyebrow}>How do you know them?</Text>
         <View style={styles.chips}>{relations.map((item) => <Pressable accessibilityRole="button" accessibilityState={{ selected: relation === item }} key={item} onPress={() => setRelation(relation === item ? null : item)} style={[styles.chip, relation === item ? styles.chipActive : null]}><Text style={[styles.chipText, relation === item ? styles.chipTextActive : null]}>{item}</Text></Pressable>)}</View>
+        {others.length ? <>
+          <Text style={styles.eyebrow}>Is this someone already here?</Text>
+          <Text style={styles.helper}>Tap a face, then tell us. Your answer beats anything the app worked out on its own.</Text>
+          <ScrollView contentContainerStyle={styles.candidateRow} horizontal showsHorizontalScrollIndicator={false}>
+            {others.map((other) => <Pressable accessibilityLabel={`Person with ${other.faceCount} photos`} accessibilityRole="button" accessibilityState={{ selected: candidate === other.id }} key={other.id} onPress={() => setCandidate(candidate === other.id ? null : other.id)} style={styles.candidate}>
+              <Image contentFit="cover" source={other.faceThumbUri ?? contentUri(other.coverAssetId)} style={[styles.candidateAvatar, candidate === other.id ? styles.candidateAvatarActive : null]} />
+              <Text style={styles.candidateCount}>{other.faceCount}</Text>
+            </Pressable>)}
+          </ScrollView>
+          {candidate ? <View style={styles.answerRow}>
+            <Pressable accessibilityRole="button" disabled={busy} onPress={() => void answer(true)} style={[styles.answer, styles.answerYes, busy ? styles.disabled : null]}><Text style={styles.answerYesText}>Same person</Text></Pressable>
+            <Pressable accessibilityRole="button" disabled={busy} onPress={() => void answer(false)} style={[styles.answer, busy ? styles.disabled : null]}><Text style={styles.answerText}>Different</Text></Pressable>
+          </View> : null}
+        </> : null}
         <Text style={styles.eyebrow}>Their photos</Text>
         <View style={styles.grid}>{person.assetIds.slice(0, 8).map((id) => <Image contentFit="cover" key={id} source={contentUri(id)} style={styles.tile} />)}</View>
         {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
@@ -45,6 +76,16 @@ export function NamePersonScreen({ onBack, person }: { onBack: () => void; perso
 }
 
 const styles = StyleSheet.create({
+  answer: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderRadius: radii.md, borderWidth: 1, flex: 1, justifyContent: "center", minHeight: 48 },
+  answerRow: { flexDirection: "row", gap: spacing.xs, marginTop: spacing.sm },
+  answerText: { color: colors.text, fontFamily: fonts.semibold, ...typeScale.small },
+  answerYes: { backgroundColor: colors.gold, borderColor: colors.gold },
+  answerYesText: { color: colors.onAccent, fontFamily: fonts.semibold, ...typeScale.small },
+  candidate: { alignItems: "center", gap: 4 },
+  candidateAvatar: { backgroundColor: colors.hairline, borderColor: "transparent", borderRadius: 32, borderWidth: 2, height: 64, width: 64 },
+  candidateAvatarActive: { borderColor: colors.gold },
+  candidateCount: { color: colors.muted, fontFamily: fonts.semibold, ...typeScale.small },
+  candidateRow: { gap: spacing.sm, paddingVertical: spacing.xs },
   avatar: { alignSelf: "center", backgroundColor: colors.hairline, borderRadius: 56, height: 112, marginTop: spacing.sm, width: 112 },
   back: { alignSelf: "flex-start", justifyContent: "center", minHeight: 44 },
   backText: { color: colors.muted, fontFamily: fonts.semibold, ...typeScale.small },
