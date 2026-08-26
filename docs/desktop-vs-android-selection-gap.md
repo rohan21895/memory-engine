@@ -1,5 +1,22 @@
 # Desktop vs Android — image selection flow, gap analysis
 
+> **STALE in one important way — read this first (2026-08-26).**
+>
+> This document says Android has "no coverage optimization" and is "a quality
+> ranker, not an album planner". That was true when it was written and is not
+> true now: `src/selection/album-planner.ts` exists, with coverage phases, per-
+> axis caps and a `minPerPerson` floor. Do not rebuild it.
+>
+> The gap moved rather than closed. The planner was ported; the 64-photo
+> candidate gate in FRONT of it was not, and `candidate-prepass.ts` contains no
+> reference to `personIds` at all. So the shortlist is chosen blind to people
+> and the planner's person floor operates on a set that may already have dropped
+> everyone it needs — which is this document's own thesis, "THE PROBLEM IS NOT
+> QUALITY. IT IS COVERAGE.", reappearing one stage earlier.
+>
+> `docs/album-selection-audit.md` describes the current path as it actually is,
+> with measured evidence. Prefer it over the stage-by-stage map below.
+
 Goal: the Android app should run the **same selection algorithm** as the desktop
 engine, choosing phone-appropriate models but keeping the algorithm identical.
 This maps the desktop flow stage-by-stage to what Android has today (after
