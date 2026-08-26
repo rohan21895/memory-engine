@@ -16,3 +16,12 @@ android {
     abortOnError false
   }
 }
+
+dependencies {
+  // HeadlessJsTaskService and its config live in React Native itself.
+  // expo-modules-core depends on it but does not re-export it, so a local
+  // module that subclasses an RN service has to ask for it directly. No
+  // version: the React Native gradle plugin pins it for the whole build, and
+  // hardcoding one here would drift from the app's RN on the next upgrade.
+  implementation 'com.facebook.react:react-android'
+}

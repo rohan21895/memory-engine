@@ -6,6 +6,12 @@
   <!-- Android 13+ gates the notification itself. Without it the service still
        runs, it is just invisible, so this is requested but never required. -->
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <!-- Required, not optional: HeadlessJsTaskService.startTask acquires a
+       PARTIAL_WAKE_LOCK before it does anything else, so without this the
+       service throws SecurityException the moment the scan starts. It also
+       earns its keep -- it is what lets the scan continue with the screen
+       off -- and the base class releases it in onDestroy. -->
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
   <application>
     <service
       android:name=".ScanForegroundService"
