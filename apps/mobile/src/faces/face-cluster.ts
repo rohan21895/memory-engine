@@ -670,9 +670,9 @@ export function mergeExistingPeople(
  * the base bar is correct. If large clusters ever need their own rule it must
  * demand MORE evidence, never less.
  *
- * ponytail: O(k^2) per merge round over k people; fine for the hundreds of
- * people a personal library yields. Swap for union-find on an ANN index if k
- * ever reaches thousands.
+ * Candidate similarities are scanned once, then only the survivor's row is
+ * refreshed after each merge. No other pair can have changed its linkage,
+ * threshold inputs, or inherited cannot-links.
  */
 function mergeSimilarPeople(
   people: MutablePerson[],
@@ -744,71 +744,146 @@ function mergeSimilarPeople(
     absorb(people, origins, blocked, keep, drop, onMerge);
   }
 
-  for (;;) {
-    let bestI = -1;
-    let bestJ = -1;
-    let bestSimilarity = Number.NEGATIVE_INFINITY;
-
-    for (let i = 0; i < people.length; i += 1) {
-      for (let j = i + 1; j < people.length; j += 1) {
-        const a = people[i];
-        const b = people[j];
-        if (!comparable(a, b)) continue;
-        // Two clusters that each carry real evidence are judged on the bar
-        // measured for AVERAGES; anything smaller is judged on the strict bar,
-        // which is the one that behaves like a single pair.
-        const evidenced =
-          a.faceCount >= MERGE_EVIDENCE_MIN_FACES &&
-          b.faceCount >= MERGE_EVIDENCE_MIN_FACES;
-        // Clusters that overlap or nearly touch in time get the temporal bar,
-        // which is how an infant's months chain together: each neighbouring
-        // pair clears it, the union spans wider, and the next neighbour comes
-        // into range on the following iteration. Requires BOTH to carry real
-        // evidence, so a stray two-face cluster cannot ride a date into
-        // somebody else.
-        const gap = spanGap(a, b);
-        const nearInTime =
-          gap !== undefined && gap <= TEMPORAL_MERGE_WINDOW_MS;
-        const identityBar = evidenced
-          ? nearInTime
-            ? Math.min(evidencedMergeThreshold, temporalMergeThreshold)
-            : evidencedMergeThreshold
-          : identityMergeThreshold;
-        const threshold =
-          a.embeddingKind === "identity" ? identityBar : perceptualThreshold;
-        // Checked BEFORE the linkage, not after. `blocked` is a hard exclusion,
-        // so a pair it rejects can never be merged no matter how it scores, and
-        // computing a 512-dimension dot product to then throw it away is pure
-        // cost -- paid on every sweep, and this sweep runs once per merge.
-        // Moving it earlier cannot change any outcome, only how long the
-        // rejection takes.
-        if (intersects(blocked[i], origins[j])) continue;
-        const similarity = linkage(a, b);
-        if (similarity < threshold || similarity < bestSimilarity) {
-          continue;
-        }
-        // Exact ties are common in synthetic and symmetric libraries, and
-        // "whichever the loops reached first" makes the result depend on the
-        // order people were discovered in — the one thing closest-first
-        // merging exists to remove. Break them on the id pair instead.
+  type MergeCandidate = {
+    similarity: number;
+    pairKey: string;
+    aId: string;
+    bId: string;
+    aVersion: number;
+    bVersion: number;
+  };
+  const candidates: MergeCandidate[] = [];
+  const versions = new Map(people.map((person) => [person.id, 0]));
+  const indexById = new Map(people.map((person, index) => [person.id, index]));
+  const betterCandidate = (a: MergeCandidate, b: MergeCandidate): boolean =>
+    a.similarity > b.similarity ||
+    (a.similarity === b.similarity && a.pairKey < b.pairKey);
+  const pushCandidate = (candidate: MergeCandidate): void => {
+    let index = candidates.push(candidate) - 1;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (!betterCandidate(candidates[index], candidates[parent])) break;
+      [candidates[index], candidates[parent]] = [
+        candidates[parent],
+        candidates[index],
+      ];
+      index = parent;
+    }
+  };
+  const popCandidate = (): MergeCandidate | undefined => {
+    const best = candidates[0];
+    const tail = candidates.pop();
+    if (candidates.length > 0 && tail) {
+      candidates[0] = tail;
+      let index = 0;
+      for (;;) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let child = index;
         if (
-          similarity === bestSimilarity &&
-          bestI !== -1 &&
-          pairKey(a, b) >= pairKey(people[bestI], people[bestJ])
+          left < candidates.length &&
+          betterCandidate(candidates[left], candidates[child])
         ) {
-          continue;
+          child = left;
         }
-        bestSimilarity = similarity;
-        bestI = i;
-        bestJ = j;
+        if (
+          right < candidates.length &&
+          betterCandidate(candidates[right], candidates[child])
+        ) {
+          child = right;
+        }
+        if (child === index) break;
+        [candidates[index], candidates[child]] = [
+          candidates[child],
+          candidates[index],
+        ];
+        index = child;
       }
     }
+    return best;
+  };
+  const scanPair = (i: number, j: number): void => {
+    const a = people[i];
+    const b = people[j];
+    if (!comparable(a, b)) return;
+    // Two clusters that each carry real evidence are judged on the bar
+    // measured for AVERAGES; anything smaller is judged on the strict bar,
+    // which is the one that behaves like a single pair.
+    const evidenced =
+      a.faceCount >= MERGE_EVIDENCE_MIN_FACES &&
+      b.faceCount >= MERGE_EVIDENCE_MIN_FACES;
+    // Clusters that overlap or nearly touch in time get the temporal bar,
+    // which is how an infant's months chain together: each neighbouring pair
+    // clears it, the union spans wider, and the next neighbour comes into
+    // range on the following iteration. Requires BOTH to carry real evidence,
+    // so a stray two-face cluster cannot ride a date into somebody else.
+    const gap = spanGap(a, b);
+    const nearInTime = gap !== undefined && gap <= TEMPORAL_MERGE_WINDOW_MS;
+    const identityBar = evidenced
+      ? nearInTime
+        ? Math.min(evidencedMergeThreshold, temporalMergeThreshold)
+        : evidencedMergeThreshold
+      : identityMergeThreshold;
+    const threshold =
+      a.embeddingKind === "identity" ? identityBar : perceptualThreshold;
+    // `blocked` must be read on every survivor-row refresh because an absorb
+    // unions both endpoints' inherited cannot-links.
+    if (intersects(blocked[i], origins[j])) return;
+    const similarity = linkage(a, b);
+    if (similarity < threshold) return;
+    pushCandidate({
+      similarity,
+      pairKey: pairKey(a, b),
+      aId: a.id,
+      bId: b.id,
+      aVersion: versions.get(a.id) ?? 0,
+      bVersion: versions.get(b.id) ?? 0,
+    });
+  };
 
-    if (bestI === -1) {
-      return;
+  // The forced-merge pass has completed before this one full similarity sweep.
+  for (let i = 0; i < people.length; i += 1) {
+    for (let j = i + 1; j < people.length; j += 1) {
+      scanPair(i, j);
+    }
+  }
+
+  for (;;) {
+    const candidate = popCandidate();
+    if (!candidate) return;
+    const aIndex = indexById.get(candidate.aId);
+    const bIndex = indexById.get(candidate.bId);
+    // An endpoint may have been absorbed while the candidate waited. A
+    // survivor may also have changed; its old row entries are invalidated by
+    // the version and replaced by the row refresh below.
+    if (
+      aIndex === undefined ||
+      bIndex === undefined ||
+      versions.get(candidate.aId) !== candidate.aVersion ||
+      versions.get(candidate.bId) !== candidate.bVersion
+    ) {
+      continue;
     }
 
-    absorb(people, origins, blocked, bestI, bestJ, onMerge);
+    const [keepIndex, dropIndex] =
+      aIndex < bIndex ? [aIndex, bIndex] : [bIndex, aIndex];
+    const survivorId = people[keepIndex].id;
+    const absorbedId = people[dropIndex].id;
+    absorb(people, origins, blocked, keepIndex, dropIndex, onMerge);
+
+    indexById.delete(absorbedId);
+    versions.delete(absorbedId);
+    versions.set(survivorId, (versions.get(survivorId) ?? 0) + 1);
+    for (let index = dropIndex; index < people.length; index += 1) {
+      indexById.set(people[index].id, index);
+    }
+
+    // Only pairs touching the survivor can have changed their similarity,
+    // evidence/temporal bars, or inherited cannot-links.
+    for (let index = 0; index < people.length; index += 1) {
+      if (index === keepIndex) continue;
+      scanPair(Math.min(index, keepIndex), Math.max(index, keepIndex));
+    }
   }
 }
 
