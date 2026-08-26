@@ -2658,16 +2658,22 @@ async function persistCoverFaceThumbs(
 /**
  * How many photos one backfill pass may decode.
  *
- * The pass only ever runs when the scan has nothing to do, so it competes with
- * nothing -- but it still runs on the JS thread, and the owner's report that the
- * app "hangs when I tap something" is exactly what an unbounded loop of decodes
- * would produce. Sixty photos is a few seconds of work, spread across yields,
- * and the next launch picks up where this one stopped.
+ * Generous on purpose. The upgrade that keys crops by photo starts every person
+ * with no avatar -- 913 of them on the owner's library -- and a small budget
+ * would take sixteen launches to fill the grid. Nobody would read that as
+ * "recovering"; they would read it as broken.
+ *
+ * It is safe to be generous because the pass yields every few photos and only
+ * runs when the scan has nothing else to do, so it never blocks a tap. It also
+ * stops the moment the app leaves the foreground, exactly like the scan.
  */
-const AVATAR_BACKFILL_PHOTOS_PER_PASS = 60;
+const AVATAR_BACKFILL_PHOTOS_PER_PASS = 1200;
 
 /** Yields to the UI after this many photos so taps stay responsive. */
 const AVATAR_BACKFILL_YIELD_EVERY = 4;
+
+/** Avatars recovered between index writes, so a kill costs at most this many. */
+const AVATAR_BACKFILL_CHECKPOINT = 50;
 
 /**
  * Recovers face avatars for people who have none.
@@ -2687,8 +2693,11 @@ const AVATAR_BACKFILL_YIELD_EVERY = 4;
  *
  * Returns how many avatars it recovered.
  */
-async function backfillCoverFaceThumbs(): Promise<number> {
+async function backfillCoverFaceThumbs(
+  control?: { cancelled: boolean; foreground: boolean },
+): Promise<number> {
   let recovered = 0;
+  let checkpointedAt = 0;
   try {
     const fileSystem = await fileSystemModule();
     if (!fileSystem.documentDirectory) return 0;
@@ -2712,10 +2721,20 @@ async function backfillCoverFaceThumbs(): Promise<number> {
       .sort((a, b) => b.faceCount - a.faceCount);
 
     let photosTried = 0;
+    const spent = () =>
+      photosTried >= AVATAR_BACKFILL_PHOTOS_PER_PASS ||
+      control?.cancelled === true ||
+      // Backgrounded means the user is elsewhere and the foreground service is
+      // not holding this work. Stop and resume on the next launch rather than
+      // decoding photos nobody is waiting for.
+      (control !== undefined && !control.foreground && !scanServiceHolding);
+    if (needing.length > 0) {
+      console.warn(`[PhoteoFaceIndex] recovering avatars for ${needing.length} people`);
+    }
     for (const person of needing) {
-      if (photosTried >= AVATAR_BACKFILL_PHOTOS_PER_PASS) break;
+      if (spent()) break;
       for (const assetId of person.assetIds) {
-        if (photosTried >= AVATAR_BACKFILL_PHOTOS_PER_PASS) break;
+        if (spent()) break;
         if (index.faceThumbUris[assetId]) break;
         if ((personIdsByAsset.get(assetId)?.length ?? 0) !== 1) continue;
         photosTried += 1;
@@ -2765,6 +2784,15 @@ async function backfillCoverFaceThumbs(): Promise<number> {
             index.faceThumbUris[assetId] = destination;
             markIndexDirty();
             recovered += 1;
+            // Checkpointed as it goes, not only at the end. A pass over 913
+            // people is minutes long, and a process killed partway through
+            // would otherwise repeat every decode it had already paid for.
+            // Counted against the last checkpoint rather than tested with a
+            // modulo, which would re-fire on every failed photo in between.
+            if (recovered - checkpointedAt >= AVATAR_BACKFILL_CHECKPOINT) {
+              checkpointedAt = recovered;
+              await persistFaceIndex(true);
+            }
           } finally {
             await deleteFaceCrop(crop.uri);
           }
@@ -3167,7 +3195,7 @@ async function runBuild(
         // The only moment the backfill can ever run: a fully indexed library
         // reaches this return on every launch and decodes nothing else, so an
         // avatar missing here would stay missing forever.
-        const recovered = await backfillCoverFaceThumbs();
+        const recovered = await backfillCoverFaceThumbs(control);
         if (recovered > 0) {
           // The People grid redraws off the progress channel, so this is what
           // makes the recovered avatars appear without a restart.
