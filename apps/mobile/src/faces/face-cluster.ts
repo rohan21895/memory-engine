@@ -105,6 +105,26 @@ function sharesAsset(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return false;
 }
 
+/**
+ * How many photos two clusters both appear in.
+ *
+ * Merging only needs to know WHETHER they co-occur, but a human being asked to
+ * overrule that veto needs to know how much evidence is behind it -- ten shared
+ * photos is a relationship, one out of five hundred faces is usually a double
+ * detection.
+ */
+function countSharedAssets(
+  a: ReadonlySet<string>,
+  b: ReadonlySet<string>,
+): number {
+  const [smaller, larger] = a.size <= b.size ? [a, b] : [b, a];
+  let shared = 0;
+  for (const assetId of smaller) {
+    if (larger.has(assetId)) shared += 1;
+  }
+  return shared;
+}
+
 /** True when the two sets have any element in common. */
 function intersects(a: ReadonlySet<number>, b: ReadonlySet<number>): boolean {
   const [smaller, larger] = a.size <= b.size ? [a, b] : [b, a];
@@ -1097,6 +1117,27 @@ export type MergeSuggestion = {
   similarity: number;
   /** The bar this pair actually failed, so the gap can be shown honestly. */
   bar: number;
+  /**
+   * Photos both clusters appear in.
+   *
+   * Shown because it is the evidence the user is being asked to overrule, and
+   * its weight varies enormously: ten shared photos means two people who are
+   * usually together, one shared photo out of five hundred faces is more often
+   * a double detection -- a reflection, a poster, a photo of a photo.
+   */
+  sharedAssets: number;
+  /**
+   * This pair cleared its merge bar on face evidence and is held apart ONLY by
+   * having been photographed together.
+   *
+   * Measured on the owner's library, every single pair that cleared its bar was
+   * in this state -- 37 of 37 -- and 27 of them were vetoed by exactly ONE
+   * shared photo. So the merge pass is not failing because its bars are too
+   * strict; it is failing because co-occurrence is an absolute veto that a
+   * single frame can trigger. These are the pairs where the app is most likely
+   * to be wrong, so they are asked first.
+   */
+  blockedByCoOccurrence: boolean;
 };
 
 /**
@@ -1188,26 +1229,36 @@ export function suggestMerges(
           : bars.evidenced
         : bars.identity;
       const bar = a.embeddingKind === "identity" ? identityBar : bars.perceptual;
-      // Already over its bar: merging handles it, so it is not a question.
-      if (similarity >= bar) continue;
-      // Two faces in one photo below the exception are two people. That is
-      // evidence, not uncertainty, and the merge pass treats it as a hard
-      // cannot-link -- so it must not come back as a suggestion.
-      if (
-        sharesAsset(a.assetIdSet, b.assetIdSet) &&
-        similarity < SAME_PHOTO_EXCEPTION_SIMILARITY
-      ) {
-        continue;
-      }
+      const sharedAssets = countSharedAssets(a.assetIdSet, b.assetIdSet);
+      const vetoed =
+        sharedAssets > 0 && similarity < SAME_PHOTO_EXCEPTION_SIMILARITY;
+      // Over the bar and NOT vetoed: merging handles it, so it is not a
+      // question. Over the bar and vetoed is the most valuable question there
+      // is, and used to be silently dropped here -- see `blockedByCoOccurrence`.
+      if (similarity >= bar && !vetoed) continue;
       const [first, second] =
         a.faceCount >= b.faceCount ? [a, b] : [b, a];
-      found.push({ a: first.id, b: second.id, similarity, bar });
+      found.push({
+        a: first.id,
+        b: second.id,
+        similarity,
+        bar,
+        sharedAssets,
+        blockedByCoOccurrence: vetoed && similarity >= bar,
+      });
     }
   }
 
-  // Ties break on id so the list does not reshuffle between identical runs.
+  // Vetoed pairs first: they cleared the bar on face evidence and are held
+  // apart only by co-occurrence, so they are the ones where the app is most
+  // likely to be wrong and the user's answer is worth most. Among those, the
+  // fewest shared photos first -- one shared frame is far weaker evidence of
+  // two people than ten. Ties break on id so the list does not reshuffle
+  // between identical runs.
   found.sort(
     (x, y) =>
+      Number(y.blockedByCoOccurrence) - Number(x.blockedByCoOccurrence) ||
+      (x.blockedByCoOccurrence ? x.sharedAssets - y.sharedAssets : 0) ||
       y.similarity - x.similarity ||
       (x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0),
   );

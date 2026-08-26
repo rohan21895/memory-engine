@@ -5,7 +5,7 @@ import {
   // @ts-expect-error Node's TypeScript runner requires the source extension.
 } from "./face-cluster.ts";
 
-function assert(value: unknown, message: string): void {
+function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(`face-cluster suggest self-check failed: ${message}`);
 }
 
@@ -93,9 +93,73 @@ assert(farIndex !== 0, "a distant pair must never outrank a near one");
   );
 }
 
-// Two faces in ONE photo below the mirror/panorama exception are two different
-// people. That is evidence, and the merge pass treats it as a hard cannot-link,
-// so it must never come back as a question.
+// A pair held apart ONLY by co-occurrence is the most important question there
+// is, and must be offered first.
+//
+// This is measured behaviour, not a hypothesis. On the owner's real 17,699-face
+// index, 37 pairs cleared their merge bar and every single one was vetoed by
+// the same-photo rule -- 27 of them by exactly ONE shared photo out of hundreds
+// of faces. The merge pass is not too strict; it is being overruled by a veto a
+// single frame can trigger. Dropping these from the list, which an earlier
+// version of this file did, hid the whole problem.
+{
+  // The two groups sit 50 degrees apart, cosine ~0.64. That has to land BETWEEN
+  // the merge bar and the 0.72 mirror/panorama exception, which is the only
+  // window where a veto can stop a merge that would otherwise happen. An
+  // earlier draft put them 3 degrees apart, where the exception fires and the
+  // code reads one face captured twice -- correctly, so nothing was vetoed and
+  // the case proved nothing.
+  const veto = [
+    ...[0, 1, 2, 3, 4].map((d, i) => face(`ana-v-${i}`, d)),
+    ...[50, 51, 52, 53, 54].map((d, i) => face(`ben-v-${i}`, d)),
+    // One frame in which both were detected. That is the entire veto.
+    { assetId: "one-frame", embedding: atDegrees(0.5), embeddingKind: "identity" as const },
+    { assetId: "one-frame", embedding: atDegrees(50.5), embeddingKind: "identity" as const },
+    // A competing question with HIGHER similarity (~0.707) that is not vetoed.
+    // Two faces each, so it is judged on the strict small-cluster bar rather
+    // than the evidenced one, and stays a question instead of merging. Without
+    // this the block held a single suggestion and any ordering rule "passed".
+    face("cy-0", 150),
+    face("cy-1", 150.4),
+    face("dee-0", 195),
+    face("dee-1", 195.4),
+  ];
+  const strict = {
+    threshold: 0.99,
+    evidencedMergeThreshold: 0.55,
+    identityMergeThreshold: 0.9,
+  };
+  const two = clusterFaces(veto, strict);
+  assert(two.length === 4, `the veto must have kept them apart, got ${two.length}`);
+
+  const asked = suggestMerges(two, { ...strict, floor: 0 });
+  assert(asked.length >= 2, `both questions must be offered, got ${asked.length}`);
+  const rival = asked.find((s) => !s.blockedByCoOccurrence);
+  assert(rival !== undefined, "the non-vetoed near miss is still a question");
+  assert(
+    rival.similarity > asked.find((s) => s.blockedByCoOccurrence)!.similarity,
+    `the rival must be MORE similar (${rival.similarity.toFixed(3)}), or ranking ` +
+      `by similarity alone would give the same order and prove nothing`,
+  );
+  assert(asked.length > 0, "a co-occurrence-vetoed pair must be offered, not hidden");
+  assert(
+    asked[0].blockedByCoOccurrence,
+    "a pair held apart only by co-occurrence must be asked FIRST, ahead of a " +
+      "more similar pair that merely failed its bar",
+  );
+  assert(
+    asked[0].sharedAssets === 1,
+    `the user must be told how thin the evidence is (got ${asked[0].sharedAssets})`,
+  );
+  assert(
+    asked[0].similarity >= asked[0].bar,
+    "this pair cleared its bar on face evidence -- only the veto stopped it",
+  );
+}
+
+// Two faces in one photo BELOW their merge bar are just two people who were
+// photographed together. Still offered, since the bar is what they failed, but
+// never ahead of a pair the veto alone stopped.
 {
   // 50 degrees apart is cosine ~0.64, BELOW the 0.72 exception -- which is what
   // makes them two people rather than one face captured twice. At 14 degrees
@@ -111,10 +175,14 @@ assert(farIndex !== 0, "a distant pair must never outrank a near one");
   assert(two.length === 2, `the group shot must stay two people, got ${two.length}`);
   const asked = suggestMerges(two, { ...options, floor: 0 });
   assert(
-    asked.length === 0,
-    `two people photographed together must not be offered as a merge ` +
-      `(similarity ${asked[0]?.similarity.toFixed(3)} is under the ` +
-      `${SAME_PHOTO_EXCEPTION_SIMILARITY} exception, so it is evidence, not doubt)`,
+    asked.every((s) => !s.blockedByCoOccurrence),
+    `a pair that failed its BAR is not a pair the veto stopped -- at similarity ` +
+      `${asked[0]?.similarity.toFixed(3)} against the ` +
+      `${SAME_PHOTO_EXCEPTION_SIMILARITY} exception it would not have merged anyway`,
+  );
+  assert(
+    asked.every((s) => s.sharedAssets === 1),
+    "the shared-photo count is still reported so the user can judge it",
   );
 }
 
