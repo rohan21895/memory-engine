@@ -694,6 +694,42 @@ function greedySelect(
     const distinct = fresh.filter(
       (mediaId) => (closest[mediaId] ?? 0) < policy.maxSelectedSimilarity,
     );
+    // The caps are HARD -- an empty `fresh` relaxes one rather than admitting a
+    // blocked photo -- but the near-duplicate bar below was only a preference,
+    // and the asymmetry put nine of a ten-frame sunset burst into a 24-photo
+    // album. A burst with no pose cluster is never blocked by `allowedPerPose`,
+    // so once the pose cap saturated on the people shots, `fresh` collapsed to
+    // the burst alone: `distinct` was empty, the fallback took a near-duplicate,
+    // and because `fresh` was never empty the cap never relaxed to let anything
+    // else back in. Every extra sunset made the next one likelier.
+    //
+    // So try the same relaxation ladder first, over the candidates that are NOT
+    // near-duplicates. This terminates for the same reason the ladder above
+    // does: each rung raises a cap, and once the caps exceed every count
+    // `fresh` is all of `eligible` and `distinct` is this non-empty set.
+    if (distinct.length === 0) {
+      const distinctEligible = eligible.filter(
+        (mediaId) => (closest[mediaId] ?? 0) < policy.maxSelectedSimilarity,
+      );
+      if (distinctEligible.length > 0) {
+        const poseReachable = distinctEligible.filter(
+          (mediaId) => (poseCounts[poseKey.get(mediaId)!] ?? 0) < allowedPerPose,
+        );
+        if (poseReachable.length > 0) {
+          const shotReachable = poseReachable.filter(
+            (mediaId) => (shotCounts[shotKey.get(mediaId)!] ?? 0) < allowedPerShot,
+          );
+          if (shotReachable.length > 0) allowedPerFamily += 1;
+          else allowedPerShot += 1;
+        } else {
+          allowedPerPose += 1;
+        }
+        continue;
+      }
+      // Everything left really is a near-duplicate. Take the least similar,
+      // exactly as before -- an album short of its target is worse than one
+      // holding a second frame of the only thing still available.
+    }
     const bestId =
       distinct.length > 0
         ? distinct.sort((left, right) => gain(right) - gain(left) || left.localeCompare(right))[0]

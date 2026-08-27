@@ -216,12 +216,19 @@ for (const fixture of fixtures) {
   }
 }
 
-// The near-duplicate claim, stated where it can be checked. The submodular
-// selector treats the bar as a HARD constraint; the shipped one treats it as a
-// preference that a starved candidate pool can overrule. On the trip fixture,
-// where a ten-frame sunset burst meets a binding pose cap, that difference is
-// the whole story — and it is asserted in BOTH directions so neither half is
-// vacuous.
+// The near-duplicate claim, stated where it can be checked.
+//
+// This assertion used to read the other way round: submodular admits none, the
+// shipped selector admits some, and the gap between them was the finding. The
+// gap is gone because the shipped selector was fixed — it used to treat the bar
+// as a preference a starved pool could overrule, so on this fixture a ten-frame
+// sunset burst meeting a binding pose cap put eight of its frames into a
+// twenty-four photo album. Both selectors now hold the line.
+//
+// That makes the old guard genuinely vacuous, and it said so rather than
+// passing quietly. The anchor is now the bar itself: lift it and the duplicates
+// come straight back. A fixture that simply had no near-duplicates to admit
+// would fail that, which is the failure the guard exists to catch.
 const tripPin = pinned.albums.find((album) => album.name === "trip")!;
 const tripFixture = fixtures.find((fixture) => fixture.name === "trip")!;
 const tripKeys = worstPair(tripFixture, tripPin.selectors["coverage-keys"].selectedIds);
@@ -232,8 +239,20 @@ assert(
   `submodular must admit no pair at or above ${DUPLICATE_BAR} (${tripSubmodular.pairs})`,
 );
 assert(
-  tripKeys.pairs > 0,
-  "VACUITY: if the shipped selector also admitted none, the constraint above would be proving nothing",
+  tripKeys.pairs === 0,
+  `the shipped selector must admit no pair at or above ${DUPLICATE_BAR} either (${tripKeys.pairs})`,
+);
+const unbarred = worstPair(
+  tripFixture,
+  planAlbum(tripFixture.candidates, tripFixture.target, {
+    policy: { maxSelectedSimilarity: 1 },
+  }).selectedIds,
+);
+console.log(`M6 duplicate discipline unbarred ${JSON.stringify(unbarred)}`);
+assert(
+  unbarred.pairs > 0,
+  "VACUITY: with the duplicate bar lifted the shipped selector must admit near-duplicates; " +
+    "if it does not, this fixture has none to admit and the two zeros above prove nothing",
 );
 
 // --- 4. Vacuity: the pin can fail -------------------------------------------

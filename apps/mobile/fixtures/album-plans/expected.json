@@ -151,22 +151,22 @@
       "selectors": {
         "coverage-keys": {
           "selectedIds": [
+            "trip-depart-02",
             "trip-depart-05",
+            "trip-beach-08",
+            "trip-beach-09",
             "trip-beach-10",
-            "trip-sunset-00",
+            "trip-beach-11",
             "trip-sunset-01",
-            "trip-sunset-02",
-            "trip-sunset-03",
-            "trip-sunset-04",
-            "trip-sunset-05",
-            "trip-sunset-06",
-            "trip-sunset-07",
-            "trip-sunset-08",
             "trip-sunset-09",
+            "trip-market-02",
             "trip-market-05",
+            "trip-market-06",
+            "trip-market-07",
             "trip-market-11",
             "trip-fort-01",
             "trip-fort-02",
+            "trip-fort-05",
             "trip-pool-00",
             "trip-pool-01",
             "trip-pool-02",
@@ -177,7 +177,7 @@
             "trip-return-01"
           ],
           "rescuedIds": [],
-          "rejectedCount": 2,
+          "rejectedCount": 27,
           "missingPersonIds": []
         },
         "submodular": {
