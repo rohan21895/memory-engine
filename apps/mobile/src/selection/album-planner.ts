@@ -4,7 +4,22 @@
  * The planner deliberately knows nothing about React Native or model loading.
  * It consumes plain, already-measured signals and returns stable media ids, so
  * Phase 2 models can improve the evidence without changing the decision rule.
+ *
+ * Two decision rules live here, chosen by `PlannerPolicy.selector`:
+ *   - `coverage-keys` (default, shipped): greedy on a per-photo score plus a
+ *     0.5^count bonus for each discrete key — time bucket, place, moment, pose,
+ *     person — with an MMR redundancy penalty.
+ *   - `submodular` (M6): the same gates and caps, but the pick is the argmax of
+ *     a monotone submodular F(S) = quality + facility location + saturating
+ *     coverage, maximized by lazy greedy plus a bounded swap pass.
+ * Everything either side of the pick — gates, rescues, rare-moment and
+ * scarce-person waivers, chronological ordering, reasons — is shared, so an A/B
+ * between them isolates the decision rule.
  */
+
+// @ts-expect-error Node requires the extension; Metro resolves this path too.
+import { COVERAGE_SATURATION, applyPick, emptyState, gainBreakdown, lazyGreedy, objectiveValue, validateProblem } from "./album-objective.ts";
+import type { CoverageCategory, SubmodularProblem } from "./album-objective";
 
 const BUCKET_DECAY = 0.5;
 const UNKNOWN = "unknown";
@@ -82,6 +97,14 @@ export type PlannerPolicy = {
   embraceSuppressPercentile: number;
   pinnedMediaIds: readonly string[];
   excludedMediaIds: readonly string[];
+  /**
+   * M6 rollback switch. `coverage-keys` is the shipped discrete-key greedy;
+   * `submodular` is the facility-location + saturating-coverage objective from
+   * EXPERT-PLAN section 15. Both run the SAME gates, rescues, caps and
+   * relaxation order, so switching this changes the decision rule and nothing
+   * else. Default stays on the shipped rule until fixtures say otherwise.
+   */
+  selector: "coverage-keys" | "submodular";
 };
 
 export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
@@ -121,6 +144,55 @@ export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
   embraceSuppressPercentile: 0.85,
   pinnedMediaIds: [],
   excludedMediaIds: [],
+  selector: "coverage-keys",
+};
+
+/**
+ * Knobs for the M6 objective. Separate from `PlannerPolicy` because they are
+ * the objective's units, not the product's gates, and because a rollback is
+ * `selector: "coverage-keys"` — not a re-tune.
+ */
+export type AlbumObjectiveTuning = {
+  /** λf, on an FL term normalised to [0,1] so it is comparable to a category. */
+  facilityWeight: number;
+  /** How much more it costs to leave a photo WITH PEOPLE unrepresented. */
+  peopleImportance: number;
+  coverageMoment: number;
+  coveragePerson: number;
+  coverageTime: number;
+  coveragePlace: number;
+  coveragePose: number;
+  /** Blend weights for sim(i,j); each component is skipped when unmeasured. */
+  simSemantic: number;
+  simPeople: number;
+  simPose: number;
+  simPlace: number;
+  simTime: number;
+  simTimeDecayMs: number;
+  /** Bounded 1-swap repair rounds after the greedy fill. */
+  swapRounds: number;
+};
+
+export const DEFAULT_ALBUM_OBJECTIVE: AlbumObjectiveTuning = {
+  facilityWeight: 3,
+  peopleImportance: 1,
+  // Twice the shipped coverage weights, on purpose. With τ = ln 2 the marginal
+  // of h(n) = 1 − e^(−τn) is 0.5^(n+1) — exactly HALF the planner's own
+  // bucketGain(n) = 0.5^n. Doubling reproduces today's coverage magnitudes, so
+  // the A/B measures facility location and summed-vs-averaged people, not a
+  // silent re-tune of five weights.
+  coverageTime: 1.7,
+  coveragePlace: 1.0,
+  coverageMoment: 0.7,
+  coveragePose: 1.1,
+  coveragePerson: 1.2,
+  simSemantic: 0.34,
+  simPeople: 0.28,
+  simPose: 0.14,
+  simPlace: 0.12,
+  simTime: 0.12,
+  simTimeDecayMs: 6 * 60 * 60 * 1_000,
+  swapRounds: 2,
 };
 
 export type PlannerReasonCode =
@@ -171,6 +243,22 @@ export type AlbumPlan = {
   personCounts: Record<string, number>;
   reasonDetailsByMediaId: Record<string, PlannerReason[]>;
   reasonsByMediaId: Record<string, string[]>;
+  /**
+   * Per-photo marginal gain at the moment it entered, and the objective's own
+   * bookkeeping. Only the submodular selector fills this; the discrete-key
+   * greedy leaves it undefined.
+   */
+  objectiveTrace?: AlbumObjectiveTrace;
+};
+
+export type AlbumObjectiveTrace = {
+  marginalGainByMediaId: Record<string, number>;
+  facilityGainByMediaId: Record<string, number>;
+  /** F(S) of the album that was returned. */
+  value: number;
+  /** True marginal-gain evaluations the lazy greedy actually paid for. */
+  evaluations: number;
+  swaps: { out: string; in: string; delta: number }[];
 };
 
 type NormalizedCandidate = Omit<PlannerCandidate, "personIds"> & {
@@ -192,6 +280,7 @@ export function planAlbum(
   options: {
     policy?: Partial<PlannerPolicy>;
     requiredPersonIds?: readonly string[];
+    objective?: Partial<AlbumObjectiveTuning>;
   } = {},
 ): AlbumPlan {
   if (!Number.isFinite(targetCount) || targetCount < 0) {
@@ -200,6 +289,10 @@ export function planAlbum(
   const target = Math.floor(targetCount);
   const policy = policyFrom(options.policy);
   validatePolicy(policy);
+  const objective: AlbumObjectiveTuning = {
+    ...DEFAULT_ALBUM_OBJECTIVE,
+    ...options.objective,
+  };
 
   const ordered = input.map(normalizeCandidate).sort(byMediaId);
   if (new Set(ordered.map((candidate) => candidate.mediaId)).size !== ordered.length) {
@@ -258,7 +351,9 @@ export function planAlbum(
     ]),
   ).sort();
 
-  const greedy = greedySelect(
+  const context = buildSelectionContext(survivors, target, policy);
+  const select = policy.selector === "submodular" ? submodularSelect : greedySelect;
+  const greedy = select(
     survivors,
     byId,
     standing,
@@ -266,6 +361,8 @@ export function planAlbum(
     policy,
     personUniverse,
     pinned,
+    context,
+    objective,
   );
   for (const mediaId of greedy.capBlocked) {
     const rejection = plannerReason("person_cap", "per-person cap reached");
@@ -301,8 +398,94 @@ export function planAlbum(
     personCounts,
     reasonDetailsByMediaId: greedy.reasonDetails,
     reasonsByMediaId: greedy.reasons,
+    ...(greedy.objectiveTrace ? { objectiveTrace: greedy.objectiveTrace } : {}),
   };
 }
+
+/**
+ * Everything both selectors measure BEFORE anything is chosen: the discrete
+ * keys, the per-axis midrank percentiles, and which frames are sleeping shots.
+ *
+ * Extracted rather than duplicated so an A/B between the two selectors changes
+ * the decision rule and nothing else. The arithmetic inside `greedySelect`'s
+ * `gain()` is deliberately NOT extracted with it: re-associating that sum would
+ * move it by an ULP or two, which is enough to flip a tie and make the shipped
+ * path's pinned fixtures drift for a reason that has nothing to do with M6.
+ */
+function buildSelectionContext(
+  survivors: NormalizedCandidate[],
+  target: number,
+  policy: PlannerPolicy,
+) {
+  const knownTimes = survivors
+    .map((candidate) => validTime(candidate.capturedAt))
+    .filter((value): value is number => value !== undefined)
+    .sort((a, b) => a - b);
+  const start = knownTimes[0] ?? 0;
+  const span = knownTimes.length > 0 ? knownTimes[knownTimes.length - 1] - start : 0;
+  const bins = policy.timeBins || Math.max(1, Math.min(target, policy.maxTimeBins));
+  const momentOf = groupMoments(survivors, policy);
+  return {
+    momentOf,
+    timeKey: new Map(
+      survivors.map((candidate) => [
+        candidate.mediaId,
+        timeBucket(validTime(candidate.capturedAt), start, span, bins),
+      ]),
+    ),
+    placeKey: new Map(
+      survivors.map((candidate) => [candidate.mediaId, candidate.placeKey || UNKNOWN]),
+    ),
+    momentKey: new Map(
+      survivors.map((candidate) => [
+        candidate.mediaId,
+        `${momentOf.get(candidate.mediaId)}|faces:${Math.min(candidate.personIds.length, 3)}`,
+      ]),
+    ),
+    poseKey: new Map(
+      survivors.map((candidate) => [
+        candidate.mediaId,
+        candidate.poseCluster ? `pose:${candidate.poseCluster}` : `nopose:${candidate.mediaId}`,
+      ]),
+    ),
+    shotKey: new Map(
+      survivors.map((candidate) => [candidate.mediaId, candidate.shotGroup || candidate.mediaId]),
+    ),
+    familyKey: new Map(
+      survivors.map((candidate) => [
+        candidate.mediaId,
+        candidate.poseFamily || candidate.shotGroup || candidate.mediaId,
+      ]),
+    ),
+    smilePercentile: axisPercentiles(survivors, (candidate) => candidate.smile),
+    composedPercentile: axisPercentiles(survivors, (candidate) => candidate.composed),
+    aestheticPercentile: axisPercentiles(survivors, (candidate) => candidate.aesthetic),
+    cleanPercentile: axisPercentiles(survivors, (candidate) => candidate.cleanFrame),
+    awakePercentile: axisPercentiles(survivors, (candidate) => candidate.awake),
+    eyesPercentile: axisPercentiles(survivors, (candidate) => candidate.eyesOpen),
+    embracePercentile: axisPercentiles(survivors, (candidate) => candidate.embraceContext),
+    sleeping: new Map(
+      survivors.map((candidate) => [
+        candidate.mediaId,
+        candidate.sleeping !== undefined &&
+          candidate.awake !== undefined &&
+          candidate.sleeping > candidate.awake &&
+          candidate.sleeping > policy.sleepingMinContrast,
+      ]),
+    ),
+  };
+}
+
+type SelectionContext = ReturnType<typeof buildSelectionContext>;
+
+/** What both selectors hand back to `planAlbum`. */
+type SelectionOutcome = {
+  selected: string[];
+  capBlocked: string[];
+  reasonDetails: Record<string, PlannerReason[]>;
+  reasons: Record<string, string[]>;
+  objectiveTrace?: AlbumObjectiveTrace;
+};
 
 function greedySelect(
   survivors: NormalizedCandidate[],
@@ -312,7 +495,9 @@ function greedySelect(
   policy: PlannerPolicy,
   personUniverse: string[],
   pinned: Set<string>,
-) {
+  context: SelectionContext,
+  _objective: AlbumObjectiveTuning,
+): SelectionOutcome {
   const selected: string[] = [];
   const remaining = survivors.map((candidate) => candidate.mediaId);
   const reasonDetails: Record<string, PlannerReason[]> = {};
@@ -321,44 +506,7 @@ function greedySelect(
     return { selected, capBlocked: [] as string[], reasonDetails, reasons };
   }
 
-  const knownTimes = survivors
-    .map((candidate) => validTime(candidate.capturedAt))
-    .filter((value): value is number => value !== undefined)
-    .sort((a, b) => a - b);
-  const start = knownTimes[0] ?? 0;
-  const span = knownTimes.length > 0 ? knownTimes[knownTimes.length - 1] - start : 0;
-  const bins = policy.timeBins || Math.max(1, Math.min(target, policy.maxTimeBins));
-  const timeKey = new Map(
-    survivors.map((candidate) => [
-      candidate.mediaId,
-      timeBucket(validTime(candidate.capturedAt), start, span, bins),
-    ]),
-  );
-  const placeKey = new Map(
-    survivors.map((candidate) => [candidate.mediaId, candidate.placeKey || UNKNOWN]),
-  );
-  const momentOf = groupMoments(survivors, policy);
-  const momentKey = new Map(
-    survivors.map((candidate) => [
-      candidate.mediaId,
-      `${momentOf.get(candidate.mediaId)}|faces:${Math.min(candidate.personIds.length, 3)}`,
-    ]),
-  );
-  const poseKey = new Map(
-    survivors.map((candidate) => [
-      candidate.mediaId,
-      candidate.poseCluster ? `pose:${candidate.poseCluster}` : `nopose:${candidate.mediaId}`,
-    ]),
-  );
-  const shotKey = new Map(
-    survivors.map((candidate) => [candidate.mediaId, candidate.shotGroup || candidate.mediaId]),
-  );
-  const familyKey = new Map(
-    survivors.map((candidate) => [
-      candidate.mediaId,
-      candidate.poseFamily || candidate.shotGroup || candidate.mediaId,
-    ]),
-  );
+  const { timeKey, placeKey, momentKey, poseKey, shotKey, familyKey } = context;
 
   const timeCounts: MutableCounts = {};
   const placeCounts: MutableCounts = {};
@@ -373,25 +521,13 @@ function greedySelect(
     survivors,
     policy,
   );
-  const smilePercentile = axisPercentiles(survivors, (candidate) => candidate.smile);
-  const composedPercentile = axisPercentiles(survivors, (candidate) => candidate.composed);
-  const aestheticPercentile = axisPercentiles(survivors, (candidate) => candidate.aesthetic);
-  const cleanPercentile = axisPercentiles(survivors, (candidate) => candidate.cleanFrame);
-  const awakePercentile = axisPercentiles(survivors, (candidate) => candidate.awake);
-  const eyesPercentile = axisPercentiles(survivors, (candidate) => candidate.eyesOpen);
-  const embracePercentile = axisPercentiles(
-    survivors,
-    (candidate) => candidate.embraceContext,
-  );
-  const sleeping = new Map(
-    survivors.map((candidate) => [
-      candidate.mediaId,
-      candidate.sleeping !== undefined &&
-        candidate.awake !== undefined &&
-        candidate.sleeping > candidate.awake &&
-        candidate.sleeping > policy.sleepingMinContrast,
-    ]),
-  );
+  const {
+    smilePercentile,
+    composedPercentile,
+    aestheticPercentile,
+    cleanPercentile,
+    sleeping,
+  } = context;
   const sleepingCap = Math.max(1, Math.floor(target * policy.maxSleepingFraction));
   let sleepingCount = 0;
 
@@ -450,21 +586,7 @@ function greedySelect(
     value += weights.weightComposed * (composedPercentile.get(mediaId) ?? 0.5);
     value += weights.weightAesthetic * (aestheticPercentile.get(mediaId) ?? 0.5);
     value += weights.weightCleanFrame * (cleanPercentile.get(mediaId) ?? 0.5);
-    const blinkSuppressed =
-      candidate.embraceContext !== undefined &&
-      candidate.embraceContext > 0 &&
-      (embracePercentile.get(mediaId) ?? 0.5) >= policy.embraceSuppressPercentile;
-    const blink =
-      !blinkSuppressed &&
-      !sleeping.get(mediaId) &&
-      ((candidate.eyesOpen !== undefined &&
-        candidate.eyesOpen < 0.5 &&
-        (eyesPercentile.get(mediaId) ?? 0.5) < 0.25) ||
-        (candidate.eyesOpen === undefined &&
-          candidate.awake !== undefined &&
-          candidate.awake < 0 &&
-          (awakePercentile.get(mediaId) ?? 0.5) < 0.25));
-    if (blink) value -= weights.midBlinkPenalty;
+    if (isMidBlink(candidate, policy, context)) value -= weights.midBlinkPenalty;
     return quantize(value);
   };
 
@@ -594,6 +716,527 @@ function greedySelect(
     reasonDetails,
     reasons,
   };
+}
+
+/** Which hard constraint a candidate set violates, in relaxation order. */
+type ConstraintCode =
+  | "pose"
+  | "family"
+  | "shot"
+  | "person_cap"
+  | "sleeping"
+  | "non_people_reserve"
+  | "near_duplicate";
+
+/**
+ * M6: the same album, chosen by maximizing F(S) instead of ranking photos.
+ *
+ * Structure is deliberately identical to `greedySelect` — pins, then the hard
+ * people floor, then the fill — so the only thing under test is the pick. What
+ * changes inside the fill:
+ *
+ *   1. Coverage is a set function. `greedySelect` averages the per-person bonus
+ *      over a photo's faces, so a frame holding five people who are all missing
+ *      scores exactly what a solo portrait of one missing person scores. The
+ *      submodular person category SUMS, so in a library that is mostly group
+ *      shots the group shot wins — which is the product's own stated ordering.
+ *   2. Facility location replaces the MMR redundancy penalty. Instead of
+ *      docking a photo for resembling something already chosen, F(S) pays for
+ *      how well S represents the WHOLE candidate pool. A frame nothing else
+ *      resembles is worth its full importance; the second frame of a burst is
+ *      worth almost nothing. That is the same repulsion a DPP would give, from
+ *      a term that needs only sim ≥ 0 rather than a PSD kernel.
+ *   3. A near-duplicate is a hard constraint, not a tiebreak. It is also the
+ *      LAST thing relaxed, and even then only far enough to admit the single
+ *      most distinct blocked frame — so the album never comes back short and
+ *      never silently gains a second copy of a burst.
+ */
+function submodularSelect(
+  survivors: NormalizedCandidate[],
+  byId: Map<string, NormalizedCandidate>,
+  standing: Map<string, number>,
+  target: number,
+  policy: PlannerPolicy,
+  personUniverse: string[],
+  pinned: Set<string>,
+  context: SelectionContext,
+  tuning: AlbumObjectiveTuning,
+): SelectionOutcome {
+  const reasonDetails: Record<string, PlannerReason[]> = {};
+  const reasons: Record<string, string[]> = {};
+  const selected: string[] = [];
+  if (target === 0 || survivors.length === 0) {
+    return { selected, capBlocked: [], reasonDetails, reasons };
+  }
+
+  const { timeKey, placeKey, momentKey, poseKey, shotKey, familyKey, sleeping } = context;
+  const ids = survivors.map((candidate) => candidate.mediaId);
+  const indexOf = new Map(ids.map((mediaId, index) => [mediaId, index]));
+
+  const similarity = survivors.map((left) =>
+    survivors.map((right) => blendedSimilarity(left, right, tuning)),
+  );
+  // The raw perceptual/semantic cosine, kept separate from the blend: the
+  // 0.92 near-duplicate bar is calibrated on THAT number, not on a mixture
+  // that a shared place and a shared minute can push over the line on their own.
+  const rawSimilarity = survivors.map((left) =>
+    survivors.map((right) => candidateSimilarity(left, right) ?? 0),
+  );
+
+  const problem: SubmodularProblem = {
+    quality: survivors.map((candidate) => photoQuality(candidate, policy, standing, context)),
+    similarity,
+    importance: survivors.map(
+      (candidate) =>
+        1 +
+        (tuning.peopleImportance * Math.min(candidate.personIds.length, 3)) / 3,
+    ),
+    facilityWeight: tuning.facilityWeight,
+    categories: [
+      categoryOf(tuning.coverageMoment, ids, (mediaId) => [momentKey.get(mediaId)!]),
+      categoryOf(tuning.coveragePerson, ids, (mediaId) => peopleKey(byId.get(mediaId)!)),
+      categoryOf(tuning.coverageTime, ids, (mediaId) => [timeKey.get(mediaId)!]),
+      categoryOf(tuning.coveragePlace, ids, (mediaId) => [placeKey.get(mediaId)!]),
+      categoryOf(tuning.coveragePose, ids, (mediaId) => [poseKey.get(mediaId)!]),
+    ],
+    saturation: COVERAGE_SATURATION,
+  };
+  validateProblem(problem);
+
+  const state = emptyState(problem);
+  const personCounts: MutableCounts = {};
+  const capBlocked = new Set<string>();
+
+  let personCap = perPersonCap(survivors, target, policy);
+  let allowedPerShot = 1;
+  let allowedPerFamily = policy.maxPerPoseFamily;
+  let allowedPerPose = policy.maxPerBodyPose;
+  let duplicateCeiling = policy.maxSelectedSimilarity;
+  let sleepingCap = Math.max(1, Math.floor(target * policy.maxSleepingFraction));
+  const nonPeopleAvailable = survivors.filter(
+    (candidate) => candidate.personIds.length === 0,
+  ).length;
+  let reserve = Math.min(
+    Math.floor(target * policy.minNonPeopleFraction),
+    nonPeopleAvailable,
+    target,
+  );
+
+  /**
+   * The hard constraints, as one whole-set predicate. Both the greedy's
+   * feasibility test and the swap pass call it, so a swap can never quietly
+   * produce a set the greedy would have refused.
+   */
+  const violation = (album: readonly string[]): ConstraintCode | undefined => {
+    const shots: MutableCounts = {};
+    const families: MutableCounts = {};
+    const poses: MutableCounts = {};
+    const people: MutableCounts = {};
+    let sleepers = 0;
+    let withoutPeople = 0;
+    for (const mediaId of album) {
+      const candidate = byId.get(mediaId)!;
+      if (pinned.has(mediaId)) {
+        // A pin bypasses every gate upstream; it must bypass the caps too, or
+        // the swap pass would report the user's own choice as infeasible.
+        if (candidate.personIds.length === 0) withoutPeople += 1;
+        continue;
+      }
+      increment(shots, shotKey.get(mediaId)!);
+      increment(families, familyKey.get(mediaId)!);
+      increment(poses, poseKey.get(mediaId)!);
+      for (const personId of candidate.personIds) increment(people, personId);
+      if (sleeping.get(mediaId)) sleepers += 1;
+      if (candidate.personIds.length === 0) withoutPeople += 1;
+      if (poses[poseKey.get(mediaId)!] > allowedPerPose) return "pose";
+      if (families[familyKey.get(mediaId)!] > allowedPerFamily) return "family";
+      if (shots[shotKey.get(mediaId)!] > allowedPerShot) return "shot";
+      if (candidate.personIds.some((personId) => people[personId] > personCap)) {
+        return "person_cap";
+      }
+    }
+    if (sleepers > sleepingCap) return "sleeping";
+    // Forward-looking, exactly as the shipped reserve is: scenery must still be
+    // able to fill its share of the slots that are left.
+    if (withoutPeople + Math.max(0, target - album.length) < reserve) {
+      return "non_people_reserve";
+    }
+    for (let left = 0; left < album.length; left += 1) {
+      for (let right = left + 1; right < album.length; right += 1) {
+        const a = indexOf.get(album[left])!;
+        const b = indexOf.get(album[right])!;
+        if (rawSimilarity[a][b] >= duplicateCeiling) return "near_duplicate";
+      }
+    }
+    return undefined;
+  };
+
+  const chosen = new Set<string>();
+  const commitById = (mediaId: string) => {
+    chosen.add(mediaId);
+    selected.push(mediaId);
+    for (const personId of peopleKey(byId.get(mediaId)!)) increment(personCounts, personId);
+    applyPick(problem, state, indexOf.get(mediaId)!);
+  };
+
+  for (const mediaId of ids.filter((id) => pinned.has(id)).sort()) commitById(mediaId);
+
+  // People are a hard floor, not a weight — unchanged from the shipped rule.
+  // Only the tiebreak among equally-covering frames now comes from F(S).
+  const personFloorPicks = new Set<string>();
+  if (policy.minPerPerson > 0) {
+    while (selected.length < target) {
+      const uncovered = new Set(
+        personUniverse.filter(
+          (personId) => (personCounts[personId] ?? 0) < policy.minPerPerson,
+        ),
+      );
+      if (uncovered.size === 0) break;
+      const options = ids
+        .filter((mediaId) => !chosen.has(mediaId))
+        .map((mediaId) => ({
+          mediaId,
+          newPeople: byId
+            .get(mediaId)!
+            .personIds.filter((personId) => uncovered.has(personId)).length,
+          gain: gainBreakdown(problem, state, indexOf.get(mediaId)!).total,
+        }))
+        .filter((entry) => entry.newPeople > 0)
+        .sort(
+          (left, right) =>
+            right.newPeople - left.newPeople ||
+            right.gain - left.gain ||
+            left.mediaId.localeCompare(right.mediaId),
+        );
+      if (options.length === 0) break;
+      commitById(options[0].mediaId);
+      personFloorPicks.add(options[0].mediaId);
+    }
+  }
+
+  let relaxations = 0;
+  const relaxationLimit = 4 * survivors.length + 8;
+  const blockedCodes = () => {
+    const codes = new Set<ConstraintCode>();
+    for (const mediaId of ids) {
+      if (chosen.has(mediaId)) continue;
+      const code = violation([...selected, mediaId]);
+      if (code) codes.add(code);
+    }
+    return codes;
+  };
+
+  const greedy = lazyGreedy({
+    // Pins and the people floor have already spent slots. `lazyGreedy` counts
+    // its own picks from zero, so the budget it gets is what is LEFT.
+    budget: Math.max(0, target - selected.length),
+    order: ids.map((_, index) => index),
+    marginal: (index) => gainBreakdown(problem, state, index).total,
+    blocked: (index) => {
+      const mediaId = ids[index];
+      if (chosen.has(mediaId)) return true;
+      const code = violation([...selected, mediaId]);
+      if (code === "person_cap") capBlocked.add(mediaId);
+      return code !== undefined;
+    },
+    commit: (index) => commitById(ids[index]),
+    // The documented soft-relaxation order. Nothing here can shorten an album;
+    // each rung widens exactly one cap and the loop retries.
+    relax: () => {
+      if (relaxations >= relaxationLimit) return false;
+      relaxations += 1;
+      const codes = blockedCodes();
+      if (codes.size === 0) return false;
+      if (codes.has("person_cap") && codes.size === 1) {
+        personCap += 1;
+        return true;
+      }
+      if (codes.has("family") && !codes.has("pose")) {
+        allowedPerFamily += 1;
+        return true;
+      }
+      if (codes.has("shot") && !codes.has("pose")) {
+        allowedPerShot += 1;
+        return true;
+      }
+      if (codes.has("pose")) {
+        allowedPerPose += 1;
+        return true;
+      }
+      if (codes.has("person_cap")) {
+        personCap += 1;
+        return true;
+      }
+      if (codes.has("sleeping")) {
+        sleepingCap += 1;
+        return true;
+      }
+      if (codes.has("non_people_reserve") && reserve > 0) {
+        reserve -= 1;
+        return true;
+      }
+      if (codes.has("near_duplicate")) {
+        // Admit the single most DISTINCT blocked frame and no more. Raising the
+        // bar to 1 here would let a whole burst back in at once.
+        const next = ids
+          .filter((mediaId) => !chosen.has(mediaId))
+          .map((mediaId) =>
+            Math.max(
+              ...selected.map(
+                (other) => rawSimilarity[indexOf.get(mediaId)!][indexOf.get(other)!],
+              ),
+              0,
+            ),
+          )
+          .filter((value) => value >= duplicateCeiling)
+          .sort((left, right) => left - right)[0];
+        if (next === undefined) return false;
+        duplicateCeiling = next + 1e-9;
+        return true;
+      }
+      return false;
+    },
+  });
+
+  const swaps = boundedSwapPass({
+    problem, ids, indexOf, selected, pinned, violation, rounds: tuning.swapRounds,
+  });
+  for (const swap of swaps) {
+    chosen.delete(swap.out);
+    chosen.add(swap.in);
+  }
+
+  // Reasons and marginal gains are produced by REPLAYING the album that was
+  // actually returned, not by recording them as the greedy went. A swap can
+  // put a photo in that the greedy never committed, and a user staring at
+  // "Adds another moment to the story." deserves it to be true of the album
+  // they can see rather than of an intermediate set nobody kept.
+  const replay = emptyState(problem);
+  const timeCounts: MutableCounts = {};
+  const placeCounts: MutableCounts = {};
+  const momentCounts: MutableCounts = {};
+  const poseCounts: MutableCounts = {};
+  const marginalGainByMediaId: Record<string, number> = {};
+  const facilityGainByMediaId: Record<string, number> = {};
+  for (const mediaId of selected) {
+    const index = indexOf.get(mediaId)!;
+    const breakdown = gainBreakdown(problem, replay, index);
+    marginalGainByMediaId[mediaId] = breakdown.total;
+    facilityGainByMediaId[mediaId] = quantize(breakdown.facility);
+    const why = pinned.has(mediaId)
+      ? [plannerReason("user_choice", "Kept because you chose it.")]
+      : personFloorPicks.has(mediaId)
+        ? [plannerReason("only_shot_of_person", "Keeps everyone in the story.")]
+        : coverageReasons(
+            mediaId, standing, timeCounts, placeCounts, momentCounts, poseCounts,
+            timeKey, placeKey, momentKey, poseKey,
+          );
+    const details = dedupeReasons([
+      ...selectionSignalReasons(byId.get(mediaId)!, standing.get(mediaId) ?? 0),
+      ...why,
+    ]);
+    reasonDetails[mediaId] = details;
+    reasons[mediaId] = details.map(({ message }) => message);
+    increment(timeCounts, timeKey.get(mediaId)!);
+    increment(placeCounts, placeKey.get(mediaId)!);
+    increment(momentCounts, momentKey.get(mediaId)!);
+    increment(poseCounts, poseKey.get(mediaId)!);
+    applyPick(problem, replay, index);
+  }
+
+  return {
+    selected,
+    capBlocked: Array.from(capBlocked).filter((mediaId) => !chosen.has(mediaId)).sort(),
+    reasonDetails,
+    reasons,
+    objectiveTrace: {
+      marginalGainByMediaId,
+      facilityGainByMediaId,
+      value: objectiveValue(problem, selected.map((mediaId) => indexOf.get(mediaId)!)),
+      evaluations: greedy.evaluations,
+      swaps,
+    },
+  };
+}
+
+/**
+ * The bounded, deterministic 1-swap repair M6 asks for.
+ *
+ * Greedy commits early with a nearly empty set, so its first few picks are
+ * chosen against almost no context. A swap pass is the cheap correction: for
+ * every (selected, unselected) pair, take the single best exchange that raises
+ * F(S) by more than ε and stays feasible, then repeat a bounded number of
+ * times. Deterministic — the best delta wins, ties go to the lower media id.
+ *
+ * A pinned photo is never swapped out: the user chose it.
+ */
+function boundedSwapPass(args: {
+  problem: SubmodularProblem;
+  ids: string[];
+  indexOf: Map<string, number>;
+  selected: string[];
+  pinned: Set<string>;
+  rounds: number;
+  violation: (album: readonly string[]) => ConstraintCode | undefined;
+}) {
+  const { problem, ids, indexOf, selected, pinned, rounds, violation } = args;
+  const swaps: { out: string; in: string; delta: number }[] = [];
+  const epsilon = 1e-6;
+  const asIndices = (album: readonly string[]) =>
+    album.map((mediaId) => indexOf.get(mediaId)!);
+
+  for (let round = 0; round < rounds; round += 1) {
+    const current = objectiveValue(problem, asIndices(selected));
+    let best: { out: string; in: string; delta: number } | undefined;
+    for (const outgoing of selected.slice().sort()) {
+      if (pinned.has(outgoing)) continue;
+      for (const incoming of ids) {
+        if (selected.includes(incoming)) continue;
+        const proposal = selected.map((mediaId) =>
+          mediaId === outgoing ? incoming : mediaId,
+        );
+        if (violation(proposal) !== undefined) continue;
+        const delta = quantize(objectiveValue(problem, asIndices(proposal)) - current);
+        if (delta <= epsilon) continue;
+        if (
+          !best ||
+          delta > best.delta ||
+          (delta === best.delta &&
+            `${incoming}<${outgoing}`.localeCompare(`${best.in}<${best.out}`) < 0)
+        ) {
+          best = { out: outgoing, in: incoming, delta };
+        }
+      }
+    }
+    if (!best) break;
+    selected[selected.indexOf(best.out)] = best.in;
+    swaps.push(best);
+  }
+  return swaps;
+}
+
+function categoryOf(
+  weight: number,
+  ids: readonly string[],
+  groupsOf: (mediaId: string) => readonly string[],
+): CoverageCategory {
+  const groupIndex = new Map<string, number>();
+  const membership = ids.map((mediaId) =>
+    groupsOf(mediaId).map((key) => {
+      const existing = groupIndex.get(key);
+      if (existing !== undefined) return existing;
+      const next = groupIndex.size;
+      groupIndex.set(key, next);
+      return next;
+    }),
+  );
+  return { weight, groupWeight: Array(groupIndex.size).fill(1), membership };
+}
+
+/**
+ * Mid-blink, as both selectors judge it. A boolean, so lifting it out of
+ * `greedySelect`'s `gain()` cannot move that sum by a floating-point ulp.
+ */
+function isMidBlink(
+  candidate: NormalizedCandidate,
+  policy: PlannerPolicy,
+  context: SelectionContext,
+) {
+  const mediaId = candidate.mediaId;
+  const suppressed =
+    candidate.embraceContext !== undefined &&
+    candidate.embraceContext > 0 &&
+    (context.embracePercentile.get(mediaId) ?? 0.5) >= policy.embraceSuppressPercentile;
+  return (
+    !suppressed &&
+    !context.sleeping.get(mediaId) &&
+    ((candidate.eyesOpen !== undefined &&
+      candidate.eyesOpen < 0.5 &&
+      (context.eyesPercentile.get(mediaId) ?? 0.5) < 0.25) ||
+      (candidate.eyesOpen === undefined &&
+        candidate.awake !== undefined &&
+        candidate.awake < 0 &&
+        (context.awakePercentile.get(mediaId) ?? 0.5) < 0.25))
+  );
+}
+
+/**
+ * q_i — everything the objective knows about ONE photo, before any set is
+ * formed: how it stands against its comparison class, plus the four semantic
+ * axes (smile, composed, TinyCLIP aesthetic, clean frame), minus a mid-blink.
+ *
+ * These are the same terms and weights the shipped `gain()` applies. Q(S) is
+ * modular, so the submodular pick is not competing with a different idea of
+ * what makes one photograph better than another — only with a different idea
+ * of what makes a SET better than another.
+ */
+function photoQuality(
+  candidate: NormalizedCandidate,
+  policy: PlannerPolicy,
+  standing: Map<string, number>,
+  context: SelectionContext,
+) {
+  const mediaId = candidate.mediaId;
+  const weights = weightsFor(candidate, policy);
+  let value = weights.weightQuality * (standing.get(mediaId) ?? candidate.quality);
+  value += weights.weightSmile * (context.smilePercentile.get(mediaId) ?? 0.5);
+  value += weights.weightComposed * (context.composedPercentile.get(mediaId) ?? 0.5);
+  value += weights.weightAesthetic * (context.aestheticPercentile.get(mediaId) ?? 0.5);
+  value += weights.weightCleanFrame * (context.cleanPercentile.get(mediaId) ?? 0.5);
+  if (isMidBlink(candidate, policy, context)) value -= weights.midBlinkPenalty;
+  return quantize(value);
+}
+
+/**
+ * sim(i,j) ∈ [0,1] — the blend from EXPERT-PLAN section 15, restricted to the
+ * five things this phone actually measures. Any component whose evidence is
+ * missing on either side is dropped and the remaining weights are renormalised,
+ * so a photo with no GPS is not thereby "dissimilar to everything".
+ *
+ * Non-negativity is load-bearing, not cosmetic: it is what lets facility
+ * location stand in for a DPP without a positive semi-definite kernel.
+ */
+export function blendedSimilarity(
+  left: NormalizedCandidate,
+  right: NormalizedCandidate,
+  tuning: AlbumObjectiveTuning,
+): number {
+  if (left.mediaId === right.mediaId) return 1;
+  let weighted = 0;
+  let available = 0;
+  const add = (weight: number, value: number) => {
+    if (weight <= 0) return;
+    weighted += weight * value;
+    available += weight;
+  };
+
+  const semantic = candidateSimilarity(left, right);
+  if (semantic !== undefined) add(tuning.simSemantic, Math.min(1, Math.max(0, semantic)));
+
+  if (left.personIds.length > 0 || right.personIds.length > 0) {
+    const shared = left.personIds.filter((personId) => right.personIds.includes(personId)).length;
+    const union = new Set([...left.personIds, ...right.personIds]).size;
+    add(tuning.simPeople, union === 0 ? 0 : shared / union);
+  }
+
+  if (left.poseCluster && right.poseCluster) {
+    add(tuning.simPose, left.poseCluster === right.poseCluster ? 1 : 0);
+  }
+
+  const leftPlace = left.placeKey || UNKNOWN;
+  const rightPlace = right.placeKey || UNKNOWN;
+  if (leftPlace !== UNKNOWN && rightPlace !== UNKNOWN) {
+    add(tuning.simPlace, leftPlace === rightPlace ? 1 : 0);
+  }
+
+  const leftTime = validTime(left.capturedAt);
+  const rightTime = validTime(right.capturedAt);
+  if (leftTime !== undefined && rightTime !== undefined && tuning.simTimeDecayMs > 0) {
+    add(tuning.simTime, Math.exp(-Math.abs(leftTime - rightTime) / tuning.simTimeDecayMs));
+  }
+
+  if (available <= 0) return 0;
+  return Math.min(1, Math.max(0, quantize(weighted / available)));
 }
 
 function coverageReasons(

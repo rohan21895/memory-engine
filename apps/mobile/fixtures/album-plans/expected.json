@@ -1,0 +1,217 @@
+{
+  "note": "Regenerate with scripts/pin-album-fixtures.ts. Never hand-edit: the corpusDigest is what stops a generator change from silently re-pinning both sides.",
+  "generatedBy": "src/selection/album-fixtures.ts",
+  "albums": [
+    {
+      "name": "birthday",
+      "target": 24,
+      "corpusDigest": "f58f5086",
+      "selectors": {
+        "coverage-keys": {
+          "selectedIds": [
+            "birthday-arrival-01",
+            "birthday-arrival-02",
+            "birthday-arrival-06",
+            "birthday-cake-01",
+            "birthday-cake-02",
+            "birthday-presents-00",
+            "birthday-presents-06",
+            "birthday-garden-02",
+            "birthday-garden-05",
+            "birthday-garden-07",
+            "birthday-garden-09",
+            "birthday-garden-12",
+            "birthday-portraits-00",
+            "birthday-portraits-02",
+            "birthday-portraits-04",
+            "birthday-portraits-05",
+            "birthday-gran-00",
+            "birthday-details-00",
+            "birthday-details-01",
+            "birthday-details-02",
+            "birthday-details-03",
+            "birthday-details-04",
+            "birthday-details-05",
+            "birthday-nightwalk-00"
+          ],
+          "rescuedIds": [
+            "birthday-gran-00"
+          ],
+          "rejectedCount": 40,
+          "missingPersonIds": []
+        },
+        "submodular": {
+          "selectedIds": [
+            "birthday-arrival-01",
+            "birthday-arrival-02",
+            "birthday-arrival-06",
+            "birthday-cake-01",
+            "birthday-cake-02",
+            "birthday-cake-10",
+            "birthday-presents-00",
+            "birthday-presents-01",
+            "birthday-presents-06",
+            "birthday-garden-02",
+            "birthday-garden-07",
+            "birthday-garden-09",
+            "birthday-garden-12",
+            "birthday-garden-13",
+            "birthday-portraits-04",
+            "birthday-portraits-05",
+            "birthday-gran-00",
+            "birthday-details-00",
+            "birthday-details-01",
+            "birthday-details-02",
+            "birthday-details-03",
+            "birthday-details-04",
+            "birthday-details-05",
+            "birthday-nightwalk-00"
+          ],
+          "rescuedIds": [
+            "birthday-gran-00"
+          ],
+          "rejectedCount": 37,
+          "missingPersonIds": []
+        }
+      }
+    },
+    {
+      "name": "twoyears",
+      "target": 24,
+      "corpusDigest": "32a0dfca",
+      "selectors": {
+        "coverage-keys": {
+          "selectedIds": [
+            "twoyears-m00-01",
+            "twoyears-m01-02",
+            "twoyears-m02-01",
+            "twoyears-m03-01",
+            "twoyears-m03-03",
+            "twoyears-m04-02",
+            "twoyears-m04-03",
+            "twoyears-m05-00",
+            "twoyears-m05-01",
+            "twoyears-m06-00",
+            "twoyears-m07-01",
+            "twoyears-m08-02",
+            "twoyears-m09-00",
+            "twoyears-m09-03",
+            "twoyears-m10-01",
+            "twoyears-m10-02",
+            "twoyears-m11-00",
+            "twoyears-m11-03",
+            "twoyears-m12-00",
+            "twoyears-m12-03",
+            "twoyears-m13-02",
+            "twoyears-m14-00",
+            "twoyears-m14-01",
+            "twoyears-m15-02"
+          ],
+          "rescuedIds": [],
+          "rejectedCount": 40,
+          "missingPersonIds": []
+        },
+        "submodular": {
+          "selectedIds": [
+            "twoyears-m00-01",
+            "twoyears-m01-02",
+            "twoyears-m02-01",
+            "twoyears-m03-01",
+            "twoyears-m03-03",
+            "twoyears-m04-02",
+            "twoyears-m04-03",
+            "twoyears-m05-00",
+            "twoyears-m05-01",
+            "twoyears-m06-00",
+            "twoyears-m07-01",
+            "twoyears-m08-00",
+            "twoyears-m08-02",
+            "twoyears-m09-00",
+            "twoyears-m09-03",
+            "twoyears-m10-01",
+            "twoyears-m10-02",
+            "twoyears-m11-00",
+            "twoyears-m11-03",
+            "twoyears-m12-00",
+            "twoyears-m13-02",
+            "twoyears-m14-00",
+            "twoyears-m14-01",
+            "twoyears-m15-02"
+          ],
+          "rescuedIds": [],
+          "rejectedCount": 40,
+          "missingPersonIds": []
+        }
+      }
+    },
+    {
+      "name": "trip",
+      "target": 24,
+      "corpusDigest": "f10b72cb",
+      "selectors": {
+        "coverage-keys": {
+          "selectedIds": [
+            "trip-depart-05",
+            "trip-beach-10",
+            "trip-sunset-00",
+            "trip-sunset-01",
+            "trip-sunset-02",
+            "trip-sunset-03",
+            "trip-sunset-04",
+            "trip-sunset-05",
+            "trip-sunset-06",
+            "trip-sunset-07",
+            "trip-sunset-08",
+            "trip-sunset-09",
+            "trip-market-05",
+            "trip-market-11",
+            "trip-fort-01",
+            "trip-fort-02",
+            "trip-pool-00",
+            "trip-pool-01",
+            "trip-pool-02",
+            "trip-pool-03",
+            "trip-pool-06",
+            "trip-pool-07",
+            "trip-return-00",
+            "trip-return-01"
+          ],
+          "rescuedIds": [],
+          "rejectedCount": 2,
+          "missingPersonIds": []
+        },
+        "submodular": {
+          "selectedIds": [
+            "trip-depart-02",
+            "trip-depart-05",
+            "trip-beach-01",
+            "trip-beach-08",
+            "trip-beach-09",
+            "trip-beach-11",
+            "trip-sunset-01",
+            "trip-sunset-09",
+            "trip-market-02",
+            "trip-market-06",
+            "trip-market-07",
+            "trip-market-11",
+            "trip-fort-01",
+            "trip-fort-02",
+            "trip-fort-05",
+            "trip-pool-00",
+            "trip-pool-01",
+            "trip-pool-02",
+            "trip-pool-03",
+            "trip-pool-05",
+            "trip-pool-06",
+            "trip-pool-07",
+            "trip-return-00",
+            "trip-return-01"
+          ],
+          "rescuedIds": [],
+          "rejectedCount": 25,
+          "missingPersonIds": []
+        }
+      }
+    }
+  ]
+}
