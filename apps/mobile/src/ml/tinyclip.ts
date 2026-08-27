@@ -1,7 +1,11 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { createModelCache } from "./model-cache.ts";
+import {
+  createModelCache,
+  type ModelCacheLoadStats,
+  type ModelExecutionTimingRecorder,
+} from "./model-cache.ts";
 
 const INPUT_SIZE = 224;
 const EMBEDDING_SIZE = 512;
@@ -73,6 +77,7 @@ export async function analyzeSemanticImage(
   imageUri: string,
   sourceWidth?: number,
   sourceHeight?: number,
+  timing?: ModelExecutionTimingRecorder,
 ): Promise<SemanticSignals | undefined> {
   if (graphUsable === false) return undefined;
 
@@ -91,10 +96,29 @@ export async function analyzeSemanticImage(
 
   const job = inferenceQueue.then(async () => {
     try {
-      const model = await modelCache.acquire();
+      const acquired = await modelCache.acquireWithInfo();
+      if (acquired.load) {
+        try {
+          timing?.recordModelLoad(acquired.load);
+        } catch {
+          // Performance reporting must never fail inference.
+        }
+      }
+      const model = acquired.model;
       graphUsable = model !== undefined && isExpectedModel(model);
       if (!model || !graphUsable) return undefined;
-      const outputs = await model.run([input.buffer as ArrayBuffer]);
+      const inferenceStartedAt = Date.now();
+      let outputs: ArrayBuffer[] | undefined;
+      try {
+        outputs = await model.run([input.buffer as ArrayBuffer]);
+      } finally {
+        try {
+          timing?.recordInference(Date.now() - inferenceStartedAt);
+        } catch {
+          // Performance reporting must never fail inference.
+        }
+      }
+      if (!outputs) return undefined;
       const embedding = parseEmbeddingOutput(outputs[0]);
       return embedding ? semanticSignals(embedding) : undefined;
     } catch {
@@ -106,6 +130,10 @@ export async function analyzeSemanticImage(
     () => undefined,
   );
   return job;
+}
+
+export function semanticModelLoadStats(): ModelCacheLoadStats {
+  return modelCache.loadStats();
 }
 
 async function loadSemanticModel(): Promise<TensorflowModel | undefined> {

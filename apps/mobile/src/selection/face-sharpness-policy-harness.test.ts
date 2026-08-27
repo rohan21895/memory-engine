@@ -23,7 +23,8 @@ const selectionSource = readFileSync(
 assert(
   appSource.includes("buildAlbum(next, 24,") &&
     buildAlbumSource.includes("HEAVY_ANALYSIS_CANDIDATE_LIMIT") &&
-    buildAlbumSource.includes("const boxesPromise = detectFaces(analysisUri") &&
+    buildAlbumSource.includes("const boxesPromise = deepAnalysisTiming") &&
+    buildAlbumSource.includes("detectFaces(analysisUri, {") &&
     buildAlbumSource.includes("detectedBoxes,") &&
     selectionSource.includes(
       "headSharpness: rankedTake.winner.analysis?.subjectSharpness",

@@ -19,6 +19,32 @@
  */
 export const RUNS_PER_MODEL = 400;
 
+export type ModelLoadEvent = {
+  sequence: number;
+  kind: "cold" | "reload";
+  elapsedMs: number;
+  succeeded: boolean;
+};
+
+export type ModelExecutionTimingRecorder = {
+  recordModelLoad(event: ModelLoadEvent): void;
+  /** Time spent inside `model.run`, excluding preprocessing, queue wait, and load. */
+  recordInference(elapsedMs: number): void;
+};
+
+export type ModelCacheLoadStats = {
+  sequence: number;
+  coldLoads: number;
+  reloads: number;
+  recent: readonly ModelLoadEvent[];
+};
+
+export type ModelAcquisition<T> = {
+  model: T | undefined;
+  /** Present only when this acquire had to load an interpreter. */
+  load?: ModelLoadEvent;
+};
+
 export type ModelCache<T> = {
   /**
    * The live model, reloading it when the previous one has been retired.
@@ -30,6 +56,8 @@ export type ModelCache<T> = {
    * run is still in flight.
    */
   acquire(): Promise<T | undefined>;
+  /** Same acquire, with load attribution for permanent performance timing. */
+  acquireWithInfo(): Promise<ModelAcquisition<T>>;
   /**
    * Drops the cached model so its native arena can be collected.
    *
@@ -46,32 +74,61 @@ export type ModelCache<T> = {
   retire(): Promise<void>;
   /** Inferences served by the current instance. Exposed for the self-check. */
   runsSinceLoad(): number;
+  /** Bounded load history plus lifetime counts; no model or user data. */
+  loadStats(): ModelCacheLoadStats;
 };
 
 export function createModelCache<T>(
   load: () => Promise<T | undefined>,
   runsPerModel: number = RUNS_PER_MODEL,
+  now: () => number = Date.now,
 ): ModelCache<T> {
   let pending: Promise<T | undefined> | undefined;
   let runs = 0;
+  let loadSequence = 0;
+  let coldLoads = 0;
+  let reloads = 0;
+  const recentLoads: ModelLoadEvent[] = [];
+
+  const acquireWithInfo = async (): Promise<ModelAcquisition<T>> => {
+    if (pending && runs >= runsPerModel) {
+      // Released before the replacement is requested so the swap never holds
+      // two interpreters at once.
+      await releaseModel(pending);
+      pending = undefined;
+    }
+    let loadEvent: ModelLoadEvent | undefined;
+    if (!pending) {
+      runs = 0;
+      const kind = loadSequence === 0 ? "cold" : "reload";
+      const startedAt = now();
+      // A load that rejects has to degrade exactly like a load that returns
+      // undefined; every caller of this cache is guarded, not try/catch-free.
+      pending = load().catch(() => undefined);
+      const model = await pending;
+      loadSequence += 1;
+      if (kind === "cold") coldLoads += 1;
+      else reloads += 1;
+      loadEvent = {
+        sequence: loadSequence,
+        kind,
+        elapsedMs: Math.max(0, now() - startedAt),
+        succeeded: model !== undefined,
+      };
+      recentLoads.push(loadEvent);
+      // This history exists only so one album build can take a before/after
+      // snapshot. Keep it bounded for process-long caches.
+      if (recentLoads.length > 32) recentLoads.shift();
+    }
+    runs += 1;
+    return { model: await pending, load: loadEvent };
+  };
 
   return {
     async acquire(): Promise<T | undefined> {
-      if (pending && runs >= runsPerModel) {
-        // Released before the replacement is requested so the swap never holds
-        // two interpreters at once.
-        await releaseModel(pending);
-        pending = undefined;
-      }
-      if (!pending) {
-        runs = 0;
-        // A load that rejects has to degrade exactly like a load that returns
-        // undefined; every caller of this cache is guarded, not try/catch-free.
-        pending = load().catch(() => undefined);
-      }
-      runs += 1;
-      return pending;
+      return (await acquireWithInfo()).model;
     },
+    acquireWithInfo,
     async retire(): Promise<void> {
       if (!pending) return;
       const retiring = pending;
@@ -80,6 +137,12 @@ export function createModelCache<T>(
       await releaseModel(retiring);
     },
     runsSinceLoad: () => runs,
+    loadStats: () => ({
+      sequence: loadSequence,
+      coldLoads,
+      reloads,
+      recent: recentLoads.slice(),
+    }),
   };
 }
 

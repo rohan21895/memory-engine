@@ -103,6 +103,36 @@ function equal(actual: unknown, expected: unknown, message: string): void {
 }
 
 {
+  // Load cost is attributed to the acquire that paid it, and a scheduled
+  // retirement is a reload rather than another cold load.
+  let now = 100;
+  let loads = 0;
+  const cache = createModelCache(
+    async () => {
+      now += loads === 0 ? 12 : 7;
+      return { id: ++loads };
+    },
+    2,
+    () => now,
+  );
+  const cold = await cache.acquireWithInfo();
+  equal(cold.load?.kind, "cold", "the first interpreter load is cold");
+  equal(cold.load?.elapsedMs, 12, "cold-load duration is measured separately");
+  equal((await cache.acquireWithInfo()).load, undefined, "a cache hit has no load cost");
+  const reload = await cache.acquireWithInfo();
+  equal(reload.load?.kind, "reload", "retirement produces a counted reload");
+  equal(reload.load?.elapsedMs, 7, "reload duration is measured separately");
+  const stats = cache.loadStats();
+  equal(stats.coldLoads, 1, "cold loads are counted");
+  equal(stats.reloads, 1, "reloads are counted");
+  equal(stats.recent.length, 2, "load events remain available to the batch reporter");
+  assert(
+    stats.recent.some((event) => event.elapsedMs > 0),
+    "vacuity guard: known load time cannot be reported as all zeros",
+  );
+}
+
+{
   // The whole point of retirement is that native memory goes DOWN, so the cache
   // must never HOLD two interpreters at once: the outgoing reference has to be
   // released before the replacement load is even requested. A ~200MB TFLite

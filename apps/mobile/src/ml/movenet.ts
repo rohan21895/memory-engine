@@ -2,7 +2,11 @@ import type { PoseKeypoint } from "../selection/pose";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { createModelCache } from "./model-cache.ts";
+import {
+  createModelCache,
+  type ModelCacheLoadStats,
+  type ModelExecutionTimingRecorder,
+} from "./model-cache.ts";
 
 const INPUT_SIZE = 192;
 const KEYPOINT_COUNT = 17;
@@ -40,6 +44,7 @@ export async function detectBodyPose(
   imageUri: string,
   sourceWidth?: number,
   sourceHeight?: number,
+  timing?: ModelExecutionTimingRecorder,
 ): Promise<MoveNetResult | undefined> {
   if (graphUsable === false) return undefined;
 
@@ -59,11 +64,30 @@ export async function detectBodyPose(
     try {
       // Acquired inside the queue: it may retire the previous interpreter, and
       // disposing one while a run is in flight is not safe.
-      const model = await modelCache.acquire();
+      const acquired = await modelCache.acquireWithInfo();
+      if (acquired.load) {
+        try {
+          timing?.recordModelLoad(acquired.load);
+        } catch {
+          // Performance reporting must never fail inference.
+        }
+      }
+      const model = acquired.model;
       graphUsable = model !== undefined && isExpectedModel(model);
       if (!model || !graphUsable) return undefined;
 
-      const outputs = await model.run([input.buffer as ArrayBuffer]);
+      const inferenceStartedAt = Date.now();
+      let outputs: ArrayBuffer[] | undefined;
+      try {
+        outputs = await model.run([input.buffer as ArrayBuffer]);
+      } finally {
+        try {
+          timing?.recordInference(Date.now() - inferenceStartedAt);
+        } catch {
+          // Performance reporting must never fail inference.
+        }
+      }
+      if (!outputs) return undefined;
       return parseMoveNetOutput(outputs[0]);
     } catch {
       return undefined;
@@ -75,6 +99,10 @@ export async function detectBodyPose(
     () => undefined,
   );
   return job;
+}
+
+export function bodyPoseModelLoadStats(): ModelCacheLoadStats {
+  return modelCache.loadStats();
 }
 
 async function loadBodyPoseModel(): Promise<TensorflowModel | undefined> {
