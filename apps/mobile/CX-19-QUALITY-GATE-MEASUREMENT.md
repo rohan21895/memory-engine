@@ -11,15 +11,15 @@ The harness therefore models 96 capped runs of 64 deeply analyzed candidates,
 not an impossible path where every photo in a large source library receives
 the expensive analysis. The real planner selects 24 photos per run.
 
-The deterministic corpus has seed `0xc019face` and 6,144 measured candidates:
+The corrected deterministic corpus has seed `0xc019face` and 6,144 measured candidates:
 
-- 5,229 (85.1%) contain a detected face.
-- 3,251 (52.9%) are group photos with at least three faces.
-- 5,915 pass the current largest-face regional-sharpness floor.
+- 5,236 (85.2%) contain a detected face.
+- 3,247 (52.8%) are group photos with at least three faces.
+- 5,924 pass the current largest-face regional-sharpness floor.
 - 2,304 photos are selected by the current planner across the 96 runs.
-- Sixteen of each run's 48 takes contain two candidates with an exactly equal,
-  quantized current score. This gives the soft policy real ties to break; it
-  cannot move a merely close score.
+- Every frame is scored independently by the production
+  `qualityScoreForSignals` path. There are 5,237 distinct quality values and
+  zero exact-quality ties among two-frame takes that contain faces.
 
 The synthetic secondary-face model correlates focus with relative face size
 and includes a shallow-depth-of-field tail that becomes more common as a face
@@ -35,17 +35,17 @@ There are no real photo pixels paired with all-face regional-sharpness values.
 
 ## Executed result
 
-The rejection denominator is the 5,915 photos that pass today's dominant-face
+The rejection denominator is the 5,924 photos that pass today's dominant-face
 check. “Selected lost” is against the 2,304 photos selected today. For the soft
-policy, “lost” means replaced by an equal-current-score photo from the same
-take; it does not mean rejected or that the album becomes shorter.
+policy, no production-score tie existed, so there was nothing it could
+legitimately replace.
 
 | Candidate policy | Newly rejected | Currently selected lost |
 | --- | ---: | ---: |
-| Minimum across every detected face, hard gate | 833 (14.1%) | 317 (13.8%) |
-| Minimum across faces at least 50% of largest area, hard gate | 170 (2.9%) | 63 (2.7%) |
-| Minimum across faces at least 25% of largest area, hard gate | 408 (6.9%) | 146 (6.3%) |
-| All-face minimum as an exact-score tie-break only | 0 (0.0%) | 312 replaced (13.5%) |
+| Minimum across every detected face, hard gate | 870 (14.7%) | 163 (7.1%) |
+| Minimum across faces at least 50% of largest area, hard gate | 151 (2.5%) | 23 (1.0%) |
+| Minimum across faces at least 25% of largest area, hard gate | 436 (7.4%) | 68 (3.0%) |
+| All-face minimum as an exact-score tie-break only | 0 (0.0%) | 0 replaced (0.0%) |
 
 Run from `apps/mobile` with Node 22 or newer:
 
@@ -55,22 +55,21 @@ node --experimental-strip-types src/selection/face-sharpness-policy-measure.ts
 
 The harness test has explicit non-vacuity guards: the corpus must remain above
 5,000 photos and majority-group; every hard policy must exercise both counters;
-the soft path must replace at least one selected ID while rejecting zero; and a
-second seeded run must be byte-identical.
+production scoring must create independently varying frame scores; a scorer
+sabotaged to return zero must collapse those scores and manufacture more than
+1,000 ties; and a second seeded run must be byte-identical.
 
 ## Recommendation
 
-If one of these four policies ships after real-library validation, ship the
-soft exact-tie policy. It closes some avoidable choices without removing a
-single candidate or shortening an album. Do not ship any hard gate from this
-synthetic result: even the least aggressive 50% rule removes 63 current picks,
-while the all-face rule removes 317. In a group-heavy family library, smaller
-background faces are precisely where deliberate depth of field makes softness
-normal.
+Do not ship the soft exact-tie policy from this corpus: independently measured
+production scores produced zero eligible ties, so the earlier 312 replacements
+were created entirely by assigning one rounded quality value per take. Do not
+ship any hard gate from this synthetic result either.
 
-The 312 replacements are not evidence that all are improvements. Before
-shipping even the soft rule, run the same measurement on consented on-device
-telemetry or a labeled local benchmark and visually review changed pairs.
+The earlier 312 replacements were not observed improvements; they were a
+fixture artifact. Before shipping the soft rule, run the same measurement on
+consented on-device telemetry or a labeled local benchmark and visually review
+changed pairs.
 
 ## Subject extent available in the current Android app
 

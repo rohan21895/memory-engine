@@ -30,6 +30,14 @@ function footprint() {
   return usage.heapUsed + usage.external;
 }
 
+const representationProbe = Buffer.alloc(512).toString("base64");
+if (!Array.isArray(decodeToNumberArray(representationProbe))) {
+  throw new Error("number[] measurement is not holding a plain JavaScript Array");
+}
+if (!(decodeToTyped(representationProbe) instanceof Int8Array)) {
+  throw new Error("typed measurement is not holding an Int8Array");
+}
+
 function measure(label, build) {
   global.gc();
   const before = footprint();

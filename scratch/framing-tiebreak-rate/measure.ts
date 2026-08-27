@@ -180,6 +180,9 @@ function exactTieGate(): void {
     const scene = randomScene(sabotage);
     if (tiedOnEveryMeasuredSignal(scoreOf(scene), scoreOf(scene))) forced += 1;
   }
+  if (forced !== 20_000) {
+    throw new Error(`tie-detector sabotage guard failed: ${forced}/20000 forced ties detected`);
+  }
   console.log(
     `   sabotage guard: with the SAME measurement on both sides the detector reports ${forced}/20000 ties, so the zeros above are real`,
   );

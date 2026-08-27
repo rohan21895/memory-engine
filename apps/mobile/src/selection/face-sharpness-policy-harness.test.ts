@@ -63,7 +63,8 @@ const quarter = byPolicy["area-25-hard"];
 const soft = byPolicy["all-faces-soft-tie"];
 
 // Vacuity guards: every hard-policy branch must see actual secondary-face
-// failures, and the tie-only branch must replace at least one selected ID.
+// failures. The production scorer must also produce independently measured
+// per-frame quality; manufacturing one rounded score per take was the old bug.
 for (const measurement of [all, half, quarter]) {
   assert(measurement !== undefined, "all hard policies must be reported");
   assert(
@@ -77,15 +78,29 @@ assert(
   "area filtering must monotonically reduce hard rejections",
 );
 assert(
-  soft?.newlyRejected === 0 && soft.currentlySelectedLost > 0,
-  "soft policy must reject nothing while exercising real tie replacements",
+  report.distinctQualityScores > corpus.length / 2 && report.exactQualityTieTakes === 0,
+  `production scoring must vary by frame instead of manufacturing ties (${report.distinctQualityScores} scores, ${report.exactQualityTieTakes} tied takes)`,
 );
 assert(
-  all.newlyRejected === 833 && all.currentlySelectedLost === 317 &&
-    half.newlyRejected === 170 && half.currentlySelectedLost === 63 &&
-    quarter.newlyRejected === 408 && quarter.currentlySelectedLost === 146 &&
-    soft.currentlySelectedLost === 312,
+  soft?.newlyRejected === 0 && soft.currentlySelectedLost === 0,
+  "the soft tie-only policy is correctly reported inert when production scoring produces no ties",
+);
+assert(
+  all.newlyRejected === 870 && all.currentlySelectedLost === 163 &&
+    half.newlyRejected === 151 && half.currentlySelectedLost === 23 &&
+    quarter.newlyRejected === 436 && quarter.currentlySelectedLost === 68 &&
+    soft.currentlySelectedLost === 0,
   "committed measurement table must match the executed seeded corpus",
+);
+
+// Actual implementation sabotage, not a second expected table: if the scorer
+// is broken to return one constant, the harness must expose that every
+// two-frame take became an exact tie and every quality collapsed to one value.
+const sabotaged = runFaceSharpnessPolicyHarness(undefined, () => 0);
+assert(
+  sabotaged.distinctQualityScores === 1 &&
+    sabotaged.exactQualityTieTakes > 1_000,
+  "constant-scorer sabotage must be observable in the corpus and tie gate",
 );
 
 // Determinism guard: a second run must be byte-identical. Without this, a

@@ -26,20 +26,21 @@ const face = (assetId: string, degrees: number) => ({
 
 // Two tight groups close enough to each other that consolidation joins them.
 const observations = [
-  face("a-1", 0), face("a-2", 1), face("a-3", 2), face("a-4", 3), face("a-5", 4),
-  face("b-1", 8), face("b-2", 9), face("b-3", 10), face("b-4", 11), face("b-5", 12),
+  face("a-1", 0), face("a-2", 0.1), face("a-3", 0.2), face("a-4", 0.3), face("a-5", 0.4),
+  face("b-1", 8), face("b-2", 8.1), face("b-3", 8.2), face("b-4", 8.3), face("b-5", 8.4),
 ];
 
-const merged = clusterFaces(observations, { threshold: 0.9 });
-const deferred = extendFaceClusters([], observations, { threshold: 0.9, skipMerge: true });
+const options = { threshold: 0.9999, evidencedMergeThreshold: 0.98 };
+const merged = clusterFaces(observations, options);
+const deferred = extendFaceClusters([], observations, { ...options, skipMerge: true });
 
 const total = (people: { faceCount: number }[]) =>
   people.reduce((sum, person) => sum + person.faceCount, 0);
 
 assert(total(deferred) === observations.length, "every face is still assigned when merging is skipped");
 assert(
-  deferred.length >= merged.length,
-  "skipping consolidation may leave MORE tiles, never fewer -- fewer would mean it fused people",
+  deferred.length === 2 && merged.length === 1,
+  `sabotage guard: this fixture must leave two deferred tiles and consolidate them to one (got ${deferred.length} and ${merged.length})`,
 );
 assert(
   deferred.every((person) => new Set(person.assetIds).size === person.assetIds.length),

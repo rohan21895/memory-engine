@@ -1,5 +1,8 @@
 // @ts-expect-error Node's native TypeScript runner requires the extension.
 import { DEFAULT_PLANNER_POLICY, planAlbum, type PlannerCandidate } from "./album-planner.ts";
+// @ts-expect-error Node's native TypeScript runner requires the extension.
+import { qualityScoreForSignals } from "./select-best-shots.ts";
+import type { Category, QualitySignals } from "./quality-signals.ts";
 
 export const FACE_SHARPNESS_HARNESS_SEED = 0xc019face;
 export const SYNTHETIC_LIBRARY_COUNT = 96;
@@ -26,6 +29,9 @@ export type SharpnessHarnessPhoto = {
   personIds: string[];
   faces: FaceRegionMeasurement[];
 };
+
+type SharpnessScoreInput = Omit<SharpnessHarnessPhoto, "quality">;
+export type SharpnessHarnessScorer = (photo: SharpnessScoreInput) => number;
 
 export type RepoFixtureCoverage = {
   faceRecords: number;
@@ -60,6 +66,8 @@ export type FaceSharpnessHarnessReport = {
   currentEligiblePhotos: number;
   photosWithFaces: number;
   groupPhotos: number;
+  distinctQualityScores: number;
+  exactQualityTieTakes: number;
   repoFixtures: Omit<RepoFixtureCoverage, "completePhotos"> & {
     newlyRejectedByHardPolicies: Record<
       Exclude<CandidatePolicyId, "all-faces-soft-tie">,
@@ -76,14 +84,15 @@ type PolicyAreaFraction = 0 | 0.5 | 0.25;
  *
  * Each synthetic library models the real >500-photo path after its prepass:
  * exactly 64 candidates receive face/pixel analysis, then the real pure album
- * planner chooses 24. Sixteen two-frame takes have deliberately quantized,
- * equal current scores so the soft policy has genuine ties to break; the other
- * 32 takes are singletons. No candidate selection behavior is changed.
+ * planner chooses 24. Sixteen takes contain two independently scored frames;
+ * the other 32 takes are singletons. Quality comes from the production scorer,
+ * so the harness must observe a real tie rather than manufacture one.
  */
 export function runFaceSharpnessPolicyHarness(
   repoFixtures: RepoFixtureCoverage = emptyRepoFixtureCoverage(),
+  scorePhoto: SharpnessHarnessScorer = productionPhotoQuality,
 ): FaceSharpnessHarnessReport {
-  const photos = syntheticCorpus();
+  const photos = syntheticCorpus(scorePhoto);
   const photosByLibrary = groupBy(photos, (photo) => photo.libraryId);
   const currentSelected = new Set<string>();
   const softSelected = new Set<string>();
@@ -158,6 +167,14 @@ export function runFaceSharpnessPolicyHarness(
     currentEligiblePhotos: photos.filter(currentDominantPolicyPasses).length,
     photosWithFaces: photos.filter((photo) => photo.faces.length > 0).length,
     groupPhotos: photos.filter((photo) => photo.faces.length >= 3).length,
+    distinctQualityScores: new Set(photos.map((photo) => photo.quality)).size,
+    exactQualityTieTakes: Array.from(groupBy(photos, (photo) => photo.takeId).values())
+      .filter((take) =>
+        take.length > 1 &&
+        take.every((photo) => photo.faces.length > 0) &&
+        new Set(take.map((photo) => photo.quality)).size === 1
+      )
+      .length,
     repoFixtures: {
       faceRecords: repoFixtures.faceRecords,
       photoMediaRecordsWithFaces: repoFixtures.photoMediaRecordsWithFaces,
@@ -176,7 +193,9 @@ export function runFaceSharpnessPolicyHarness(
   };
 }
 
-export function syntheticCorpus(): SharpnessHarnessPhoto[] {
+export function syntheticCorpus(
+  scorePhoto: SharpnessHarnessScorer = productionPhotoQuality,
+): SharpnessHarnessPhoto[] {
   const random = mulberry32(FACE_SHARPNESS_HARNESS_SEED);
   const result: SharpnessHarnessPhoto[] = [];
 
@@ -194,9 +213,6 @@ export function syntheticCorpus(): SharpnessHarnessPhoto[] {
       const takeId = `${libraryId}-take-${String(takeIndex).padStart(2, "0")}`;
       const faceCount = syntheticFaceCount(random);
       const faceAreas = syntheticFaceAreas(random, faceCount);
-      // Device scores are bounded and serialized; hundredth quantization makes
-      // an exact-tie policy observable without letting it reorder near-ties.
-      const quality = Math.round((0.42 + random() * 0.5) * 100) / 100;
       const focus = random() < 0.045
         ? 0.025 + random() * 0.055
         : 0.16 + random() * 0.7;
@@ -208,15 +224,19 @@ export function syntheticCorpus(): SharpnessHarnessPhoto[] {
 
       for (let variant = 0; variant < takeSize; variant += 1) {
         const mediaId = `${libraryId}-photo-${String(photoIndex).padStart(2, "0")}`;
-        result.push({
+        const faces = syntheticFaces(random, faceAreas, focus);
+        const evidence: SharpnessScoreInput = {
           mediaId,
           libraryId,
           takeId,
-          quality,
           capturedAt: libraryStart + takeIndex * 15 * 60_000 + variant * 650,
           placeKey: `place-${libraryIndex % 6}-${Math.floor(takeIndex / 12)}`,
           personIds: people,
-          faces: syntheticFaces(random, faceAreas, focus),
+          faces,
+        };
+        result.push({
+          ...evidence,
+          quality: scorePhoto(evidence),
         });
         photoIndex += 1;
       }
@@ -230,6 +250,34 @@ export function syntheticCorpus(): SharpnessHarnessPhoto[] {
   }
 
   return result;
+}
+
+function categoryFor(faces: readonly FaceRegionMeasurement[]): Category {
+  return faces.length >= 3
+    ? "group"
+    : faces.length === 2
+      ? "couple"
+      : faces.length === 1
+        ? "portrait"
+        : "scene";
+}
+
+function productionPhotoQuality(photo: SharpnessScoreInput): number {
+  const dominant = photo.faces[0];
+  const analysis: QualitySignals = {
+    sharpness: dominant?.regionalSharpness,
+    subjectSharpness: dominant?.regionalSharpness,
+    faces: photo.faces.map((face) => ({
+      areaRatio: face.areaRatio,
+      cutAtEdge: false,
+    })),
+    faceCount: photo.faces.length,
+    largestFaceAreaRatio: dominant?.areaRatio ?? 0,
+    anyFaceCutAtEdge: false,
+    isScreenshotOrDocument: false,
+    category: categoryFor(photo.faces),
+  };
+  return qualityScoreForSignals({ analysis, width: 4_000, height: 3_000 });
 }
 
 function syntheticFaceCount(random: () => number): number {
@@ -331,14 +379,7 @@ function plannerCandidate(photo: SharpnessHarnessPhoto): PlannerCandidate {
     personIds: photo.personIds,
     shotGroup: `take:${photo.mediaId}`,
     poseFamily: `take:${photo.mediaId}`,
-    category:
-      photo.faces.length >= 3
-        ? "group"
-        : photo.faces.length === 2
-          ? "couple"
-          : photo.faces.length === 1
-            ? "portrait"
-            : "scene",
+    category: categoryFor(photo.faces),
     headSharpness: dominant?.regionalSharpness,
   };
 }
