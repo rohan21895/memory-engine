@@ -1,5 +1,11 @@
 # Review of the expert plan
 
+> **Historical, pre-measurement review. Do not use as live guidance.** Later experiments
+> rejected this document's endorsements of multi-prototype identity and facility
+> location, corrected the deep-analysis timing attribution, and respecified M1. The
+> authoritative plan is [`EXPERT-PLAN.md`](EXPERT-PLAN.md); the short status is
+> [`EXPERT-PLAN-STATUS.md`](EXPERT-PLAN-STATUS.md).
+
 What we accept, what is already built, where the plan is out of date, and what we
 think it gets wrong about ordering. The plan itself is `docs/EXPERT-PLAN.md`;
 Codex's line-by-line verification is `docs/CX-21-PLAN-AUDIT.md`.

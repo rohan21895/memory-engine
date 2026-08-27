@@ -1,5 +1,10 @@
 # CX-21 — external-plan audit
 
+> **Point-in-time audit.** This remains primary evidence for the repository inspection,
+> but its then-unverified M3/M4/M6 questions were answered by later measurements. Do not
+> treat its “Unverified” list as current work. See the reconciled
+> [`EXPERT-PLAN.md`](EXPERT-PLAN.md).
+
 Audit date: 2026-08-27. Scope is repository evidence only; no Android build, device run, dependency install, or production change was made. SHA-256, byte size, and tensor metadata below were read directly from the tracked FlatBuffers; binary citations use `:1` because those files have no text lines.
 
 ## A. Factual claims
