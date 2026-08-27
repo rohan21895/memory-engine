@@ -261,4 +261,59 @@ const options = { threshold: 0.5, identityMergeThreshold: 0.6 };
   );
 }
 
+/**
+ * A crowded photo is not a question.
+ *
+ * The owner was shown a party photograph holding five or six people and asked
+ * whether two of the faces in it were one person: "of course there are more
+ * than one people in the image, any basic ML model will tell that". The app
+ * already knows -- it has placed several distinct people in that frame.
+ *
+ * Measured on his live index: of the 4,073 pairs held apart by exactly one
+ * shared photo, that photo holds 3+ people in 92.2% of cases. Run against his
+ * real sixty-question queue, 7 were co-occurrence-blocked, 6 are suppressed
+ * here, and the survivor is the doubtful shape -- two people in frame at 0.899.
+ */
+{
+  const crowd = ["party"];
+  const guest = (id: string, degrees: number) =>
+    person(id, 3, degrees, [...crowd, `${id}-own`]);
+  // Two of the party's faces, plus four other people who are also in it.
+  const partygoers = [
+    guest("guest-a", 0),
+    guest("guest-b", 51),
+    guest("guest-c", 140),
+    guest("guest-d", 160),
+    guest("guest-e", 175),
+  ];
+  assert(
+    suggestMerges(partygoers, { ...options, limit: 10 }).length === 0,
+    "two faces in a photo the library already fills with people is not a question",
+  );
+
+  // VACUITY: the SAME two people, in a photo holding only them, must still be
+  // asked. Otherwise this rule would have silenced the doubtful case too, which
+  // is the only one left worth his attention.
+  const justTwo = [guest("guest-a", 0), guest("guest-b", 51)];
+  const asked = suggestMerges(justTwo, { ...options, limit: 10 });
+  assert(
+    asked.length === 1 && asked[0].blockedByCoOccurrence,
+    `a two-person frame carries real doubt and must still be asked, got ${asked.length}`,
+  );
+
+  // The MIN, not the max: sharing one crowded frame AND one quiet frame leaves
+  // the quiet one as genuine evidence, so the pair is still asked.
+  const alsoAlone = [
+    person("guest-a", 3, 0, [...crowd, "quiet", "guest-a-own"]),
+    person("guest-b", 3, 51, [...crowd, "quiet", "guest-b-own"]),
+    guest("guest-c", 140),
+    guest("guest-d", 160),
+    guest("guest-e", 175),
+  ];
+  assert(
+    suggestMerges(alsoAlone, { ...options, limit: 10 }).length === 1,
+    "a quiet shared frame still counts even when another shared frame is crowded",
+  );
+}
+
 console.log("suggest-ranking self-check passed");

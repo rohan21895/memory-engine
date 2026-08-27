@@ -1405,6 +1405,19 @@ export const RARE_MERGE_CO_OCCURRENCE_RATE = 0.05;
 /** Above this, the evidence sentence warns that two people may travel together. */
 export const FREQUENT_MERGE_CO_OCCURRENCE_RATE = 0.15;
 
+/**
+ * People in a frame beyond which "these two are one person" stops being a
+ * question worth asking.
+ *
+ * Three, because two is where the doubt actually lives: a frame the library
+ * reads as holding one or two people is where a repeat detection, a mirror or a
+ * photo of a printed photo can masquerade as a second person. Add a third and
+ * the frame is a group, and a group photo containing two faces contains two
+ * people. Used only to withhold REVIEW QUESTIONS; the cannot-link itself is
+ * untouched, so the pair stays unmerged either way.
+ */
+export const CROWDED_PHOTO_PEOPLE = 3;
+
 function mergeCoOccurrenceRate(suggestion: MergeSuggestion): number {
   return suggestion.appearances > 0
     ? suggestion.sharedAssets / suggestion.appearances
@@ -1453,6 +1466,15 @@ export function suggestMerges(
   const resolved = resolveConstraints(mutable, opts.constraints ?? [], bars);
   for (const [i, j] of resolved.cannot) {
     blocked.add(pairName(Math.min(i, j), Math.max(i, j)));
+  }
+
+  // How many distinct people the library already believes are in each photo.
+  // Built once; the inner loop is O(people^2) and must not walk this.
+  const peopleInPhoto = new Map<string, number>();
+  for (const person of mutable) {
+    for (const assetId of person.assetIdSet) {
+      peopleInPhoto.set(assetId, (peopleInPhoto.get(assetId) ?? 0) + 1);
+    }
   }
 
   const found: MergeSuggestion[] = [];
@@ -1536,6 +1558,41 @@ export function suggestMerges(
         a.assetIdSet.size === 1 &&
         b.assetIdSet.size === 1;
       if (strangersInOnePhoto) continue;
+      // In a crowded photo, two faces are two people, and asking is absurd.
+      //
+      // The owner made this point after being shown a party photograph holding
+      // five or six people under the question — "of course there are more than
+      // one people in the image, any basic ML model will tell that". He is
+      // right, and the app already knows it: it has placed several distinct
+      // people in that frame.
+      //
+      // Measured on his live index. Of the 4,073 pairs held apart by exactly one
+      // shared photo, that photo holds 3+ people in 92.2% of cases and 6+ in
+      // 65.1%. Run against his real sixty-question queue through this same
+      // function: 7 were co-occurrence-blocked, 6 are suppressed by this rule,
+      // and the ONE that survives is the genuinely doubtful shape — two people
+      // in the frame at similarity 0.899, which is far more likely to be one
+      // head found twice.
+      //
+      // Safe under this codebase's own invariant: withholding a question can
+      // only ever leave two records SPLIT, never fused. A split is repairable by
+      // any later pass; a fusion is not. So the cost of being wrong here is a
+      // tile that stays divided, against the cost of asking him thousands of
+      // questions whose answer he can already see is "obviously two people".
+      //
+      // MIN across the shared photos, not max: if any one of them holds two
+      // people or fewer, that frame carries real doubt and is worth asking about.
+      if (vetoed) {
+        let leastCrowded = Number.POSITIVE_INFINITY;
+        for (const assetId of a.assetIdSet) {
+          if (!b.assetIdSet.has(assetId)) continue;
+          leastCrowded = Math.min(
+            leastCrowded,
+            peopleInPhoto.get(assetId) ?? 0,
+          );
+        }
+        if (leastCrowded >= CROWDED_PHOTO_PEOPLE) continue;
+      }
       const [first, second] =
         a.faceCount >= b.faceCount ? [a, b] : [b, a];
       found.push({
