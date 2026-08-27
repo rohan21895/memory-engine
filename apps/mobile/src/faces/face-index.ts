@@ -3628,9 +3628,14 @@ function transferPendingConsolidationPerson(
   // Even if neither endpoint was directly touched, an absorb changes the
   // survivor's centroid, size, span and inherited constraints. It is therefore
   // touched from this point onward and its whole row must be refreshed.
+  //
+  // Mutates the live set and does NOT persist: the callers below store once
+  // when the clusterer returns. Storing per callback would re-sort the whole
+  // array on every assigned face, which is quadratic in the batch and buys
+  // nothing -- nothing reaches disk until `persistFaceIndex`, so a crash
+  // partway through loses the half-updated `index.people` either way.
   pending.delete(absorbedPersonId);
   pending.add(survivingPersonId);
-  storePendingConsolidationPeople(pending);
 }
 
 function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
@@ -3688,8 +3693,11 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
     ...clusterOptions,
     onAssign: (observation, personId) => {
       assignments.set(observation, personId);
+      // Seeds the restricted sweep below. Load-bearing ORDER: `mergeSeedPersonIds`
+      // is the same live set, and the clusterer snapshots it only when it starts
+      // merging -- after every assignment has landed. Read it earlier and the
+      // arriving faces' own people would not seed the sweep at all.
       pending.add(personId);
-      storePendingConsolidationPeople(pending);
     },
     onMerge: (absorbedPersonId, survivingPersonId) => {
       transferPendingConsolidationPerson(
@@ -3712,6 +3720,9 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
     index.consolidationBars = bars;
     index.pendingConsolidationPersonIds = [];
     index.consolidationPending = false;
+  } else {
+    // Deferred: carry every person this batch touched into the next sweep.
+    storePendingConsolidationPeople(pending);
   }
   traceScanStage("cluster", clusterStartedAt);
   if (consolidate) traceScanCount("consolidated");
