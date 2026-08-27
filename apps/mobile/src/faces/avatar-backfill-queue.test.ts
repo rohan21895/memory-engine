@@ -79,6 +79,50 @@ const ids = (people: readonly Person[]): string => people.map((p) => p.id).join(
 }
 
 /**
+ * THE case. The queue has to be able to become EMPTY.
+ *
+ * Ordering by attempts stopped the pass starving its tail, but it never let
+ * anyone leave the queue, and that is not slow convergence — it is a permanent
+ * tax on every launch. On the owner's phone 552 people had no avatar and every
+ * one had already failed four or five times, yet they still cost 910 photo
+ * decodes per launch, each a decode plus a detection plus an embedding. He
+ * reported the app as "super laggy". This is that bug.
+ */
+{
+  const exhausted = [
+    person("tried-4", 300, 4),
+    person("tried-9", 200, 9),
+  ];
+  assert(
+    avatarBackfillQueue(exhausted).length === 0,
+    `people who have been tried enough must leave the queue, ` +
+      `got ${ids(avatarBackfillQueue(exhausted))}`,
+  );
+  // Vacuity guard: the same people one attempt earlier ARE still queued, so the
+  // emptiness above is the cap doing its job and not a filter that rejects
+  // everything.
+  const stillTrying = [person("tried-3", 300, 3)];
+  assert(
+    avatarBackfillQueue(stillTrying).length === 1,
+    "somebody below the cap must still be offered work",
+  );
+}
+
+// A library where every faceless person is exhausted costs nothing at all —
+// the property that actually makes launches quiet again.
+{
+  const settled: Person[] = [
+    { ...person("has-face", 900), avatarUri: "file://a.jpg" },
+    person("gave-up-1", 50, 4),
+    person("gave-up-2", 20, 5),
+  ];
+  assert(
+    avatarBackfillQueue(settled).length === 0,
+    `a settled library must schedule zero work, got ${ids(avatarBackfillQueue(settled))}`,
+  );
+}
+
+/**
  * The property that actually matters, stated as the thing that was broken:
  * across repeated budgeted passes where every attempt FAILS, every person is
  * eventually looked at. Under the old size-only ordering this loop never

@@ -2657,6 +2657,30 @@ const AVATAR_BACKFILL_CHECKPOINT = 50;
 const AVATAR_BACKFILL_TRIES_PER_PERSON = 6;
 
 /**
+ * Passes to spend on one person before giving up on them.
+ *
+ * Without this the queue can never empty, and that is not a slow convergence —
+ * it is a permanent tax on every launch. Measured on the owner's phone: 552
+ * people had no avatar and every one of them had already failed four or five
+ * times, yet they still cost 910 photo decodes per launch, each a decode plus a
+ * detection plus an embedding. He reported the app as "super laggy"; this was
+ * why. The attempt counter that fixed the starvation only reordered the queue,
+ * it never let anyone leave it.
+ *
+ * Four, because the same measurement showed recoveries had already flattened —
+ * the last full pass recovered 1 avatar for 133 attempts. Anyone still without
+ * a face by then is someone the matcher cannot confidently place, and their
+ * tile falls back to their own photo, which is correct rather than broken.
+ *
+ * It does not strand them forever: `reattachAvatars` carries `avatarUri` across
+ * a recluster but deliberately not `avatarTries`, so a scan that finds new
+ * faces rebuilds these people and hands them a fresh set of attempts. Retrying
+ * when there is genuinely new evidence is the behaviour we want; retrying on
+ * every launch with identical inputs is the bug.
+ */
+const MAX_AVATAR_TRIES = 4;
+
+/**
  * Recovers face avatars for people who have none.
  *
  * Needed because avatars are a by-product of SCANNING: the crop exists only
@@ -2801,7 +2825,10 @@ async function faceForPerson(
  */
 export function avatarBackfillQueue(people: readonly Person[]): Person[] {
   return people
-    .filter((person) => !person.avatarUri)
+    .filter(
+      (person) =>
+        !person.avatarUri && (person.avatarTries ?? 0) < MAX_AVATAR_TRIES,
+    )
     .sort(
       (a, b) =>
         (a.avatarTries ?? 0) - (b.avatarTries ?? 0) || b.faceCount - a.faceCount,
