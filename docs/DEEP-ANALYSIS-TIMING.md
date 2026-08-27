@@ -93,3 +93,41 @@ The instrumentation ships on, is cheap, and emits through the existing
 ```
 adb logcat | grep album-build-timing
 ```
+
+---
+
+## Addendum: the review flow could not record 62% of its own answers
+
+Measured the same day, on the same pulled index, with
+`scratch/face-anchor-coverage/measure.ts --index <face-index.json>`:
+
+```
+people 2226   faces 15784   clusters with 2+ faces 921
+NO ANCHOR: 1433 people (64.4%) holding 4062 faces (25.7%)
+  sizes: 1 face 903, 2-3 292, 4-9 160, 10+ 78
+REVIEW (limit 60): 60 offered, 37 refused (61.7%)
+  first-5 3 refused, first-20 18 refused
+  refused pairs would have fixed 186 photos; face counts 50+12, 51+12, 38+7, 57+6
+```
+
+A user judgement is stored against an ANCHOR ASSET, because person ids are rebuilt on
+every recluster. An anchor has to be a photo only one cluster claims — and since two
+faces in one photo are cannot-linked, that means a photo where the person is the *only*
+detected face. **A person who is never photographed alone has no anchor**, and the app
+answers "we can't remember that" and drops the correction.
+
+**Eighteen of the first twenty questions were refusable.** That matters more than the
+raw rate, because of the other thing measured today: there are **zero** unblocked cluster
+pairs above 0.52 linkage. Every remaining split in this library is held by co-occurrence,
+so the review queue is the *only* remaining lever — and most of its questions could not
+be recorded.
+
+Worth noting the agent that built the fix measured a synthetic library first and reported
+honestly that its own numbers did not support the "people who matter most" framing: 6.9%
+of faces affected, no refused repair worth more than 1–2 photos. On the real index it is
+25.7% of faces and 78 anchorless people holding 10+ faces each. The synthetic model
+under-fragmented and understated it, which the agent predicted it would.
+
+The fix lets an anchor name *which face* inside a shared photo, resolved only when the
+winning face clears the assignment bar and beats the runner-up by 0.15 — a margin
+measured against confusable relatives, not chosen. Old constraints load unchanged.
