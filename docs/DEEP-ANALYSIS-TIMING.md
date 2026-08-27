@@ -16,9 +16,31 @@ deep-analysis         148,837 ms / 64 photos     (2.33 s per photo)
   movenet.model-inference     71,113 ms   mean 1,111 ms   p95 1,964 ms
 ```
 
-**TinyCLIP's own inference accounts for 145,952 ms of a 148,837 ms stage — 98%.** It is
-the critical path almost exactly. The expert's assumption was right; it is now measured
-rather than assumed, which is what M3 was blocked on.
+**The TinyCLIP span accounts for 145,952 ms of a 148,837 ms stage — 98%.** It is the
+critical path almost exactly.
+
+> **Correction — what that span actually contains.** This section originally read
+> "TinyCLIP's *own inference*". That attribution is wrong, and the error points at a
+> different fix than the one it implied.
+>
+> `model-inference` is `Date.now()` around `await model.run(...)` (`ml/tinyclip.ts:106-112`).
+> The `await` means the span includes however long the JS event loop took to *deliver the
+> resolution* — and `ANALYZE_CONCURRENCY = 6` (`build-album.ts:82`) has up to five other
+> photos running `jpeg-js` decodes and 150,528-iteration normalization loops on that same
+> single thread. Only `acquire() + run()` are serialized; preprocessing deliberately is
+> not. So the span is kernel time **plus** JS-thread scheduling delay **plus** core
+> contention.
+>
+> The cross-check is what settles it. Measured on this Mac at one thread: TinyCLIP fp32
+> **6.03 ms**, MoveNet int8 **2.14 ms**, w600k fp32 **3.93 ms** (thread count barely
+> matters — 4t ≈ 1t). Even assuming a phone CPU 20x slower, the expected device figures
+> are ~120 ms and ~43 ms against measured 2,280 ms and 1,111 ms: a **~19–26x unexplained
+> multiplier on both models**. A multiplier that survives a change of both architecture
+> *and* precision — an fp32 ViT and an int8 CNN — is a property of the environment, not
+> of the models.
+>
+> The ratio between the two spans is still informative, and TinyCLIP is still the larger
+> one. But "quantize the model" does not address most of what is being measured here.
 
 MoveNet is the surprise. It is 2.9 MB, already int8, and still costs **1.11 s of pure
 inference per photo**. A quantized 2.9 MB model taking half the time of a 33 MB float32
@@ -82,8 +104,22 @@ Both point at a full-resolution decode somewhere off the proxy path.
 
 ## What this changes
 
-1. **M3 is unblocked and correctly aimed.** Quantize TinyCLIP first — the fidelity gates
-   in `docs/EXPERT-PLAN.md` §8 apply as written.
+1. ~~**M3 is unblocked and correctly aimed.** Quantize TinyCLIP first.~~ **Withdrawn —
+   quantization was tried and it makes things worse.** A quantized TinyCLIP *can* be
+   produced from the shipped `.tflite` without the source model (`ai-edge-litert`'s
+   `CalibrationWrapper` does flatbuffer-to-flatbuffer PTQ), so the feasibility question
+   is answered — but full int8 is blocked outright (`Quantization not yet supported for
+   op: 'DIV'`) and mixed int8 converts to 8.5 MB and runs **3.4x slower** (6.55 → 22.15
+   ms), because it inserts 71 `QUANTIZE`/`DEQUANTIZE` ops around everything it could not
+   convert. §8's own warning about partial delegation is exactly what happened.
+
+   The root cause is the conversion, not the precision: TinyCLIP's flatbuffer has **zero
+   `FULLY_CONNECTED` ops**. 61 of its 81 `BATCH_MATMUL`s carry a constant weight operand
+   — every linear layer landed in a shape both the quantizer and XNNPACK handle worse
+   than the op it should have been — and its 22 LayerNorms are decomposed into raw
+   arithmetic (44 `MEAN`, 23 `SQRT`, 23 `DIV`, 22 `SUB`), where `DIV` is what blocks
+   int8. Re-converting from the upstream checkpoint is the genuinely blocked path, and
+   would likely beat any quantization. Details in `apps/mobile/src/quant/`.
 2. **MoveNet sets the floor, and argues for the runtime work rather than quantization.**
    It is already int8 and still costs 1.11 s, so quantization cannot fix it — the ceiling
    here is the CPU/delegate path, which is also where the `fast-tflite` arena leak lives.
