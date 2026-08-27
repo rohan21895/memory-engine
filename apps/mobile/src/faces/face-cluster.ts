@@ -868,9 +868,53 @@ function mergeSimilarPeople(
     a.embeddingKind === b.embeddingKind &&
     a.centroid.length > 0 &&
     a.centroid.length === b.centroid.length;
-  /** Mean cosine between every face of `a` and every face of `b`. */
-  const linkage = (a: MutablePerson, b: MutablePerson): number =>
-    scaledSimilarity(a.centroid, a.inverse, b.centroid, b.inverse);
+  /**
+   * Mean cosine between every face of `a` and every face of `b`, abandoned as
+   * soon as it cannot reach `required`.
+   *
+   * The sweep below is O(people^2) -- on the owner's library 2,244 people is
+   * 2.5M pairs -- and the line after every call throws the answer away unless
+   * it clears the bar. Nearly all of them do not: two people picked at random
+   * out of a face library are close to orthogonal, so the running dot product
+   * plus its own best case falls under the bar within a block or two, long
+   * before 512 dimensions have been touched.
+   *
+   * The bound is used as a FILTER and nothing else, which is the only reason
+   * this is safe to do to a library of somebody's family. `boundedSimilarity`
+   * scales by `aInverse * bInverse` where `scaledSimilarity` scales by
+   * `aInverse` then `bInverse`, and floating-point multiplication is not
+   * associative, so the two can disagree in the last bit. That is normally
+   * beneath notice, but the candidate queue settles EXACT ties by `pairKey`,
+   * so a one-bit disagreement can turn a tie into an ordering -- and the sweep
+   * is greedy, so merge order can change the final grouping. Recomputing the
+   * survivors with the original expression keeps every value that reaches the
+   * queue exactly the one that reached it before this change.
+   *
+   * Paying for the dot product twice on survivors is free in practice for the
+   * same reason the filter works at all: almost nothing survives.
+   *
+   * `suffix` costs nothing to use here. It exists for the assignment loop and
+   * `refreshCentroidMagnitudes` already restores it on every centroid move,
+   * including the one inside `absorb` -- so the sweep cannot read a stale bound
+   * even midway through a chain of merges.
+   */
+  const linkage = (
+    a: MutablePerson,
+    b: MutablePerson,
+    required: number,
+  ): number => {
+    const reachable = boundedSimilarity(
+      a.centroid,
+      a.inverse,
+      a.suffix,
+      b.centroid,
+      b.inverse,
+      b.suffix,
+      required,
+    );
+    if (reachable === Number.NEGATIVE_INFINITY) return Number.NEGATIVE_INFINITY;
+    return scaledSimilarity(a.centroid, a.inverse, b.centroid, b.inverse);
+  };
   /** Order-free name for a pair, used only to settle exact ties. */
   const pairKey = (a: MutablePerson, b: MutablePerson): string =>
     a.id < b.id ? `${a.id} ${b.id}` : `${b.id} ${a.id}`;
@@ -1009,7 +1053,9 @@ function mergeSimilarPeople(
     // `blocked` must be read on every survivor-row refresh because an absorb
     // unions both endpoints' inherited cannot-links.
     if (intersects(blocked[i], origins[j])) return;
-    const similarity = linkage(a, b);
+    // Passing the bar in is what makes the call cheap: `linkage` may abandon
+    // the dot product the moment it cannot reach the very bar tested next.
+    const similarity = linkage(a, b, threshold);
     if (similarity < threshold) return;
     pushCandidate({
       similarity,
