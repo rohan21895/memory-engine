@@ -86,6 +86,23 @@ assert(
   "reordered people are a different partition and must not be treated as equal",
 );
 
+// A RULES change must discard the queue too, and this is the guard for a bug
+// that shipped for exactly one build. The fingerprint covered everything about
+// the library and nothing about the code, so a build that changed which pairs
+// are worth asking about served the previous build's stored queue as current --
+// the crowded-photo fix would have been invisible on the owner's phone until
+// his library happened to move on its own.
+//
+// The version is a plain constant inside the module, so it cannot be varied
+// from here. Asserting it is PRESENT in the string is the honest check: a
+// fingerprint that omits it cannot discard a stale queue on a rules change.
+assert(
+  mergeQueueFingerprint(base).split(":").length ===
+    mergeQueueFingerprint({ ...base }).split(":").length &&
+    /^\d+:/.test(mergeQueueFingerprint(base)),
+  "the fingerprint must lead with a rules version, or a code change cannot invalidate",
+);
+
 // --- What must NOT invalidate. --------------------------------------------
 //
 // The avatar backfill rewrites the index repeatedly and touches nothing the

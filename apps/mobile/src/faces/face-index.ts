@@ -2235,6 +2235,20 @@ function consolidationBarsFrom(
  * consolidation fields cover regrouping. An avatar backfill appears in none of
  * them, which is the point: it must not discard 45 seconds of work.
  */
+/**
+ * Bumped whenever the RULES that build the queue change, not the data.
+ *
+ * The fingerprint below covers everything about the library, and covered
+ * nothing about the code — so a build that changed which pairs are worth asking
+ * about would serve the previous build's stored queue as though it were current,
+ * and the fix would not reach the screen until the library happened to move.
+ * That was live for exactly one build: the crowded-photo rule (`a1c7e57`) would
+ * have been invisible on his phone.
+ *
+ * 2: withhold strangers-in-one-photo, and withhold crowded frames.
+ */
+const MERGE_QUEUE_RULES_VERSION = 2;
+
 export function mergeQueueFingerprint(state: {
   people: readonly { id: string; faceCount: number }[];
   processedCount: number;
@@ -2253,6 +2267,7 @@ export function mergeQueueFingerprint(state: {
     peopleHash = (Math.imul(peopleHash, 31) + person.faceCount) | 0;
   }
   return [
+    MERGE_QUEUE_RULES_VERSION,
     state.people.length,
     peopleHash,
     state.processedCount,
