@@ -1228,6 +1228,24 @@ export type MergeSuggestion = {
 };
 
 /**
+ * The measured gap used to put the most repairable review questions first.
+ *
+ * On the owner's library, likely duplicate detections top out at 3.6% while
+ * known two-person patterns begin at 7.7%. Five percent sits in that empty gap.
+ * It is a ranking hint only: the app still never answers for the user.
+ */
+export const RARE_MERGE_CO_OCCURRENCE_RATE = 0.05;
+
+/** Above this, the evidence sentence warns that two people may travel together. */
+export const FREQUENT_MERGE_CO_OCCURRENCE_RATE = 0.15;
+
+function mergeCoOccurrenceRate(suggestion: MergeSuggestion): number {
+  return suggestion.appearances > 0
+    ? suggestion.sharedAssets / suggestion.appearances
+    : Number.POSITIVE_INFINITY;
+}
+
+/**
  * Pairs of people that ALMOST merged, ranked by how close they came.
  *
  * Getting a threshold exactly right for every face in a library is not
@@ -1343,15 +1361,17 @@ export function suggestMerges(
   // apart only by co-occurrence, so they are the ones where the app is most
   // likely to be wrong and the user's answer is worth most.
   //
-  // Within that group, the biggest repair first. These pairs have ALREADY
-  // passed the similarity test, so confidence is no longer what separates them
-  // -- what separates them is how much each answer is worth, and that is the
-  // smaller cluster's size. Ordering them by fewest-shared-photos instead
-  // treated a pair of one-face strangers as the most urgent question in the
-  // library: on the owner's index six of the first twenty slots went to pairs
-  // worth one photo each, while person-16 (257 faces) split from person-745
-  // (150 faces) ranked fourteenth. Shared photos stays as the tiebreak, since
-  // one shared frame is far weaker evidence of two people than ten.
+  // Within that group, ask the rare-co-occurrence population first. These pairs
+  // have ALREADY passed the similarity test, and on the measured library the
+  // pairs at <= 5% are the ones with the signature of a real split: one face
+  // found twice in a mirror, framed photo, or single frame. High co-occurrence
+  // pairs are more often two relatives who are genuinely photographed together;
+  // putting a large one first merely earns a quick "not the same" rather than
+  // repairing the library.
+  //
+  // Within each population, the biggest repair comes first. Every question
+  // costs the same tap, so the smaller side's size is how much that tap can put
+  // right. The exact rate then breaks ties before similarity.
   //
   // The pairs BELOW their bar keep similarity first. There confidence IS the
   // binding constraint, and a wrong merge is unrecoverable, so a large tile is
@@ -1360,7 +1380,14 @@ export function suggestMerges(
     (x, y) =>
       Number(y.blockedByCoOccurrence) - Number(x.blockedByCoOccurrence) ||
       (x.blockedByCoOccurrence
-        ? y.photosFixed - x.photosFixed || x.sharedAssets - y.sharedAssets
+        ? Number(
+            mergeCoOccurrenceRate(y) <= RARE_MERGE_CO_OCCURRENCE_RATE,
+          ) -
+            Number(
+              mergeCoOccurrenceRate(x) <= RARE_MERGE_CO_OCCURRENCE_RATE,
+            ) ||
+          y.photosFixed - x.photosFixed ||
+          mergeCoOccurrenceRate(x) - mergeCoOccurrenceRate(y)
         : 0) ||
       y.similarity - x.similarity ||
       (x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0),

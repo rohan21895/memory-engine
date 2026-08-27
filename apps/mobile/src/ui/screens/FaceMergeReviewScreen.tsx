@@ -9,13 +9,30 @@ import {
   markNotSamePerson,
   markSamePerson,
   suggestedFaceMerges,
+  undoLastFaceConstraint,
 } from "../../faces/face-index";
 import type { MergeSuggestion } from "../../faces/face-cluster";
 import { fonts } from "../fonts";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
-import { coOccurrenceEvidence, faceMergeReviewPair, remainingFaceMergeSuggestions } from "./face-merge-review";
+import {
+  advanceFaceMergeReviewProgress,
+  coOccurrenceEvidence,
+  faceMergeReviewPair,
+  remainingFaceMergeSuggestions,
+  type FaceMergeReviewProgress,
+} from "./face-merge-review";
 
 type ReviewPhase = "idle" | "loading" | "review" | "done" | "error";
+type LastAnswer = {
+  progressBefore: FaceMergeReviewProgress;
+  samePerson: boolean;
+  suggestionsBefore: MergeSuggestion[];
+};
+
+const EMPTY_PROGRESS: FaceMergeReviewProgress = {
+  answered: 0,
+  photosRepaired: 0,
+};
 
 function afterPaint(): Promise<void> {
   return new Promise((resolve) => {
@@ -28,7 +45,10 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
   const [phase, setPhase] = useState<ReviewPhase>("idle");
   const [suggestions, setSuggestions] = useState<MergeSuggestion[]>([]);
   const [answering, setAnswering] = useState(false);
+  const [undoing, setUndoing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [lastAnswer, setLastAnswer] = useState<LastAnswer | null>(null);
+  const [progress, setProgress] = useState<FaceMergeReviewProgress>(EMPTY_PROGRESS);
   // Read ONCE, not per render. `faceIndexStatus` walks every observation and
   // every seen asset id -- 17,699 and 11,828 of them on the owner's library --
   // and this number only decorates the intro copy. Answering a pair re-renders
@@ -45,6 +65,8 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
     setPhase("loading");
     setNotice(null);
     setSuggestions([]);
+    setLastAnswer(null);
+    setProgress(EMPTY_PROGRESS);
     // Guarantee the progress state paints before the O(people^2) sweep owns
     // the JS thread. The sweep is never started by render or mount.
     await afterPaint();
@@ -58,13 +80,20 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
   };
 
   const answer = async (samePerson: boolean) => {
-    if (!pair || answering) return;
+    if (!pair || answering || undoing) return;
     setAnswering(true);
     setNotice(null);
-    const recorded = samePerson
-      ? await markSamePerson(pair.suggestion.a, pair.suggestion.b)
-      : await markNotSamePerson(pair.suggestion.a, pair.suggestion.b);
-    setAnswering(false);
+    let recorded = false;
+    try {
+      recorded = samePerson
+        ? await markSamePerson(pair.suggestion.a, pair.suggestion.b)
+        : await markNotSamePerson(pair.suggestion.a, pair.suggestion.b);
+    } catch {
+      setNotice("That answer wasn’t saved. Nothing changed, so please try again.");
+      return;
+    } finally {
+      setAnswering(false);
+    }
     if (!recorded) {
       // Reached only when no photo of one of them identifies them on its own:
       // not "they share every photo" any more, which face anchors now handle,
@@ -72,10 +101,61 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
       setNotice("In these photos we can’t tell which face is which, so we can’t remember that answer yet.");
       return;
     }
+    setLastAnswer({
+      progressBefore: progress,
+      samePerson,
+      suggestionsBefore: suggestions,
+    });
+    setProgress(advanceFaceMergeReviewProgress(progress, pair.suggestion, samePerson));
     const remaining = remainingFaceMergeSuggestions(suggestions, pair.suggestion, samePerson);
     setSuggestions(remaining);
     if (remaining.length === 0) setPhase("done");
-    setNotice(samePerson ? "Combined. They’ll appear as one person." : "Noted. They’ll stay separate.");
+    setNotice(
+      samePerson
+        ? `${pair.suggestion.photosFixed.toLocaleString()} photos brought together. They’ll appear as one person.`
+        : "Kept separate. This answer is saved.",
+    );
+  };
+
+  const undoLastAnswer = async () => {
+    if (!lastAnswer || answering || undoing) return;
+    setUndoing(true);
+    setNotice("Undoing your last answer…");
+    // The safe undo for a merge rebuilds People from the saved face records.
+    // Paint the feedback before that synchronous work owns the JS thread.
+    await afterPaint();
+    let undone = false;
+    try {
+      undone = await undoLastFaceConstraint();
+    } catch {
+      setNotice("We couldn’t undo that answer. It is still saved.");
+      setUndoing(false);
+      return;
+    }
+    if (!undone) {
+      setNotice("There was no saved answer to undo.");
+      setUndoing(false);
+      return;
+    }
+
+    setProgress(lastAnswer.progressBefore);
+    setLastAnswer(null);
+    try {
+      const restored = lastAnswer.samePerson
+        ? await suggestedFaceMerges()
+        : lastAnswer.suggestionsBefore;
+      setSuggestions(restored);
+      setPhase(restored.length > 0 ? "review" : "done");
+      setNotice("Last answer undone. Nothing from it will be remembered.");
+    } catch {
+      // The judgement is already gone. Never claim it survived merely because
+      // refreshing the questions failed after the safe rebuild completed.
+      setSuggestions([]);
+      setPhase("review");
+      setNotice("Last answer undone. Check again to refresh the remaining questions.");
+    } finally {
+      setUndoing(false);
+    }
   };
 
   return (
@@ -86,12 +166,49 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
           <Text style={styles.backText}>‹ Photos</Text>
         </Pressable>
         <Text accessibilityRole="header" style={styles.title}>These might be the same person</Text>
-        <Text style={styles.helper}>You decide. Nothing is combined until you say so, and every answer stays on this phone.</Text>
+        <Text style={styles.helper}>You decide. Nothing is combined until you say so. Answers stay on this phone, and you can undo the last one.</Text>
+
+        {(phase === "review" || phase === "done") ? (
+          <View style={styles.reviewStatus}>
+            <View style={styles.statRow}>
+              <View style={styles.stat}>
+                <Text style={styles.statNumber}>{suggestions.length.toLocaleString()}</Text>
+                <Text style={styles.statLabel}>left</Text>
+              </View>
+              <View style={styles.stat}>
+                <Text style={styles.statNumber}>{progress.answered.toLocaleString()}</Text>
+                <Text style={styles.statLabel}>answered</Text>
+              </View>
+              <View style={styles.stat}>
+                <Text style={styles.statNumber}>{progress.photosRepaired.toLocaleString()}</Text>
+                <Text style={styles.statLabel}>photos brought together</Text>
+              </View>
+            </View>
+            <Text style={styles.stopNote}>Stop whenever you like. Each answer is saved as you go.</Text>
+          </View>
+        ) : null}
+
+        {notice ? (
+          <View accessibilityLiveRegion="polite" style={styles.noticeBar}>
+            <Text style={styles.notice}>{notice}</Text>
+            {lastAnswer ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ busy: undoing, disabled: answering || undoing }}
+                disabled={answering || undoing}
+                onPress={() => void undoLastAnswer()}
+                style={styles.undoAction}
+              >
+                <Text style={styles.undoText}>{undoing ? "Undoing…" : "Undo last answer"}</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
 
         {phase === "idle" ? (
           <View style={styles.intro}>
-            <Text style={styles.introTitle}>Check your People groups</Text>
-            <Text style={styles.introText}>We’ll compare {personCount.toLocaleString()} groups. On a large library this can take around 15 seconds.</Text>
+            <Text style={styles.introTitle}>Check your People</Text>
+            <Text style={styles.introText}>We’ll compare {personCount.toLocaleString()} entries in People. On a large library this can take around 15 seconds.</Text>
             <Pressable accessibilityRole="button" onPress={() => void findMatches()} style={styles.primaryAction}>
               <Text style={styles.primaryActionText}>Find possible matches</Text>
             </Pressable>
@@ -122,9 +239,9 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
                 </View>
               ))}
             </View>
-            <View style={styles.sharedNote}>
-              <Text style={styles.sharedCount}>{pair.suggestion.sharedAssets.toLocaleString()}</Text>
-              <Text style={styles.sharedText}>{pair.suggestion.sharedAssets === 1 ? "photo has both groups" : "photos have both groups"}</Text>
+            <View style={styles.repairNote}>
+              <Text style={styles.repairCount}>{pair.suggestion.photosFixed.toLocaleString()}</Text>
+              <Text style={styles.repairText}>{pair.suggestion.photosFixed === 1 ? "photo would come together" : "photos would come together"} if you choose Same person</Text>
             </View>
             {/* The evidence being overruled. A shared photo is the ONLY reason
                 these two are still apart, and the count alone cannot be acted
@@ -135,24 +252,24 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
             <View style={styles.actions}>
               <Pressable
                 accessibilityRole="button"
-                accessibilityState={{ busy: answering, disabled: answering }}
-                disabled={answering}
-                onPress={() => void answer(true)}
-                style={[styles.answer, styles.same, answering ? styles.disabled : null]}
+                accessibilityState={{ busy: answering, disabled: answering || undoing }}
+                disabled={answering || undoing}
+                onPress={() => void answer(false)}
+                style={[styles.answer, styles.notSame, answering || undoing ? styles.disabled : null]}
               >
-                <Text style={styles.sameText}>Same person</Text>
+                <Text style={styles.notSameText}>Not the same</Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
-                accessibilityState={{ busy: answering, disabled: answering }}
-                disabled={answering}
-                onPress={() => void answer(false)}
-                style={[styles.answer, answering ? styles.disabled : null]}
+                accessibilityState={{ busy: answering, disabled: answering || undoing }}
+                disabled={answering || undoing}
+                onPress={() => void answer(true)}
+                style={[styles.answer, answering || undoing ? styles.disabled : null]}
               >
-                <Text style={styles.answerText}>Not the same</Text>
+                <Text style={styles.answerText}>Same person</Text>
               </Pressable>
             </View>
-            <Text style={styles.remaining}>{suggestions.length.toLocaleString()} possible {suggestions.length === 1 ? "match" : "matches"} in this review</Text>
+            <Text style={styles.safeHint}>Choose Same person only when you’re sure.</Text>
           </View>
         ) : null}
 
@@ -186,14 +303,13 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
           </View>
         ) : null}
 
-        {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  actions: { flexDirection: "row", gap: spacing.xs },
+  actions: { gap: spacing.xs },
   answer: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderCurve: "continuous", borderRadius: radii.md, borderWidth: 1, flex: 1, justifyContent: "center", minHeight: 54, paddingHorizontal: spacing.sm },
   answerText: { color: colors.text, fontFamily: fonts.semibold, ...typeScale.small },
   back: { alignSelf: "flex-start", justifyContent: "center", minHeight: layout.minTouchTarget },
@@ -207,6 +323,9 @@ const styles = StyleSheet.create({
   introText: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.body },
   introTitle: { color: colors.text, fontFamily: fonts.bold, ...typeScale.subtitle },
   notice: { color: colors.goldPressed, fontFamily: fonts.medium, textAlign: "center", ...typeScale.small },
+  noticeBar: { alignItems: "center", backgroundColor: colors.panelRaised, borderCurve: "continuous", borderRadius: radii.md, gap: spacing.xs, padding: spacing.md },
+  notSame: { backgroundColor: colors.gold, borderColor: colors.gold },
+  notSameText: { color: colors.onAccent, fontFamily: fonts.bold, ...typeScale.small },
   pairRow: { flexDirection: "row", gap: spacing.sm, justifyContent: "center" },
   personTile: { flex: 1, gap: spacing.xs, maxWidth: 238 },
   primaryAction: { alignItems: "center", alignSelf: "flex-start", backgroundColor: colors.gold, borderCurve: "continuous", borderRadius: radii.pill, justifyContent: "center", marginTop: spacing.sm, minHeight: layout.primaryButtonHeight, paddingHorizontal: spacing.lg },
@@ -215,16 +334,22 @@ const styles = StyleSheet.create({
   progressText: { color: colors.muted, fontFamily: fonts.regular, maxWidth: 360, textAlign: "center", ...typeScale.body },
   progressTitle: { color: colors.text, fontFamily: fonts.bold, textAlign: "center", ...typeScale.subtitle },
   question: { color: colors.text, fontFamily: fonts.extraBold, textAlign: "center", ...typeScale.subtitle },
-  remaining: { color: colors.muted, fontFamily: fonts.regular, textAlign: "center", ...typeScale.eyebrow },
+  repairCount: { color: colors.goldPressed, fontFamily: fonts.extraBold, fontVariant: ["tabular-nums"], ...typeScale.subtitle },
+  repairNote: { alignItems: "center", alignSelf: "center", backgroundColor: colors.panelRaised, borderCurve: "continuous", borderRadius: radii.pill, flexDirection: "row", gap: spacing.xs, minHeight: layout.minTouchTarget, paddingHorizontal: spacing.md },
+  repairText: { color: colors.text, flexShrink: 1, fontFamily: fonts.semibold, ...typeScale.small },
   review: { gap: spacing.lg },
+  reviewStatus: { backgroundColor: colors.panel, borderColor: colors.hairline, borderCurve: "continuous", borderRadius: radii.lg, borderWidth: 1, gap: spacing.sm, padding: spacing.md },
   root: { backgroundColor: colors.background, flex: 1 },
-  same: { backgroundColor: colors.gold, borderColor: colors.gold },
-  sameText: { color: colors.onAccent, fontFamily: fonts.bold, ...typeScale.small },
+  safeHint: { color: colors.muted, fontFamily: fonts.regular, textAlign: "center", ...typeScale.eyebrow },
   scroll: { gap: spacing.lg, paddingBottom: spacing.xxl, paddingHorizontal: layout.screenPadding, paddingTop: (StatusBar.currentHeight ?? 24) + spacing.xs },
   secondaryAction: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderCurve: "continuous", borderRadius: radii.pill, borderWidth: 1, justifyContent: "center", marginTop: spacing.sm, minHeight: layout.minTouchTarget, paddingHorizontal: spacing.lg },
   secondaryActionText: { color: colors.goldPressed, fontFamily: fonts.bold, ...typeScale.small },
-  sharedCount: { color: colors.goldPressed, fontFamily: fonts.extraBold, fontVariant: ["tabular-nums"], ...typeScale.subtitle },
-  sharedNote: { alignItems: "center", alignSelf: "center", backgroundColor: colors.panelRaised, borderCurve: "continuous", borderRadius: radii.pill, flexDirection: "row", gap: spacing.xs, minHeight: layout.minTouchTarget, paddingHorizontal: spacing.md },
-  sharedText: { color: colors.text, fontFamily: fonts.semibold, ...typeScale.small },
+  stat: { alignItems: "center", flex: 1, gap: 2 },
+  statLabel: { color: colors.muted, fontFamily: fonts.regular, textAlign: "center", ...typeScale.eyebrow },
+  statNumber: { color: colors.text, fontFamily: fonts.extraBold, fontVariant: ["tabular-nums"], ...typeScale.subtitle },
+  statRow: { flexDirection: "row", gap: spacing.xs },
+  stopNote: { color: colors.muted, fontFamily: fonts.regular, textAlign: "center", ...typeScale.small },
   title: { color: colors.text, fontFamily: fonts.extraBold, maxWidth: 520, ...typeScale.title },
+  undoAction: { justifyContent: "center", minHeight: layout.minTouchTarget, paddingHorizontal: spacing.sm },
+  undoText: { color: colors.goldPressed, fontFamily: fonts.bold, textDecorationLine: "underline", ...typeScale.small },
 });

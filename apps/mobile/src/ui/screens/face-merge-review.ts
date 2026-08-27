@@ -1,3 +1,5 @@
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { FREQUENT_MERGE_CO_OCCURRENCE_RATE, RARE_MERGE_CO_OCCURRENCE_RATE } from "../../faces/face-cluster.ts";
 import type { MergeSuggestion } from "../../faces/face-cluster";
 import type { FaceIndexPerson } from "../../faces/face-index";
 
@@ -33,9 +35,6 @@ export function faceMergeReviewPair(
  * Nothing lands between 3.6% and 7.7%, so the bands below are reading a real
  * separation rather than slicing a continuum at a convenient place.
  */
-const LIKELY_DOUBLE_DETECTION = 0.05;
-const LIKELY_TWO_PEOPLE = 0.15;
-
 /**
  * The evidence the app is asking the user to overrule, in a sentence.
  *
@@ -61,24 +60,47 @@ export function coOccurrenceEvidence(
   if (!blockedByCoOccurrence || sharedAssets <= 0 || appearances <= 0) {
     return undefined;
   }
-  const photos = `${sharedAssets === 1 ? "1 photo" : `${sharedAssets} photos`}`;
-  const of = `of ${appearances.toLocaleString()}`;
   const rate = sharedAssets / appearances;
-  if (rate <= LIKELY_DOUBLE_DETECTION) {
+  const percentage = Math.round(rate * 1_000) / 10;
+  const shared = `${sharedAssets.toLocaleString()} ${
+    sharedAssets === 1 ? "photo" : "photos"
+  }`;
+  const total = `${appearances.toLocaleString()} ${
+    appearances === 1 ? "photo" : "photos"
+  }`;
+  const fact = `${shared} out of ${total} (${percentage}%) show both faces.`;
+  if (rate <= RARE_MERGE_CO_OCCURRENCE_RATE) {
     return (
-      `They appear together in only ${photos} ${of}. ` +
-      `That usually means one face was counted twice in that photo — a mirror, ` +
-      `a picture on the wall, or the same head found twice.`
+      `${fact} In this library, seeing both this rarely can happen when one ` +
+      `face was counted twice — in a mirror, a framed photo, or the same head ` +
+      `found twice.`
     );
   }
-  if (rate >= LIKELY_TWO_PEOPLE) {
+  if (rate >= FREQUENT_MERGE_CO_OCCURRENCE_RATE) {
     return (
-      `They appear together in ${photos} ${of}. ` +
-      `People who are photographed together this often are usually two ` +
-      `different people.`
+      `${fact} Seeing both this often can mean they are two different people ` +
+      `who are often photographed together.`
     );
   }
-  return `They appear together in ${photos} ${of}.`;
+  return fact;
+}
+
+export type FaceMergeReviewProgress = {
+  answered: number;
+  photosRepaired: number;
+};
+
+/** Advances the two numbers the owner sees after a recorded answer. */
+export function advanceFaceMergeReviewProgress(
+  progress: FaceMergeReviewProgress,
+  suggestion: MergeSuggestion,
+  samePerson: boolean,
+): FaceMergeReviewProgress {
+  return {
+    answered: progress.answered + 1,
+    photosRepaired:
+      progress.photosRepaired + (samePerson ? suggestion.photosFixed : 0),
+  };
 }
 
 /**

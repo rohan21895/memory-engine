@@ -1876,6 +1876,28 @@ export function faceConstraintCount(): number {
   return index.constraints?.length ?? 0;
 }
 
+/**
+ * Forgets only the most recent correction.
+ *
+ * A cannot-link did not change today's People records, so removing it is
+ * immediate. A must-link joined two records in memory; undoing that safely
+ * requires a full rebuild from the observations. That is slower, but it is the
+ * only route that cannot lose a face or guess how the old records were split.
+ */
+export async function undoLastFaceConstraint(): Promise<boolean> {
+  const constraints = index.constraints ?? [];
+  const removed = constraints.at(-1);
+  if (!removed) return false;
+  index.constraints = constraints.slice(0, -1);
+  markIndexDirty();
+  if (removed.kind === "must") {
+    await ensureObservations();
+    rebuildPeople();
+  }
+  await persistFaceIndex(true);
+  return true;
+}
+
 /** Forgets every correction, returning grouping to the measured bars alone. */
 export async function clearFaceConstraints(): Promise<void> {
   index.constraints = [];
