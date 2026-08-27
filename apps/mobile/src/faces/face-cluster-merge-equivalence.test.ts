@@ -94,10 +94,31 @@ function spanGap(
 }
 
 function widenSpan(person: ReferencePerson, capturedAt: number | undefined): void {
-  if (!Number.isFinite(capturedAt)) return;
-  const at = capturedAt as number;
+  const at = spanTime(capturedAt);
+  if (at === undefined) return;
   person.firstAt = person.firstAt === undefined ? at : Math.min(person.firstAt, at);
   person.lastAt = person.lastAt === undefined ? at : Math.max(person.lastAt, at);
+}
+
+/**
+ * Mirrors `face-cluster.ts`'s own `spanTime`. A non-positive stored span is NO
+ * span: MediaStore reports DATE_TAKEN as 0 for a file it could not read the
+ * EXIF of, and the fixtures below draw `firstAt` from a range that includes 0,
+ * so the reference diverges from the shipped rule the moment this is omitted.
+ */
+function spanTime(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
+
+/** Mirrors `face-cluster.ts`'s own `narrowSpan`. */
+function narrowSpan(person: ReferencePerson): boolean {
+  return (
+    person.firstAt !== undefined &&
+    person.lastAt !== undefined &&
+    person.lastAt - person.firstAt <= TEMPORAL_MERGE_WINDOW_MS
+  );
 }
 
 function mutablePerson(person: StoredPerson): ReferencePerson {
@@ -107,6 +128,8 @@ function mutablePerson(person: StoredPerson): ReferencePerson {
     centroid: person.centroid.slice(),
     assetIdSet: new Set(person.assetIds),
     inverse: comparisonInverse(person.centroid),
+    firstAt: spanTime(person.firstAt),
+    lastAt: spanTime(person.lastAt),
   };
 }
 
@@ -225,7 +248,11 @@ function runCurrentAlgorithm(
           a.faceCount >= MERGE_EVIDENCE_MIN_FACES &&
           b.faceCount >= MERGE_EVIDENCE_MIN_FACES;
         const gap = spanGap(a, b);
-        const nearInTime = gap !== undefined && gap <= TEMPORAL_MERGE_WINDOW_MS;
+        const nearInTime =
+          gap !== undefined &&
+          gap <= TEMPORAL_MERGE_WINDOW_MS &&
+          narrowSpan(a) &&
+          narrowSpan(b);
         const identityBar = evidenced
           ? nearInTime
             ? Math.min(evidencedMergeThreshold, temporalMergeThreshold)

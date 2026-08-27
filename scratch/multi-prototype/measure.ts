@@ -70,14 +70,49 @@
  *
  * A FIFTH FINDING, unrelated to prototypes and worth more than they were. The
  * capture times this library carries are 73.3% exactly 0, 26.6% absent and 23
- * faces out of 17,768 real. `face-index.ts` guards that field with
+ * faces out of 17,768 real. `face-index.ts` guarded that field with
  * `Number.isFinite(asset.creationTime)`, and 0 is finite, so a MediaStore record
- * with no DATE_TAKEN is stored as the epoch. Every one of those people gets
- * `firstAt = lastAt = 0`, `spanGap` returns 0 for every pair of them, and the
+ * with no DATE_TAKEN was stored as the epoch. Every one of those people got
+ * `firstAt = lastAt = 0`, `spanGap` returned 0 for every pair of them, and the
  * TEMPORAL merge bar — meant to be the relaxation for clusters close in time —
- * is applied to essentially every evidenced pair in the library. The 60-day
- * window is not doing what it says here, and time-aware linking cannot be
- * evaluated on this export at all.
+ * was applied to essentially every evidenced pair in the library.
+ *
+ * That is now fixed and MEASURED, with `--times` below. The answer is worse than
+ * the bug. Three runs over these same faces:
+ *
+ *   --times stored, old guard   2,248 people   (the epoch, blanket discount)
+ *   --times stored, guard fixed 2,258 people   (no usable time survives at all)
+ *   --times spread              2,248 people   (perfect times over two years)
+ *
+ * The third run is byte-identical to the first: the same 2,248 tiles, the same
+ * ten merges, the same faces in each. Recovering the capture times changes
+ * NOTHING, because `spanGap` returns 0 for spans that merely OVERLAP and a
+ * person photographed across a family library spans the whole library. With
+ * genuine, well-separated times 70.9% of evidenced pairs still land inside the
+ * 60-day window (92.1% over a six-month library). The window is not a window.
+ *
+ * The ten merges it performs are all large — 301+159, 214+46, 197+45, 176+43,
+ * 134+20, 66+62, 104+15, 42+39, 33+13, 26+10 — and the price is legible in the
+ * census this file now prints: relaxing the bar on every evidenced pair lets 25
+ * MORE known-different-person pairs clear (26 -> 51) to gain 13 unlabelled ones.
+ * Two thirds of everything that clears at the discount is demonstrably two
+ * different people. The 0.6000 bar is 4.87 sigma on this library's own
+ * different-person scale; 0.5124 is exactly 4.
+ *
+ * SO THE REPAIR IS NOT THE TIMES, IT IS THE RULE, and it shipped: `narrowSpan`
+ * now requires BOTH clusters to be narrower than the window before the discount
+ * applies, which is what "two moments in one timeline" always meant. With that
+ * in place `--times spread` returns 2,258 — every one of the ten fusions refused
+ * — while the adjacent-months case the mechanism was designed for still fires.
+ *
+ * ONE MORE THING `--times near` IS FOR. A recovery that returns the SAME instant
+ * for every photo defeats `narrowSpan` completely: every span has width 0, so
+ * every span is narrow, every gap is 0, and all ten merges come back (2,248).
+ * That is not hypothetical — it is what MediaStore's DATE_MODIFIED looks like
+ * after a library is copied between volumes, every mtime inside the same few
+ * minutes. It is why `captureTime` in `face-index.ts` refuses to fall back to
+ * DATE_MODIFIED even though it is free and always populated, and why the only
+ * sound recovery left is EXIF DateTimeOriginal.
  *
  * WHERE THE MEMBERSHIP COMES FROM. Prototypes need each person's FACES, and
  * `face-index.json` stores only centroids. So the shipped clusterer is re-run
@@ -96,13 +131,17 @@
  *
  *   node --experimental-strip-types scratch/multi-prototype/measure.ts \
  *     --observations /path/to/face-observations.jsonl \
- *     [--index /path/to/face-index.json]
+ *     [--index /path/to/face-index.json] \
+ *     [--times stored|strict|near|spread[:days]] [--capturedat] [--dump file]
  *
  * The index is optional and is used only to check the re-clustered partition
- * against the device's. Run from apps/mobile so the relative imports resolve.
+ * against the device's. `--capturedat` stops after the capture-time work and
+ * skips the prototype sweep; `--dump` writes one final person id per face, and
+ * two dumps diff into the exact set of clusters one rule joins and another does
+ * not. Run from apps/mobile so the relative imports resolve.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
 
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
@@ -154,9 +193,40 @@ function percent(part: number, whole: number): string {
 
 const observationsPath = argument("observations");
 if (!observationsPath) {
-  console.error("usage: measure.ts --observations <face-observations.jsonl> [--index <face-index.json>]");
+  console.error("usage: measure.ts --observations <face-observations.jsonl> [--index <face-index.json>] [--times stored|strict|near|spread[:days]] [--capturedat]");
   process.exit(1);
 }
+
+/**
+ * What each face is allowed to claim as its capture time, so the temporal merge
+ * window can be measured rather than assumed.
+ *
+ *   stored  exactly what the device wrote. On this library that is 73% zeros,
+ *           and zero is a real instant to `spanGap`, so nearly every cluster
+ *           overlaps nearly every other. This is TODAY.
+ *   strict  the guard fix with nothing recovered: a non-positive time is no
+ *           time. Every span the zeros were propping up disappears.
+ *   near    every face shares one instant. Every span overlaps every other, so
+ *           EVERY evidenced pair is nearInTime. This is the upper bound on what
+ *           any recovery can do, and it is where `stored` already sits.
+ *   spread  a SHAPE PROBE, not data. Assets are ordered by their MediaStore id
+ *           and dealt evenly across `days`, giving every cluster a real span of
+ *           realistic width. It answers one question only -- with genuine,
+ *           well-separated times, how many evidenced pairs still land inside the
+ *           60-day window? -- and no claim here rests on the specific values.
+ *
+ * `strict` is also the answer for "recovered times that are far apart": a gap
+ * above the window and a missing span both make `nearInTime` false, so the two
+ * are the same measurement.
+ */
+const timesMode = argument("times") ?? "stored";
+const timesKind = timesMode.split(":")[0];
+if (!["stored", "strict", "near", "spread"].includes(timesKind)) {
+  console.error(`unknown --times mode ${timesMode}`);
+  process.exit(1);
+}
+const SPREAD_DAYS = Number(timesMode.split(":")[1] ?? 730);
+const NEAR_INSTANT = Date.UTC(2025, 0, 1);
 
 // ---------------------------------------------------------------- load faces
 
@@ -164,12 +234,14 @@ const observations: FaceObservation[] = [];
 let capturedAtZero = 0;
 let capturedAtMissing = 0;
 let capturedAtReal = 0;
+const storedTimes: Array<number | undefined> = [];
 for (const line of readFileSync(observationsPath, "utf8").split("\n")) {
   if (!line) continue;
   const stored = JSON.parse(line) as StoredObservation;
   if (stored.capturedAt === undefined) capturedAtMissing += 1;
   else if (stored.capturedAt === 0) capturedAtZero += 1;
   else capturedAtReal += 1;
+  storedTimes.push(stored.capturedAt);
   observations.push({
     assetId: stored.assetId,
     embedding: unit(decodeEmbedding(stored.embedding)),
@@ -178,6 +250,41 @@ for (const line of readFileSync(observationsPath, "utf8").split("\n")) {
     ...(stored.capturedAt === undefined ? {} : { capturedAt: stored.capturedAt }),
   });
 }
+
+/**
+ * Rewrites `capturedAt` under the chosen mode.
+ *
+ * Only the times move. The embeddings, the assignment order and every bar are
+ * byte-identical across modes, so any difference in the outcome is the temporal
+ * rule and nothing else.
+ */
+if (timesKind !== "stored") {
+  const spreadAt = new Map<string, number>();
+  if (timesKind === "spread") {
+    const assetIds = [...new Set(observations.map((o) => o.assetId))].sort(
+      (a, b) => Number(a) - Number(b) || a.localeCompare(b),
+    );
+    const step = (SPREAD_DAYS * 24 * 60 * 60 * 1000) / Math.max(1, assetIds.length - 1);
+    assetIds.forEach((assetId, at) => spreadAt.set(assetId, NEAR_INSTANT + at * step));
+  }
+  observations.forEach((observation, at) => {
+    const editable = observation as { capturedAt?: number };
+    if (timesKind === "strict") {
+      const kept = storedTimes[at];
+      if (kept === undefined || kept > 0) return;
+      delete editable.capturedAt;
+      return;
+    }
+    editable.capturedAt =
+      timesKind === "near" ? NEAR_INSTANT : (spreadAt.get(observation.assetId) as number);
+  });
+}
+const usableTimes = observations.filter(
+  (o) => typeof o.capturedAt === "number" && o.capturedAt > 0,
+).length;
+console.log(
+  `capture times         --times ${timesMode}: ${usableTimes} of ${observations.length} faces carry a usable time`,
+);
 
 const assignmentBar = calibrateThreshold(observations, DEFAULT_FACE_INDEX_THRESHOLD);
 const evidencedBar = calibrateMergeThreshold(observations, DEFAULT_MERGE_THRESHOLD);
@@ -403,6 +510,119 @@ const bothEvidenced = (key: number): boolean =>
   evidenced.has(key % identityPeople.length);
 
 console.log(`\nco-occurring cluster pairs (known different people): ${coOccurring.size}`);
+
+// ------------------------------------- what the temporal window actually does
+
+/**
+ * The merge sweep's own rule, replayed over the finished partition.
+ *
+ * `extendFaceClusters` above already reports the headline -- how many people the
+ * library ends with under this `--times` mode. What it cannot report is the
+ * PRICE, because its cannot-link refuses every co-occurring pair before the bar
+ * is ever consulted. So the same bar rule is re-run here with the cannot-link
+ * lifted: a co-occurring pair that clears its bar is a fusion the constraint had
+ * to catch, and is the only measurable estimate of how often the same bar fuses
+ * two different people who never happen to share a photo -- where nothing
+ * catches it.
+ *
+ * Both counts are read together and never apart. Merges alone are not evidence:
+ * nothing here proves two clusters are one person.
+ */
+{
+  const spans = identityPeople.map((person) => {
+    let firstAt: number | undefined;
+    let lastAt: number | undefined;
+    for (const face of facesByPerson.get(person.id) ?? []) {
+      const at = face.capturedAt;
+      if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) continue;
+      firstAt = firstAt === undefined ? at : Math.min(firstAt, at);
+      lastAt = lastAt === undefined ? at : Math.max(lastAt, at);
+    }
+    return { firstAt, lastAt };
+  });
+  const gapBetween = (i: number, j: number): number | undefined => {
+    const a = spans[i];
+    const b = spans[j];
+    if (
+      a.firstAt === undefined || a.lastAt === undefined ||
+      b.firstAt === undefined || b.lastAt === undefined
+    ) {
+      return undefined;
+    }
+    if (a.lastAt >= b.firstAt && b.lastAt >= a.firstAt) return 0;
+    return a.lastAt < b.firstAt ? b.firstAt - a.lastAt : a.firstAt - b.lastAt;
+  };
+  const relaxed = Math.min(evidencedBar.threshold, temporalBar.threshold);
+  const bank = makeBank(identityPeople.map((person) => person.centroid));
+  const tally = {
+    spanned: spans.filter((span) => span.firstAt !== undefined).length,
+    evidencedPairs: 0,
+    nearPairs: 0,
+    shipped: { impostors: 0, merges: 0 },
+    alwaysStrict: { impostors: 0, merges: 0 },
+    alwaysRelaxed: { impostors: 0, merges: 0 },
+  };
+  for (let i = 0; i < identityPeople.length; i += 1) {
+    for (let j = i + 1; j < identityPeople.length; j += 1) {
+      const evidencedPair = evidenced.has(i) && evidenced.has(j);
+      const gap = evidencedPair ? gapBetween(i, j) : undefined;
+      const nearInTime = gap !== undefined && gap <= TEMPORAL_MERGE_WINDOW_MS;
+      if (evidencedPair) {
+        tally.evidencedPairs += 1;
+        if (nearInTime) tally.nearPairs += 1;
+      }
+      // Scoring only pairs that could reach the LOWEST bar in play keeps this
+      // sweep bounded; anything below it clears none of the three rules.
+      const lowest = Math.min(relaxed, evidencedBar.threshold, DEFAULT_MERGE_THRESHOLD);
+      const score = boundedScore(bank, i, j, lowest);
+      if (score < lowest) continue;
+      const impostor = coOccurring.has(pairId(i, j));
+      const record = (
+        bucket: { impostors: number; merges: number },
+        bar: number,
+      ): void => {
+        if (score < bar) return;
+        if (impostor) bucket.impostors += 1;
+        else bucket.merges += 1;
+      };
+      const strictBar = evidencedPair ? evidencedBar.threshold : DEFAULT_MERGE_THRESHOLD;
+      record(tally.shipped, nearInTime ? relaxed : strictBar);
+      record(tally.alwaysStrict, strictBar);
+      record(tally.alwaysRelaxed, evidencedPair ? relaxed : DEFAULT_MERGE_THRESHOLD);
+    }
+  }
+  console.log("\nTEMPORAL WINDOW ON THIS PARTITION");
+  console.log(
+    `  clusters with a span   ${tally.spanned} of ${identityPeople.length}`,
+  );
+  console.log(
+    `  evidenced pairs        ${tally.evidencedPairs}, of which ${tally.nearPairs} (${percent(tally.nearPairs, tally.evidencedPairs)}) are nearInTime and get the ${relaxed.toFixed(4)} bar instead of ${evidencedBar.threshold.toFixed(4)}`,
+  );
+  console.log("  pairs clearing their bar (cannot-link lifted):");
+  for (const [name, bucket] of [
+    ["as shipped, under --times", tally.shipped],
+    ["if no pair were ever near", tally.alwaysStrict],
+    ["if every pair were near", tally.alwaysRelaxed],
+  ] as const) {
+    console.log(
+      `    ${name.padEnd(28)} ${String(bucket.impostors).padStart(4)} impostors  ${String(bucket.merges).padStart(4)} merges`,
+    );
+  }
+}
+
+// One line per face, in file order: the id of the person it ended under. Two
+// runs' dumps diff into the exact set of clusters one rule joins and the other
+// does not, which is the only honest way to say "N people merge".
+const dumpPath = argument("dump");
+if (dumpPath) {
+  writeFileSync(
+    dumpPath,
+    `${observations.map((observation) => finalId(membership.get(observation) ?? "?")).join("\n")}\n`,
+  );
+  console.log(`\nmembership dump       ${dumpPath}`);
+}
+
+if (process.argv.includes("--capturedat")) process.exit(0);
 
 /**
  * Are the tiles internally incoherent at all? This is the premise being tested,

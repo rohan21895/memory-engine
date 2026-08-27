@@ -303,6 +303,44 @@ export type FaceScanAsset = {
   creationTime?: number;
 };
 
+/**
+ * When the photo was TAKEN, or undefined when the library cannot say.
+ *
+ * Android reports MediaStore's DATE_TAKEN as `creationTime`, and DATE_TAKEN is
+ * 0 -- not null, not absent -- for any file whose EXIF the media scanner could
+ * not read, which is every file that arrived by copy rather than by camera. On
+ * the owner's library that is 13,026 of 17,768 faces. `Number.isFinite(0)` is
+ * true, so the old guard stored all of them at the epoch, `spanGap` then read
+ * every one of those clusters as overlapping every other, and the relaxed
+ * temporal merge bar was handed to essentially every evidenced pair. Zero is
+ * MediaStore saying it does not know. It is not 1 January 1970.
+ *
+ * WHY DATE_MODIFIED IS NOT USED, though it is free and always populated. It sits
+ * on the same cursor row as DATE_TAKEN, costs no extra I/O, and `photo-index.ts`
+ * already falls back to it for month buckets -- so it is tempting. But it is the
+ * file's mtime, and for a copied file the mtime is the COPY, not the shutter. A
+ * library moved between volumes lands with every mtime inside the same few
+ * minutes, and a whole library at one instant is worse for the merge sweep than
+ * no time at all: every span is narrow, every gap is 0, and the discount applies
+ * to everything -- the exact failure the epoch produced. Measured on this
+ * library (`scratch/multi-prototype/measure.ts --times near`), a constant
+ * "recovered" time re-creates all ten of the merges the guard fix refuses,
+ * including one fusing a 301-face person into a 159-face one.
+ *
+ * The recovery that WOULD be sound is EXIF DateTimeOriginal, which is a real
+ * shutter time and survives a copy that loses DATE_TAKEN.
+ * `MediaLibraryConstants.EXIF_TAGS` exports TAG_DATETIME_ORIGINAL, so
+ * `getAssetInfoAsync` returns it -- at the cost of opening and parsing every
+ * photo, the same per-asset cost `photo-index.ts` already pays for location.
+ * Not built here: it is a scan-pass change, not a guard.
+ */
+export function captureTime(asset: FaceScanAsset): number | undefined {
+  const takenAt = asset.creationTime;
+  return typeof takenAt === "number" && Number.isFinite(takenAt) && takenAt > 0
+    ? takenAt
+    : undefined;
+}
+
 export type FacePhotoEmbeddingContext = {
   detailFrame: FaceFrame | null;
   detailFrameBound: number | null;
@@ -2217,14 +2255,13 @@ export async function scanFaceAssets(
                 validEmbedding(result.embedding) &&
                 (result.kind === "identity" || result.kind === "perceptual")
               ) {
+                const capturedAt = captureTime(asset);
                 const observation: FaceObservation = {
                   assetId: asset.id,
                   embedding: unitEmbedding(result.embedding),
                   embeddingKind: result.kind,
                   seedable: qualityTier === "seedable",
-                  ...(Number.isFinite(asset.creationTime)
-                    ? { capturedAt: asset.creationTime }
-                    : {}),
+                  ...(capturedAt === undefined ? {} : { capturedAt }),
                 };
                 observations.push(observation);
                 if (result.cropUri) {
