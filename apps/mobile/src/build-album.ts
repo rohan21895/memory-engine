@@ -3,11 +3,13 @@
 import { detectFaces, type FaceBox } from "./faces/face-detector";
 import type { PickedPhoto } from "./import/picked-photo";
 import { checkModelHealth, getModel } from "./ml";
-import { detectBodyPose } from "./ml/movenet";
+import { bodyPoseModelLoadStats, detectBodyPose } from "./ml/movenet";
 import {
   analyzeSemanticImage,
   SEMANTIC_SCREENSHOT_THRESHOLD,
+  semanticModelLoadStats,
 } from "./ml/tinyclip";
+import type { ModelCacheLoadStats, ModelLoadEvent } from "./ml/model-cache";
 import type {
   ReviewAlternative,
   ReviewData,
@@ -41,6 +43,12 @@ import {
   type MeasuredImageQuality,
   type NormalizedBox,
 } from "./selection/image-quality";
+import {
+  DeepAnalysisTimingCollector,
+  summarizeDurations,
+  type DeepAnalysisMeasurement,
+  type DeepAnalysisPhase,
+} from "./selection/deep-analysis-timing";
 import { clusterPoses, makePose } from "./selection/pose";
 import {
   classifyCategory,
@@ -117,7 +125,8 @@ const ANALYSIS_YIELD_ITEMS = 4;
  * library: 11,793 prepass units against 64 analysis units puts the bar at 99.5%
  * before the expensive stage has begun, so it appears to hang for the last
  * fifth of the build. A prepass item reads a 32px platform thumbnail and hashes
- * it; an analysis item renders a bounded proxy and runs four models over it.
+ * it; an analysis item renders a bounded proxy and runs perceptual, face,
+ * quality, MoveNet, and TinyCLIP analysis over it.
  * They are at least an order of magnitude apart.
  *
  * This is a calibration knob, not a measurement — the phase text carries the
@@ -139,6 +148,8 @@ export type BuildAlbumTiming = {
     | "candidate-rank"
     | "model-ready-wait"
     | "deep-analysis"
+    | "deep-analysis-phase"
+    | "model-load"
     | "pose-and-enrich"
     | "choose-best-shots"
     | "review-assembly"
@@ -146,6 +157,16 @@ export type BuildAlbumTiming = {
   elapsedMs: number;
   itemCount: number;
   cacheHits?: number;
+  phase?: DeepAnalysisPhase | "concurrent-model-group";
+  model?: "movenet" | "tinyclip";
+  measurement?:
+    | DeepAnalysisMeasurement
+    | "model-cold-load"
+    | "model-reload";
+  meanMs?: number;
+  p50Ms?: number;
+  p95Ms?: number;
+  reloadCount?: number;
 };
 
 export type BuildAlbumOptions = {
@@ -205,6 +226,73 @@ function reportTiming(
 ): void {
   timings.push(timing);
   options.onTiming?.(timing);
+}
+
+function formatTiming(timing: BuildAlbumTiming): string {
+  if (timing.measurement) {
+    const subject = timing.model ?? timing.phase ?? timing.stage;
+    return `${subject}.${timing.measurement}={` +
+      `count:${timing.itemCount},total:${timing.elapsedMs}ms,` +
+      `mean:${formatMilliseconds(timing.meanMs)},` +
+      `p50:${formatMilliseconds(timing.p50Ms)},` +
+      `p95:${formatMilliseconds(timing.p95Ms)}` +
+      (timing.reloadCount === undefined
+        ? ""
+        : `,reloads:${timing.reloadCount}`) +
+      "}";
+  }
+  return `${timing.stage}=${timing.elapsedMs}ms/${timing.itemCount}` +
+    (timing.cacheHits === undefined ? "" : `/hits:${timing.cacheHits}`);
+}
+
+function formatMilliseconds(value: number | undefined): string {
+  if (value === undefined) return "0ms";
+  return `${Math.round(value * 10) / 10}ms`;
+}
+
+type AnalysisModelLoadSnapshot = {
+  movenet: ModelCacheLoadStats;
+  tinyclip: ModelCacheLoadStats;
+};
+
+function analysisModelLoadSnapshot(): AnalysisModelLoadSnapshot {
+  return {
+    movenet: bodyPoseModelLoadStats(),
+    tinyclip: semanticModelLoadStats(),
+  };
+}
+
+function modelLoadsSince(
+  before: ModelCacheLoadStats,
+  after: ModelCacheLoadStats,
+): ModelLoadEvent[] {
+  return after.recent.filter((event) => event.sequence > before.sequence);
+}
+
+function reportModelLoads(
+  options: BuildAlbumOptions,
+  timings: BuildAlbumTiming[],
+  before: AnalysisModelLoadSnapshot,
+  after: AnalysisModelLoadSnapshot,
+): void {
+  for (const model of ["movenet", "tinyclip"] as const) {
+    const events = modelLoadsSince(before[model], after[model]);
+    for (const kind of ["cold", "reload"] as const) {
+      const matching = events.filter((event) => event.kind === kind);
+      const stats = summarizeDurations(matching.map((event) => event.elapsedMs));
+      reportTiming(options, timings, {
+        stage: "model-load",
+        model,
+        measurement: kind === "cold" ? "model-cold-load" : "model-reload",
+        elapsedMs: stats.totalMs,
+        itemCount: matching.length,
+        meanMs: stats.meanMs,
+        p50Ms: stats.p50Ms,
+        p95Ms: stats.p95Ms,
+        reloadCount: kind === "reload" ? matching.length : undefined,
+      });
+    }
+  }
 }
 
 /**
@@ -394,13 +482,16 @@ export async function buildAlbum(
       itemCount: photos.length,
     };
     reportTiming(options, timings, total);
+    const hasDeepAnalysisBreakdown = timings.some(
+      (timing) => timing.stage === "deep-analysis-phase",
+    );
     console.info(
       `[album-build-timing] ${timings
-        .map((timing) =>
-          `${timing.stage}=${timing.elapsedMs}ms/${timing.itemCount}` +
-          (timing.cacheHits === undefined ? "" : `/hits:${timing.cacheHits}`),
-        )
-        .join(" ")}`,
+        .map(formatTiming)
+        .join(" ")}` +
+        (hasDeepAnalysisBreakdown
+          ? ' analysis-note="awaited phases overlap and include queue wait; model-inference excludes preprocessing/queue/load; concurrent-model-group.concurrent-wall is per-photo Promise.all wall time; do not sum awaited phases"'
+          : ""),
     );
   }
 }
@@ -415,6 +506,7 @@ async function buildAlbumImpl(
 ): Promise<ReviewData> {
   throwIfCancelled(options.signal);
   const model = getModel();
+  const modelLoadsBefore = analysisModelLoadSnapshot();
   // Started here so it overlaps the prepass, awaited before the heavy pass.
   // Every build then leaves one "[photeo-models] ..." line naming the graphs
   // that actually loaded, and each wrapper knows up front whether its graph is
@@ -522,6 +614,7 @@ async function buildAlbumImpl(
     itemCount: 1,
   });
   const analysisStartedAt = Date.now();
+  const deepAnalysisTiming = new DeepAnalysisTimingCollector();
   const analyzed = await mapLimit(analysisInputs, ANALYZE_CONCURRENCY, async ({
     photo,
     quality: probedQuality,
@@ -534,7 +627,10 @@ async function buildAlbumImpl(
     // sub-500-photo pick — the beta's whole usage — sent the original
     // content:// URI to five preprocessors that each decoded it at full
     // resolution, which is the heap ceiling times several.
-    const proxy = await prepareCandidateAnalysisProxy(photo.uri);
+    const proxy = await deepAnalysisTiming.measureAwaited(
+      "proxy-create",
+      () => prepareCandidateAnalysisProxy(photo.uri),
+    );
     try {
       throwIfCancelled(options.signal);
       // A failed proxy is treated like any guarded native failure; do not fall
@@ -559,44 +655,71 @@ async function buildAlbumImpl(
       // Start face detection alongside the other models, then let only quality
       // measurement wait for its result. The quality API owns the single pixel
       // decode and can produce face-region signals only when given this box.
-      const boxesPromise = detectFaces(analysisUri, {
-        width: analysisWidth,
-        height: analysisHeight,
-      }).catch(() => [] as FaceBox[]);
-      const qualityPromise = boxesPromise
-        .then((detectedBoxes) => {
-          const subjectBox = dominantFaceSubjectBox(
-            detectedBoxes,
-            analysisWidth,
-            analysisHeight,
-          );
-          return subjectBox
-            ? measureImageQuality(analysisUri, { subjectBox })
-            : measureImageQuality(analysisUri);
-        })
-        .catch(() => probedQuality ?? {});
-      const [result, boxes, quality, detectedPose, semantic] = await Promise.all([
-        // CX-16's orientation/reframe duplicate logic requires this documented
-        // 76-value perceptual fingerprint. The capped path used to inject []
-        // here, so its regression fixture passed only because it began after the
-        // real bridge. Running it for the already-capped 64 restores that path.
-        model.run(analysisUri),
-        // Dimensions supplied so the detector neither re-measures nor
-        // re-manipulates: the proxy is already a file:// image inside its
-        // detection bound, so boxes come back 1:1 in proxy coordinates — the
-        // same space as analysisWidth/analysisHeight below.
-        boxesPromise,
-        // Always measure properly here, even when the prepass already produced a
-        // probedQuality. That probe comes from a 4x3 blurhash decoded to 16x12,
-        // which by construction holds no high frequencies — it reads ~0.05
-        // sharpness no matter how well focused the photo is. It is a fine
-        // ranking prior for choosing candidates, but feeding it onward as the
-        // final quality signal drives every photo under the planner's quality
-        // floor, so large libraries produce an empty album.
-        qualityPromise,
-        detectBodyPose(analysisUri, analysisWidth, analysisHeight),
-        analyzeSemanticImage(analysisUri, analysisWidth, analysisHeight),
-      ]);
+      const [result, boxes, quality, detectedPose, semantic] =
+        await deepAnalysisTiming.measureConcurrentWall(async () => {
+          const boxesPromise = deepAnalysisTiming
+            .measureAwaited("face-detect", () =>
+              detectFaces(analysisUri, {
+                width: analysisWidth,
+                height: analysisHeight,
+              }),
+            )
+            .catch(() => [] as FaceBox[]);
+          const qualityPromise = boxesPromise
+            .then((detectedBoxes) => {
+              const subjectBox = dominantFaceSubjectBox(
+                detectedBoxes,
+                analysisWidth,
+                analysisHeight,
+              );
+              return deepAnalysisTiming.measureAwaited(
+                "quality-decode",
+                () =>
+                  subjectBox
+                    ? measureImageQuality(analysisUri, { subjectBox })
+                    : measureImageQuality(analysisUri),
+              );
+            })
+            .catch(() => probedQuality ?? {});
+          return Promise.all([
+            // CX-16's orientation/reframe duplicate logic requires this documented
+            // 76-value perceptual fingerprint. The capped path used to inject []
+            // here, so its regression fixture passed only because it began after the
+            // real bridge. Running it for the already-capped 64 restores that path.
+            deepAnalysisTiming.measureAwaited("perceptual", () =>
+              model.run(analysisUri),
+            ),
+            // Dimensions supplied so the detector neither re-measures nor
+            // re-manipulates: the proxy is already a file:// image inside its
+            // detection bound, so boxes come back 1:1 in proxy coordinates — the
+            // same space as analysisWidth/analysisHeight below.
+            boxesPromise,
+            // Always measure properly here, even when the prepass already produced a
+            // probedQuality. That probe comes from a 4x3 blurhash decoded to 16x12,
+            // which by construction holds no high frequencies — it reads ~0.05
+            // sharpness no matter how well focused the photo is. It is a fine
+            // ranking prior for choosing candidates, but feeding it onward as the
+            // final quality signal drives every photo under the planner's quality
+            // floor, so large libraries produce an empty album.
+            qualityPromise,
+            deepAnalysisTiming.measureAwaited("movenet", (timing) =>
+              detectBodyPose(
+                analysisUri,
+                analysisWidth,
+                analysisHeight,
+                timing,
+              ),
+            ),
+            deepAnalysisTiming.measureAwaited("tinyclip", (timing) =>
+              analyzeSemanticImage(
+                analysisUri,
+                analysisWidth,
+                analysisHeight,
+                timing,
+              ),
+            ),
+          ]);
+        });
       throwIfCancelled(options.signal);
       return {
         photo,
@@ -633,6 +756,28 @@ async function buildAlbumImpl(
     elapsedMs: Date.now() - analysisStartedAt,
     itemCount: analysisInputs.length,
   });
+  for (const aggregate of deepAnalysisTiming.summarize()) {
+    reportTiming(options, timings, {
+      stage: "deep-analysis-phase",
+      phase: aggregate.phase,
+      measurement: aggregate.measurement,
+      elapsedMs: aggregate.totalMs,
+      itemCount: aggregate.count,
+      meanMs: aggregate.meanMs,
+      p50Ms: aggregate.p50Ms,
+      p95Ms: aggregate.p95Ms,
+      reloadCount:
+        aggregate.phase === "movenet" || aggregate.phase === "tinyclip"
+          ? aggregate.reloadCount
+          : undefined,
+    });
+  }
+  reportModelLoads(
+    options,
+    timings,
+    modelLoadsBefore,
+    analysisModelLoadSnapshot(),
+  );
   throwIfCancelled(options.signal);
 
   const enrichStartedAt = Date.now();

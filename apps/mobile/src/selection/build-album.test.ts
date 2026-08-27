@@ -21,12 +21,13 @@ assert(
 );
 
 assert(
-  source.includes("const boxesPromise = detectFaces(analysisUri"),
+  source.includes("const boxesPromise = deepAnalysisTiming") &&
+    source.includes("detectFaces(analysisUri, {"),
   "face detection must be shared with quality measurement",
 );
 assert(
   source.includes("? measureImageQuality(analysisUri, { subjectBox })") &&
-    source.includes(": measureImageQuality(analysisUri);"),
+    source.includes(": measureImageQuality(analysisUri),"),
   "quality must receive a subject box only when a detected face provides one",
 );
 assert(
