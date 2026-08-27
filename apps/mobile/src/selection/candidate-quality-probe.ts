@@ -19,6 +19,13 @@ const BASE83 =
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~";
 
 /**
+ * Bump in the same change as any probe computation that can alter its signals.
+ * The cache imports this constant, keeping algorithm identity beside the code
+ * it versions instead of tying invalidation to an unrelated app release.
+ */
+export const CANDIDATE_PROBE_SIGNAL_VERSION = 1;
+
+/**
  * Ask the platform image loader for a genuinely tiny thumbnail before reading
  * pixels. On Android this lets Glide/MediaStore subsample during decode instead
  * of image-manipulator materializing and JPEG-encoding a full source image.
