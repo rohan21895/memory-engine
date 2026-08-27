@@ -22,7 +22,11 @@ const selectionSource = readFileSync(
 // precisely the silent failure this measurement is meant to avoid.
 assert(
   appSource.includes("buildAlbum(next, 24,") &&
-    buildAlbumSource.includes("HEAVY_ANALYSIS_CANDIDATE_LIMIT") &&
+    // The cap the real caller applies. It used to be the bare
+    // HEAVY_ANALYSIS_CANDIDATE_LIMIT constant; it is now the measured budget
+    // policy, which returns exactly that constant at today's per-candidate
+    // price. The anchor follows the symbol so it keeps naming a real caller.
+    buildAlbumSource.includes("candidateBudget(count)") &&
     buildAlbumSource.includes("const boxesPromise = deepAnalysisTiming") &&
     buildAlbumSource.includes("detectFaces(analysisUri, {") &&
     buildAlbumSource.includes("detectedBoxes,") &&

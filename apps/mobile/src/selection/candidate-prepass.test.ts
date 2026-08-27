@@ -215,6 +215,71 @@ assert(
   "the burst must not take every slot",
 );
 
+// --- content coverage meets moment reservations -----------------------------
+//
+// The two gates have to hold at once, and the case that tells them apart is a
+// scene REVISITED: a look the pool has already covered, photographed again an
+// hour later. The content axis is right to say "seen that", the time axis is a
+// quantile a burst has already ticked off, and between them a whole later
+// moment disappears without leaving a trace. That is the coverage loss M5 is
+// about, and it is the one a reservation has to fix WITHOUT becoming a way for
+// a thirteenth frame of the burst to get in.
+
+function timedSessionCandidate(
+  id: string,
+  level: number,
+  sharpness: number,
+  minutes: number,
+): ProbedCandidate {
+  const timed = sessionCandidate(id, level, sharpness);
+  return {
+    ...timed,
+    photo: { ...timed.photo, creationTime: Date.UTC(2025, 4, 9, 9, 0, 0) + minutes * 60_000 },
+  };
+}
+
+// Twelve frames of one look; four of a second look forty minutes later; and one
+// LAST frame of that same second look an hour after that — the worst photograph
+// in the set, and the only evidence that the evening happened at all.
+const revisitBurst = Array.from({ length: 12 }, (_, index) =>
+  timedSessionCandidate(`revisit-burst-${index}`, 30, 0.95, index / 3),
+);
+const revisitSecond = Array.from({ length: 4 }, (_, index) =>
+  timedSessionCandidate(`revisit-second-${index}`, 220, 0.5, 40 + index / 3),
+);
+const revisitLate = timedSessionCandidate("revisit-late-00", 220, 0.3, 100);
+const revisitCorpus = [...revisitBurst, ...revisitSecond, revisitLate];
+
+const REVISIT_BUDGET = 6;
+const revisitBlind = chooseHeavyAnalysisCandidates(revisitCorpus, REVISIT_BUDGET, {
+  reserveMoments: false,
+});
+const revisitReserved = chooseHeavyAnalysisCandidates(revisitCorpus, REVISIT_BUDGET);
+const burstCount = (pool: ProbedCandidate[]) =>
+  pool.filter(({ photo }) => photo.id.startsWith("revisit-burst-")).length;
+
+// The foil. If the old gate already keeps the late moment, nothing below is
+// evidence of anything the reservation did.
+assert(
+  !revisitBlind.some(({ photo }) => photo.id === "revisit-late-00"),
+  "VACUITY: the unreserved gate already keeps the revisited late moment, so the reservation " +
+    "assertion below proves nothing — this corpus no longer starves anything",
+);
+assert(
+  revisitReserved.some(({ photo }) => photo.id === "revisit-late-00"),
+  "a moment nothing else covers must reach deep analysis even when its look is already in " +
+    "the pool and its frame is the worst in the set",
+);
+// ...and the reservation must not have bought that seat by loosening the burst.
+assert(
+  burstCount(revisitReserved) <= burstCount(revisitBlind),
+  `reserving a moment must not deepen the burst (${burstCount(revisitBlind)} -> ${burstCount(revisitReserved)})`,
+);
+assert(
+  revisitReserved.length === REVISIT_BUDGET && burstCount(revisitReserved) < REVISIT_BUDGET,
+  "the burst must still not take the whole pool once reservations are in play",
+);
+
 // The axis must stay inert rather than throw when no blurhash was probed, which
 // is the uncapped path and any frame whose proxy failed.
 const hashless = Array.from({ length: 6 }, (_, index) =>
