@@ -36,10 +36,22 @@ import {
   type EventLoopLagReport,
 } from "./selection/js-thread-profile";
 import {
+  ANALYSIS_PRIORITY,
+  createAnalysisQueue,
+  isPermutationOf,
+  restoreInputOrder,
+  type AnalysisJob,
+} from "./selection/analysis-tiers";
+import {
   loadCandidateProbeCache,
   probeCandidateWithCache,
   type CandidateProbeCache,
 } from "./selection/candidate-probe-cache";
+import {
+  defaultDeepSignalStore,
+  type DeepSignalRecord,
+  type DeepSignalStore,
+} from "./selection/deep-signal-store";
 import {
   prepareCandidateAnalysisProxy,
   probeCandidateQuality,
@@ -88,6 +100,33 @@ const EDGE_FRACTION = 0.01;
  * serialize only the inference itself.
  */
 const ANALYZE_CONCURRENCY = 6;
+
+/**
+ * M2: reuse Tier-B signals across album builds instead of recomputing them.
+ *
+ * OFF, so the shipped path is byte-for-byte today's. What flipping it changes,
+ * measured rather than assumed:
+ *
+ *  - A candidate whose record is already durable skips the proxy and all five
+ *    models. That is the 2.33 s/photo the deep stage costs, so a build whose
+ *    64 candidates are all cached loses ~148 s of its ~207 s.
+ *  - A candidate with no record costs exactly what it costs today, plus one
+ *    3.9 KB encode. Nothing here makes the first analysis of a photograph
+ *    cheaper — see `docs/DEEP-ANALYSIS-TIMING.md`, where 98% of the stage is a
+ *    span that already includes JS-thread contention. This converts a REPEATED
+ *    cost into a once-per-photograph one; only M3 attacks the once.
+ *  - The stored values are float32, drifting a vector component by at most
+ *    2.7e-8. `deep-signal-parity.test.ts` is the standing gate that this moves
+ *    none of the pinned albums, and it uses the rejected int8 encoding — which
+ *    DOES move one — as its sabotage.
+ *
+ * What is still unmeasured, and what should decide the flip: the hit rate on a
+ * real library. A repeat of the same filter hits everything; a different filter
+ * re-ranks the cheap probes and can pick a largely different 64.
+ * `deep-signal-store.benchmark.ts` reports that overlap for nested and
+ * disjoint filters, but only against synthetic corpora.
+ */
+const USE_DEEP_SIGNAL_CACHE = false;
 
 /**
  * Who recurs across the whole library, for the candidate cap to protect.
@@ -160,6 +199,8 @@ export type BuildAlbumTiming = {
     | "candidate-probe"
     | "candidate-rank"
     | "model-ready-wait"
+    | "deep-signal-load"
+    | "deep-signal-store"
     | "deep-analysis"
     | "deep-analysis-phase"
     | "analysis-degraded"
@@ -185,6 +226,22 @@ export type BuildAlbumTiming = {
   degradedPhotos?: number;
   /** `analysis-degraded` only: every phase, including the ones that lost none. */
   degraded?: readonly DeepAnalysisDegradation[];
+  /** `deep-signal-store` only: what the Tier-B cache did this build. */
+  deepSignals?: DeepSignalReport;
+};
+
+/** Everything needed to say how much inference the store avoided, and its cost. */
+export type DeepSignalReport = {
+  hits: number;
+  misses: number;
+  writes: number;
+  refusedWrites: number;
+  shardsLoaded: number;
+  recordsLoaded: number;
+  shardsEvicted: number;
+  bytes: number;
+  /** Candidates still without a durable record when the build finished. */
+  stillPending: number;
 };
 
 export type BuildAlbumOptions = {
@@ -192,6 +249,8 @@ export type BuildAlbumOptions = {
   onProgress?: (progress: BuildAlbumProgress) => void;
   /** Always-on console trace also emits through here for device benchmarks. */
   onTiming?: (timing: BuildAlbumTiming) => void;
+  /** Overrides `USE_DEEP_SIGNAL_CACHE` for benchmarks and A/B runs. */
+  deepSignalCache?: boolean;
 };
 
 /**
@@ -386,9 +445,34 @@ function reportRuntimeProfile(
   }
 }
 
+/**
+ * `deep-signal-store={hits:64/64,writes:0,pending:0,shards:2,rows:1042,disk:4.1MB,evicted:0}`
+ *
+ * `hits` over the candidate count is the number that matters: it is how many
+ * photographs did NOT pay 2.33 s of deep analysis. `pending` is its honest
+ * other half — candidates that finished the build still without a durable
+ * record, because their analysis degraded and a degraded record must never be
+ * cached. `refused` should always be zero; it counts writes aimed at a shard
+ * the build never read, which would have overwritten a month.
+ */
+function formatDeepSignals(timing: BuildAlbumTiming): string {
+  const report = timing.deepSignals;
+  if (!report) return "deep-signal-store={off}";
+  return (
+    `deep-signal-store={hits:${report.hits}/${timing.itemCount},` +
+    `writes:${report.writes},pending:${report.stillPending},` +
+    `shards:${report.shardsLoaded},rows:${report.recordsLoaded},` +
+    `disk:${(report.bytes / (1024 * 1024)).toFixed(1)}MB,` +
+    `evicted:${report.shardsEvicted},refused:${report.refusedWrites}}`
+  );
+}
+
 function formatTiming(timing: BuildAlbumTiming): string {
   if (timing.stage === "analysis-degraded") {
     return formatDegradation(timing);
+  }
+  if (timing.stage === "deep-signal-store") {
+    return formatDeepSignals(timing);
   }
   if (timing.measurement) {
     const subject = timing.model ?? timing.phase ?? timing.stage;
@@ -512,6 +596,46 @@ function dominantFaceSubjectBox(
 }
 
 /**
+ * Rebuild the deep-analysis result from a durable Tier-B record.
+ *
+ * The shape returned here must match the live path's exactly, field for field,
+ * because `enriched` cannot tell them apart. Two of those fields are NOT stored
+ * and are re-derived: `makePose` and `bodyCoverage` are pure functions of the
+ * MoveNet keypoints, costing microseconds, and keeping them out of the record
+ * means an edit to `pose.ts` or `pose-framing.ts` never invalidates an hour of
+ * inference.
+ *
+ * `bodyCoverage` is handed the record's own analysis dimensions. Those are the
+ * proxy's, which is what the keypoints were letterboxed against — passing the
+ * original photo's would invert every in-frame test on a non-square photo.
+ */
+function replayDeepSignals(photo: PickedPhoto, record: DeepSignalRecord) {
+  const analysisWidth = record.analysisWidth ?? photo.width;
+  const analysisHeight = record.analysisHeight ?? photo.height;
+  return {
+    photo,
+    result: record.perceptual,
+    boxes: record.boxes,
+    quality: record.quality,
+    pose: record.pose
+      ? makePose(record.pose.keypoints, record.pose.scores)
+      : undefined,
+    coverage:
+      record.pose && analysisWidth !== undefined && analysisHeight !== undefined
+        ? bodyCoverage(
+            record.pose.keypoints,
+            record.pose.scores,
+            analysisWidth,
+            analysisHeight,
+          )
+        : undefined,
+    semantic: record.semantic,
+    analysisWidth,
+    analysisHeight,
+  };
+}
+
+/**
  * The hard 0.92 take-collapse threshold is for visual near-copies, not shared
  * semantics. Prefer the phone's perceptual fingerprint when it exists; capped
  * builds skip that model, so TinyCLIP remains a useful fail-open fallback.
@@ -621,10 +745,18 @@ export async function buildAlbum(
       itemCount: photos.length,
     });
   }
-  const lifecycle = await watchAlbumBuildLifecycle(
-    options.signal,
-    async () => probeCache?.persist(),
-  );
+  // Opened here rather than in the impl so the SAME checkpoint rule covers both
+  // tiers: backgrounding and cancellation each commit whatever finished. No
+  // per-N checkpoint, unlike the probe cache -- a deep shard is two megabytes
+  // and the deep pass is only 64 items, so mid-pass rewrites would cost more
+  // than the work they protect.
+  const deepStore = (options.deepSignalCache ?? USE_DEEP_SIGNAL_CACHE)
+    ? await defaultDeepSignalStore()
+    : undefined;
+  const lifecycle = await watchAlbumBuildLifecycle(options.signal, async () => {
+    await probeCache?.persist();
+    await deepStore?.persist();
+  });
   try {
     return await buildAlbumImpl(
       photos,
@@ -632,10 +764,12 @@ export async function buildAlbum(
       options,
       timings,
       probeCache,
+      deepStore,
       lifecycle.waitUntilForeground,
     );
   } finally {
     await probeCache?.persist();
+    await deepStore?.persist();
     lifecycle.dispose();
     const total: BuildAlbumTiming = {
       stage: "total",
@@ -663,6 +797,7 @@ async function buildAlbumImpl(
   options: BuildAlbumOptions,
   timings: BuildAlbumTiming[],
   probeCache: CandidateProbeCache | undefined,
+  deepStore: DeepSignalStore | undefined,
   waitUntilForeground: () => Promise<void>,
 ): Promise<ReviewData> {
   throwIfCancelled(options.signal);
@@ -784,7 +919,50 @@ async function buildAlbumImpl(
   // JS thread is quiet enough to measure a graph rather than a queue.
   throwIfCancelled(options.signal);
   const inferenceBench = await benchmarkInferenceModels();
-  // Prepass costs are the prepass's; this window is the heavy pass alone.
+
+  // Tier B, read side. Only now is the candidate set known, so this is the
+  // earliest point at which the store can be told which months to open -- and
+  // opening only those is the reason the store is sharded at all.
+  if (deepStore) {
+    const loadStartedAt = Date.now();
+    await deepStore.load(analysisInputs.map(({ photo }) => photo));
+    reportTiming(options, timings, {
+      stage: "deep-signal-load",
+      elapsedMs: Date.now() - loadStartedAt,
+      itemCount: deepStore.stats().shardsLoaded,
+    });
+    throwIfCancelled(options.signal);
+  }
+
+  // The queue decides the ORDER, never the membership: every candidate is
+  // analysed either way, and `mapLimit` preserves the order of the array it is
+  // given, so the results are scattered back into candidate order before
+  // anything downstream sees them. Selection cannot move because of this.
+  const analysisQueue = createAnalysisQueue();
+  analysisQueue.enqueue(
+    analysisInputs.map(({ photo }): AnalysisJob => ({
+      photoId: photo.id,
+      capturedAt: photo.creationTime,
+      priority: ANALYSIS_PRIORITY.userCandidate,
+    })),
+  );
+  const leased = analysisQueue.lease(analysisInputs.length);
+  const inputIndexById = new Map(
+    analysisInputs.map(({ photo }, index) => [photo.id, index]),
+  );
+  // A picker that returned the same asset twice would collapse in the queue and
+  // silently drop a candidate. Checked as a permutation, before any photograph
+  // is decoded, because this is the last moment a fallback exists: array order
+  // gives an album one photo short of nothing at all.
+  const queueOrder = leased.map((job) => inputIndexById.get(job.photoId) ?? -1);
+  const analysisOrder =
+    deepStore && isPermutationOf(queueOrder, analysisInputs.length)
+      ? queueOrder
+      : analysisInputs.map((_, index) => index);
+
+  // Prepass costs are the prepass's, and so is the store load above; this
+  // window is the heavy pass alone. Started last so the profile measures what
+  // it claims to.
   resetJsThreadProfile();
   const stopLagSampler = startEventLoopLagSampler();
   const analysisStartedAt = Date.now();
@@ -794,11 +972,25 @@ async function buildAlbumImpl(
   // phases of the SAME photo, and reporting only the phase sum would read as
   // several bad photos instead of one bad moment for the heap.
   let degradedPhotos = 0;
-  const analyzed = await mapLimit(analysisInputs, ANALYZE_CONCURRENCY, async ({
-    photo,
-    quality: probedQuality,
-  }) => {
+  const orderedAnalyses = await mapLimit(analysisOrder, ANALYZE_CONCURRENCY, async (
+    inputIndex,
+  ) => {
+    const { photo, quality: probedQuality } = analysisInputs[inputIndex];
+    const job: AnalysisJob = {
+      photoId: photo.id,
+      capturedAt: photo.creationTime,
+      priority: ANALYSIS_PRIORITY.userCandidate,
+    };
     throwIfCancelled(options.signal);
+    // Tier B, already durable. This is the entire saving: no proxy, no
+    // perceptual fingerprint, no ML Kit, no quality decode, no MoveNet, no
+    // TinyCLIP -- the 2.33 s/photo stage becomes one JSON.parse of 3.9 KB plus
+    // the pure-arithmetic re-derivation of pose and body coverage.
+    const cached = deepStore?.get(photo);
+    if (cached) {
+      analysisQueue.commit(job);
+      return replayDeepSignals(photo, cached);
+    }
     let photoDegraded = false;
     const markPhotoDegraded = (): void => {
       if (photoDegraded) return;
@@ -833,6 +1025,7 @@ async function buildAlbumImpl(
       // back to decoding the original and risk the Java heap. The photo still
       // reaches the planner, scored on its metadata alone.
       if (!proxy) {
+        analysisQueue.release(job);
         return {
           photo,
           result: { embedding: [], faces: 0 },
@@ -945,6 +1138,28 @@ async function buildAlbumImpl(
           ]);
         });
       throwIfCancelled(options.signal);
+      // A degraded photo is never cached. Its signals are wrong in ways that do
+      // not repeat -- the perceptual fallback is SEEDED FROM THE URI, and the
+      // proxy uri is a fresh temp file every build -- so storing one would pin
+      // a valid-looking embedding unrelated to the pixels for as long as the
+      // shard survives. The job goes back to pending instead, which is what the
+      // `pending:` counter in the log line reports.
+      if (photoDegraded) {
+        analysisQueue.release(job);
+      } else {
+        deepStore?.set(photo, {
+          analysisWidth,
+          analysisHeight,
+          perceptual: result,
+          boxes,
+          quality,
+          pose: detectedPose
+            ? { keypoints: detectedPose.keypoints, scores: detectedPose.scores }
+            : undefined,
+          semantic,
+        });
+        analysisQueue.commit(job);
+      }
       return {
         photo,
         result,
@@ -1000,11 +1215,28 @@ async function buildAlbumImpl(
     inferenceBench,
     stopLagSampler,
   );
+  // Undo the queue's ordering. Everything downstream — pose clustering, the
+  // planner, the near-duplicate observations — reads this array, and it must be
+  // in candidate order whether or not the store was consulted.
+  const analyzed = restoreInputOrder(analysisOrder, orderedAnalyses);
   reportTiming(options, timings, {
     stage: "deep-analysis",
     elapsedMs: analysisWallMs,
     itemCount: analysisInputs.length,
+    cacheHits: deepStore ? deepStore.stats().hits : undefined,
   });
+  if (deepStore) {
+    // Persisted before it is reported, so `disk` and `evicted` describe the
+    // store as it now IS rather than as it was when the build opened it.
+    await deepStore.persist();
+    const stats = deepStore.stats();
+    reportTiming(options, timings, {
+      stage: "deep-signal-store",
+      elapsedMs: 0,
+      itemCount: analysisInputs.length,
+      deepSignals: { ...stats, stillPending: analysisQueue.pending() },
+    });
+  }
   for (const aggregate of deepAnalysisTiming.summarize()) {
     reportTiming(options, timings, {
       stage: "deep-analysis-phase",
