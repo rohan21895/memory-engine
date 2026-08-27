@@ -5,8 +5,6 @@ import type { SemanticSignals } from "../ml/tinyclip";
 import { planAlbum } from "./album-planner.ts";
 // @ts-expect-error Node requires the extension; Metro resolves this path too.
 import { relativeQualityFloor } from "./image-quality.ts";
-// @ts-expect-error Node requires the extension; Metro resolves this path too.
-import { compareFramingCompleteness } from "./pose-framing.ts";
 import type { BodyCoverage } from "./pose-framing";
 // @ts-expect-error Node requires the extension; Metro resolves this path too.
 import { bestSmile, significantFaces, worstEyesOpen } from "./quality-signals.ts";
@@ -100,8 +98,12 @@ type AnalyzedPhoto = PickedPhoto & {
   /**
    * How much of the person MoveNet locked onto the frame actually holds.
    *
-   * Read ONLY as a tie-break inside a take; see `framingTieWinner`. Absent
-   * whenever the pose runtime produced nothing, which is the normal case.
+   * Carried, and currently read by nothing in this file. It used to settle a
+   * tie inside a take, until that tie was measured and found never to occur.
+   * The same MoveNet keypoints still feed `clusterPoses` and the planner's
+   * pose-diversity key, so the signal is not dead — only this reader was.
+   *
+   * Absent whenever the pose runtime produced nothing, which is the normal case.
    */
   bodyCoverage?: BodyCoverage;
 };
@@ -598,7 +600,15 @@ function rankTake(take: Take): RankedTake {
       !blinkRejectedIds.has(candidate.photo.id) &&
       !cutFaceRejectedIds.has(candidate.photo.id),
   );
-  const winner = framingTieWinner([...eligible].sort(compareCandidates));
+  // Framing is deliberately NOT consulted here. It used to be, via a
+  // `framingTieWinner` pass that promoted a later frame of a take whose
+  // measured signals tied exactly. Measured, that tie never occurs: the
+  // comparison falls through to the raw `quality` double, so the gate was bit
+  // equality between two independently computed measurements -- 0 ties in
+  // 100,000 simulated burst pairs, and duplicate files are self-defeating
+  // because identical pixels give identical keypoints. See
+  // docs/framing-tiebreak-measurement.md.
+  const winner = [...eligible].sort(compareCandidates)[0];
   return {
     take,
     winner,
@@ -719,79 +729,6 @@ function compareMeasuredSignals(left: Candidate, right: Candidate): number {
   );
 }
 
-/** No opinion. `compareFramingCompleteness` treats `unknown` as equal to everything. */
-const NO_FRAMING_OPINION: BodyCoverage = {
-  framing: "unknown",
-  depth: -1,
-  cutByFrame: false,
-  cutAtJoint: false,
-};
-
-/**
- * Body framing, but only where MoveNet's single fit describes the whole picture.
- *
- * MoveNet is single-person. With anyone else in the frame, the coverage
- * describes whichever body it locked onto and says NOTHING about the others, so
- * reading it as "the subject is cut off" would present a claim about one person
- * as a claim about the photograph. Exactly one detected face is the only case
- * where the fit and the picture agree — every detected box, not just the
- * significant ones, because a bystander small enough to ignore for sharpness is
- * still a second person whose framing was never measured.
- *
- * Anything else, including a photo with no analysis and a pose the model could
- * not read, returns the inert value: never rewarded, never penalised.
- */
-function singleSubjectFraming(candidate: Candidate): BodyCoverage {
-  return candidate.analysis?.faceCount === 1 && candidate.photo.bodyCoverage
-    ? candidate.photo.bodyCoverage
-    : NO_FRAMING_OPINION;
-}
-
-/**
- * Settle a take whose frames every measured signal scored EXACTLY alike.
- *
- * `ordered` is already sorted best-first by `compareCandidates`, whose last two
- * keys are the order the photos happened to be picked in and their id. Frames
- * that reach those keys are near-duplicate takes of one moment that quality,
- * smile and pixel count could not separate at all, so how much of the subject
- * each frame holds is a better answer than "whichever came first".
- *
- * Deliberately NOT a sort. `compareFramingCompleteness` makes `unknown` equal to
- * everything, which is not a transitive equality: with an unreadable pose in the
- * group, `Array.prototype.sort` has an inconsistent comparator and may return a
- * different winner for the same frames in a different input order. This file has
- * already shipped that bug once. A single pass over an order that is already
- * total, promoting only on a STRICTLY better framing, is order-independent.
- *
- * The one asymmetry is deliberate: an `unknown` leader is never displaced,
- * because displacing it would penalise a photo for a pose the model could not
- * read. Most photos in a family library have no clean single subject.
- *
- * It fires only on an exact tie, and that is load-bearing rather than timid.
- * The winner's own quality is forwarded to the planner AND the album's quality
- * floor is derived from those winners, so a swap that changed the number could
- * push a take under the floor — which would change which photos are ELIGIBLE,
- * not merely their order. On an exact tie the planner sees identical numbers and
- * only the media id moves. For the same reason this never reaches
- * `compareRankedTakes` (two takes are two different moments) and is never summed
- * into `enhancedQualityScore`: CX-19 measured every hard framing gate on this
- * codebase and each one cost between 2.7% and 13.8% of real selections.
- */
-function framingTieWinner(ordered: Candidate[]): Candidate {
-  let winner = ordered[0];
-  for (const candidate of ordered) {
-    if (compareMeasuredSignals(winner, candidate) !== 0) break;
-    if (
-      compareFramingCompleteness(
-        singleSubjectFraming(candidate),
-        singleSubjectFraming(winner),
-      ) < 0
-    ) {
-      winner = candidate;
-    }
-  }
-  return winner;
-}
 
 function qualityBand(candidate: Candidate): number {
   return Math.round(candidate.quality / SMILE_TIE_BAND);
