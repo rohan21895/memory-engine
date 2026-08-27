@@ -4556,13 +4556,57 @@ export async function suggestedFaceMerges(
       limit,
     },
   );
+  // A question whose answer cannot be SAVED must not be asked.
+  //
+  // `recordConstraint` refuses when either side has no anchor -- no photo in
+  // which that person's face can be picked out on its own. The screen then shows
+  // "In these photos we can't tell which face is which", and because the pair is
+  // never answered it stays at the head of the queue, so the owner meets the
+  // same dead end every time he opens the review. He hit exactly that.
+  //
+  // Checked here because this is the one place that has already paid for the
+  // observations, and cheaply: the free anchor is tried for every person first,
+  // and the expensive per-face pass runs only for the few that fail it.
+  const anchorable = new Map<string, boolean>();
+  const bars = anchorBars();
+  const unresolved: string[] = [];
+  for (const personId of new Set(list.flatMap((s) => [s.a, s.b]))) {
+    const cheap = anchorFor(index.people, personId, bars) !== undefined;
+    anchorable.set(personId, cheap);
+    if (!cheap) unresolved.push(personId);
+  }
+  if (unresolved.length > 0) {
+    const faces = facesByAsset(
+      new Set(unresolved.flatMap((personId) => assetIdsForPerson(personId))),
+    );
+    const facesIn = (assetId: string): number[][] => faces.get(assetId) ?? [];
+    for (const personId of unresolved) {
+      anchorable.set(
+        personId,
+        anchorFor(index.people, personId, bars, facesIn) !== undefined,
+      );
+    }
+  }
+  const answerable = list.filter(
+    (suggestion) => anchorable.get(suggestion.a) && anchorable.get(suggestion.b),
+  );
+  if (answerable.length !== list.length) {
+    console.warn(
+      `[PhoteoFaceIndex] withheld ${list.length - answerable.length} merge ` +
+        `questions whose answer could not be recorded`,
+    );
+  }
   // Re-derived rather than reusing `key`: loading observations can repair
   // duplicate faces, and a key captured before that describes an index that no
   // longer exists. Storing the stale one would pin this list past the repair.
-  index.mergeSuggestions = { key: suggestionCacheKey(), limit, list };
+  index.mergeSuggestions = {
+    key: suggestionCacheKey(),
+    limit,
+    list: answerable,
+  };
   markIndexDirty();
   await persistFaceIndex(true);
-  return list;
+  return answerable;
 }
 
 export function assetIdsForPerson(personId: string): string[] {

@@ -1,5 +1,5 @@
 import { Image } from "expo-image";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StatusBar, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 
 import {
@@ -80,31 +80,17 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
   // this screen, so a per-render call would pay that walk on every tap.
   const [personCount] = useState(() => faceIndexStatus().people);
 
-  // Refresh behind the stale queue he is already reading. No spinner and no
-  // phase change: the point is that he never waits for this.
+  // NOTHING heavy runs on mount. This screen used to refresh a stale queue here
+  // and it froze the app: `suggestedFaceMerges` is a 13.8 MB parse plus an
+  // O(people^2) sweep measured at 28 s on the owner's phone, and React Native
+  // runs it on the JS thread -- so "in the background" was wishful thinking, and
+  // it was NOT in the background at all. It ran with no spinner, on every mount,
+  // the moment a rules bump made every stored queue stale. That is an ANR, and
+  // he reported it as one.
   //
-  // The result is applied only while he has not answered anything yet. Once he
-  // has, `remainingFaceMergeSuggestions` has been filtering the list he can see,
-  // and swapping a freshly swept one underneath would move the card out from
-  // under his thumb for no gain -- the next visit picks it up anyway.
-  const untouched = useRef(true);
-  untouched.current = lastAnswer === null && !answering;
-  useEffect(() => {
-    if (!restored || restored.fresh) return;
-    let cancelled = false;
-    void suggestedFaceMerges()
-      .then((fresh) => {
-        if (cancelled || !untouched.current) return;
-        setSuggestions(fresh);
-        if (fresh.length === 0) setPhase("done");
-      })
-      // A background refresh that fails must leave the stale queue alone: it is
-      // still answerable, and there is nothing here worth interrupting him for.
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [restored]);
+  // A stale queue is answerable, so it is simply shown. The sweep happens only
+  // where the user asked for it and can see it happening: the intro button, or
+  // "Check again" once the stored questions run out.
 
   const pair = suggestions[0]
     ? faceMergeReviewPair(suggestions[0], getFaceIndexPerson)
@@ -147,10 +133,20 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
       setAnswering(false);
     }
     if (!recorded) {
-      // Reached only when no photo of one of them identifies them on its own:
-      // not "they share every photo" any more, which face anchors now handle,
-      // but "two people in one of these photos look too alike to tell apart".
-      setNotice("In these photos we can’t tell which face is which, so we can’t remember that answer yet.");
+      // No photo identifies one of them on its own, so the answer cannot be
+      // stored. The pair MUST leave the queue anyway: it is the head of the
+      // list, so leaving it there is a dead end -- he taps, nothing happens,
+      // and the same question is waiting the next time he opens the review.
+      // He hit exactly that. `suggestedFaceMerges` now filters these out when
+      // the queue is built, so this is the belt to that braces.
+      const skipped = remainingFaceMergeSuggestions(
+        suggestions,
+        pair.suggestion,
+        false,
+      );
+      setSuggestions(skipped);
+      if (skipped.length === 0) setPhase("done");
+      setNotice("We can’t tell these two faces apart well enough to save that answer, so this one is skipped.");
       return;
     }
     setLastAnswer({
