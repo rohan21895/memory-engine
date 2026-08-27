@@ -21,9 +21,21 @@ the critical path almost exactly. The expert's assumption was right; it is now m
 rather than assumed, which is what M3 was blocked on.
 
 MoveNet is the surprise. It is 2.9 MB, already int8, and still costs **1.11 s of pure
-inference per photo** — 48% of the same wall. A quantized 2.9 MB model taking half the
-time of a 33 MB float32 ViT says the constraint is the CPU itself, not model size, and
-that argues for the delegate/runtime work rather than quantization alone.
+inference per photo**. A quantized 2.9 MB model taking half the time of a 33 MB float32
+ViT says the constraint is the CPU itself, not model size, and that argues for the
+delegate/runtime work rather than quantization alone.
+
+> **Correction.** The first version of this line called MoveNet "48% of the same wall".
+> That is the ratio of the two inference times, but it is not a share of the wall: the
+> two models run inside one `Promise.all` (`build-album.ts:690`), so MoveNet's 1.11 s
+> overlaps TinyCLIP's 2.28 s rather than adding to it. Today MoveNet is **free** — fully
+> hidden — which is consistent with a 2.33 s stage against 2.28 s of TinyCLIP.
+>
+> This makes the sequencing sharper, not softer. MoveNet is not a cost to remove now; it
+> is a **floor**. Quantizing TinyCLIP buys real time only down to 1.11 s per photo, and
+> below that MoveNet becomes the critical path and the delegate/runtime work is the only
+> remaining lever. Anyone setting a target for M3 should treat 1.11 s as the wall until
+> the pose model or the runtime changes too.
 
 Neither model reloaded during the batch (`reloads:0`), so the 400-run interpreter
 retirement never fired at this size and is not contaminating these numbers.
@@ -72,10 +84,12 @@ Both point at a full-resolution decode somewhere off the proxy path.
 
 1. **M3 is unblocked and correctly aimed.** Quantize TinyCLIP first — the fidelity gates
    in `docs/EXPERT-PLAN.md` §8 apply as written.
-2. **MoveNet argues for the runtime work, not just quantization.** It is already int8 and
-   still costs 1.11 s. Quantization cannot fix a model that is already quantized, so the
-   ceiling here is the CPU/delegate path — which is also where the `fast-tflite` arena
-   leak lives.
+2. **MoveNet sets the floor, and argues for the runtime work rather than quantization.**
+   It is already int8 and still costs 1.11 s, so quantization cannot fix it — the ceiling
+   here is the CPU/delegate path, which is also where the `fast-tflite` arena leak lives.
+   Because it runs concurrently with TinyCLIP it costs nothing on the wall *today*, but
+   it caps what M3 can win: **quantizing TinyCLIP buys time only down to 1.11 s/photo.**
+   A target below that is unreachable without touching the pose model or the runtime.
 3. **The candidate budget of 64 is explained.** At 2.33 s/photo, the plan's target of
    96–192 candidates is 3.7–7.5 minutes of deep analysis. §14's budget is unreachable
    until this stage is faster, exactly as sequenced.
