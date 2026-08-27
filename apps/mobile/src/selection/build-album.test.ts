@@ -103,3 +103,71 @@ assert(
   !source.includes("? Promise.resolve({ embedding: [], faces: 0 })"),
   "the >500-photo path must not bypass the perceptual fingerprint used by CX-16 dedupe",
 );
+
+// --- M2: the Tier-B signal store -------------------------------------------
+//
+// These are source checks, and source checks are weak, so they are deliberately
+// confined to the two things that CANNOT be tested any other way from Node:
+// which side of the flag ships, and where in the sequence the store is touched.
+// The behaviour itself -- the codec, the eviction, the queue ordering and the
+// scatter back into candidate order -- is tested properly in
+// deep-signal-store.test.ts, analysis-tiers.test.ts and
+// deep-signal-parity.test.ts, against real values rather than substrings.
+
+assert(
+  source.includes("const USE_DEEP_SIGNAL_CACHE = false;"),
+  "the Tier-B store must ship OFF: reading a stored signal instead of recomputing " +
+    "one is a selection-affecting change and the default has to stay today's behaviour",
+);
+// VACUITY: the grep above passes on any file containing that string, including
+// one where the constant is never consulted. The flag has to reach a decision.
+assert(
+  source.includes("options.deepSignalCache ?? USE_DEEP_SIGNAL_CACHE"),
+  "VACUITY: ...and the constant must actually be read to decide whether to open the store",
+);
+
+const deepLoad = source.indexOf("await deepStore.load(");
+const deepPass = source.indexOf("const orderedAnalyses = await mapLimit(");
+assert(
+  deepLoad >= 0 && deepPass >= 0 && deepLoad < deepPass,
+  "the store must be told which months to open BEFORE the deep pass, not during it",
+);
+assert(
+  source.indexOf("chooseHeavyAnalysisCandidates(") < deepLoad,
+  "and AFTER the candidate cap: opening every month would read the whole library",
+);
+
+// A degraded photograph must never be cached. The perceptual fallback is seeded
+// from the URI and the proxy URI is a fresh temp file every build, so a stored
+// degraded record pins a valid-looking embedding unrelated to the pixels.
+assert(
+  source.includes("if (photoDegraded) {\n        analysisQueue.release(job);\n      } else {\n        deepStore?.set("),
+  "the store write must sit on the else branch of the degradation check",
+);
+assert(
+  !/deepStore\?\.set\([^)]*\);\s*\n\s*(?:if \(photoDegraded|\/\/ degraded)/.test(source),
+  "VACUITY: there must be no second, unguarded write path",
+);
+assert(
+  (source.match(/deepStore\?\.set\(/g) ?? []).length === 1,
+  "exactly one place may write a record, or the degradation guard is not a guard",
+);
+
+// Cancellation and backgrounding must commit whatever finished.
+assert(
+  source.includes("await probeCache?.persist();\n    await deepStore?.persist();"),
+  "both cache tiers must be checkpointed together on background and in the finally",
+);
+assert(
+  (source.match(/await deepStore\?\.persist\(\);/g) ?? []).length >= 2,
+  "one persist is not enough: the lifecycle watcher and the finally are different paths",
+);
+
+assert(
+  source.includes("restoreInputOrder(analysisOrder, orderedAnalyses)"),
+  "the queue's processing order must be undone before anything downstream reads it",
+);
+assert(
+  source.includes("isPermutationOf(queueOrder, analysisInputs.length)"),
+  "the reorder must be refused unless it is a permutation, while a fallback still exists",
+);
