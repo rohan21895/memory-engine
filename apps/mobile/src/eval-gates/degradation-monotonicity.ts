@@ -10,12 +10,7 @@ import type { QualitySignals } from "../selection/quality-signals";
 // @ts-expect-error Node's native TypeScript runner requires source extensions.
 import { round, type GateResult } from "./gate-report.ts";
 // @ts-expect-error Node's native TypeScript runner requires source extensions.
-import {
-  croppedFaceBox,
-  decodeFixtureSource,
-  qualityFixtureLoader,
-  readQualityFixtureManifest,
-} from "./quality-fixture-loader.ts";
+import { croppedFaceBox, decodeFixtureSource, qualityFixtureLoader, readQualityFixtureManifest } from "./quality-fixture-loader.ts";
 import type {
   FixtureDegradation,
   QualityFixture,

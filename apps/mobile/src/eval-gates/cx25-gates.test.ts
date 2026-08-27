@@ -12,10 +12,7 @@ import { runDegradationMonotonicityGate } from "./degradation-monotonicity.ts";
 // @ts-expect-error Node's native TypeScript runner requires source extensions.
 import { runEyesOpenOrderingGate } from "./eyes-open-ordering.ts";
 // @ts-expect-error Node's native TypeScript runner requires source extensions.
-import {
-  loadEvaluationIndex,
-  runFrozenPairDriftGate,
-} from "./frozen-pair-drift.ts";
+import { loadEvaluationIndex, runFrozenPairDriftGate } from "./frozen-pair-drift.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`CX-25 gate self-check failed: ${message}`);

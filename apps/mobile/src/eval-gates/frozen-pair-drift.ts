@@ -4,11 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 // @ts-expect-error Node's native TypeScript runner requires source extensions.
-import {
-  DEFAULT_MERGE_THRESHOLD,
-  SAME_PHOTO_EXCEPTION_SIMILARITY,
-  cosine,
-} from "../faces/face-cluster.ts";
+import { DEFAULT_MERGE_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, cosine } from "../faces/face-cluster.ts";
 // @ts-expect-error Node's native TypeScript runner requires source extensions.
 import { round, type GateResult } from "./gate-report.ts";
 
@@ -98,7 +94,7 @@ export function runFrozenPairDriftGate(
   const bars = {
     assignment: current.threshold,
     merge: DEFAULT_MERGE_THRESHOLD,
-    samePhotoException: SAME_PHOTO_EXCEPTION_SIMILARITY,
+    samePhotoDuplicate: SAME_PHOTO_DUPLICATE_SIMILARITY,
   };
   const crossings = Object.fromEntries(
     Object.entries(bars).map(([name, bar]) => [
