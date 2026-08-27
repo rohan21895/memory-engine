@@ -42,14 +42,18 @@ years. Relatives resemble each other, which matters for every threshold decision
 
 **Inference:** TFLite via `react-native-fast-tflite`, XNNPACK **CPU only**.
 
-**Bundled models:** ~55 MB total, only MoveNet quantized.
+**Bundled models:** ~49.8 MB total, only MoveNet quantized.
 
 ```
-mobilefacenet-192-float32.tflite            5.2 MB
-movenet-singlepose-lightning-int8.tflite    2.9 MB
-tinyclip-vit-8m16-image-float32.tflite     33.2 MB
-w600k-mbf-512-float32.tflite               13.6 MB
+movenet-singlepose-lightning-int8.tflite    2.9 MB   uint8  [1,192,192,3] -> f32 [1,1,17,3]
+tinyclip-vit-8m16-image-float32.tflite     33.2 MB   f32    [1,224,224,3] -> f32 [1,512]
+w600k-mbf-512-float32.tflite               13.6 MB   f32    [1,112,112,3] -> f32 [1,512]
 ```
+
+*A fourth, `mobilefacenet-192-float32.tflite` (5.2 MB), shipped in every build until an
+audit found no code path loaded it. Removed. The docs had been describing it as the live
+identity model — the real one is `w600k-mbf` — which would have sent anyone recalibrating
+a threshold to the wrong model entirely.*
 
 ---
 
