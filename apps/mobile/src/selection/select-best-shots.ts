@@ -13,13 +13,7 @@ import { bestSmile, significantFaces, worstEyesOpen } from "./quality-signals.ts
 import type { Category, QualitySignals } from "./quality-signals";
 import type { AlbumData, Alt, Pool, Selected } from "./types";
 // @ts-expect-error Node's native TypeScript runner requires the extension.
-import {
-  PHOTO_SELECTOR_CONFIG_VERSION,
-  preferenceAssetId,
-  type NearDuplicateGroupObservation,
-  type ObservedPreferenceCandidate,
-  type PhotoPreferenceFeatures,
-} from "./preference-label-store.ts";
+import { PHOTO_SELECTOR_CONFIG_VERSION, preferenceAssetId, type NearDuplicateGroupObservation, type ObservedPreferenceCandidate, type PhotoPreferenceFeatures } from "./preference-label-store.ts";
 
 /** Absolute quality gate calibrated on desktop-grade measurements. */
 const DESKTOP_QUALITY_FLOOR = 0.35;

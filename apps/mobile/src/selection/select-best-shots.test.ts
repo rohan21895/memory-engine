@@ -4,11 +4,7 @@ import type { FaceSignal, QualitySignals } from "./quality-signals.ts";
 // @ts-expect-error Node's native TypeScript runner requires the extension.
 import { preferenceAssetId } from "./preference-label-store.ts";
 // @ts-expect-error Node's native TypeScript runner requires the extension.
-import {
-  albumQualityFloor,
-  selectBestShots,
-  selectBestShotsWithObservations,
-} from "./select-best-shots.ts";
+import { albumQualityFloor, selectBestShots, selectBestShotsWithObservations } from "./select-best-shots.ts";
 // @ts-expect-error Node's native TypeScript runner requires the extension.
 import "./selection-quality-regression.test.ts";
 

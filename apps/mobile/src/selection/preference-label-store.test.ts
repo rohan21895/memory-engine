@@ -3,17 +3,7 @@ import type {
   PreferenceLabelFileSystem,
 } from "./preference-label-store";
 // @ts-expect-error Node's native TypeScript runner requires the extension.
-import {
-  appendAlbumEditPreference,
-  MAX_PREFERENCE_LABEL_RECORDS,
-  openPhotoPreferenceLabelStore,
-  parsePhotoPreferenceLabels,
-  preferenceAssetId,
-  PHOTO_FEATURE_SCHEMA_VERSION,
-  PHOTO_SELECTOR_CONFIG_VERSION,
-  PHOTO_SELECTOR_NAME,
-  serializePhotoPreferenceLabels,
-} from "./preference-label-store.ts";
+import { appendAlbumEditPreference, MAX_PREFERENCE_LABEL_RECORDS, openPhotoPreferenceLabelStore, parsePhotoPreferenceLabels, preferenceAssetId, PHOTO_FEATURE_SCHEMA_VERSION, PHOTO_SELECTOR_CONFIG_VERSION, PHOTO_SELECTOR_NAME, serializePhotoPreferenceLabels } from "./preference-label-store.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`Preference label store self-check failed: ${message}`);

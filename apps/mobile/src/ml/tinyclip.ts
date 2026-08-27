@@ -1,11 +1,7 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import {
-  createModelCache,
-  type ModelCacheLoadStats,
-  type ModelExecutionTimingRecorder,
-} from "./model-cache.ts";
+import { createModelCache, type ModelCacheLoadStats, type ModelExecutionTimingRecorder } from "./model-cache.ts";
 
 const INPUT_SIZE = 224;
 const EMBEDDING_SIZE = 512;
