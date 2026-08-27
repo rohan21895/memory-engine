@@ -1,0 +1,51 @@
+name: CX-25 standing model gates
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cx25-standing-gates.yml"
+      - "apps/mobile/assets/models/**"
+      - "apps/mobile/fixtures/cx25/**"
+      - "apps/mobile/modules/**"
+      - "apps/mobile/package.json"
+      - "apps/mobile/src/build-album.ts"
+      - "apps/mobile/src/eval-gates/**"
+      - "apps/mobile/src/faces/**"
+      - "apps/mobile/src/ml/**"
+      - "apps/mobile/src/selection/**"
+      - "models/**"
+      - "packages/eval-harness/**"
+      - "packages/ranking-engine/**"
+      - "workers/ml-runtime/**"
+  workflow_dispatch:
+    inputs:
+      face_index:
+        description: "Optional checked-out path to the current exported face index"
+        required: false
+        type: string
+      previous_face_index:
+        description: "Optional checked-out path to the previous exported face index"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  standing-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run degradation, eyes-open, and frozen-pair gates
+        env:
+          FACE_INDEX: ${{ inputs.face_index }}
+          PREVIOUS_FACE_INDEX: ${{ inputs.previous_face_index }}
+        run: |
+          args=()
+          if [[ -n "${FACE_INDEX}" ]]; then args+=(--face-index "${FACE_INDEX}"); fi
+          if [[ -n "${PREVIOUS_FACE_INDEX}" ]]; then args+=(--previous-face-index "${PREVIOUS_FACE_INDEX}"); fi
+          npm run gates:cx25 -- "${args[@]}"
