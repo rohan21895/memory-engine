@@ -1,0 +1,298 @@
+# Review of the expert plan
+
+What we accept, what is already built, where the plan is out of date, and what we
+think it gets wrong about ordering. The plan itself is `docs/EXPERT-PLAN.md`;
+Codex's line-by-line verification is `docs/CX-21-PLAN-AUDIT.md`.
+
+The plan was written from `docs/ARCHITECTURE-BRIEF.md`, which is a summary. Several
+of its factual premises describe the app as the brief described it rather than as the
+code is, and two of them are load-bearing for its milestone order.
+
+---
+
+## Verdict
+
+**The plan is good and we should follow most of it.** The engineering judgement is
+sound, several of its recommendations are better than what we had proposed, and three
+of them independently confirm things we measured ourselves — which is the strongest
+signal available that they are right.
+
+We disagree with the milestone **order**, not the milestones.
+
+---
+
+## Adopt without argument
+
+**The framing.** "Photo scoring decides whether a photograph is good; album
+optimization decides whether it adds value to this collection." We have been
+conflating the two — `select-best-shots.ts` mixes quality and diversity in one pass.
+Separating them is the right shape.
+
+**Submodular over DPP.** We asked the expert whether a DPP was the right selection
+objective. The answer — facility-location + saturating coverage with lazy greedy —
+is better than what we proposed, and for a reason we had not considered: a DPP kernel
+must be PSD, and the hand-blended similarity matrix we were going to feed it (CLIP
+distance + face overlap + pose + GPS + time) is not. Lazy greedy also takes hard
+constraints natively, which DPP MAP does not. We drop the DPP to an offline baseline.
+
+**Never train on like counts.** Correct, and it saves a wrong turn we would have taken.
+Likes measure audience and posting time, not the photograph.
+
+**Structural supervision.** Same-photo faces as free different-person labels is
+something we already do. Bursts as free ranking labels, and exact duplicates as
+fingerprint validation, are free and we were not using them.
+
+**Framing as a soft penalty, never a hard gate.** This matches CX-19's measurement on
+this codebase exactly — every hard framing gate tested cost real selections. Arrived
+at independently, which is worth more than either finding alone.
+
+**Multi-prototype identities (medoids, not means).** The genuinely new idea, and the
+right answer to the fragmentation we could not fix with thresholds. Real, unbuilt, and
+the single highest-value item in the plan.
+
+**Standing gates.** Frozen-pair drift, degradation monotonicity, eyes-open ordering.
+Cheap, and they would have caught at least two regressions we shipped.
+
+---
+
+## Already built — do not rebuild
+
+### M1's headline premise is stale: startup does not parse the JSONL
+
+The plan's M1 acceptance criterion is "startup no longer parses JSONL". It already
+doesn't. `INDEX_VERSION 22` split embeddings out of the index file into
+`face-observations.jsonl` for exactly this reason — the comment at
+[face-index.ts:45](apps/mobile/src/faces/face-index.ts:45) records the measurement
+that motivated it (`readMs=84 parseMs=5993`, "six seconds of a frozen JS thread on
+every launch").
+
+It is also no longer atomic. `OBSERVATION_LOAD_CHUNK = 500`
+([face-index.ts:70](apps/mobile/src/faces/face-index.ts:70)) parses a chunk, yields to
+the UI, and continues — one JSON object per line specifically so it *can* be
+interrupted.
+
+So the 6.7 s is paid **on demand**, by things that need embeddings (merge review,
+recluster), and it yields while it runs. That is a much smaller problem than the plan
+believes. SQLite is still worth doing — for incremental queries and for not holding
+17.8k embeddings in JS heap — but its headline benefit is already delivered and its
+priority drops accordingly.
+
+### Candidate selection is not a "global top-64 by quality"
+
+`chooseHeavyAnalysisCandidates`
+([candidate-prepass.ts:117](apps/mobile/src/selection/candidate-prepass.ts:117))
+already rewards underrepresented time windows, places, coarse visual content, and
+recurring people. CX-16 added those axes for precisely the reason the plan gives.
+
+The plan's *diagnosis* still stands — the cap is applied before moments exist, and
+there are no explicit reservations — but the fix is not "add diversity awareness". It
+is to raise 64, and 64 is not a tuning choice: the comment at
+[candidate-prepass.ts:11](apps/mobile/src/selection/candidate-prepass.ts:11) records
+that the TFLite runtimes serialize their queues and 64 is the largest pool that fits
+the time budget. **The candidate budget is a function of inference cost.**
+
+### Temporal chaining and evidence-gated merges exist, and are calibrated rather than guessed
+
+The plan proposes temporal chaining as new M4 work with seed constants: 45-day window,
+chain bar 0.52, ≥2 supporting pairs. We have all three concepts already:
+
+| Plan | In the code |
+|---|---|
+| chain window 45 days | `TEMPORAL_MERGE_WINDOW_MS` = 60 days ([face-cluster.ts:75](apps/mobile/src/faces/face-cluster.ts:75)) |
+| chain pair bar 0.52 | `temporalMergeBar()` — evidenced bar minus one sigma, **derived from this library's own impostor distribution** ([face-index.ts:1927](apps/mobile/src/faces/face-index.ts:1927)) |
+| ≥2 supporting pairs | `MERGE_EVIDENCE_MIN_FACES` = 4 on both sides ([face-cluster.ts:46](apps/mobile/src/faces/face-cluster.ts:46)) |
+
+Ours are measured; the plan's are hand-picked seeds. Adopting section 21 literally
+would replace calibrated constants with guesses. We take the plan's *structure* for
+M4 (multi-prototype) and keep our own bar derivation.
+
+The plan also does not know about `centeredForClustering`
+([face-index.ts:1882](apps/mobile/src/faces/face-index.ts:1882)) — embeddings are
+mean-centred before clustering. Any threshold the plan quotes lives in that centred
+space, not raw ArcFace space.
+
+### Long-lived model instances — done, and the plan's reason is the wrong one
+
+"Keep long-lived model instances (never load TinyCLIP 64 times)" is done
+([model-cache.ts](apps/mobile/src/ml/model-cache.ts)). But the constraint is the
+opposite of what the plan assumes: fast-tflite v3 never returns the interpreter arena
+between runs (mrousavy/react-native-fast-tflite#124), so native memory climbs from
+~200 MB to ~1.2 GB across a long batch and OOM-kills the app. We are *forced* to retire
+each interpreter every 400 inferences, and `dispose()` on a nitro HybridObject is an
+empty body — there is no deterministic release at all
+([model-cache.ts:86](apps/mobile/src/ml/model-cache.ts:86)).
+
+This strengthens the plan's "thin native LiteRT module" recommendation, for a memory
+reason it did not have. It is the best argument in favour of that work.
+
+---
+
+## Where the plan is wrong for this codebase
+
+### "TinyCLIP fp32 on CPU is the dominant cost" is an assumption, not a measurement
+
+This is the load-bearing claim under all of M3, and nobody has measured it.
+
+Deep analysis runs **five** things per photo, concurrently but serialized in the native
+queue ([build-album.ts:578](apps/mobile/src/build-album.ts:578)): the 76-value
+perceptual model, ML Kit face detection, a full pixel decode for quality, MoveNet, and
+TinyCLIP. The only timer is around the whole loop
+([build-album.ts:631](apps/mobile/src/build-album.ts:631)). There is no per-model
+breakdown.
+
+If decode is 1.2 s of the 2.2 s, quantizing TinyCLIP buys a fraction of what the plan
+projects. On this codebase, when we have guessed at where time goes, we have been
+wrong every time — a single `O(n²)` log line once cost 2.8 s at startup.
+
+**Instrumenting the five stages is the first task of M3 and it gates the rest of it.**
+
+### The sequencing is wrong: M3 should come first
+
+The plan runs M1 (SQLite) → M2 (progressive analysis) → M3 (inference). We think M3
+has to move up, because two later milestones are gated on it and M1's benefit is
+already banked:
+
+- **M2 depends on M3.** Tier A is per-photo analysis over 11,853 photos. The plan
+  itself computes that at current speed this is 7.2 h and calls it unacceptable —
+  then schedules it before the milestone that fixes the speed.
+- **M5 depends on M3.** The target budget is `clamp(5K, 96, 192)`. At 2.2 s/photo,
+  192 candidates is seven minutes of deep analysis. The budget is unreachable until
+  inference is cheaper; the cap of 64 exists for that reason today.
+- **M1's stated benefit is already delivered** (above), so it is not buying the
+  unblocking the order implies.
+
+Our order: **M0 → M3 → M2 → M4 → M5/M6 → M1 → M7/M8.** M0 is unchanged and cheap.
+SQLite moves to where it is actually needed — once progressive analysis is writing a
+per-photo signal row per model version, flat files stop being adequate. That is a
+consequence of M2, not a prerequisite for it.
+
+### The plan under-weights the thing currently doing the most good
+
+It treats user corrections as an input constraint. On this library they are the
+product surface that does the repairing — we measured that **no merge threshold fixes
+the splits**: every bar low enough to join genuinely-split people admits more
+impostors than it gains merges. Multi-prototype identity may change that; until it
+does and is proven in shadow mode, the ranked merge review is the only safe repair,
+and improving it (co-occurrence evidence on the card, better ranking, fewer questions
+for the same repair) beats anything in M1–M9 on a weeks horizon.
+
+---
+
+## Measured: the 0.72 escape is dead, and what it is hiding
+
+The plan demands the `SAME_PHOTO_EXCEPTION_SIMILARITY = 0.72` escape be removed. We
+measured it on the owner's real index (2,173 people, 17,699 faces) before deciding.
+
+```
+co-occurring cluster pairs                  7986
+  of those, >= 0.72 (escape fires)             0
+highest co-occurring pair                 0.6992
+```
+
+**It has never fired.** Removing it is free on this library and closes a latent hazard,
+so we take the plan's recommendation — but note that it cannot help fragmentation,
+because it is not currently letting anything through *or* holding anything back.
+
+The interesting part is what the sweep found on the way. Among co-occurring pairs above
+0.60 linkage — the ones the same-photo cannot-link is actively blocking — there are two
+completely different populations:
+
+```
+  linkage  A (faces)          B (faces)        shared  rate
+  0.6992   person-311  (  1)  person-312  (  1)     1  100.0%
+  0.6796   person-414  (  1)  person-415  (  1)     1  100.0%
+  0.6727   person-232  (  1)  person-233  (  1)     1  100.0%
+  ...
+  0.6369   person-55   (228)  person-714  ( 29)     1    3.4%
+  0.6268   person-14   (258)  person-729  (152)     2    1.3%
+  0.6226   person-126  ( 67)  person-930  ( 32)     1    3.1%
+```
+
+The first group co-occurs in 100% of their appearances: two faces, one photo, nothing
+else. Either two look-alikes or one double-detection, and there is no evidence to tell
+them apart. The cannot-link is doing exactly its job.
+
+The second group is the opposite. `person-14` and `person-729` hold 258 and 152 faces
+and share **2 photos out of 410 appearances** — 1.3%. That is not what two different
+people who know each other look like; our own co-occurrence study put clearly-different
+people at a median of 18.8%. It is what one person looks like when a single photo
+contains a reflection, a framed photo on a wall, or a spurious second detection.
+
+**Three pairs sit at linkage ≥ 0.60 with co-occurrence ≤ 5%, and repairing them merges
+213 faces.** One of those pairs alone is 152. These are almost certainly the tiles the
+owner is complaining about.
+
+We do **not** auto-merge on this. The plan is right that similarity between co-occurring
+people is the failure mode to protect against, and we measured separately that no
+threshold change is safe. But the *rate* is independent evidence the review queue should
+show: "together in only 2 of 410 photos" is the sentence that lets him answer the
+question correctly in one second. #153 already ranks these pairs first; the evidence is
+not yet on the card.
+
+## The finding that reorders everything: nothing is unblocked at the top
+
+We then swept every pair of substantial clusters (both ≥ 4 faces, 453 of them) and
+split the results by whether the same-photo rule blocks them:
+
+```
+   bar    unblocked   faces they'd repair   blocked by same-photo
+  0.60           0                     0                       7
+  0.55           0                     0                      15
+  0.52           0                     0                      28
+  0.50           2                    42                      30
+```
+
+**Above 0.52 linkage there are no unblocked pairs at all.** Every substantial cluster
+pair the app could merge on similarity, it already has. Everything left at the top of
+the distribution is held apart by the same-photo cannot-link — not by the threshold.
+
+And the blocked population is cleanly bimodal on co-occurrence rate:
+
+```
+  rate    linkage  A (faces)          B (faces)        shared
+   0.6%   0.5393   person-16   ( 180)  person-187  ( 310)     1
+   0.9%   0.5678   person-24   ( 151)  person-1090 ( 116)     1
+   1.0%   0.5152   person-1    ( 487)  person-20   ( 101)     1
+   1.2%   0.5228   person-23   ( 168)  person-313  ( 373)     2
+   1.3%   0.6268   person-14   ( 258)  person-729  ( 152)     2
+   2.4%   0.5216   person-47   ( 439)  person-388  ( 127)     3
+   3.6%   0.5381   person-2    ( 718)  person-769  (  28)     1
+  ...  gap  ...
+  52.6%   0.5439   person-2    ( 718)  person-158  (  19)    10
+  57.1%   0.5199   person-3    (1159)  person-177  (   7)     4
+```
+
+There is a clean break between 3.6% and 7.7%. Below it: eleven pairs holding **1,065
+faces**, where two large clusters share one, two or three photos out of hundreds. Above
+it: pairs that really are two people who are always photographed together, where the
+cannot-link is doing exactly the right thing.
+
+Two clusters of 180 and 310 faces that share exactly one photo are not two people who
+met once. The likelier explanation is that the one shared photo contains a reflection,
+a framed photo on a wall, or a spurious second detection — **one bad face observation
+holding a 490-face identity apart.**
+
+That reframes the fix. Rather than asking "are these the same person?", we can ask about
+the single shared photo: *is this second face a real person, or an artifact?* One
+question, and a 490-face split resolves. It is a smaller question than a merge
+confirmation, it is one the owner can answer instantly from the crop, and it removes the
+constraint at its source instead of overriding it.
+
+**This is now our highest-value item, ahead of multi-prototype identities.** It is also
+invisible from the summary the expert worked from, which is why the plan does not
+contain it.
+
+*Honest caveat:* a low co-occurrence rate is evidence, not proof. Two people
+photographed together exactly once would look identical in this table. That is precisely
+why the action is a user-answered question and not an auto-merge.
+
+## Still open, to answer with measurement
+
+1. **Which face model is live?** `apps/mobile/src/ml/README.md` says MobileFaceNet;
+   the brief says `w600k-mbf`. Both are bundled. One of them is 5.2 MB of dead APK.
+2. **What is the real per-model split of the 2.2 s?** See above — this gates M3.
+3. **Stored embeddings are already int8**, base64-encoded, decoded to `number[]` in JS
+   ([face-index.ts:828](apps/mobile/src/faces/face-index.ts:828)). The plan's rule
+   "embeddings never materialize as JS number arrays or base64" is a fair criticism of
+   what we do today — but note its quantization ladder concerns the *model*, and the
+   *vectors* have been int8 for some time.
