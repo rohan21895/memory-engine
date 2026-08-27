@@ -99,8 +99,70 @@ Options 2 and 3 both change stored groupings in the last bits, so either needs a
 `CLUSTER_CALIBRATION` bump to force one clean rebuild rather than letting old centroids
 and new arithmetic disagree silently.
 
+## Decided: option 3, and it needed no calibration bump
+
+`FaceObservation.embedding` is now `number[] | Int8Array` (`faces/types.ts`). A face loaded
+from disk stays as its 512 bytes; a face fresh out of the detector is still `number[]`,
+because it has not been quantized yet. Everything that reads a component goes through
+`dequantized` (`faces/face-cluster.ts`).
+
+**The sentence above about needing a `CLUSTER_CALIBRATION` bump was wrong, and correcting
+it is the point of this section.** It assumed option 3 meant the obvious int8 scheme:
+accumulate an INTEGER dot product and apply `1/127²` once at the end. That scheme is
+actually *more* accurate than what ships — an integer dot product over 512 dimensions
+maxes at 8.26M and is exact in float64 — and it is still the wrong thing to adopt, for
+the reason `252a07b` recorded: the merge candidate queue settles exact ties by `pairKey`
+and the sweep is greedy, so a one-bit disagreement can reorder a merge. That commit paid
+for a second full dot product on every surviving pair rather than accept it.
+
+The same care is available here for 2 KB. Every stored component is `k/127`, so a
+256-entry `Float64Array` holds every double the old `Array.from(signed, (c) => c / 127)`
+could produce, computed by that same division. Expanding a byte through the table returns
+the identical bit pattern, so **no arithmetic anywhere sees a different value than it saw
+before** — no new rounding, no reassociation, no bump.
+
+Verified rather than argued, on the owner's real library
+(`scratch/embedding-memory/int8-equivalence.ts`):
+
+| form | components differing from baseline | people | fused impostors | pairs newly joined | pairs newly split |
+|---|---|---|---|---|---|
+| baseline `c/127` | — | 2,253 | 0 | — | — |
+| **int8 via the table** | **0 of 9,097,216** | **2,253** | **0** | **0** | **0** |
+| float32 (option 2) | 8,453,790, worst 4.9e-8 | 2,253 | 0 | 0 | 0 |
+| one ulp on every component | 8,453,790, worst 2.2e-16 | 2,253 | 0 | 0 | 0 |
+
+Read the bottom two rows as the control they are, not as permission. They say that *this*
+library, clustered in *one batch*, has no tie tight enough for a last-bit difference to
+reorder a merge — 37,125 same-photo impostor pairs and not one of them fused under any
+form. They do not say the next library has none, and the device clusters incrementally
+across many batches where the tie surface is different. The int8 row does not depend on
+that luck: it is zero because there is nothing to disagree about.
+
+And the guard that makes the zeros mean anything: the same comparison reports
+`joined=394` when a single face is moved by hand, and `joined=90,043 split=949,210` for a
+4-bit quantization of the same faces. It is not blind.
+
+Measured saving, holding whole `FaceObservation` objects the way `index.observations`
+holds them: **82.3 MB → 18.5 MB, 4.4x, 63.7 MB of resident set.** (The bare vectors are
+the 5.8x above; the object carries an assetId, a kind, a flag and a time either way.)
+Full recluster of 17,768 faces is at parity, 10.2–19.7s for `number[]` against 10.8–14.7s
+for int8 over interleaved rounds — but only because `dequantized` builds its array with
+`Array.from`; an index-filled `new Array(512)` measured ~40% slower for identical
+arithmetic, and that trap is commented at the call site.
+
+**Option 1, the release path, is not being shipped and should not be.** It was the
+laziest option when the resident cost was 89.5 MB. At 18.5 MB it is not worth its two
+hazards — dropping while `observationsDirty` loses scan work, and clearing between an
+`await ensureObservations()` and its reader silently yields an empty library. Option 4,
+`expo-sqlite`, remains open and is now a query-granularity argument rather than a memory
+one.
+
 ## Reproducing
 
 ```
 node --expose-gc scratch/embedding-memory/measure.js <face-observations.jsonl>
+
+cd apps/mobile && node --experimental-strip-types \
+  ../../scratch/embedding-memory/int8-equivalence.ts \
+  --observations <face-observations.jsonl> [--order baseline,int8,baseline,int8]
 ```

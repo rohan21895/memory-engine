@@ -48,7 +48,40 @@ function measure(label, build) {
 const asNumbers = measure("number[]  (as the app holds them)", decodeToNumberArray);
 const asTyped = measure("Int8Array (as they arrive on disk)", decodeToTyped);
 console.log(`\nratio: ${(asNumbers / asTyped).toFixed(1)}x`);
+console.log(`saving: ${((asNumbers - asTyped) / 1e6).toFixed(1)} MB of resident set`);
+
+// The bare vectors are the finding, but they are not what the app retains:
+// `index.observations` holds whole FaceObservation objects, and the assetId,
+// kind, seedable flag and capture time are carried either way. Measuring those
+// too is what says how much of the saving actually reaches the process, rather
+// than how much reaches an array nobody holds on its own.
+function measureObservations(label, build) {
+  global.gc();
+  const before = footprint();
+  const held = lines.map((line) => {
+    const stored = JSON.parse(line);
+    return {
+      assetId: stored.assetId,
+      embedding: build(stored.embedding),
+      embeddingKind: stored.embeddingKind,
+      seedable: stored.seedable,
+      ...(stored.capturedAt === undefined ? {} : { capturedAt: stored.capturedAt }),
+    };
+  });
+  global.gc();
+  const after = footprint();
+  const dims = held[0].embedding.length;
+  console.log(
+    `${label}: ${((after - before) / 1e6).toFixed(1)} MB for ${held.length} faces ` +
+      `x ${dims} dims  (${((after - before) / held.length).toFixed(0)} bytes/face)`,
+  );
+  return after - before;
+}
+
+console.log("\nas whole FaceObservation objects, which is what index.observations holds:");
+const objectsNumbers = measureObservations("  number[]  ", decodeToNumberArray);
+const objectsTyped = measureObservations("  Int8Array ", decodeToTyped);
 console.log(
-  `saving: ${((asNumbers - asTyped) / 1e6).toFixed(1)} MB against the 268 MB ` +
-    `growth limit the OOM reported`,
+  `\nratio: ${(objectsNumbers / objectsTyped).toFixed(1)}x   ` +
+    `saving: ${((objectsNumbers - objectsTyped) / 1e6).toFixed(1)} MB of resident set`,
 );

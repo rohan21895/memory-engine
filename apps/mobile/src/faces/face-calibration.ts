@@ -18,12 +18,13 @@
  * without ever naming them.
  */
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_MERGE_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY } from "./face-cluster.ts";
+import { DEFAULT_MERGE_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, dequantized } from "./face-cluster.ts";
+import type { FaceEmbeddingVector } from "./types";
 
 /** Faces this calibration reads. Structurally a subset of FaceObservation. */
 export type CalibrationFace = {
   assetId: string;
-  embedding: readonly number[];
+  embedding: FaceEmbeddingVector;
 };
 
 /**
@@ -151,23 +152,26 @@ function cosine(a: readonly number[], b: readonly number[]): number {
 export function samePhotoImpostorScores(
   faces: readonly CalibrationFace[],
 ): number[] {
-  const byAsset = new Map<string, CalibrationFace[]>();
+  // Grouped by their EXPANDED embedding, so a compact one costs one expansion
+  // per face rather than one per pair in a crowded photo.
+  const byAsset = new Map<string, number[][]>();
   for (const face of faces) {
     if (!face.embedding || face.embedding.length === 0) {
       continue;
     }
+    const embedding = dequantized(face.embedding);
     const group = byAsset.get(face.assetId);
     if (group) {
-      group.push(face);
+      group.push(embedding);
     } else {
-      byAsset.set(face.assetId, [face]);
+      byAsset.set(face.assetId, [embedding]);
     }
   }
   const scores: number[] = [];
   for (const group of byAsset.values()) {
     for (let i = 0; i < group.length; i += 1) {
       for (let j = i + 1; j < group.length; j += 1) {
-        const score = cosine(group[i].embedding, group[j].embedding);
+        const score = cosine(group[i], group[j]);
         if (score < SAME_PHOTO_DUPLICATE_SIMILARITY) {
           scores.push(score);
         }

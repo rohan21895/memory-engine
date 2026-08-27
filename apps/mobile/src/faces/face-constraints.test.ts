@@ -1,7 +1,7 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { MIN_ANCHOR_MARGIN, anchorFor, pruneConstraints, resolveConstraints, sameAnchor, type FaceConstraint } from "./face-constraints.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_IDENTITY_THRESHOLD, DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, cosine, extendFaceClusters } from "./face-cluster.ts";
+import { DEFAULT_IDENTITY_THRESHOLD, DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, cosine, dequantized, extendFaceClusters } from "./face-cluster.ts";
 import type { FaceObservation, Person } from "./types";
 
 function assert(value: unknown, message: string): asserts value {
@@ -79,7 +79,9 @@ const library: FaceObservation[] = [
 ];
 
 const facesIn = (assetId: string): number[][] =>
-  library.filter((face) => face.assetId === assetId).map((face) => face.embedding);
+  library
+    .filter((face) => face.assetId === assetId)
+    .map((face) => dequantized(face.embedding));
 
 const clusterOptions = {
   threshold: DEFAULT_IDENTITY_THRESHOLD,

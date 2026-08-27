@@ -1,4 +1,4 @@
-import type { FaceObservation, Person } from "./types";
+import type { FaceEmbeddingVector, FaceObservation, Person } from "./types";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { resolveConstraints, type AnchorBars, type FaceConstraint } from "./face-constraints.ts";
 
@@ -149,6 +149,52 @@ function intersects(a: ReadonlySet<number>, b: ReadonlySet<number>): boolean {
   return false;
 }
 
+/**
+ * `k/127` for all 256 bytes an int8 embedding component can hold.
+ *
+ * This table is the whole reason storing embeddings as `Int8Array` is safe to do
+ * to a library of somebody's family. The obvious int8 scheme — accumulate an
+ * INTEGER dot product and apply `1/127^2` once at the end — is more accurate
+ * than what ships today and still wrong to adopt, because it is not the SAME
+ * arithmetic: the merge candidate queue settles exact ties by `pairKey` and the
+ * sweep is greedy, so a one-bit disagreement can reorder a merge and change the
+ * final grouping. `252a07b` paid for a second dot product on every surviving
+ * pair to avoid exactly that, and a person wrongly FUSED is the one failure no
+ * later pass can undo.
+ *
+ * So the bytes are expanded back to the identical doubles instead. Each entry is
+ * computed by the same `component / 127` division `dequantizeEmbedding` ran per
+ * component, and a `Float64Array` returns it bit-for-bit, so every value the
+ * clusterer sees is the value it saw before this change. The table is 2 KB and
+ * replaces 74 MB.
+ */
+const DEQUANTIZED_BYTE = Float64Array.from(
+  { length: 256 },
+  // Sign-extend the byte, because `Int8Array` holds -128..127 and the index is
+  // taken with `& 0xff`.
+  (_unused, byte) => ((byte << 24) >> 24) / 127,
+);
+
+/**
+ * A `number[]` view of either embedding form, for the arithmetic to index.
+ *
+ * A `number[]` is returned AS IS rather than copied: it is already what the
+ * caller wants and every caller treats it as read-only. An `Int8Array` is
+ * expanded once, which is what makes the compact form free at the point of use —
+ * assignment expands one face, compares it against every person, and drops it.
+ */
+export function dequantized(embedding: FaceEmbeddingVector): number[] {
+  if (!(embedding instanceof Int8Array)) return embedding;
+  // `Array.from` over the typed array, which is the same construction the old
+  // `dequantizeEmbedding` used, and deliberately NOT `new Array(n)` filled by
+  // index. The result is handed straight into the dot-product loop that runs 512
+  // dimensions against every person in the library, and the index-filled version
+  // measured ~40% slower on a full recluster of the owner's library -- identical
+  // arithmetic, identical partition, worse array shape for the engine to
+  // iterate. Built this way the recluster is back at parity with `number[]`.
+  return Array.from(embedding, (component) => DEQUANTIZED_BYTE[component & 0xff]);
+}
+
 function magnitude(values: number[]): number {
   let squared = 0;
   for (const value of values) {
@@ -167,11 +213,12 @@ function magnitude(values: number[]): number {
  * `clusterFaces` is a public export and a caller handing in longer vectors
  * would otherwise make every cluster look artificially loose.
  */
-function unitEmbedding(embedding: number[]): number[] {
-  const length = magnitude(embedding);
+function unitEmbedding(embedding: FaceEmbeddingVector): number[] {
+  const values = dequantized(embedding);
+  const length = magnitude(values);
   return length > Number.EPSILON && Math.abs(length - 1) > 1e-9
-    ? embedding.map((value) => value / length)
-    : embedding;
+    ? values.map((value) => value / length)
+    : values;
 }
 
 /**
