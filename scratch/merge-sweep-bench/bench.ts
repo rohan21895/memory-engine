@@ -71,6 +71,11 @@ const faces = consolidated.reduce(
   (sum: number, person: { faceCount: number }) => sum + person.faceCount,
   0,
 );
+if (people.length === 0 || consolidated.length === 0 || faces !== observations.length) {
+  throw new Error(
+    `merge benchmark invalid: ${people.length} initial people, ${consolidated.length} after sweep, ${faces}/${observations.length} faces accounted for`,
+  );
+}
 console.log(
   JSON.stringify({
     faces: observations.length,

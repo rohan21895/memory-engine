@@ -192,9 +192,8 @@ console.log(
     `${(crossCentroidRate * 100).toFixed(2)}% (recorded: 4.1%)`,
 );
 if (Math.abs(crossCentroidRate - 0.041) > 0.015) {
-  console.log(
-    "  WARNING: does not match the record. Treat every number below as " +
-      "unverified until the pair construction is reconciled.",
+  throw new Error(
+    "calibration does not match the record; refusing to report unverified fidelity numbers",
   );
 } else {
   console.log(

@@ -522,6 +522,12 @@ function anchorAudit(
       loosestWrong = Math.max(loosestWrong, margin);
     }
   }
+  if (byFace === 0) {
+    throw new Error("face-anchor audit is vacuous: no person exercised a face anchor");
+  }
+  if (wrong !== 0) {
+    throw new Error(`face-anchor audit found ${wrong} wrong anchors`);
+  }
   return (
     `WITH FACE ANCHORS: ${byPhoto + byFace} of ${people.length} anchorable ` +
     `(${percent(byPhoto + byFace, people.length)}), ${byFace} by face, ${refused} still refused; ` +
@@ -587,6 +593,11 @@ function report(
   const withSolo = found.anchorless.filter((person) =>
     person.assetIds.some((assetId) => (shared.get(assetId) ?? 0) === 1),
   ).length;
+  if (withSolo !== 0) {
+    throw new Error(
+      `${label}: ${withSolo} supposedly anchorless people own an unshared photo`,
+    );
+  }
   console.log(
     `  photos claimed by exactly one cluster: ${[...shared.values()].filter((count) => count === 1).length}` +
       ` of ${shared.size}; anchorless people owning one: ${withSolo} (must be 0)`,
