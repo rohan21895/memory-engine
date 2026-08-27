@@ -14,6 +14,54 @@ export const CANDIDATE_PREPASS_THRESHOLD = 500;
  */
 export const HEAVY_ANALYSIS_CANDIDATE_LIMIT = 64;
 
+/**
+ * EXPERT-PLAN §14/§21 ask for `B = clamp(5K, 96, 192)`, cap 256. That number
+ * was written before anybody timed the stage it pays for.
+ *
+ * `docs/DEEP-ANALYSIS-TIMING.md` timed it: 148,837 ms for 64 photos, 2.33 s
+ * each, 98% of it inside TinyCLIP. So the plan's own 96–192 is 3.7–7.5 minutes
+ * of a user staring at a spinner, and today's 64 is not a taste decision at all
+ * — it is 149 s divided by 2.33 s.
+ *
+ * The budget is therefore a PRICE, not a constant. Ask for what the album wants
+ * and pay for what the device can actually afford inside the wall the build
+ * already spends; the two clamp against each other. At today's measured price
+ * this returns exactly 64 and nothing about the shipped build changes. When M2
+ * caches signals or M3 makes inference cheaper, `msPerCandidate` falls and the
+ * budget rises on its own — no flag day, no second constant to remember.
+ *
+ * The floor is today's 64, deliberately. A device that measures SLOWER than the
+ * baseline must not quietly ship a 30-photo pool and a thinner album; a slow
+ * build is a latency problem, and shortening the candidate pool is the one
+ * response that damages the album instead.
+ */
+export const DEEP_ANALYSIS_MS_PER_CANDIDATE = 2_326;
+/** The wall the deep stage already spends today: 148,837 ms for its 64 photos. */
+export const DEEP_ANALYSIS_BUDGET_MS = 148_837;
+export const CANDIDATE_BUDGET_MIN = 96;
+export const CANDIDATE_BUDGET_MAX = 192;
+
+export function candidateBudget(
+  albumSize: number,
+  msPerCandidate = DEEP_ANALYSIS_MS_PER_CANDIDATE,
+): number {
+  // A non-finite album size or price must land on today's 64, never on a NaN
+  // that reaches `chooseHeavyAnalysisCandidates` and returns an empty pool.
+  const size = Number.isFinite(albumSize) ? Math.max(0, Math.floor(albumSize)) : 0;
+  const price = Number.isFinite(msPerCandidate)
+    ? Math.max(1, msPerCandidate)
+    : DEEP_ANALYSIS_MS_PER_CANDIDATE;
+  const wanted = Math.min(
+    Math.max(5 * size, CANDIDATE_BUDGET_MIN),
+    CANDIDATE_BUDGET_MAX,
+  );
+  const affordable = Math.floor(DEEP_ANALYSIS_BUDGET_MS / price);
+  return Math.max(
+    HEAVY_ANALYSIS_CANDIDATE_LIMIT,
+    Math.min(wanted, affordable),
+  );
+}
+
 export type ProbedCandidate = {
   photo: PickedPhoto;
   quality: MeasuredImageQuality;
@@ -22,6 +70,11 @@ export type ProbedCandidate = {
 type RankedCandidate = ProbedCandidate & {
   qualityScore: number;
   timeBucket?: number;
+  /**
+   * Index of the gap-delimited moment this frame belongs to, or undefined when
+   * it carries no usable capture time. See `MOMENT_GAP_MS`.
+   */
+  moment?: number;
   contentKey?: string;
   /**
    * This photo's people, already filtered to the ones that recur. Precomputed
@@ -48,9 +101,56 @@ export type PrepassOptions = {
    * never met. See faces/person-recurrence.ts, which counts occasions.
    */
   isFamiliar?: (personId: string) => boolean;
+  /**
+   * Guarantee the least-covered moments a candidate slot (EXPERT-PLAN §14
+   * `MOMENT_RESERVE`). Defaults on; pass `false` to measure the pool this gate
+   * produced before reservations existed.
+   */
+  reserveMoments?: boolean;
 };
 
 const MAX_TIME_BUCKETS = 40;
+
+/**
+ * The silence between two moments.
+ *
+ * The time axis above buckets photos by equal COUNT, and equal count is not a
+ * moment: a 200-frame burst spans three buckets on its own while a four-frame
+ * moment shares a bucket with seventy frames of something else, and a bucket
+ * the burst already "covers" hands that four-frame moment nothing at all. That
+ * is the coverage the top-64 loses silently, because a lost moment leaves no
+ * trace in the pool it never entered.
+ *
+ * Ten minutes, and the corpus chose it. Measured over the three pinned album
+ * fixtures: the largest gap INSIDE a real moment is 15 min (the trip's two
+ * departure-lounge frames) and the smallest gap BETWEEN two real moments is
+ * 14 min (the birthday's portraits and the single frame of `gran`). They
+ * overlap, so no threshold is clean and the question is which way to be wrong.
+ * Splitting one moment in two costs one extra reserved slot for a frame that
+ * was worth photographing anyway. Merging two costs the smaller one its
+ * reservation — and `gran` appears once in sixty-four frames, which is exactly
+ * the photograph this whole mechanism exists to protect. So: comfortably below
+ * the 14-minute separation, and let the long moments split.
+ */
+const MOMENT_GAP_MS = 10 * 60 * 1_000;
+
+/**
+ * How much of the pool moment reservations may claim.
+ *
+ * A reservation buys BREADTH, and breadth taken to its limit is its own
+ * failure: a filter holding more moments than the budget would spend every
+ * slot on a different moment, one frame each, chosen on a blurhash — leaving
+ * the planner unable to reject a blink because it holds no sibling frame to
+ * reject it in favour of. §14 asks for reservoirs of two or more per moment
+ * for the same reason. Half the pool guaranteed to distinct moments, half left
+ * to the quality fill, which gives busy moments their alternates back.
+ *
+ * So the promise is precise: the pool holds at least
+ * `min(moments, floor(budget/2))` DISTINCT moments. Beyond that the fill
+ * decides, and a moment that misses out lost a ranked comparison rather than
+ * disappearing into a time bucket a burst had already ticked off.
+ */
+export const MOMENT_RESERVE_FRACTION = 0.5;
 
 /**
  * Grid the blurhash is reduced to before it becomes a bucket key.
@@ -131,6 +231,7 @@ export function chooseHeavyAnalysisCandidates(
   const placeCounts = new Map<string, number>();
   const contentCounts = new Map<string, number>();
   const personCounts = new Map<string, number>();
+  const coveredMoments = new Set<number>();
 
   // User pins remain sovereign when a future edit flow feeds them into a
   // capped rebuild. The safety cap still wins if more than the limit are pinned.
@@ -139,23 +240,58 @@ export function chooseHeavyAnalysisCandidates(
     .sort(compareRankedCandidates)
     .slice(0, normalizedLimit);
   for (const candidate of pinned) {
-    select(candidate, selectedIds, timeCounts, placeCounts, contentCounts, personCounts);
+    select(candidate, selectedIds, timeCounts, placeCounts, contentCounts, personCounts, coveredMoments);
   }
+
+  const momentCount = new Set(
+    ranked
+      .map(({ moment }) => moment)
+      .filter((moment): moment is number => moment !== undefined),
+  ).size;
+  const promise =
+    options.reserveMoments === false
+      ? 0
+      : Math.min(momentCount, Math.floor(normalizedLimit * MOMENT_RESERVE_FRACTION));
 
   const remaining = ranked.filter(({ photo }) => !selectedIds.has(photo.id));
   while (selectedIds.size < normalizedLimit && remaining.length > 0) {
-    let bestIndex = 0;
+    // The reservation binds LATE, the way the planner's own scenery reserve
+    // does: quality spends the pool freely until the slots left are only just
+    // enough to keep the promise, and only then is the choice narrowed. So a
+    // reservation costs nothing while there is room, and costs exactly what it
+    // must when there is not.
+    //
+    // Note what the narrowing is: not "frames of moment X", but "frames of
+    // moments with NOTHING selected yet". A reserved pick is by construction
+    // the FIRST frame of its moment, so no reservation can ever be the route by
+    // which a second, near-identical frame of a moment reaches deep analysis —
+    // the failure `fd97b18` fixed one stage downstream. Which moment gets the
+    // slot is the reservation's decision; WHICH FRAME of it is still
+    // `candidatePriority`'s, and that already discounts a look already covered.
+    const owed = Math.max(0, promise - coveredMoments.size);
+    const reserving = owed >= normalizedLimit - selectedIds.size;
+    const uncovered = reserving
+      ? remaining.filter(
+          ({ moment }) => moment !== undefined && !coveredMoments.has(moment),
+        )
+      : remaining;
+    // `owed > 0` implies an uncovered moment exists and every frame of it is
+    // still in `remaining`, so this is belt-and-braces against a future edit
+    // breaking that invariant into an infinite loop rather than a live case.
+    const pool = uncovered.length > 0 ? uncovered : remaining;
+
+    let best = pool[0];
     let bestPriority = candidatePriority(
-      remaining[0],
+      best,
       timeCounts,
       placeCounts,
       contentCounts,
       personCounts,
     );
 
-    for (let index = 1; index < remaining.length; index += 1) {
+    for (let index = 1; index < pool.length; index += 1) {
       const priority = candidatePriority(
-        remaining[index],
+        pool[index],
         timeCounts,
         placeCounts,
         contentCounts,
@@ -163,16 +299,15 @@ export function chooseHeavyAnalysisCandidates(
       );
       if (
         priority > bestPriority ||
-        (priority === bestPriority &&
-          compareRankedCandidates(remaining[index], remaining[bestIndex]) < 0)
+        (priority === bestPriority && compareRankedCandidates(pool[index], best) < 0)
       ) {
-        bestIndex = index;
+        best = pool[index];
         bestPriority = priority;
       }
     }
 
-    const [winner] = remaining.splice(bestIndex, 1);
-    select(winner, selectedIds, timeCounts, placeCounts, contentCounts, personCounts);
+    remaining.splice(remaining.indexOf(best), 1);
+    select(best, selectedIds, timeCounts, placeCounts, contentCounts, personCounts, coveredMoments);
   }
 
   return unique.filter(({ photo }) => selectedIds.has(photo.id));
@@ -213,10 +348,25 @@ function addTimeBuckets(
     );
   });
 
+  // Moments, from the same already-sorted list: a silence longer than the gap
+  // ends one and starts the next. Cheap on purpose — capture time is the only
+  // description of WHEN that exists before the heavy models run, and the
+  // blurhash content key already covers what a frame looks like.
+  const momentById = new Map<string, number>();
+  let moment = -1;
+  let previous: number | undefined;
+  for (const { photo } of timed) {
+    const time = photo.creationTime as number;
+    if (previous === undefined || time - previous > MOMENT_GAP_MS) moment += 1;
+    momentById.set(photo.id, moment);
+    previous = time;
+  }
+
   return candidates.map((candidate) => ({
     ...candidate,
     qualityScore: cheapQualityScore(candidate),
     timeBucket: bucketById.get(candidate.photo.id),
+    moment: momentById.get(candidate.photo.id),
     // Decoded once here rather than inside the O(limit x remaining) scoring
     // loop, where the same hash would be decoded tens of thousands of times.
     contentKey: contentKeyForQuality(candidate.quality),
@@ -320,8 +470,10 @@ function select(
   placeCounts: Map<string, number>,
   contentCounts: Map<string, number>,
   personCounts: Map<string, number>,
+  coveredMoments: Set<number>,
 ): void {
   selectedIds.add(candidate.photo.id);
+  if (candidate.moment !== undefined) coveredMoments.add(candidate.moment);
   for (const personId of candidate.familiarPersonIds ?? []) {
     personCounts.set(personId, (personCounts.get(personId) ?? 0) + 1);
   }

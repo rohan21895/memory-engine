@@ -19,8 +19,8 @@ import type {
 } from "./review/mock-data";
 import {
   CANDIDATE_PREPASS_THRESHOLD,
+  candidateBudget,
   chooseHeavyAnalysisCandidates,
-  HEAVY_ANALYSIS_CANDIDATE_LIMIT,
   type ProbedCandidate,
 } from "./selection/candidate-prepass";
 import {
@@ -674,8 +674,12 @@ async function buildAlbumImpl(
   // usable instead of preprocessing every photo for an answer it cannot give.
   const modelHealth = checkModelHealth();
   const capEngaged = photos.length > CANDIDATE_PREPASS_THRESHOLD;
+  // The budget the album asks for, clamped by what the deep stage can afford at
+  // its measured per-photo price. 64 today; it rises on its own when M2/M3 make
+  // a candidate cheaper. See `candidateBudget`.
+  const budget = candidateBudget(count);
   const expectedCandidateCount = capEngaged
-    ? Math.min(HEAVY_ANALYSIS_CANDIDATE_LIMIT, photos.length)
+    ? Math.min(budget, photos.length)
     : photos.length;
   // Progress is measured in work units, not photos, so the two stages are
   // weighted by roughly what they cost. The trailing unit is the planner.
@@ -742,7 +746,7 @@ async function buildAlbumImpl(
     const rankStartedAt = Date.now();
     analysisInputs = chooseHeavyAnalysisCandidates(
       probed,
-      HEAVY_ANALYSIS_CANDIDATE_LIMIT,
+      budget,
       { isFamiliar: await familiarPersonPredicate() },
     ).map(({ photo, quality }) => ({ photo, quality }));
     reportTiming(options, timings, {
