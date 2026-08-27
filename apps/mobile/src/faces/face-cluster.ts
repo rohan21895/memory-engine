@@ -229,7 +229,7 @@ function centroidScale(centroid: number[]): number {
  * Returns 0 for a vector that cannot be compared, which makes the similarity 0
  * exactly as `cosine`'s own non-finite and zero-norm guards did.
  */
-function comparisonInverse(values: number[]): number {
+export function comparisonInverse(values: number[]): number {
   let squared = 0;
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
@@ -323,7 +323,7 @@ function boundedSimilarity(
  * multiply-add per dimension. A zero inverse means the vector already failed
  * validation, so it short-circuits before the dot product can produce NaN.
  */
-function scaledSimilarity(
+export function scaledSimilarity(
   a: number[],
   aInverse: number,
   b: number[],
