@@ -45,16 +45,22 @@ const person = (
 // (0.6) and the same-photo escape (0.72), which is where the owner's real pairs
 // sit: person-16 ~ person-745 at 0.628, person-247 ~ person-960 at 0.699.
 //
-// One would repair a 150-photo tile; the other, two strangers with one photo
-// each. The small pair is deliberately the MORE similar of the two, which is
-// exactly the shape that used to sink the big one.
+// One would repair a 150-photo tile; the other, two-photo tiles. The small pair
+// is deliberately the MORE similar of the two, which is exactly the shape that
+// used to sink the big one.
+//
+// The small pair carries a photo of its own on each side ON PURPOSE. One face
+// each whose ONLY photo is the shared one is now withheld from the review
+// entirely -- measured to be worth nothing, see the block at the end of this
+// file -- so a fixture built that way would test the withholding rule instead
+// of the ranking it is here for.
 const big = [
   person("big-a", 257, 0, ["shared-1", "b1", "b2"]),
   person("big-b", 150, 51, ["shared-1", "b3", "b4"]),
 ];
 const tiny = [
-  person("tiny-a", 1, 0, ["shared-2"]),
-  person("tiny-b", 1, 45.5, ["shared-2"]),
+  person("tiny-a", 2, 0, ["shared-2", "t1"]),
+  person("tiny-b", 2, 45.5, ["shared-2", "t2"]),
 ];
 const options = { threshold: 0.5, identityMergeThreshold: 0.6 };
 
@@ -213,6 +219,45 @@ const options = { threshold: 0.5, identityMergeThreshold: 0.6 };
   assert(
     out.length === 0,
     `a pair over its bar and free to merge must not be offered, got ${out.length}`,
+  );
+}
+
+/**
+ * Two faces that exist nowhere but one shared photo are never asked about.
+ *
+ * The owner hit this and pushed back on being asked at all — "this cannot be
+ * automated?" — so it was measured on his live index rather than argued. All 48
+ * such pairs come from NINE images: two screenshots of this app's own photo
+ * grid, one ChatGPT download, and six WhatsApp pictures that are photographs OF
+ * PRINTED PHOTO ALBUMS, where the same relatives appear in each printed photo
+ * inside the frame. One grid screenshot holds 20 detected "faces" and produced
+ * 39 of the 48 pairs by itself. Not one of the nine is an ordinary photograph.
+ *
+ * With no history on either side, both answers move one composite image and
+ * nothing else — while the question cannot be answered, because if it is one
+ * face found twice then the two crops are the same pixels.
+ */
+{
+  const strangers = [
+    person("only-a", 1, 0, ["one-and-only"]),
+    person("only-b", 1, 45.5, ["one-and-only"]),
+  ];
+  assert(
+    suggestMerges(strangers, { ...options, limit: 10 }).length === 0,
+    "one face each, one shared photo, no history: not a question",
+  );
+
+  // VACUITY: the identical pair IS offered the moment either side has a photo
+  // of its own. Without this, deleting the whole vetoed branch would pass the
+  // assertion above while silencing every question in the library.
+  const withHistory = [
+    person("only-a", 1, 0, ["one-and-only"]),
+    person("only-b", 2, 45.5, ["one-and-only", "elsewhere"]),
+  ];
+  const offered = suggestMerges(withHistory, { ...options, limit: 10 });
+  assert(
+    offered.length === 1 && offered[0].blockedByCoOccurrence,
+    `a side with history elsewhere must still be asked, got ${offered.length}`,
   );
 }
 

@@ -203,51 +203,43 @@ assert(
 // IS one face found twice then the two crops are the same pixels, so there is
 // no difference for him to spot. The photo settles it; the crops cannot.
 {
-  const single = (id: string, assetId: string): FaceIndexPerson => ({
-    id,
-    faceCount: 1,
-    coverAssetId: assetId,
-    assetIds: [assetId],
-  });
-  const onePhoto = {
-    first: single("person-x", "photo-7"),
-    second: single("person-y", "photo-7"),
-    suggestion,
-  };
+  // The real pair this matters most for: 310 faces against 180, held apart by
+  // ONE shared frame. What that frame shows is the entire question.
   assert(
-    soleSharedPhoto(onePhoto) === "photo-7",
-    "two one-face tiles from one shared photo must resolve to that photo",
+    soleSharedPhoto({ first: people[0], second: people[1], suggestion }) ===
+      "shared",
+    "one shared photo between two large tiles must resolve to that photo",
   );
 
-  // VACUITY: a tile with real history must NOT get the photo question. Its
-  // crops are genuinely different pixels, and its face count is the warning
-  // that the answer is worth care.
-  assert(
-    soleSharedPhoto({ ...onePhoto, first: people[0] }) === undefined,
-    "a 310-face tile keeps the ordinary comparison",
-  );
+  // VACUITY: sharing several photos means no single frame stands for the rest,
+  // so the crops and the rate stay.
   assert(
     soleSharedPhoto({
-      ...onePhoto,
-      second: { ...single("person-y", "photo-7"), faceCount: 2 },
+      first: people[0],
+      second: people[1],
+      suggestion: { ...suggestion, sharedAssets: 12 },
     }) === undefined,
-    "a face count that disagrees with the asset list is not this shape",
-  );
-  // Two strangers each photographed once, but in DIFFERENT photos. Showing one
-  // of the two photos would be showing evidence about the wrong pair.
-  assert(
-    soleSharedPhoto({ ...onePhoto, second: single("person-y", "photo-9") }) ===
-      undefined,
-    "one face each in two different photos is not a shared photo",
+    "a pair sharing twelve photos is not settled by showing one of them",
   );
   // Similarity, not co-occurrence, is what holds this one back, so the shared
   // photo is not the evidence under discussion.
   assert(
     soleSharedPhoto({
-      ...onePhoto,
+      first: people[0],
+      second: people[1],
       suggestion: { ...suggestion, blockedByCoOccurrence: false },
     }) === undefined,
     "only co-occurrence-blocked pairs get the photo question",
+  );
+  // Two people each photographed once, but in DIFFERENT photos. Showing either
+  // photo would be presenting evidence about the wrong pair.
+  assert(
+    soleSharedPhoto({
+      first: { id: "x", faceCount: 1, coverAssetId: "p1", assetIds: ["p1"] },
+      second: { id: "y", faceCount: 1, coverAssetId: "p2", assetIds: ["p2"] },
+      suggestion,
+    }) === undefined,
+    "no overlap means there is no shared photo to show",
   );
 }
 

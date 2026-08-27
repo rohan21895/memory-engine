@@ -1508,6 +1508,34 @@ export function suggestMerges(
       // question. Over the bar and vetoed is the most valuable question there
       // is, and used to be silently dropped here -- see `blockedByCoOccurrence`.
       if (similarity >= bar && !vetoed) continue;
+      // Two faces that appear NOWHERE except one photo they share carry no
+      // information for the user to act on, so they are not asked about.
+      //
+      // Measured on the owner's live index: 48 such pairs, and they come from
+      // exactly NINE images -- two screenshots of this app's own photo grid,
+      // one ChatGPT download, and six WhatsApp pictures that are photographs OF
+      // PRINTED PHOTO ALBUMS, where the same relatives appear in each printed
+      // photo inside the frame. None of the nine is an ordinary photograph. One
+      // grid screenshot holds 20 detected "faces" and generated 39 of the 48
+      // pairs on its own.
+      //
+      // Neither side has any history: one face each, one photo each, the same
+      // photo. So whichever way it is answered, one composite image changes and
+      // nothing else -- while the question itself is unanswerable, because if it
+      // IS one face found twice the two crops are the same pixels. Dropping them
+      // costs nothing measurable and removes every question of this shape.
+      //
+      // Deliberately NOT a threshold change. The pair is still blocked from
+      // merging by the same-photo cannot-link exactly as before; it is only
+      // withheld from the review. Any pair with real history behind it still
+      // gets asked, and the screen now shows it the photograph.
+      const strangersInOnePhoto =
+        vetoed &&
+        a.faceCount === 1 &&
+        b.faceCount === 1 &&
+        a.assetIdSet.size === 1 &&
+        b.assetIdSet.size === 1;
+      if (strangersInOnePhoto) continue;
       const [first, second] =
         a.faceCount >= b.faceCount ? [a, b] : [b, a];
       found.push({

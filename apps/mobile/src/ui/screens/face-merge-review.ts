@@ -108,45 +108,41 @@ export function coOccurrenceEvidence(
 }
 
 /**
- * The single photo both tiles come from, when that photo is the WHOLE of what
- * either one holds — and the reason the question has to change shape.
+ * The one photo holding this pair apart, when a single photo is the whole case.
  *
- * Measured on the owner's live index (17,769 faces): 48 pairs are this exact
- * shape, and every one scores between 0.456 and 0.705 — clustered just under
- * `SAME_PHOTO_DUPLICATE_SIMILARITY`, the bar above which a same-photo repeat is
- * deleted outright. They survive because two boxes landing slightly differently
- * on ONE head produce an alignment difference the identity model reads as a
- * stranger, so the same face scores like two people and the deletion rule
- * correctly declines to guess.
- *
- * Which means similarity cannot settle these, and neither can the owner: if it
- * really is one face found twice, the two crops he is being asked to compare
- * are the same pixels. There is no difference to spot. He said so —
+ * These pairs cleared the merge bar on face evidence and are blocked ONLY by
+ * having been photographed together, so the entire question is what that one
+ * frame actually shows — and the crops cannot answer it. Two boxes landing
+ * slightly differently on one head give an alignment difference the identity
+ * model reads as a stranger, which is why a repeat detection can score like two
+ * people; and if it IS one face found twice, the two crops being compared are
+ * the same pixels. There is nothing to spot. The owner said as much —
  * "how will i know this bro?" — and he was right.
  *
- * The photograph settles it instantly. One person in the frame means one face
- * was counted twice; two people means two people. So for this shape the screen
- * shows the SOURCE PHOTO and asks about the photo, which is a question about
- * something he can see, rather than about two thumbnails that cannot differ.
+ * The photograph settles it in a glance, and settles every version of it: two
+ * people in the frame means two people; one person means the face was counted
+ * twice; a mirror or a photo of a printed photo means one person as well, which
+ * is the answer that case needs.
  *
- * Deliberately narrow. Both sides must hold exactly one face and it must be the
- * same photo — then a wrong answer moves one photograph and nothing else. A
- * tile with a real history behind it goes back to the ordinary comparison,
- * where the crops ARE different pixels and the face count is the warning that
- * the answer is worth care.
+ * Only when they share EXACTLY ONE photo. Sharing several means no single frame
+ * stands for the rest, and there the crops and the rate are the honest summary.
+ *
+ * The zero-information version of this — both sides holding one face, in one
+ * shared photo, with no history anywhere else — never reaches the screen at all
+ * now; `suggestMerges` withholds it, with the measurement that justified it.
  */
 export function soleSharedPhoto(
   pair: FaceMergeReviewPair,
 ): string | undefined {
   const { first, second, suggestion } = pair;
   if (!suggestion.blockedByCoOccurrence) return undefined;
-  if (first.faceCount !== 1 || second.faceCount !== 1) return undefined;
-  if (first.assetIds.length !== 1 || second.assetIds.length !== 1) {
-    return undefined;
-  }
-  return first.assetIds[0] === second.assetIds[0]
-    ? first.assetIds[0]
-    : undefined;
+  // Exactly one shared photo, so that photo IS the whole of the evidence. When
+  // they share several, no single frame stands for the rest and the crops plus
+  // the rate are the honest summary.
+  if (suggestion.sharedAssets !== 1) return undefined;
+  const second_ = new Set(second.assetIds);
+  const shared = first.assetIds.filter((assetId) => second_.has(assetId));
+  return shared.length === 1 ? shared[0] : undefined;
 }
 
 export type FaceMergeReviewProgress = {
