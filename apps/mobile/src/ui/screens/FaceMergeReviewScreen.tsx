@@ -19,6 +19,7 @@ import {
   coOccurrenceEvidence,
   faceMergeReviewPair,
   remainingFaceMergeSuggestions,
+  soleSharedPhoto,
   type FaceMergeReviewProgress,
 } from "./face-merge-review";
 
@@ -59,6 +60,11 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
     : undefined;
   const evidence = pair ? coOccurrenceEvidence(pair.suggestion) : undefined;
   const tileWidth = Math.max(132, Math.min(238, (width - layout.screenPadding * 2 - spacing.sm) / 2));
+  // When both tiles are one face from one shared photo, comparing the crops is
+  // impossible by construction -- see `soleSharedPhoto`. Show the photograph
+  // and ask about the photograph instead.
+  const onePhoto = pair ? soleSharedPhoto(pair) : undefined;
+  const photoWidth = width - layout.screenPadding * 2;
 
   const findMatches = async () => {
     if (phase === "loading") return;
@@ -225,31 +231,58 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
 
         {phase === "review" && pair ? (
           <View style={styles.review}>
-            <View style={styles.pairRow}>
-              {[pair.first, pair.second].map((person, index) => (
-                <View key={person.id} style={[styles.personTile, { width: tileWidth }]}>
-                  <Image
-                    accessibilityLabel={`Possible match ${index + 1}`}
-                    cachePolicy="memory-disk"
-                    contentFit="cover"
-                    source={person.faceThumbUri ?? contentUri(person.coverAssetId)}
-                    style={[styles.face, { height: tileWidth, width: tileWidth }]}
-                  />
-                  <Text style={styles.faceCount}>{person.faceCount.toLocaleString()} {person.faceCount === 1 ? "face" : "faces"}</Text>
+            {onePhoto ? (
+              <Image
+                accessibilityLabel="The photo both of these came from"
+                cachePolicy="memory-disk"
+                contentFit="contain"
+                source={contentUri(onePhoto)}
+                style={[styles.sourcePhoto, { height: photoWidth, width: photoWidth }]}
+              />
+            ) : (
+              <View style={styles.pairRow}>
+                {[pair.first, pair.second].map((person, index) => (
+                  <View key={person.id} style={[styles.personTile, { width: tileWidth }]}>
+                    <Image
+                      accessibilityLabel={`Possible match ${index + 1}`}
+                      cachePolicy="memory-disk"
+                      contentFit="cover"
+                      source={person.faceThumbUri ?? contentUri(person.coverAssetId)}
+                      style={[styles.face, { height: tileWidth, width: tileWidth }]}
+                    />
+                    <Text style={styles.faceCount}>{person.faceCount.toLocaleString()} {person.faceCount === 1 ? "face" : "faces"}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+            {onePhoto ? (
+              // No repair count and no rate here. Both are always "1" for this
+              // shape, so they add a number without adding information, and the
+              // photograph above is the whole of the evidence.
+              <Text style={styles.evidence}>
+                We found two faces in this photo. If only one person is in it, we
+                counted the same face twice.
+              </Text>
+            ) : (
+              <>
+                <View style={styles.repairNote}>
+                  <Text style={styles.repairCount}>{pair.suggestion.photosFixed.toLocaleString()}</Text>
+                  <Text style={styles.repairText}>{pair.suggestion.photosFixed === 1 ? "photo would come together" : "photos would come together"} if you choose Same person</Text>
                 </View>
-              ))}
-            </View>
-            <View style={styles.repairNote}>
-              <Text style={styles.repairCount}>{pair.suggestion.photosFixed.toLocaleString()}</Text>
-              <Text style={styles.repairText}>{pair.suggestion.photosFixed === 1 ? "photo would come together" : "photos would come together"} if you choose Same person</Text>
-            </View>
-            {/* The evidence being overruled. A shared photo is the ONLY reason
-                these two are still apart, and the count alone cannot be acted
-                on -- one photo out of four hundred means the opposite of one
-                out of two. */}
-            {evidence ? <Text style={styles.evidence}>{evidence}</Text> : null}
-            <Text style={styles.question}>Are these the same person?</Text>
+                {/* The evidence being overruled. A shared photo is the ONLY reason
+                    these two are still apart, and the count alone cannot be acted
+                    on -- one photo out of four hundred means the opposite of one
+                    out of two. */}
+                {evidence ? <Text style={styles.evidence}>{evidence}</Text> : null}
+              </>
+            )}
+            <Text style={styles.question}>
+              {onePhoto ? "How many people are in this photo?" : "Are these the same person?"}
+            </Text>
             <View style={styles.actions}>
+              {/* The cautious answer stays first in both framings: it is the one
+                  that changes nothing. For the photo question that is "more than
+                  one", which keeps the two records apart. */}
               <Pressable
                 accessibilityRole="button"
                 accessibilityState={{ busy: answering, disabled: answering || undoing }}
@@ -257,7 +290,7 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
                 onPress={() => void answer(false)}
                 style={[styles.answer, styles.notSame, answering || undoing ? styles.disabled : null]}
               >
-                <Text style={styles.notSameText}>Not the same</Text>
+                <Text style={styles.notSameText}>{onePhoto ? "More than one" : "Not the same"}</Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
@@ -266,10 +299,14 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
                 onPress={() => void answer(true)}
                 style={[styles.answer, answering || undoing ? styles.disabled : null]}
               >
-                <Text style={styles.answerText}>Same person</Text>
+                <Text style={styles.answerText}>{onePhoto ? "Just one person" : "Same person"}</Text>
               </Pressable>
             </View>
-            <Text style={styles.safeHint}>Choose Same person only when you’re sure.</Text>
+            <Text style={styles.safeHint}>
+              {onePhoto
+                ? "Look at the photo, not the faces we cut out of it."
+                : "Choose Same person only when you’re sure."}
+            </Text>
           </View>
         ) : null}
 
@@ -316,6 +353,9 @@ const styles = StyleSheet.create({
   backText: { color: colors.muted, fontFamily: fonts.semibold, ...typeScale.small },
   disabled: { opacity: 0.42 },
   face: { backgroundColor: colors.quietSurface, borderCurve: "continuous", borderRadius: radii.lg },
+  // `contain`, not `cover`: this is the evidence, so the whole frame must be
+  // visible. A crop could hide the second person the question is asking about.
+  sourcePhoto: { backgroundColor: colors.quietSurface, borderCurve: "continuous", borderRadius: radii.lg },
   faceCount: { color: colors.text, fontFamily: fonts.bold, textAlign: "center", ...typeScale.small },
   evidence: { color: colors.muted, fontFamily: fonts.regular, maxWidth: layout.maxReadableWidth, textAlign: "center", ...typeScale.small },
   helper: { color: colors.muted, fontFamily: fonts.regular, maxWidth: layout.maxReadableWidth, ...typeScale.body },

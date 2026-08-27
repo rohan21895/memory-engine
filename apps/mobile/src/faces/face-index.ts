@@ -424,6 +424,20 @@ type PersistedFaceIndex = {
   pendingConsolidationPersonIds?: string[];
   /** True when observations arrived after the last completed consolidation. */
   consolidationPending?: boolean;
+  /**
+   * The last computed review queue, so restarting the app does not re-derive it.
+   *
+   * `suggestedFaceMerges` costs an observations parse plus an O(people^2) sweep
+   * — about 45 seconds on the owner's library before the first question appears
+   * — and nothing kept the result, so every app start paid it again to reach the
+   * same list. His ANSWERS always persisted; only the questions were discarded.
+   *
+   * `key` is a fingerprint of everything the sweep reads, and deliberately of
+   * nothing else: an avatar backfill must not throw the queue away. It is built
+   * from state available BEFORE observations are loaded, because a key that
+   * needed them would have to pay the parse to discover it could skip it.
+   */
+  mergeSuggestions?: { key: string; limit: number; list: MergeSuggestion[] };
   /** Frozen population mean the stored centroids are centered against. */
   embeddingMean?: number[];
   /** What the user said about who is who. Survives every recluster. */
@@ -1365,6 +1379,39 @@ function validConsolidationBars(value: unknown): value is ConsolidationBars {
   );
 }
 
+/**
+ * A cached review queue is a convenience, never a source of truth.
+ *
+ * Validated so a file written by a different build cannot reach the screen as a
+ * half-formed question, and DROPPED rather than rejected — same reasoning as the
+ * constraint list below it. Losing the cache costs one sweep; rejecting the
+ * index over it would discard every embedding and re-scan the library.
+ */
+function validStoredSuggestions(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (
+    !isRecord(value) ||
+    typeof value.key !== "string" ||
+    typeof value.limit !== "number" ||
+    !Number.isFinite(value.limit) ||
+    !Array.isArray(value.list)
+  ) {
+    return false;
+  }
+  return value.list.every(
+    (suggestion) =>
+      isRecord(suggestion) &&
+      typeof suggestion.a === "string" &&
+      typeof suggestion.b === "string" &&
+      typeof suggestion.blockedByCoOccurrence === "boolean" &&
+      (["similarity", "bar", "sharedAssets", "appearances", "photosFixed"] as const).every(
+        (field) =>
+          typeof suggestion[field] === "number" &&
+          Number.isFinite(suggestion[field]),
+      ),
+  );
+}
+
 function parseIndex(contents: string): PersistedFaceIndex | null {
   try {
     const value: unknown = JSON.parse(contents);
@@ -1419,6 +1466,9 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
       pendingConsolidationPersonIds:
         stored.pendingConsolidationPersonIds ?? [],
       consolidationPending: stored.consolidationPending ?? false,
+      mergeSuggestions: validStoredSuggestions(stored.mergeSuggestions)
+        ? stored.mergeSuggestions
+        : undefined,
     };
     return loaded.observations.every(validObservation) &&
       loaded.people.every(validPerson)
@@ -2170,6 +2220,64 @@ function consolidationBarsFrom(
       options.temporalMergeThreshold,
     ),
   };
+}
+
+/**
+ * Everything `suggestMerges` reads, in one string, without touching observations.
+ *
+ * The people term is a checksum over ids AND face counts rather than a bare
+ * length, because a merge plus a split in one batch leaves the length identical
+ * while the tiles underneath are different — and a stale queue that still
+ * resolves to live person ids would show a real pair with the wrong evidence.
+ *
+ * `processedAssetIds` covers arriving faces (they change no person until the
+ * batch is clustered), `constraints` covers an answer or an undo, and the
+ * consolidation fields cover regrouping. An avatar backfill appears in none of
+ * them, which is the point: it must not discard 45 seconds of work.
+ */
+export function mergeQueueFingerprint(state: {
+  people: readonly { id: string; faceCount: number }[];
+  processedCount: number;
+  constraintCount: number;
+  threshold: number;
+  calibration: unknown;
+  bars: ConsolidationBars | undefined;
+  consolidationPending: boolean;
+  pendingCount: number;
+}): string {
+  let peopleHash = 0;
+  for (const person of state.people) {
+    for (let i = 0; i < person.id.length; i += 1) {
+      peopleHash = (Math.imul(peopleHash, 31) + person.id.charCodeAt(i)) | 0;
+    }
+    peopleHash = (Math.imul(peopleHash, 31) + person.faceCount) | 0;
+  }
+  return [
+    state.people.length,
+    peopleHash,
+    state.processedCount,
+    state.constraintCount,
+    state.threshold,
+    String(state.calibration),
+    state.bars
+      ? `${state.bars.identity},${state.bars.perceptual},${state.bars.evidenced},${state.bars.temporal}`
+      : "legacy-bars",
+    state.consolidationPending,
+    state.pendingCount,
+  ].join(":");
+}
+
+function suggestionCacheKey(): string {
+  return mergeQueueFingerprint({
+    people: index.people,
+    processedCount: Object.keys(index.processedAssetIds).length,
+    constraintCount: index.constraints?.length ?? 0,
+    threshold: index.threshold,
+    calibration: index.calibration,
+    bars: index.consolidationBars,
+    consolidationPending: index.consolidationPending ?? false,
+    pendingCount: index.pendingConsolidationPersonIds?.length ?? 0,
+  });
 }
 
 /** Exact by design: any bar movement requires the historical full sweep. */
@@ -4369,9 +4477,17 @@ export async function suggestedFaceMerges(
   // ones that matter either way.
   limit = 60,
 ): Promise<MergeSuggestion[]> {
+  // Checked BEFORE `ensureObservations`, because the parse is most of what this
+  // is avoiding. A cache computed for a longer list still answers a shorter
+  // request; the reverse would silently hand back a truncated queue.
+  const key = suggestionCacheKey();
+  const cached = index.mergeSuggestions;
+  if (cached && cached.key === key && cached.limit >= limit) {
+    return cached.list.slice(0, limit);
+  }
   // Both bars are measured over every face on record.
   await ensureObservations();
-  return suggestMerges(
+  const list = suggestMerges(
     index.people,
     {
       ...faceClusterOptions(index.threshold, {
@@ -4382,6 +4498,13 @@ export async function suggestedFaceMerges(
       limit,
     },
   );
+  // Re-derived rather than reusing `key`: loading observations can repair
+  // duplicate faces, and a key captured before that describes an index that no
+  // longer exists. Storing the stale one would pin this list past the repair.
+  index.mergeSuggestions = { key: suggestionCacheKey(), limit, list };
+  markIndexDirty();
+  await persistFaceIndex(true);
+  return list;
 }
 
 export function assetIdsForPerson(personId: string): string[] {

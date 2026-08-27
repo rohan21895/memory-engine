@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { advanceFaceMergeReviewProgress, coOccurrenceEvidence, faceMergeReviewPair, remainingFaceMergeSuggestions } from "./face-merge-review.ts";
+import { advanceFaceMergeReviewProgress, coOccurrenceEvidence, faceMergeReviewPair, remainingFaceMergeSuggestions, soleSharedPhoto } from "./face-merge-review.ts";
 import type { MergeSuggestion } from "../../faces/face-cluster";
 import type { FaceIndexPerson } from "../../faces/face-index";
 
@@ -192,6 +192,62 @@ assert(
   assert(
     sparse !== undefined && sparse.includes("counted twice"),
     `1 of 400 must still read as a duplicate detection, got: ${sparse}`,
+  );
+}
+
+// The shape the owner could not answer, and the narrowness that makes showing
+// the photograph safe.
+//
+// 48 pairs on his live index are one face from one shared photo, all scoring
+// 0.456-0.705 -- under the bar that deletes a same-photo repeat outright. If it
+// IS one face found twice then the two crops are the same pixels, so there is
+// no difference for him to spot. The photo settles it; the crops cannot.
+{
+  const single = (id: string, assetId: string): FaceIndexPerson => ({
+    id,
+    faceCount: 1,
+    coverAssetId: assetId,
+    assetIds: [assetId],
+  });
+  const onePhoto = {
+    first: single("person-x", "photo-7"),
+    second: single("person-y", "photo-7"),
+    suggestion,
+  };
+  assert(
+    soleSharedPhoto(onePhoto) === "photo-7",
+    "two one-face tiles from one shared photo must resolve to that photo",
+  );
+
+  // VACUITY: a tile with real history must NOT get the photo question. Its
+  // crops are genuinely different pixels, and its face count is the warning
+  // that the answer is worth care.
+  assert(
+    soleSharedPhoto({ ...onePhoto, first: people[0] }) === undefined,
+    "a 310-face tile keeps the ordinary comparison",
+  );
+  assert(
+    soleSharedPhoto({
+      ...onePhoto,
+      second: { ...single("person-y", "photo-7"), faceCount: 2 },
+    }) === undefined,
+    "a face count that disagrees with the asset list is not this shape",
+  );
+  // Two strangers each photographed once, but in DIFFERENT photos. Showing one
+  // of the two photos would be showing evidence about the wrong pair.
+  assert(
+    soleSharedPhoto({ ...onePhoto, second: single("person-y", "photo-9") }) ===
+      undefined,
+    "one face each in two different photos is not a shared photo",
+  );
+  // Similarity, not co-occurrence, is what holds this one back, so the shared
+  // photo is not the evidence under discussion.
+  assert(
+    soleSharedPhoto({
+      ...onePhoto,
+      suggestion: { ...suggestion, blockedByCoOccurrence: false },
+    }) === undefined,
+    "only co-occurrence-blocked pairs get the photo question",
   );
 }
 
