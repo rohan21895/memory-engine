@@ -1,6 +1,8 @@
 import type { PickedPhoto } from "../import/picked-photo";
 // @ts-expect-error Node requires the extension; Metro resolves this path too.
 import { candidateProbeKey, isCandidateProbeCacheable, parseCandidateProbeCache, probeCandidateWithCache, serializeCandidateProbeCache, type CandidateProbeCache } from "./candidate-probe-cache.ts";
+// @ts-expect-error Node requires the extension; Metro resolves this path too.
+import { CANDIDATE_PROBE_SIGNAL_VERSION } from "./candidate-quality-probe.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`Candidate probe cache self-check failed: ${message}`);
@@ -34,13 +36,37 @@ const serialized = serializeCandidateProbeCache(entries);
 const restored = parseCandidateProbeCache(serialized);
 assert(restored.size === 1, "one valid checkpoint entry must round-trip");
 assert(restored.get(key)?.blurhash === "hash", "round-trip must retain content evidence");
+// Regression check: the current signal version reuses the stored entry (the
+// vacuity guard), while the same checkpoint is a miss after an algorithm bump.
+assert(restored.has(key), "the same signal version must reuse cached evidence");
+const afterSignalChange = parseCandidateProbeCache(
+  serialized,
+  CANDIDATE_PROBE_SIGNAL_VERSION + 1,
+);
+assert(
+  !afterSignalChange.has(key),
+  "a signal version bump must not reuse pre-change evidence",
+);
+
+const legacyCheckpoint = JSON.stringify({
+  version: 1,
+  entries: [{ key, quality: entries.get(key) }],
+});
+assert(
+  !parseCandidateProbeCache(legacyCheckpoint).has(key),
+  "a checkpoint entry without a signal version must be stale",
+);
 
 // Vacuity guards: malformed storage and a transient empty native result are
 // both plausible inputs, but neither may become a cache hit.
 assert(parseCandidateProbeCache("not json").size === 0, "corrupt checkpoints fail empty");
 const emptyResult = JSON.stringify({
   version: 1,
-  entries: [{ key: "failed-probe", quality: {} }],
+  entries: [{
+    key: "failed-probe",
+    signalVersion: CANDIDATE_PROBE_SIGNAL_VERSION,
+    quality: {},
+  }],
 });
 assert(
   parseCandidateProbeCache(emptyResult).size === 0,

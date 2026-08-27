@@ -68,9 +68,10 @@ function safeErrorMessage(error: unknown): string {
 }
 
 /**
- * Crops one ML Kit face and returns its L2-normalized MobileFaceNet identity
- * embedding. Model loading, image manipulation, decoding, and inference are
- * lazy and guarded; callers receive undefined and can use a neutral fallback.
+ * Crops one ML Kit face and returns its L2-normalized InsightFace buffalo_s
+ * w600k_mbf 512-d identity embedding. Model loading, image manipulation,
+ * decoding, and inference are lazy and guarded; callers receive undefined and
+ * can use a neutral fallback.
  */
 export async function embedFaceIdentity(
   asset: FaceImageAsset,
@@ -181,6 +182,8 @@ export async function probeFaceIdentityModel(): Promise<boolean> {
 function isExpectedModel(model: TensorflowModel): boolean {
   const input = model.inputs[0];
   const output = model.outputs[0];
+  // Pin the live w600k_mbf graph, including its 512-value identity space. A
+  // different embedding width is a model migration, never a compatible load.
   return (
     input?.dataType === "float32" &&
     input.shape.join("x") === `1x${INPUT_SIZE}x${INPUT_SIZE}x3` &&
@@ -191,7 +194,7 @@ function isExpectedModel(model: TensorflowModel): boolean {
 }
 
 /**
- * How the tensors handed to MobileFaceNet were actually produced.
+ * How the tensors handed to the bundled w600k_mbf graph were actually produced.
  *
  * The bounding-box path is a silent quality cliff: ArcFace-family weights are
  * trained on faces warped to a canonical 5-point template, so an unaligned crop
@@ -345,7 +348,7 @@ async function boundingBoxFaceFloatTensor(
     INPUT_SIZE,
   );
   if (!base64) {
-    throw new Error("MobileFaceNet preprocessing returned no pixels.");
+    throw new Error("w600k_mbf preprocessing returned no pixels.");
   }
   const decoded = decodeFaceJpeg(base64, INPUT_SIZE);
   return normalizeFacePixels(decoded.data, decoded.width, decoded.height);
@@ -360,7 +363,7 @@ function decodeFaceJpeg(base64: string, expectedSize: number) {
     maxMemoryUsageInMB: 8,
   });
   if (decoded.width !== expectedSize || decoded.height !== expectedSize) {
-    throw new Error("MobileFaceNet preprocessing returned the wrong image size.");
+    throw new Error("w600k_mbf preprocessing returned the wrong image size.");
   }
   return decoded;
 }
@@ -418,18 +421,17 @@ export function squareFaceCrop(
 /**
  * Converts RGBA pixels to RGB floats in the ArcFace range (x - 127.5) / 127.5.
  *
- * Tensor contract, read out of the bundled flatbuffer: input `input`
- * FLOAT32[1,112,112,3] (NHWC, annotated with the TOCO input range 0..255),
- * output `embeddings` FLOAT32[1,192]. Channel order is RGB, matching the
- * artifact's own Dart reference implementation (getRed/getGreen/getBlue) — a
- * BGR swap here would still return confident, stable, WRONG identities.
+ * Tensor contract, read from the live InsightFace buffalo_s `w600k_mbf`
+ * FlatBuffer: input `input.1` FLOAT32[1,112,112,3] NHWC, output `516`
+ * FLOAT32[1,512]. Channel order is RGB; a BGR swap here would still return
+ * confident, stable, WRONG identities.
  *
- * That reference uses (x - 128) / 128 and the MobileFaceNet_TF lineage uses
- * (x - 127.5) / 128; this uses (x - 127.5) / 127.5. All three agree to within
- * 0.4% of full scale, which is far below JPEG round-trip noise, and the output
- * is L2-normalized before any cosine comparison. Left as-is deliberately:
- * changing it would silently shift every embedding without invalidating the
- * persisted face index, which is a worse outcome than a 0.4% scale difference.
+ * Preprocessing contract `w600k-mbf-arcface-rgb-jpeg95-1275-v1` uses the
+ * canonical ArcFace similarity warp when landmarks are available (with a 1.3x
+ * padded square fallback), JPEG quality 0.95, and (x - 127.5) / 127.5. The raw
+ * graph output is not normalized, so it is L2-normalized before every cosine
+ * comparison. Any change to this contract must invalidate the persisted face
+ * index and recalibrate all identity and clustering thresholds.
  */
 export function normalizeFacePixels(
   rgba: Uint8Array,

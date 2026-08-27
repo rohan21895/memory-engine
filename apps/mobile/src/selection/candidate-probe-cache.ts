@@ -1,5 +1,7 @@
 import type { PickedPhoto } from "../import/picked-photo";
 import type { MeasuredImageQuality } from "./image-quality";
+// @ts-expect-error Node's native TypeScript runner requires the extension.
+import { CANDIDATE_PROBE_SIGNAL_VERSION } from "./candidate-quality-probe.ts";
 
 const CACHE_VERSION = 1;
 const CACHE_FILENAME = "album-candidate-probes.json";
@@ -7,6 +9,7 @@ const MAX_CACHE_ENTRIES = 20_000;
 
 type CacheEntry = {
   key: string;
+  signalVersion: number;
   quality: MeasuredImageQuality;
 };
 
@@ -55,7 +58,10 @@ export function isCandidateProbeCacheable(photo: PickedPhoto): boolean {
   return photo.source !== "local-folder";
 }
 
-export function parseCandidateProbeCache(raw: string): Map<string, MeasuredImageQuality> {
+export function parseCandidateProbeCache(
+  raw: string,
+  signalVersion = CANDIDATE_PROBE_SIGNAL_VERSION,
+): Map<string, MeasuredImageQuality> {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed) || parsed.version !== CACHE_VERSION || !Array.isArray(parsed.entries)) {
@@ -63,7 +69,11 @@ export function parseCandidateProbeCache(raw: string): Map<string, MeasuredImage
     }
     const entries = new Map<string, MeasuredImageQuality>();
     for (const value of parsed.entries) {
-      if (!isRecord(value) || typeof value.key !== "string") continue;
+      if (
+        !isRecord(value) ||
+        typeof value.key !== "string" ||
+        value.signalVersion !== signalVersion
+      ) continue;
       const quality = parseQuality(value.quality);
       if (quality?.blurhash) entries.set(value.key, quality);
     }
@@ -75,9 +85,13 @@ export function parseCandidateProbeCache(raw: string): Map<string, MeasuredImage
 
 export function serializeCandidateProbeCache(
   entries: ReadonlyMap<string, MeasuredImageQuality>,
+  signalVersion = CANDIDATE_PROBE_SIGNAL_VERSION,
 ): string {
-  const storedEntries = Array.from(entries, ([key, quality]) => ({ key, quality }))
-    .slice(-MAX_CACHE_ENTRIES);
+  const storedEntries = Array.from(entries, ([key, quality]) => ({
+    key,
+    signalVersion,
+    quality,
+  })).slice(-MAX_CACHE_ENTRIES);
   const stored: StoredCache = { version: CACHE_VERSION, entries: storedEntries };
   return JSON.stringify(stored);
 }
