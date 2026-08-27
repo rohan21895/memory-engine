@@ -31,9 +31,11 @@ export function NamePersonScreen({ onBack, person }: { onBack: () => void; perso
     const recorded = same ? await markSamePerson(person.id, candidate) : await markNotSamePerson(person.id, candidate);
     setBusy(false);
     setCandidate(null);
-    // A refused answer means no photo could identify one of them on its own, so
-    // there is nothing honest to store. Say so rather than failing silently.
-    if (!recorded) { setNotice("Every photo of one of them also has someone else in it, so this can’t be recorded yet."); return; }
+    // A refused answer means no photo could identify one of them on its own --
+    // now that a shared photo can be anchored on a single face, that means two
+    // faces in it are too alike to tell apart. Say so rather than failing
+    // silently: there is nothing honest to store.
+    if (!recorded) { setNotice("In their photos we can’t tell which face is which, so this can’t be recorded yet."); return; }
     setNotice(same ? "Merged. They’re one person now." : "Noted. They’ll stay separate.");
   };
   // TODO(owner): needs backend/local schema support for persisted person names and relationships.
