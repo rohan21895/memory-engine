@@ -635,10 +635,17 @@ export async function detectFacesInFrame(
   }
 }
 
-/** Detects faces and maps every box/landmark back to source-image coordinates. */
+/**
+ * Detects faces and maps every box/landmark back to source-image coordinates.
+ *
+ * `onDegraded` fires only for a genuine failure. An empty array is NOT reported:
+ * most photos legitimately contain no face, and a counter that cannot tell
+ * "nobody in this frame" from "the decode died" would be worse than none.
+ */
 export async function detectFaces(
   imageUri: string,
   source?: FaceImageDimensions,
+  onDegraded?: (error: unknown) => void,
 ): Promise<FaceBox[]> {
   let frame: FaceFrame | null = null;
   try {
@@ -647,7 +654,12 @@ export async function detectFaces(
     frame = await openFaceFrame(imageUri, source);
     if (!frame) return [];
     return await detectFacesInFrame(frame);
-  } catch {
+  } catch (error) {
+    try {
+      onDegraded?.(error);
+    } catch {
+      // Reporting must never fail the scan or the album it reports on.
+    }
     return [];
   } finally {
     await closeFaceFrame(frame);

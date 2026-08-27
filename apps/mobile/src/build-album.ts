@@ -46,6 +46,7 @@ import {
 import {
   DeepAnalysisTimingCollector,
   summarizeDurations,
+  type DeepAnalysisDegradation,
   type DeepAnalysisMeasurement,
   type DeepAnalysisPhase,
 } from "./selection/deep-analysis-timing";
@@ -154,6 +155,7 @@ export type BuildAlbumTiming = {
     | "model-ready-wait"
     | "deep-analysis"
     | "deep-analysis-phase"
+    | "analysis-degraded"
     | "model-load"
     | "pose-and-enrich"
     | "choose-best-shots"
@@ -172,6 +174,10 @@ export type BuildAlbumTiming = {
   p50Ms?: number;
   p95Ms?: number;
   reloadCount?: number;
+  /** `analysis-degraded` only: photos that lost at least one signal. */
+  degradedPhotos?: number;
+  /** `analysis-degraded` only: every phase, including the ones that lost none. */
+  degraded?: readonly DeepAnalysisDegradation[];
 };
 
 export type BuildAlbumOptions = {
@@ -233,7 +239,35 @@ function reportTiming(
   options.onTiming?.(timing);
 }
 
+/**
+ * `analysis-degraded={photos:3/64,proxy-create:0,...,tinyclip:1,oom:1}`
+ *
+ * Every phase is printed, zeros included: a build that degraded nothing has to
+ * SAY it degraded nothing, or the next person reading a log cannot tell a clean
+ * pass from a counter that never ran.
+ *
+ * `photos` is the number that matters to a user — how many frames the planner
+ * judged on less evidence than it should have. The phase totals can sum above
+ * it because one failure often takes several phases of the same photo.
+ */
+function formatDegradation(timing: BuildAlbumTiming): string {
+  const phases = (timing.degraded ?? [])
+    .map((entry) => `,${entry.phase}:${entry.count}`)
+    .join("");
+  const outOfMemory = (timing.degraded ?? []).reduce(
+    (total, entry) => total + entry.outOfMemory,
+    0,
+  );
+  return (
+    `analysis-degraded={photos:${timing.degradedPhotos ?? 0}/${timing.itemCount}` +
+    `${phases},oom:${outOfMemory}}`
+  );
+}
+
 function formatTiming(timing: BuildAlbumTiming): string {
+  if (timing.stage === "analysis-degraded") {
+    return formatDegradation(timing);
+  }
   if (timing.measurement) {
     const subject = timing.model ?? timing.phase ?? timing.stage;
     return `${subject}.${timing.measurement}={` +
@@ -620,11 +654,29 @@ async function buildAlbumImpl(
   });
   const analysisStartedAt = Date.now();
   const deepAnalysisTiming = new DeepAnalysisTimingCollector();
+  // Photos that lost at least one signal, counted once however many they lost.
+  // The per-phase totals below can exceed this: one OOM tends to take several
+  // phases of the SAME photo, and reporting only the phase sum would read as
+  // several bad photos instead of one bad moment for the heap.
+  let degradedPhotos = 0;
   const analyzed = await mapLimit(analysisInputs, ANALYZE_CONCURRENCY, async ({
     photo,
     quality: probedQuality,
   }) => {
     throwIfCancelled(options.signal);
+    let photoDegraded = false;
+    const markPhotoDegraded = (): void => {
+      if (photoDegraded) return;
+      photoDegraded = true;
+      degradedPhotos += 1;
+    };
+    /** Route a swallowed failure to both the phase total and the photo count. */
+    const degraded =
+      (phase: DeepAnalysisPhase) =>
+      (error: unknown): void => {
+        deepAnalysisTiming.recordDegraded(phase, error);
+        markPhotoDegraded();
+      };
     // ONE bounded proxy per photo, on every path — not just the capped one.
     // expo-image's loadAsync subsamples during decode (Glide submit(w,h)), so
     // the original is never fully materialized; everything downstream then works
@@ -634,7 +686,11 @@ async function buildAlbumImpl(
     // resolution, which is the heap ceiling times several.
     const proxy = await deepAnalysisTiming.measureAwaited(
       "proxy-create",
-      () => prepareCandidateAnalysisProxy(photo.uri),
+      (timing) =>
+        prepareCandidateAnalysisProxy(photo.uri, (error) =>
+          timing.recordDegraded(error),
+        ),
+      markPhotoDegraded,
     );
     try {
       throwIfCancelled(options.signal);
@@ -664,13 +720,19 @@ async function buildAlbumImpl(
       const [result, boxes, quality, detectedPose, semantic] =
         await deepAnalysisTiming.measureConcurrentWall(async () => {
           const boxesPromise = deepAnalysisTiming
-            .measureAwaited("face-detect", () =>
-              detectFaces(analysisUri, {
-                width: analysisWidth,
-                height: analysisHeight,
-              }),
+            .measureAwaited(
+              "face-detect",
+              (timing) =>
+                detectFaces(analysisUri, {
+                  width: analysisWidth,
+                  height: analysisHeight,
+                }, (error) => timing.recordDegraded(error)),
+              markPhotoDegraded,
             )
-            .catch(() => [] as FaceBox[]);
+            .catch((error) => {
+              degraded("face-detect")(error);
+              return [] as FaceBox[];
+            });
           const qualityPromise = boxesPromise
             .then((detectedBoxes) => {
               const subjectBox = dominantFaceSubjectBox(
@@ -680,20 +742,35 @@ async function buildAlbumImpl(
               );
               return deepAnalysisTiming.measureAwaited(
                 "quality-decode",
-                () =>
-                  subjectBox
-                    ? measureImageQuality(analysisUri, { subjectBox })
-                    : measureImageQuality(analysisUri),
+                (timing) => {
+                  const onDegraded = (error: unknown): void => {
+                    timing.recordDegraded(error);
+                  };
+                  return subjectBox
+                    ? measureImageQuality(analysisUri, { subjectBox, onDegraded })
+                    : measureImageQuality(analysisUri, { onDegraded });
+                },
+                markPhotoDegraded,
               );
             })
-            .catch(() => probedQuality ?? {});
+            .catch((error) => {
+              // The fallback this reaches for is the blurhash prior, which reads
+              // ~0.05 sharpness on every photo ever taken. Falling back to it is
+              // still right — an album with a mis-scored photo beats no album —
+              // but it must never again happen without a number attached.
+              degraded("quality-decode")(error);
+              return probedQuality ?? {};
+            });
           return Promise.all([
             // CX-16's orientation/reframe duplicate logic requires this documented
             // 76-value perceptual fingerprint. The capped path used to inject []
             // here, so its regression fixture passed only because it began after the
             // real bridge. Running it for the already-capped 64 restores that path.
-            deepAnalysisTiming.measureAwaited("perceptual", () =>
-              model.run(analysisUri),
+            deepAnalysisTiming.measureAwaited(
+              "perceptual",
+              (timing) =>
+                model.run(analysisUri, (error) => timing.recordDegraded(error)),
+              markPhotoDegraded,
             ),
             // Dimensions supplied so the detector neither re-measures nor
             // re-manipulates: the proxy is already a file:// image inside its
@@ -708,21 +785,27 @@ async function buildAlbumImpl(
             // final quality signal drives every photo under the planner's quality
             // floor, so large libraries produce an empty album.
             qualityPromise,
-            deepAnalysisTiming.measureAwaited("movenet", (timing) =>
-              detectBodyPose(
-                analysisUri,
-                analysisWidth,
-                analysisHeight,
-                timing,
-              ),
+            deepAnalysisTiming.measureAwaited(
+              "movenet",
+              (timing) =>
+                detectBodyPose(
+                  analysisUri,
+                  analysisWidth,
+                  analysisHeight,
+                  timing,
+                ),
+              markPhotoDegraded,
             ),
-            deepAnalysisTiming.measureAwaited("tinyclip", (timing) =>
-              analyzeSemanticImage(
-                analysisUri,
-                analysisWidth,
-                analysisHeight,
-                timing,
-              ),
+            deepAnalysisTiming.measureAwaited(
+              "tinyclip",
+              (timing) =>
+                analyzeSemanticImage(
+                  analysisUri,
+                  analysisWidth,
+                  analysisHeight,
+                  timing,
+                ),
+              markPhotoDegraded,
             ),
           ]);
         });
@@ -789,6 +872,26 @@ async function buildAlbumImpl(
           ? aggregate.reloadCount
           : undefined,
     });
+  }
+  const degradations = deepAnalysisTiming.degradations();
+  reportTiming(options, timings, {
+    stage: "analysis-degraded",
+    // Not a duration. The stage exists to carry counters, and `elapsedMs` is
+    // required by the shared shape rather than meaningful here.
+    elapsedMs: 0,
+    itemCount: analysisInputs.length,
+    degradedPhotos,
+    degraded: degradations,
+  });
+  // The counters say HOW MANY; only the message says what. Printed separately
+  // and once per phase, because a per-photo warning across 3,000 photos is a
+  // log nobody reads and the first failure is the one worth keeping.
+  for (const degradation of degradations) {
+    if (degradation.count === 0) continue;
+    console.warn(
+      `[album-build-degraded] ${degradation.phase} count=${degradation.count} ` +
+        `oom=${degradation.outOfMemory} first="${degradation.firstMessage}"`,
+    );
   }
   reportModelLoads(
     options,

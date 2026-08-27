@@ -43,6 +43,51 @@ type AwaitedSample = {
   inferenceMs?: number;
 };
 
+/** One phase's degraded photos for a single build. */
+export type DeepAnalysisDegradation = {
+  phase: DeepAnalysisPhase;
+  /** Photos that lost this phase's signal. */
+  count: number;
+  /**
+   * How many of those named an out-of-memory failure.
+   *
+   * Separated because it is the only degradation whose cause is the BATCH
+   * rather than the photo: an OOM says the pass is running too close to the
+   * heap ceiling, and the next photo is as likely to lose its signal as this
+   * one was. One decode failing on a corrupt JPEG says nothing of the kind.
+   */
+  outOfMemory: number;
+  /** The first failure seen, with local URIs removed. */
+  firstMessage: string;
+};
+
+/**
+ * Java/native memory exhaustion, however the bridge spells it.
+ *
+ * Android's ART message is `java.lang.OutOfMemoryError: Failed to allocate a
+ * <n> byte allocation with <m> free bytes ...`; a native/JS heap failure
+ * reaching JS may only carry "out of memory". Matching the allocation phrasing
+ * as well means the size is still greppable in the log line even if the class
+ * name was stripped somewhere in between.
+ */
+const OUT_OF_MEMORY = /outofmemory|out of memory|failed to allocate/iu;
+
+/**
+ * A failure as it is safe to print.
+ *
+ * Same treatment `safeFrameError` gives the face scan's one-shot warning: a
+ * decode failure quotes the URI it was handed, and that is a `content://` or
+ * `file://` path into the owner's library, which must not reach a log this
+ * repo asks people to paste into an issue.
+ */
+export function describeDegradation(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.replace(/(?:content|file):\/\/\S+/gu, "<local-uri>").slice(0, 200) ||
+    "(no message)"
+  );
+}
+
 /**
  * Batch-scoped deep-analysis accounting.
  *
@@ -54,6 +99,7 @@ type AwaitedSample = {
  */
 export class DeepAnalysisTimingCollector {
   private readonly awaited = new Map<DeepAnalysisPhase, AwaitedSample[]>();
+  private readonly degraded = new Map<DeepAnalysisPhase, DeepAnalysisDegradation>();
   private readonly concurrentWall: number[] = [];
   private readonly now: () => number;
 
@@ -61,9 +107,55 @@ export class DeepAnalysisTimingCollector {
     this.now = now;
   }
 
+  /**
+   * One photo lost one phase's signal. Safe to call from inside a catch.
+   *
+   * Never throws: a build must not fail because its own accounting did.
+   */
+  recordDegraded(phase: DeepAnalysisPhase, error: unknown): void {
+    const message = describeDegradation(error);
+    const existing = this.degraded.get(phase);
+    if (existing) {
+      existing.count += 1;
+      if (OUT_OF_MEMORY.test(message)) existing.outOfMemory += 1;
+      return;
+    }
+    this.degraded.set(phase, {
+      phase,
+      count: 1,
+      outOfMemory: OUT_OF_MEMORY.test(message) ? 1 : 0,
+      firstMessage: message,
+    });
+  }
+
+  /**
+   * Every phase, in pipeline order, including the ones that lost nothing.
+   *
+   * A zero is reported rather than omitted on purpose: "quality-decode:0" is
+   * evidence the counter ran and found nothing, which an absent field is not.
+   */
+  degradations(): DeepAnalysisDegradation[] {
+    return DEEP_ANALYSIS_PHASES.map(
+      (phase) =>
+        this.degraded.get(phase) ?? {
+          phase,
+          count: 0,
+          outOfMemory: 0,
+          firstMessage: "",
+        },
+    );
+  }
+
+  /**
+   * `observer` is told about every degradation this phase reports, in addition
+   * to the batch counter. The caller uses it to count PHOTOS rather than
+   * signals: photos are analysed concurrently, so nothing outside this
+   * per-invocation closure can attribute a degradation to the right one.
+   */
   async measureAwaited<T>(
     phase: DeepAnalysisPhase,
     operation: (timing: ModelExecutionTimingRecorder) => Promise<T>,
+    observer?: (error: unknown) => void,
   ): Promise<T> {
     const startedAt = this.now();
     let modelLoad: ModelLoadEvent | undefined;
@@ -74,6 +166,14 @@ export class DeepAnalysisTimingCollector {
       },
       recordInference: (elapsedMs) => {
         inferenceMs = Math.max(0, elapsedMs);
+      },
+      recordDegraded: (error) => {
+        this.recordDegraded(phase, error);
+        try {
+          observer?.(error);
+        } catch {
+          // A caller's counter must not fail the build it is counting.
+        }
       },
     };
     try {

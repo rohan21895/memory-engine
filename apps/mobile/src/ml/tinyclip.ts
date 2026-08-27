@@ -1,7 +1,7 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { createModelCache, type ModelCacheLoadStats, type ModelExecutionTimingRecorder } from "./model-cache.ts";
+import { createModelCache, reportDegraded, type ModelCacheLoadStats, type ModelExecutionTimingRecorder } from "./model-cache.ts";
 
 const INPUT_SIZE = 224;
 const EMBEDDING_SIZE = 512;
@@ -86,7 +86,11 @@ export async function analyzeSemanticImage(
   let input: Float32Array;
   try {
     input = await imageFloatTensor(imageUri, sourceWidth, sourceHeight);
-  } catch {
+  } catch (error) {
+    // Still non-fatal, no longer silent. This catch covers the native
+    // resize/crop and the JPEG decode, so it is where a memory failure during
+    // preprocessing lands and where it used to disappear.
+    reportDegraded(timing, error);
     return undefined;
   }
 
@@ -117,7 +121,8 @@ export async function analyzeSemanticImage(
       if (!outputs) return undefined;
       const embedding = parseEmbeddingOutput(outputs[0]);
       return embedding ? semanticSignals(embedding) : undefined;
-    } catch {
+    } catch (error) {
+      reportDegraded(timing, error);
       return undefined;
     }
   });

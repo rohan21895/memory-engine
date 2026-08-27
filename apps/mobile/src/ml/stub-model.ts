@@ -206,13 +206,21 @@ function decodeBase64(value: string): Uint8Array {
 
 /** Cheap pixel-based model used until the bundled ONNX models are wired. */
 export class StubOnDeviceModel implements OnDeviceModel {
-  async run(imageUri: string): Promise<ModelResult> {
+  async run(
+    imageUri: string,
+    onDegraded?: (error: unknown) => void,
+  ): Promise<ModelResult> {
     try {
       return {
         embedding: await createPerceptualEmbedding(imageUri),
         faces: 0,
       };
-    } catch {
+    } catch (error) {
+      try {
+        onDegraded?.(error);
+      } catch {
+        // Reporting must never fail the fingerprint it reports on.
+      }
       return {
         embedding: createFallbackEmbedding(hashUri(imageUri)),
         faces: 0,

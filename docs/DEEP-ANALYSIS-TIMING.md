@@ -95,10 +95,54 @@ emitted line carries `analysis-note="...do not sum awaited phases"` for exactly 
 reason.
 
 The one awaited figure still worth attention is `quality-decode` at mean 2,131 ms with a
-p95 of 9,118 ms. Even discounting queue wait, a p95 of nine seconds on a *pixel decode*
-is out of line with the 1280 px analysis proxy it is supposed to be reading, and it sits
-next to the 29 MB single allocation that threw `OutOfMemoryError` during this same build.
-Both point at a full-resolution decode somewhere off the proxy path.
+p95 of 9,118 ms.
+
+## Addendum: the 29 MB allocation was not a decode
+
+The first reading of that p95, written above, was that it sat next to the 29 MB
+`OutOfMemoryError` from the same build and that both pointed at a full-resolution decode
+off the proxy path. That reading is wrong, and the arithmetic settles it without a
+rebuild.
+
+**28,975,795 = 5 x 5,795,159, and 5,795,159 is prime.** A bitmap's byte count is
+`rowBytes x height`, so it is a multiple of 4 for ARGB_8888 and of 2 for RGB_565. This
+number is odd. It cannot be a bitmap pixel buffer of any Android config. ART reports a
+`byte[]` as `12 + length`, which makes this a **27.63 MiB byte array** — a
+data-dependent length, i.e. a payload, not a raster.
+
+Two more things follow from the message itself. `growth limit 268435456` is the ART Java
+heap, and since Android 8 `Bitmap` pixels live in native memory, not there. Hermes
+allocates its JS heap separately too, so the ~89 MB of resident `number[]` face
+embeddings is not in that 268 MB either. The build was at ~244 MB of **Java** heap, and
+whatever filled it was Java-side bytes.
+
+Tracing the album path agrees. Every per-photo decode reads the shared proxy:
+`prepareCandidateAnalysisProxy` bounds the original with `Image.loadAsync(maxWidth: 1280,
+maxHeight: 1280)` (Glide subsamples during decode, and with `centerInside`'s MEMORY
+rounding a 4032 px frame decodes at 1008 px), and quality, face detection, MoveNet,
+TinyCLIP and the perceptual fingerprint are all handed `proxy.uri` with `proxy.width` /
+`proxy.height`. `detectFaces` then short-circuits entirely, because the proxy is already
+a `file://` image inside `MAX_DETECTION_EDGE`.
+
+The p95 has a simpler explanation that costs no heap: `measureImageQuality` runs a JS
+JPEG decode plus four full-buffer passes over ~200k pixels on the one JS thread, six
+photos in flight, and `measureAwaited` starts its clock at the call.
+
+**Why this is still open.** The allocation has no site because six independent catches on
+one photo's analysis path swallowed their errors and returned `undefined` / `{}` / `[]`.
+The next build says so out loud:
+
+```
+analysis-degraded={photos:3/64,proxy-create:0,perceptual:0,face-detect:1,quality-decode:2,movenet:0,tinyclip:0,oom:1}
+[album-build-degraded] quality-decode count=2 oom=1 first="java.lang.OutOfMemoryError: Failed to allocate a ..."
+```
+
+If `oom` is 0 on a build that logs an `OutOfMemoryError`, the allocation is outside the
+analysis pass — and the file reads are then the place to look, because
+`readAsStringAsync` allocates a `byte[]` of exactly the file's length (Kotlin's
+`InputStream.readBytes()` sizes its `ByteArrayOutputStream` from `available()` and then
+copies it), which is the one shape in this app that produces an arbitrary length like
+28,975,783.
 
 ---
 
@@ -130,8 +174,9 @@ Both point at a full-resolution decode somewhere off the proxy path.
    96–192 candidates is 3.7–7.5 minutes of deep analysis. §14's budget is unreachable
    until this stage is faster, exactly as sequenced.
 4. **A 29 MB allocation threw OOM during this build** and the app caught it and carried
-   on. Some photo's analysis silently degraded and nothing reports which. Tracked
-   separately.
+   on. Some photo's analysis silently degraded and nothing reported which. It still
+   catches and still carries on — it no longer keeps quiet. See the addendum above for
+   what the number rules out and what the new counters will say.
 
 ---
 

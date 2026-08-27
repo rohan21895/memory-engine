@@ -30,7 +30,39 @@ export type ModelExecutionTimingRecorder = {
   recordModelLoad(event: ModelLoadEvent): void;
   /** Time spent inside `model.run`, excluding preprocessing, queue wait, and load. */
   recordInference(elapsedMs: number): void;
+  /**
+   * This photo lost a signal, and why.
+   *
+   * Every wrapper on the analysis path swallows its own failures and returns
+   * `undefined`/`{}`/`[]` so one bad photo cannot fail an album. That is the
+   * right behaviour and it stays — but until this existed, the swallow was also
+   * the END of the story: a 29MB `OutOfMemoryError` thrown inside a native
+   * decode was caught, the album quietly got worse, and the only trace left was
+   * a timing sample indistinguishable from a healthy one. `measureAwaited`
+   * records in a `finally`, so a rejected phase still produced a duration.
+   *
+   * Callers must keep catching. They must no longer keep quiet.
+   */
+  recordDegraded(error: unknown): void;
 };
+
+/**
+ * Report a swallowed failure without letting the report become the failure.
+ *
+ * The recorder is optional (an offline caller passes none) and is supplied by
+ * the caller, so it is exactly the kind of thing that must not be able to throw
+ * out of a catch block and turn one lost signal into a lost album.
+ */
+export function reportDegraded(
+  timing: ModelExecutionTimingRecorder | undefined,
+  error: unknown,
+): void {
+  try {
+    timing?.recordDegraded(error);
+  } catch {
+    // Degradation reporting must never fail the thing it is reporting on.
+  }
+}
 
 export type ModelCacheLoadStats = {
   sequence: number;

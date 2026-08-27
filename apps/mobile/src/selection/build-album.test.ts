@@ -25,10 +25,13 @@ assert(
     source.includes("detectFaces(analysisUri, {"),
   "face detection must be shared with quality measurement",
 );
+// The `onDegraded` half is new and belongs in the SAME assertion: the branch a
+// gate does not name is the branch that loses it. A decode that dies on the
+// no-face branch degrades exactly as much as one that dies with a box.
 assert(
-  source.includes("? measureImageQuality(analysisUri, { subjectBox })") &&
-    source.includes(": measureImageQuality(analysisUri),"),
-  "quality must receive a subject box only when a detected face provides one",
+  source.includes("? measureImageQuality(analysisUri, { subjectBox, onDegraded })") &&
+    source.includes(": measureImageQuality(analysisUri, { onDegraded });"),
+  "quality must receive a subject box only when a detected face provides one, and must report a failed decode on either branch",
 );
 assert(
   source.includes("...quality,") &&
@@ -86,9 +89,15 @@ assert(
     source.includes(": semanticEmbedding ?? [];"),
   "semantic embedding must remain the fallback when perceptual data is absent",
 );
+// The callback is pinned alongside the call because `run` NEVER rejects: on
+// failure it returns a URI-seeded fallback embedding, which is a valid-looking
+// 32-value vector unrelated to the pixels. Nothing downstream can detect that,
+// so the only evidence it happened is this argument being passed.
 assert(
-  source.includes("model.run(analysisUri),"),
-  "the real heavy-analysis bridge must produce the perceptual fingerprint",
+  source.includes(
+    "model.run(analysisUri, (error) => timing.recordDegraded(error)),",
+  ),
+  "the real heavy-analysis bridge must produce the perceptual fingerprint, and must report when it fell back",
 );
 assert(
   !source.includes("? Promise.resolve({ embedding: [], faces: 0 })"),

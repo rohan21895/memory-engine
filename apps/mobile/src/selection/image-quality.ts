@@ -99,6 +99,17 @@ export type MeasureImageQualityOptions = {
    * exercise this exact measurement function without an Android/iOS runtime.
    */
   imageLoader?: QualityImageLoader;
+  /**
+   * Called when the decode failed and `{}` is about to be returned.
+   *
+   * `{}` is also what a caller gets for an image with no measurable pixels, so
+   * the return value alone cannot tell a failure from a legitimate blank. That
+   * ambiguity is why a decode dying of `OutOfMemoryError` cost the album a
+   * sharpness score and left no record: the caller substituted the blurhash
+   * prior -- which this file documents reads ~0.05 sharpness on ANY photo --
+   * and the frame quietly sank below the planner's quality floor.
+   */
+  onDegraded?: (error: unknown) => void;
 };
 
 export type LoadedQualityImage = {
@@ -419,7 +430,12 @@ export async function measureImageQuality(
       clippedFraction: exposure.clippedFraction,
       ...subjectQuality,
     };
-  } catch {
+  } catch (error) {
+    try {
+      options.onDegraded?.(error);
+    } catch {
+      // Measurement stays fail-neutral even when its own reporting fails.
+    }
     return {};
   } finally {
     if (loaded?.cleanup) {
