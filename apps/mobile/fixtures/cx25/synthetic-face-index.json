@@ -1,0 +1,9 @@
+{
+  "format": "photeo-synthetic-face-index-v1",
+  "version": 22,
+  "modelRevision": "synthetic-current",
+  "seed": 25021,
+  "people": 50,
+  "dimensions": 32,
+  "threshold": 0.44
+}

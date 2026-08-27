@@ -19,6 +19,8 @@
     "codegen": "node scripts/ci/generate-contracts.mjs",
     "codegen:check": "node scripts/ci/check-codegen-freshness.mjs",
     "test:egress": "npm run build --workspace @memory-engine/api --silent && node scripts/ci/run-no-skip-tests.mjs tests/egress/*.test.mjs",
+    "gates:cx25": "node apps/mobile/src/eval-gates/run-cx25-gates.ts",
+    "test:cx25": "node apps/mobile/src/eval-gates/cx25-gates.test.ts",
     "ci": "npm run lint && npm test && npm run codegen:check && npm run test:egress",
     "postinstall": "patch-package"
   },

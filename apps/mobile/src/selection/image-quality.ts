@@ -91,7 +91,27 @@ export type NormalizedBox = PixelRegion;
 
 export type MeasureImageQualityOptions = {
   subjectBox?: NormalizedBox;
+  /**
+   * Offline decoder seam for deterministic evaluation.
+   *
+   * Production callers leave this unset and use Expo's one-decode proxy path.
+   * The standing quality gate supplies decoded fixture pixels here so it can
+   * exercise this exact measurement function without an Android/iOS runtime.
+   */
+  imageLoader?: QualityImageLoader;
 };
+
+export type LoadedQualityImage = {
+  rgba: Uint8Array;
+  width: number;
+  height: number;
+  cleanup?: () => Promise<void>;
+};
+
+export type QualityImageLoader = (
+  uri: string,
+  targetWidth: number,
+) => Promise<LoadedQualityImage>;
 
 type LaplacianStats = {
   total: number;
@@ -355,26 +375,90 @@ export async function measureImageQuality(
   uri: string,
   options: MeasureImageQualityOptions = {},
 ): Promise<MeasuredImageQuality> {
-  let outputUri: string | undefined;
+  let loaded: LoadedQualityImage | undefined;
   try {
-    const [{ manipulateAsync, SaveFormat }, { decode: decodeJpeg }] =
-      await Promise.all([
-        import("expo-image-manipulator"),
-        import("jpeg-js"),
-      ]);
-    const thumbnail = await manipulateAsync(
+    loaded = await (options.imageLoader ?? loadQualityImageWithExpo)(
       uri,
-      [{ resize: { width: QUALITY_SAMPLE_WIDTH } }],
-      {
-        base64: true,
-        compress: 0.9,
-        format: SaveFormat.JPEG,
-      },
+      QUALITY_SAMPLE_WIDTH,
     );
-    outputUri = thumbnail.uri;
-
-    if (!thumbnail.base64) {
+    if (loaded.width < 1 || loaded.height < 1 || loaded.rgba.length < 4) {
       return {};
+    }
+
+    const gray = rgbaToGrayscale(
+      loaded.rgba,
+      loaded.width,
+      loaded.height,
+    );
+    const exposure = exposureFromPixels(gray, loaded.width, loaded.height);
+    const region = toPixelRegion(
+      options.subjectBox,
+      loaded.width,
+      loaded.height,
+    );
+    const { inside, outside } = laplacianStats(
+      gray,
+      loaded.width,
+      loaded.height,
+      region,
+    );
+    // Reuse the exact-face split for full-frame sharpness, then measure the
+    // expanded subject independently so blurred hair/body cannot hide in the
+    // frame average.
+    const subjectQuality = subjectQualityFromPixelStats(
+      gray,
+      loaded.width,
+      loaded.height,
+      region,
+      { inside, outside },
+    );
+
+    return {
+      sharpness: normalizeSharpness(varianceOf(combine(inside, outside))),
+      exposure: exposure.exposure,
+      clippedFraction: exposure.clippedFraction,
+      ...subjectQuality,
+    };
+  } catch {
+    return {};
+  } finally {
+    if (loaded?.cleanup) {
+      try {
+        await loaded.cleanup();
+      } catch {
+        // Best-effort cache cleanup; measurement must stay fail-neutral.
+      }
+    }
+  }
+}
+
+/** Production decoder: one Expo resize/JPEG round-trip, exactly as before. */
+async function loadQualityImageWithExpo(
+  uri: string,
+  targetWidth: number,
+): Promise<LoadedQualityImage> {
+  const [{ manipulateAsync, SaveFormat }, { decode: decodeJpeg }] =
+    await Promise.all([
+      import("expo-image-manipulator"),
+      import("jpeg-js"),
+    ]);
+  const thumbnail = await manipulateAsync(
+    uri,
+    [{ resize: { width: targetWidth } }],
+    {
+      base64: true,
+      compress: 0.9,
+      format: SaveFormat.JPEG,
+    },
+  );
+  const cleanup = async (): Promise<void> => {
+    const { deleteAsync } = await import("expo-file-system/legacy");
+    await deleteAsync(thumbnail.uri, { idempotent: true });
+  };
+
+  try {
+    if (!thumbnail.base64) {
+      return { rgba: new Uint8Array(), width: 0, height: 0, cleanup };
     }
 
     const decoded = decodeJpeg(decodeBase64(thumbnail.base64), {
@@ -389,58 +473,15 @@ export async function measureImageQuality(
       maxResolutionInMP: 4,
       maxMemoryUsageInMB: 48,
     });
-    if (decoded.width < 1 || decoded.height < 1 || decoded.data.length < 4) {
-      return {};
-    }
-
-    const gray = rgbaToGrayscale(
-      decoded.data,
-      decoded.width,
-      decoded.height,
-    );
-    const exposure = exposureFromPixels(gray, decoded.width, decoded.height);
-    const region = toPixelRegion(
-      options.subjectBox,
-      decoded.width,
-      decoded.height,
-    );
-    const { inside, outside } = laplacianStats(
-      gray,
-      decoded.width,
-      decoded.height,
-      region,
-    );
-    // Reuse the exact-face split for full-frame sharpness, then measure the
-    // expanded subject independently so blurred hair/body cannot hide in the
-    // frame average.
-    const subjectQuality = subjectQualityFromPixelStats(
-      gray,
-      decoded.width,
-      decoded.height,
-      region,
-      { inside, outside },
-    );
-
     return {
-      sharpness: normalizeSharpness(varianceOf(combine(inside, outside))),
-      exposure: exposure.exposure,
-      clippedFraction: exposure.clippedFraction,
-      ...subjectQuality,
+      rgba: decoded.data,
+      width: decoded.width,
+      height: decoded.height,
+      cleanup,
     };
-  } catch {
-    return {};
-  } finally {
-    // manipulateAsync always writes a cache file, base64 or not, and nothing
-    // else ever reads this one. Left behind it grows the cache by one JPEG per
-    // photo per build, forever.
-    if (outputUri) {
-      try {
-        const { deleteAsync } = await import("expo-file-system/legacy");
-        await deleteAsync(outputUri, { idempotent: true });
-      } catch {
-        // Best-effort cache cleanup; measurement must stay fail-neutral.
-      }
-    }
+  } catch (error) {
+    await cleanup().catch(() => undefined);
+    throw error;
   }
 }
 

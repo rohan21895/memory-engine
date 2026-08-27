@@ -1,0 +1,5 @@
+{
+  "format": "photeo-mlkit-eyes-open-fixtures-v1",
+  "groups": [],
+  "blocker": "No checked-in fixture contains a real near-duplicate frame group with ML Kit eye-open probabilities at both >=0.8 and <=0.2. UNKNOWN values are not eligible, and the existing composite artwork is not a real multi-frame ML Kit capture."
+}

@@ -21,8 +21,16 @@ AppRegistry.registerHeadlessTask(SCAN_TASK_KEY, () => holdScanTask);
 // synthetic embeddings -- which have disagreed with the device every time. The
 // native side skips the copy unless the index actually changed, and a failure
 // is silent because nothing the user does depends on it.
-void exportPrivateFile('face-index.json').then((path) => {
-  if (path) console.log(`[PhoteoFaceIndex] exported ${path}`);
+void Promise.all([
+  exportPrivateFile('face-index.json'),
+  exportPrivateFile('face-observations.jsonl'),
+]).then(([indexPath, observationsPath]) => {
+  if (indexPath || observationsPath) {
+    console.log(
+      `[PhoteoFaceIndex] exported index=${indexPath ?? "unchanged"} ` +
+      `observations=${observationsPath ?? "unchanged"}`,
+    );
+  }
 });
 
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);

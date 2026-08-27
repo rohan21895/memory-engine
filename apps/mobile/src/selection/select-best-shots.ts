@@ -942,6 +942,36 @@ function enhancedQualityScore(input: {
   return clamp01(weightedTotal / availableWeight - cutPenalty);
 }
 
+/**
+ * Public scoring seam for standing evaluations.
+ *
+ * It intentionally delegates to the same category-weighted scorer used by
+ * `selectBestShots`; gates must not carry a second copy of these weights.
+ */
+export function qualityScoreForSignals(input: {
+  analysis: QualitySignals;
+  width?: number;
+  height?: number;
+  detailScore?: number;
+}): number {
+  const faces = significantFaces(input.analysis.faces, SIGNIFICANT_FACE_AREA);
+  const sharpness =
+    subjectFocusSharpness(input.analysis) ?? unitSignal(input.analysis.sharpness);
+  return enhancedQualityScore({
+    analysis: input.analysis,
+    detailScore: input.detailScore,
+    sharpness,
+    eyesOpen: worstEyesOpen(faces),
+    smile: bestSmile(faces),
+    cutFace: faces.some((face) => face.cutAtEdge),
+    pixels:
+      positiveNumber(input.width) !== undefined &&
+      positiveNumber(input.height) !== undefined
+        ? input.width! * input.height!
+        : 0,
+  });
+}
+
 function resolutionQuality(pixels: number): number | undefined {
   return pixels > 0 ? clamp01(Math.sqrt(pixels / 12_000_000)) : undefined;
 }
