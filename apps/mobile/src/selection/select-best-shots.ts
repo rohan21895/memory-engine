@@ -9,6 +9,14 @@ import { relativeQualityFloor } from "./image-quality.ts";
 import { bestSmile, significantFaces, worstEyesOpen } from "./quality-signals.ts";
 import type { Category, QualitySignals } from "./quality-signals";
 import type { AlbumData, Alt, Pool, Selected } from "./types";
+// @ts-expect-error Node's native TypeScript runner requires the extension.
+import {
+  PHOTO_SELECTOR_CONFIG_VERSION,
+  preferenceAssetId,
+  type NearDuplicateGroupObservation,
+  type ObservedPreferenceCandidate,
+  type PhotoPreferenceFeatures,
+} from "./preference-label-store.ts";
 
 /** Absolute quality gate calibrated on desktop-grade measurements. */
 const DESKTOP_QUALITY_FLOOR = 0.35;
@@ -129,6 +137,11 @@ type RankedTake = {
   winner: Candidate;
   blinkGateEnabled: boolean;
   blinkRejectedIds: Set<string>;
+  cutFaceRejectedIds: Set<string>;
+};
+
+export type BestShotSelectionObservations = {
+  nearDuplicateGroups: NearDuplicateGroupObservation[];
 };
 
 /**
@@ -143,6 +156,21 @@ export function selectBestShots(
     excludedMediaIds?: readonly string[];
   },
 ): AlbumData {
+  return selectBestShotsWithObservations(photos, opts).album;
+}
+
+/**
+ * The normal selector plus a read-only view of evidence it already computed.
+ * Persistence lives outside this function, so observing can never alter a pick.
+ */
+export function selectBestShotsWithObservations(
+  photos: AnalyzedPhoto[],
+  opts: {
+    count: number;
+    pinnedMediaIds?: readonly string[];
+    excludedMediaIds?: readonly string[];
+  },
+): { album: AlbumData; observations: BestShotSelectionObservations } {
   const candidates = buildCandidates(photos);
   const eligibleCandidates = candidates.filter(
     (candidate) => !candidate.analysis?.isScreenshotOrDocument,
@@ -154,15 +182,21 @@ export function selectBestShots(
 
   if (candidates.length === 0) {
     return {
-      album_id: albumId([], requestedCount),
-      selected: [],
-      pool: [],
+      album: {
+        album_id: albumId([], requestedCount),
+        selected: [],
+        pool: [],
+      },
+      observations: { nearDuplicateGroups: [] },
     };
   }
 
   const rankedTakes = buildTakes(eligibleCandidates)
     .map(rankTake)
     .sort(compareRankedTakes);
+  const nearDuplicateGroups = rankedTakes
+    .filter(({ take }) => take.candidates.length > 1)
+    .map(observeRankedTake);
   const plan = planAlbum(
     rankedTakes.map((rankedTake) => ({
       mediaId: rankedTake.winner.photo.id,
@@ -274,12 +308,15 @@ export function selectBestShots(
     }));
 
   return {
-    album_id: albumId(
-      candidates.map(({ photo }) => photo),
-      requestedCount,
-    ),
-    selected,
-    pool,
+    album: {
+      album_id: albumId(
+        candidates.map(({ photo }) => photo),
+        requestedCount,
+      ),
+      selected,
+      pool,
+    },
+    observations: { nearDuplicateGroups },
   };
 }
 
@@ -563,7 +600,85 @@ function rankTake(take: Take): RankedTake {
     winner,
     blinkGateEnabled,
     blinkRejectedIds,
+    cutFaceRejectedIds,
   };
+}
+
+function observeRankedTake(rankedTake: RankedTake): NearDuplicateGroupObservation {
+  const assetIds = rankedTake.take.candidates
+    .map(({ photo }) => preferenceAssetId(photo.id))
+    .sort((left, right) => left.localeCompare(right));
+  return {
+    groupId: preferenceGroupId(assetIds),
+    winnerAssetId: preferenceAssetId(rankedTake.winner.photo.id),
+    candidates: rankedTake.take.candidates
+      .map(observeCandidate)
+      .sort((left, right) => left.assetId.localeCompare(right.assetId)),
+    blinkGateEnabled: rankedTake.blinkGateEnabled,
+    blinkRejectedAssetIds: Array.from(
+      rankedTake.blinkRejectedIds,
+      preferenceAssetId,
+    ).sort(),
+    cutFaceRejectedAssetIds: Array.from(
+      rankedTake.cutFaceRejectedIds,
+      preferenceAssetId,
+    ).sort(),
+  };
+}
+
+function observeCandidate(candidate: Candidate): ObservedPreferenceCandidate {
+  const semantic = candidate.photo.semantic;
+  const features: PhotoPreferenceFeatures = {
+    qualityScore: candidate.quality,
+    qualityBand: qualityBand(candidate),
+    smileTieRank: smileRank(candidate),
+    sourcePixelCount: candidate.pixels,
+    tieBreakInputIndex: candidate.inputIndex,
+    detailScore: candidate.detailScore,
+    sharpness: candidate.sharpness,
+    eyesOpen: candidate.eyesOpen,
+    smile: candidate.smile,
+    cutFace: candidate.cutFace,
+    category: candidate.analysis?.category,
+    exposure: candidate.analysis?.exposure,
+    clippedFraction: candidate.analysis?.clippedFraction,
+    faceSharpness: candidate.analysis?.faceSharpness,
+    subjectSharpness: candidate.analysis?.subjectSharpness,
+    subjectBackgroundRatio: candidate.analysis?.subjectBackgroundRatio,
+    faceCount: candidate.analysis?.faceCount,
+    largestFaceAreaRatio: candidate.analysis?.largestFaceAreaRatio,
+    anyFaceCutAtEdge: candidate.analysis?.anyFaceCutAtEdge,
+    semantic: semantic
+      ? {
+          aesthetic: semantic.aesthetic,
+          composed: semantic.composed,
+          cleanFrame: semantic.cleanFrame,
+          sleeping: semantic.sleeping,
+          awake: semantic.awake,
+          embraceContext: semantic.embraceContext,
+          screenshotDocument: semantic.screenshotDocument,
+        }
+      : undefined,
+    groupingEmbedding: candidate.embedding?.slice(),
+    groupingEmbeddingSpace: candidate.perceptualEmbedding
+      ? "phone-perceptual-v1"
+      : semantic
+        ? "tinyclip-vit-8m16-yfcc15m-v1"
+        : undefined,
+    perceptualEmbedding: candidate.perceptualEmbedding?.slice(),
+    semanticEmbedding: semantic?.embedding.slice(),
+  };
+  return { assetId: preferenceAssetId(candidate.photo.id), features };
+}
+
+function preferenceGroupId(sortedAssetIds: string[]): string {
+  const value = `${PHOTO_SELECTOR_CONFIG_VERSION}\0${sortedAssetIds.join("\0")}`;
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `near-duplicate:${hash.toString(16).padStart(8, "0")}`;
 }
 
 /**
