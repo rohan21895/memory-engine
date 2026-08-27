@@ -2296,10 +2296,35 @@ function suggestionCacheKey(): string {
 export function cachedFaceMergeSuggestions(
   limit = 60,
 ): MergeSuggestion[] | undefined {
+  const stored = storedFaceMergeSuggestions(limit);
+  return stored?.fresh ? stored.list : undefined;
+}
+
+/**
+ * The stored queue whether or not it is still current, and which it is.
+ *
+ * An exact-match cache is not enough on the owner's phone, and the device said
+ * so: a background consolidation moved his library from 17,769 faces to 17,701
+ * between two visits to this screen, and any change to people, faces or bars
+ * invalidates the key by design. On a library that is still scanning, a
+ * strictly-fresh cache is discarded almost every time — so he kept meeting the
+ * intro card and its "around 15 seconds" for work that had already been done.
+ *
+ * A slightly stale question is still a real question: every pair in it cleared
+ * the merge bar, and his recorded answers live in the index rather than in this
+ * list, so nothing he has already decided can come back. The screen shows the
+ * stored queue at once and refreshes behind it, which is what he asked for —
+ * "if you have already done this, don't show it to me again".
+ */
+export function storedFaceMergeSuggestions(
+  limit = 60,
+): { list: MergeSuggestion[]; fresh: boolean } | undefined {
   const cached = index.mergeSuggestions;
-  return cached && cached.limit >= limit && cached.key === suggestionCacheKey()
-    ? cached.list.slice(0, limit)
-    : undefined;
+  if (!cached) return undefined;
+  return {
+    list: cached.list.slice(0, limit),
+    fresh: cached.limit >= limit && cached.key === suggestionCacheKey(),
+  };
 }
 
 /** Exact by design: any bar movement requires the historical full sweep. */

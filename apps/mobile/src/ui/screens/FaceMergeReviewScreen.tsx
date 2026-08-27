@@ -1,12 +1,12 @@
 import { Image } from "expo-image";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StatusBar, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 
 import {
   contentUri,
   faceIndexStatus,
   getFaceIndexPerson,
-  cachedFaceMergeSuggestions,
+  storedFaceMergeSuggestions,
   markNotSamePerson,
   markSamePerson,
   suggestedFaceMerges,
@@ -44,17 +44,31 @@ function afterPaint(): Promise<void> {
 
 export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
   const { width } = useWindowDimensions();
-  // Work already done is not announced again. If the stored queue is still
-  // valid this opens straight on a question -- no intro card, no "Find possible
-  // matches" tap, no fifteen-second warning for something that will not take
-  // fifteen seconds. Reading it costs no observations parse and no sweep, so it
-  // is safe during render; `useState` keeps it to once per mount.
-  const [restored] = useState(() => cachedFaceMergeSuggestions());
+  // Work already done is not announced again. The stored queue opens straight
+  // on a question -- no intro card, no "Find possible matches" tap, no
+  // fifteen-second warning for something already finished -- even when a
+  // background consolidation has since moved the library and made it stale.
+  //
+  // Stale is shown on purpose. Every pair in it cleared the merge bar, and his
+  // answers live in the index rather than in this list, so nothing he has
+  // already decided reappears. Entries whose people no longer resolve ARE
+  // dropped, because those would render an empty card.
+  //
+  // Reading it costs no observations parse and no sweep, so it is safe during
+  // render; `useState` keeps it to once per mount.
+  const [restored] = useState(() => {
+    const stored = storedFaceMergeSuggestions();
+    if (!stored) return undefined;
+    const usable = stored.list.filter((suggestion) =>
+      faceMergeReviewPair(suggestion, getFaceIndexPerson),
+    );
+    return usable.length > 0 ? { list: usable, fresh: stored.fresh } : undefined;
+  });
   const [phase, setPhase] = useState<ReviewPhase>(
-    restored && restored.length > 0 ? "review" : "idle",
+    restored ? "review" : "idle",
   );
   const [suggestions, setSuggestions] = useState<MergeSuggestion[]>(
-    restored ?? [],
+    restored?.list ?? [],
   );
   const [answering, setAnswering] = useState(false);
   const [undoing, setUndoing] = useState(false);
@@ -66,6 +80,33 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
   // and this number only decorates the intro copy. Answering a pair re-renders
   // this screen, so a per-render call would pay that walk on every tap.
   const [personCount] = useState(() => faceIndexStatus().people);
+
+  // Refresh behind the stale queue he is already reading. No spinner and no
+  // phase change: the point is that he never waits for this.
+  //
+  // The result is applied only while he has not answered anything yet. Once he
+  // has, `remainingFaceMergeSuggestions` has been filtering the list he can see,
+  // and swapping a freshly swept one underneath would move the card out from
+  // under his thumb for no gain -- the next visit picks it up anyway.
+  const untouched = useRef(true);
+  untouched.current = lastAnswer === null && !answering;
+  useEffect(() => {
+    if (!restored || restored.fresh) return;
+    let cancelled = false;
+    void suggestedFaceMerges()
+      .then((fresh) => {
+        if (cancelled || !untouched.current) return;
+        setSuggestions(fresh);
+        if (fresh.length === 0) setPhase("done");
+      })
+      // A background refresh that fails must leave the stale queue alone: it is
+      // still answerable, and there is nothing here worth interrupting him for.
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [restored]);
+
   const pair = suggestions[0]
     ? faceMergeReviewPair(suggestions[0], getFaceIndexPerson)
     : undefined;
