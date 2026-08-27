@@ -2,6 +2,8 @@ import {
   __observationsFileForTest as file,
   // @ts-expect-error Node's TypeScript runner requires the source extension.
 } from "./face-index.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { dequantized } from "./face-cluster.ts";
 import type { FaceObservation } from "./types.ts";
 
 function assert(value: unknown, message: string): asserts value {
@@ -146,13 +148,33 @@ const library = [observation("a", 0), observation("b", 30), observation("c", 61)
       back.embedding.length === library[i].embedding.length,
       `line ${i} keeps every dimension`,
     );
-    const dot = back.embedding.reduce(
-      (sum: number, value: number, index: number) =>
-        sum + value * library[i].embedding[index],
+    // A loaded observation is the COMPACT form: 512 bytes, not 512 doubles.
+    // That is the whole memory saving, so it is asserted rather than assumed --
+    // a load path that quietly expanded again would still pass every check
+    // below it.
+    assert(
+      back.embedding instanceof Int8Array,
+      `line ${i} must come back as bytes, not as 512 boxed doubles`,
+    );
+    // And expanding those bytes must reproduce EXACTLY the doubles the old
+    // `Array.from(signed, (c) => c / 127)` produced -- `Object.is`, not a
+    // tolerance. Everything that clusters this library reads the expansion, and
+    // a value that differs in its last bit can reorder a greedy merge.
+    const expanded = dequantized(back.embedding);
+    const bytes = back.embedding as Int8Array;
+    for (let d = 0; d < bytes.length; d += 1) {
+      assert(
+        Object.is(expanded[d], bytes[d] / 127),
+        `line ${i} dimension ${d} must expand to the identical double ` +
+          `(${expanded[d]} vs ${bytes[d] / 127})`,
+      );
+    }
+    const original = dequantized(library[i].embedding);
+    const dot = expanded.reduce(
+      (sum: number, value: number, index: number) => sum + value * original[index],
       0,
     );
-    const magnitude =
-      Math.hypot(...back.embedding) * Math.hypot(...library[i].embedding);
+    const magnitude = Math.hypot(...expanded) * Math.hypot(...original);
     assert(
       dot / magnitude > 0.999,
       `line ${i} must come back as the same face (cosine ${(dot / magnitude).toFixed(5)})`,
@@ -164,13 +186,13 @@ const library = [observation("a", 0), observation("b", 30), observation("c", 61)
   const first = restored[0];
   const last = restored[library.length - 1];
   assert(first !== null && last !== null, "both ends of the sample parsed");
-  const cross = first.embedding.reduce(
-    (sum: number, value: number, index: number) =>
-      sum + value * last.embedding[index],
+  const firstValues = dequantized(first.embedding);
+  const lastValues = dequantized(last.embedding);
+  const cross = firstValues.reduce(
+    (sum: number, value: number, index: number) => sum + value * lastValues[index],
     0,
   );
-  const crossMagnitude =
-    Math.hypot(...first.embedding) * Math.hypot(...last.embedding);
+  const crossMagnitude = Math.hypot(...firstValues) * Math.hypot(...lastValues);
   assert(
     cross / crossMagnitude < 0.9,
     `the test faces must be distinguishable or the round trip proves nothing ` +

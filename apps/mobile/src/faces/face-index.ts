@@ -6,7 +6,7 @@ import { faceEmbeddingPathCounts } from "../ml/facenet.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } from "../ml/face-align.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, clusterFaces, cosine, extendFaceClusters, mergeExistingPeople, suggestMerges, type MergeSuggestion } from "./face-cluster.ts";
+import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, clusterFaces, cosine, dequantized, extendFaceClusters, mergeExistingPeople, suggestMerges, type MergeSuggestion } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { anchorFor, isFaceConstraint, pruneConstraints, sameAnchor, type AnchorBars, type FaceAnchor, type FaceConstraint } from "./face-constraints.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
@@ -20,7 +20,7 @@ import { embedFaceIdentity, traceNextAlignments, type FaceImageSource } from "..
 import { incrementalScanTarget } from "../import/incremental-index.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { isBatteryUnrestricted, requestBatteryUnrestricted, startScanService, stopScanService, updateScanService } from "../../modules/photeo-scan-service/src/index.ts";
-import type { FaceEmbeddingKind, FaceObservation, Person } from "./types";
+import type { FaceEmbeddingVector, FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
 // v18 stores aligned embeddings as int8/base64. Older versions contain
 // unaligned embeddings and must be rebuilt rather than migrated across spaces.
@@ -615,17 +615,33 @@ export function logFaceIndexDiagnostics(context = "status"): void {
 const SIMILARITY_SAMPLE = 220;
 const SWEEP_SAMPLE = 900;
 
-function sampleObservations(limit: number): FaceObservation[] {
+/**
+ * One sampled observation, with its embedding expanded.
+ *
+ * The diagnostics below do component arithmetic on hundreds of faces and were
+ * written against `number[]`. Expanding once here, at the sample boundary, keeps
+ * all of them unchanged and bounds the cost at SWEEP_SAMPLE faces rather than
+ * the library.
+ */
+type SampledObservation = Omit<FaceObservation, "embedding"> & {
+  embedding: number[];
+};
+
+function sampleObservations(limit: number): SampledObservation[] {
   const identity = index.observations.filter(
     (observation) => observation.embeddingKind === "identity",
   );
-  if (identity.length <= limit) return identity;
+  const expand = (observation: FaceObservation): SampledObservation => ({
+    ...observation,
+    embedding: dequantized(observation.embedding),
+  });
+  if (identity.length <= limit) return identity.map(expand);
   // Even stride rather than random: the sample must be identical between runs,
   // or two consecutive diagnostics look like a change in the data.
   const stride = identity.length / limit;
-  const sampled: FaceObservation[] = [];
+  const sampled: SampledObservation[] = [];
   for (let index = 0; index < limit; index += 1) {
-    sampled.push(identity[Math.floor(index * stride)]);
+    sampled.push(expand(identity[Math.floor(index * stride)]));
   }
   return sampled;
 }
@@ -823,7 +839,19 @@ function encodeBase64(bytes: Uint8Array): string {
 }
 
 /** Symmetric fixed-scale int8 quantization for normalized face embeddings. */
-export function quantizeEmbedding(embedding: number[]): string {
+export function quantizeEmbedding(embedding: FaceEmbeddingVector): string {
+  // Already int8: the bytes ARE the answer, and re-deriving them would be a
+  // round trip through `k/127` and back. `Math.round((k/127) * 127)` does return
+  // `k` for every k in range, so this is the same string either way — it is
+  // taken directly because it cannot be anything else, not because it is faster.
+  if (embedding instanceof Int8Array) {
+    if (embedding.length === 0) {
+      throw new Error("Cannot quantize an invalid face embedding.");
+    }
+    return encodeBase64(
+      new Uint8Array(embedding.buffer, embedding.byteOffset, embedding.byteLength),
+    );
+  }
   if (!validEmbedding(embedding)) {
     throw new Error("Cannot quantize an invalid face embedding.");
   }
@@ -836,9 +864,19 @@ export function quantizeEmbedding(embedding: number[]): string {
 }
 
 export function dequantizeEmbedding(value: string): number[] {
-  const bytes = decodeBase64(value);
-  const signed = new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return Array.from(signed, (component) => component / 127);
+  return dequantized(decodeEmbeddingBytes(value));
+}
+
+/**
+ * The compact form of a stored embedding: its bytes, kept as bytes.
+ *
+ * `new Int8Array(uint8Array)` reinterprets each byte as signed (255 -> -1) into
+ * a FRESH buffer of exactly this length, which is what the memory saving rests
+ * on — a view onto a larger parent would keep that parent alive and give the
+ * 74 MB straight back.
+ */
+export function decodeEmbeddingBytes(value: string): Int8Array {
+  return new Int8Array(decodeBase64(value));
 }
 
 /**
@@ -963,11 +1001,23 @@ function storedIndex(): StoredFaceIndex {
   };
 }
 
+/**
+ * `validEmbedding`, widened to the compact form.
+ *
+ * An `Int8Array` needs no per-component check: every element is by construction
+ * a finite integer in [-128, 127], so length is the only thing left to be wrong
+ * about. That turns the 512-component scan this used to run on every one of
+ * 17,768 observations at load into a single comparison.
+ */
+function validObservationEmbedding(value: unknown): value is FaceEmbeddingVector {
+  return value instanceof Int8Array ? value.length > 0 : validEmbedding(value);
+}
+
 function validObservation(value: unknown): value is FaceObservation {
   return (
     isRecord(value) &&
     typeof value.assetId === "string" &&
-    validEmbedding(value.embedding) &&
+    validObservationEmbedding(value.embedding) &&
     (value.embeddingKind === "identity" || value.embeddingKind === "perceptual") &&
     (value.seedable === undefined || typeof value.seedable === "boolean")
   );
@@ -1136,17 +1186,22 @@ export function dedupeFaceObservations(
   similarityThreshold = SAME_PHOTO_DUPLICATE_SIMILARITY,
 ): FaceObservation[] {
   const kept: FaceObservation[] = [];
-  const byAsset = new Map<string, FaceObservation[]>();
+  // Siblings carry their expanded embedding rather than the observation, so a
+  // compact one is expanded once per face instead of once per comparison.
+  const byAsset = new Map<
+    string,
+    { kind: FaceEmbeddingKind; embedding: number[] }[]
+  >();
   for (const observation of observations) {
+    const embedding = dequantized(observation.embedding);
     const siblings = byAsset.get(observation.assetId) ?? [];
     const duplicate = siblings.some(
       (candidate) =>
-        candidate.embeddingKind === observation.embeddingKind &&
-        cosine(candidate.embedding, observation.embedding) >=
-          similarityThreshold,
+        candidate.kind === observation.embeddingKind &&
+        cosine(candidate.embedding, embedding) >= similarityThreshold,
     );
     if (duplicate) continue;
-    siblings.push(observation);
+    siblings.push({ kind: observation.embeddingKind, embedding });
     byAsset.set(observation.assetId, siblings);
     kept.push(observation);
   }
@@ -1273,7 +1328,7 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
       ...stored,
       observations: (stored.observations ?? []).map((observation) => ({
         ...observation,
-        embedding: dequantizeEmbedding(observation.embedding),
+        embedding: decodeEmbeddingBytes(observation.embedding),
       })),
       people: stored.people.map((person) => ({
         ...person,
@@ -1416,7 +1471,7 @@ function parseObservationLine(line: string): FaceObservation | null {
     const stored = parsed as StoredFaceObservation;
     const observation: FaceObservation = {
       ...stored,
-      embedding: dequantizeEmbedding(stored.embedding),
+      embedding: decodeEmbeddingBytes(stored.embedding),
     };
     return validObservation(observation) ? observation : null;
   } catch {
@@ -1981,8 +2036,9 @@ function embeddingMean(observations: readonly FaceObservation[]): number[] {
   if (dimensions === 0 || observations.length === 0) return mean;
   for (const observation of observations) {
     if (observation.embedding.length !== dimensions) continue;
+    const values = dequantized(observation.embedding);
     for (let axis = 0; axis < dimensions; axis += 1) {
-      mean[axis] += observation.embedding[axis];
+      mean[axis] += values[axis];
     }
   }
   for (let axis = 0; axis < dimensions; axis += 1) mean[axis] /= observations.length;
@@ -1991,9 +2047,10 @@ function embeddingMean(observations: readonly FaceObservation[]): number[] {
 
 /** Centers one embedding by the stored mean and re-normalizes to unit length. */
 export function centerEmbedding(
-  embedding: readonly number[],
+  compact: FaceEmbeddingVector,
   mean: readonly number[] | undefined,
 ): number[] {
+  const embedding = dequantized(compact);
   if (!mean || mean.length !== embedding.length) return embedding.slice();
   const shifted = new Array<number>(embedding.length);
   let squared = 0;
@@ -2920,13 +2977,15 @@ async function faceForPerson(
     );
     if (!embedding || !validEmbedding(embedding)) continue;
     const score = cosine(
-      centeredForClustering([
-        {
-          assetId: asset.id,
-          embedding: unitEmbedding(embedding),
-          embeddingKind: "identity",
-        },
-      ])[0].embedding,
+      dequantized(
+        centeredForClustering([
+          {
+            assetId: asset.id,
+            embedding: unitEmbedding(embedding),
+            embeddingKind: "identity",
+          },
+        ])[0].embedding,
+      ),
       person.centroid,
     );
     if (!best || score > best.score) {
