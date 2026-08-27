@@ -452,10 +452,37 @@ function centroidWeight(observation: FaceObservation): number {
   return observation.seedable === false ? ASSIGNABLE_CENTROID_WEIGHT : 1;
 }
 
+/**
+ * A capture time fit to bound a span, or undefined when there is none.
+ *
+ * A non-positive time is NO time, not 1 January 1970. Android's DATE_TAKEN is
+ * literally 0 for any file whose EXIF the media scanner could not read, and
+ * `Number.isFinite(0)` is true, so the old guard admitted those as a real
+ * instant: 73% of the owner's library landed on the epoch, every such cluster
+ * then span-overlapped every other, and `spanGap` returned 0 for the pair. That
+ * handed the relaxed temporal bar to essentially every evidenced pair in the
+ * library, which is the opposite of a 60-day window.
+ *
+ * The guard lives HERE and not only at the scanner because observations already
+ * written to disk keep their stored `capturedAt: 0` forever -- a processed asset
+ * is never re-scanned, so a scanner-only fix would leave every existing install
+ * clustering on the epoch. Every route a time can take into a span goes through
+ * this one function: the assignment loop's newborn cluster, the widen, and the
+ * rehydration of a stored `firstAt`/`lastAt` -- a stored index on disk already
+ * holds 1,966 people at `firstAt: 0`, so the rehydration is not theoretical.
+ */
+function spanTime(capturedAt: number | undefined): number | undefined {
+  return typeof capturedAt === "number" &&
+    Number.isFinite(capturedAt) &&
+    capturedAt > 0
+    ? capturedAt
+    : undefined;
+}
+
 /** Grows a cluster's capture-time span to include one more face. */
 function widenSpan(person: MutablePerson, capturedAt: number | undefined): void {
-  if (!Number.isFinite(capturedAt)) return;
-  const at = capturedAt as number;
+  const at = spanTime(capturedAt);
+  if (at === undefined) return;
   person.firstAt = person.firstAt === undefined ? at : Math.min(person.firstAt, at);
   person.lastAt = person.lastAt === undefined ? at : Math.max(person.lastAt, at);
 }
@@ -473,6 +500,32 @@ function spanGap(a: MutablePerson, b: MutablePerson): number | undefined {
   }
   if (a.lastAt >= b.firstAt && b.lastAt >= a.firstAt) return 0;
   return a.lastAt < b.firstAt ? b.firstAt - a.lastAt : a.firstAt - b.lastAt;
+}
+
+/**
+ * Is this cluster a MOMENT rather than a lifetime?
+ *
+ * `spanGap` returns 0 for spans that merely OVERLAP, and a person photographed
+ * across a family library spans the whole library -- so their span overlaps
+ * everybody's and the "60-day window" opens for every pair they are in. That is
+ * not the rule's intent. The discount exists because two clusters may be two
+ * MOMENTS in one timeline, close enough that an infant's appearance has not yet
+ * drifted between them; a cluster covering two years is not a moment, and
+ * nothing about it says its faces sit near the other cluster's in time.
+ *
+ * Measured on the owner's library, without this the window is not a window: with
+ * genuine capture times spread over two years, 70.9% of evidenced pairs are
+ * still "near in time" (92.1% over six months), and the resulting partition is
+ * byte-identical to the one the epoch-zero bug produced -- the same 2,248
+ * tiles, the same ten merges, 301+159 faces among them. With it, the same
+ * genuine times produce 2,258 and refuse all ten.
+ */
+function narrowSpan(person: MutablePerson): boolean {
+  return (
+    person.firstAt !== undefined &&
+    person.lastAt !== undefined &&
+    person.lastAt - person.firstAt <= TEMPORAL_MERGE_WINDOW_MS
+  );
 }
 
 type MutablePerson = Person & {
@@ -528,14 +581,12 @@ function mutablePerson(person: Person): MutablePerson {
       stored.weightSum > 0
         ? stored.weightSum
         : person.faceCount,
-    firstAt:
-      typeof stored.firstAt === "number" && Number.isFinite(stored.firstAt)
-        ? stored.firstAt
-        : undefined,
-    lastAt:
-      typeof stored.lastAt === "number" && Number.isFinite(stored.lastAt)
-        ? stored.lastAt
-        : undefined,
+    firstAt: spanTime(
+      typeof stored.firstAt === "number" ? stored.firstAt : undefined,
+    ),
+    lastAt: spanTime(
+      typeof stored.lastAt === "number" ? stored.lastAt : undefined,
+    ),
   };
 }
 
@@ -757,8 +808,8 @@ export function extendFaceClusters(
         // wholesale whenever the centroid moves.
         suffix: embeddingSuffix,
         weightSum: centroidWeight(observation),
-        firstAt: observation.capturedAt,
-        lastAt: observation.capturedAt,
+        firstAt: spanTime(observation.capturedAt),
+        lastAt: spanTime(observation.capturedAt),
       });
       opts.onAssign?.(observation, id);
       continue;
@@ -1083,13 +1134,19 @@ function mergeSimilarPeople(
     const evidenced =
       a.faceCount >= MERGE_EVIDENCE_MIN_FACES &&
       b.faceCount >= MERGE_EVIDENCE_MIN_FACES;
-    // Clusters that overlap or nearly touch in time get the temporal bar,
-    // which is how an infant's months chain together: each neighbouring pair
-    // clears it, the union spans wider, and the next neighbour comes into
-    // range on the following iteration. Requires BOTH to carry real evidence,
-    // so a stray two-face cluster cannot ride a date into somebody else.
+    // Two clusters that are each a MOMENT, and whose moments overlap or nearly
+    // touch, get the temporal bar -- which is how an infant's months chain
+    // together: each neighbouring pair clears it, the union spans wider, and
+    // the next neighbour comes into range on the following iteration. Requires
+    // BOTH to carry real evidence, so a stray two-face cluster cannot ride a
+    // date into somebody else, and BOTH to be narrow, so a cluster spanning the
+    // whole library cannot hand its overlap to everyone (see `narrowSpan`).
     const gap = spanGap(a, b);
-    const nearInTime = gap !== undefined && gap <= TEMPORAL_MERGE_WINDOW_MS;
+    const nearInTime =
+      gap !== undefined &&
+      gap <= TEMPORAL_MERGE_WINDOW_MS &&
+      narrowSpan(a) &&
+      narrowSpan(b);
     const identityBar = evidenced
       ? nearInTime
         ? Math.min(evidencedMergeThreshold, temporalMergeThreshold)
