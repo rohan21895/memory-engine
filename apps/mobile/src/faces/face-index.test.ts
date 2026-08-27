@@ -1,7 +1,7 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { SAME_PHOTO_EXCEPTION_SIMILARITY } from "./face-cluster.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { CENTERED_FACE_INDEX_THRESHOLD, DEFAULT_FACE_INDEX_THRESHOLD, FACE_INDEX_IDENTITY_MERGE_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, applyConstraintToPeople, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
+import { CENTERED_FACE_INDEX_THRESHOLD, DEFAULT_FACE_INDEX_THRESHOLD, FACE_INDEX_IDENTITY_MERGE_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, __constraintStorageForTest, applyConstraintToPeople, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { CALIBRATION_MAX_THRESHOLD, CALIBRATION_MIN_THRESHOLD } from "./face-calibration.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -33,6 +33,43 @@ assert(
     restored.every((value, index) => Math.abs(value - source[index]) <= 1 / 127),
     "int8 quantization stays within one step",
   );
+}
+
+// A constraint's anchored face has to survive the file, and survive it
+// EXACTLY: `recordConstraint` decides whether a new answer replaces an older
+// one by comparing anchor faces, so a value that drifts by one quantization
+// step between save and load would stop a later judgement superseding an
+// earlier one about the same pair.
+{
+  const { store, load, valid } = __constraintStorageForTest;
+  const face = Array.from({ length: 512 }, (_, index) => Math.sin(index * 0.31) * 0.6);
+  const recorded = { kind: "must" as const, a: "newborn", b: "birthday", aFace: face, bFace: face.slice().reverse() };
+  const stored = store(recorded);
+  assert(typeof stored.aFace === "string" && stored.aFace.length === 684, "an anchored face is stored quantized, not as JSON floats");
+  const loaded = load(stored);
+  assert(
+    loaded.aFace?.every((value, index) => Math.abs(value - face[index]) <= 1 / 127) === true,
+    "and comes back within one quantization step",
+  );
+  assert(store(loaded).aFace === stored.aFace, "a second save must be byte-identical to the first");
+  assert(
+    load(store(loaded)).aFace?.every((value, index) => value === (loaded.aFace as number[])[index]) === true,
+    "and a second load exactly equal to the first",
+  );
+
+  // Migration: everything written before face anchors existed has no face at
+  // all, and must load and re-save untouched rather than being discarded.
+  const legacy = { kind: "cannot" as const, a: "solo-a", b: "solo-b" };
+  assert(valid(legacy), "a pre-face-anchor constraint is still a constraint");
+  const migrated = load(legacy);
+  assert(
+    migrated.kind === "cannot" && migrated.a === "solo-a" && migrated.b === "solo-b" && migrated.aFace === undefined,
+    "a constraint without faces loads unchanged",
+  );
+  assert(store(migrated).aFace === undefined, "and is written back without inventing one");
+
+  assert(!valid({ kind: "must", a: "x", b: "y", aFace: 12 }), "a face that is not a stored embedding is not loadable");
+  assert(!valid({ kind: "maybe", a: "x", b: "y" }), "and neither is an unknown kind");
 }
 
 {

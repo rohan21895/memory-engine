@@ -1,6 +1,6 @@
 import type { FaceObservation, Person } from "./types";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { resolveConstraints, type FaceConstraint } from "./face-constraints.ts";
+import { resolveConstraints, type AnchorBars, type FaceConstraint } from "./face-constraints.ts";
 
 /**
  * Cosine bar for "same person" when assigning an aligned face to an existing
@@ -741,6 +741,7 @@ export function extendFaceClusters(
       evidencedMergeThreshold,
       temporalMergeThreshold,
       opts.constraints ?? [],
+      bars,
       opts.onMerge,
     );
   }
@@ -856,6 +857,8 @@ function mergeSimilarPeople(
   evidencedMergeThreshold: number,
   temporalMergeThreshold: number,
   constraints: readonly FaceConstraint[],
+  /** Bars a face-anchored constraint is resolved against; see `AnchorBars`. */
+  bars: AnchorBars,
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
 ): void {
   const comparable = (a: MutablePerson, b: MutablePerson): boolean =>
@@ -894,7 +897,7 @@ function mergeSimilarPeople(
   // so it inherits through merges for free. A "same person" is applied as a
   // forced merge below, before any similarity is consulted at all — the whole
   // point is that it holds where the numbers disagree.
-  const resolved = resolveConstraints(people, constraints);
+  const resolved = resolveConstraints(people, constraints, bars);
   for (const [i, j] of resolved.cannot) {
     blocked[i].add(j);
     blocked[j].add(i);
@@ -1197,7 +1200,7 @@ export function suggestMerges(
   const mutable = people.map(mutablePerson);
   const blocked = new Set<string>();
   const pairName = (i: number, j: number): string => `${i}:${j}`;
-  const resolved = resolveConstraints(mutable, opts.constraints ?? []);
+  const resolved = resolveConstraints(mutable, opts.constraints ?? [], bars);
   for (const [i, j] of resolved.cannot) {
     blocked.add(pairName(Math.min(i, j), Math.max(i, j)));
   }

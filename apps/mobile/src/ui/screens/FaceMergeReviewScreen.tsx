@@ -65,7 +65,10 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
       : await markNotSamePerson(pair.suggestion.a, pair.suggestion.b);
     setAnswering(false);
     if (!recorded) {
-      setNotice("These groups do not have separate photos we can use to remember that answer yet.");
+      // Reached only when no photo of one of them identifies them on its own:
+      // not "they share every photo" any more, which face anchors now handle,
+      // but "two people in one of these photos look too alike to tell apart".
+      setNotice("In these photos we can’t tell which face is which, so we can’t remember that answer yet.");
       return;
     }
     const remaining = remainingFaceMergeSuggestions(suggestions, pair.suggestion, samePerson);

@@ -8,7 +8,7 @@ import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } f
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters, mergeExistingPeople, suggestMerges, type MergeSuggestion } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { anchorAssetFor, isFaceConstraint, pruneConstraints, type FaceConstraint } from "./face-constraints.ts";
+import { anchorFor, isFaceConstraint, pruneConstraints, sameAnchor, type AnchorBars, type FaceAnchor, type FaceConstraint } from "./face-constraints.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { MERGE_SIGMA, calibrateMergeThreshold, calibrateThreshold } from "./face-calibration.ts";
 
@@ -393,10 +393,21 @@ type StoredFaceObservation = Omit<FaceObservation, "embedding"> & {
 
 type StoredPerson = Omit<Person, "centroid"> & { centroid: string };
 
+/**
+ * An anchored face is stored the way every other embedding here is: int8,
+ * base64, ~684 characters instead of the ~7KB a JSON float array would cost in
+ * the file whose parse time is already the launch budget.
+ */
+type StoredFaceConstraint = Omit<FaceConstraint, "aFace" | "bFace"> & {
+  aFace?: string;
+  bFace?: string;
+};
+
 type StoredFaceIndex = Omit<
   PersistedFaceIndex,
-  "observations" | "people"
+  "observations" | "people" | "constraints"
 > & {
+  constraints?: StoredFaceConstraint[];
   /**
    * Only present in files written before embeddings moved to their own line-
    * delimited file. Read for the one launch that upgrades, never written.
@@ -830,6 +841,57 @@ export function dequantizeEmbedding(value: string): number[] {
   return Array.from(signed, (component) => component / 127);
 }
 
+/**
+ * A constraint on its way to disk, with any anchored face quantized.
+ *
+ * A face that cannot be quantized is written WITHOUT it rather than not
+ * written at all: the constraint then behaves like every pre-face-anchor one
+ * and resolves only while its photo has a single cluster, which is a weaker
+ * memory of the user's answer but never a wrong one.
+ */
+function storedConstraint(constraint: FaceConstraint): StoredFaceConstraint {
+  const { aFace, bFace, ...rest } = constraint;
+  return {
+    ...rest,
+    ...(validEmbedding(aFace) ? { aFace: quantizeEmbedding(aFace) } : {}),
+    ...(validEmbedding(bFace) ? { bFace: quantizeEmbedding(bFace) } : {}),
+  };
+}
+
+function isStoredConstraint(value: unknown): value is StoredFaceConstraint {
+  if (!isFaceConstraint(value)) return false;
+  const candidate = value as { aFace?: unknown; bFace?: unknown };
+  return (
+    (candidate.aFace === undefined || typeof candidate.aFace === "string") &&
+    (candidate.bFace === undefined || typeof candidate.bFace === "string")
+  );
+}
+
+function loadedConstraint(stored: StoredFaceConstraint): FaceConstraint {
+  const { aFace, bFace, ...rest } = stored;
+  return {
+    ...rest,
+    ...(aFace ? { aFace: dequantizeEmbedding(aFace) } : {}),
+    ...(bFace ? { bFace: dequantizeEmbedding(bFace) } : {}),
+  };
+}
+
+/**
+ * Test seam for a constraint's trip to disk and back.
+ *
+ * An anchored face is the user's judgement in its most fragile form. A
+ * quantization that loses it, or a load that silently drops it, hands the
+ * correction back to the very thresholds it was recorded to overrule, and
+ * nothing on screen would say so. Exported because the mappers are pure and
+ * the file they serve is not.
+ */
+export const __constraintStorageForTest = {
+  store: storedConstraint,
+  load: loadedConstraint,
+  valid: isStoredConstraint,
+  current: (): readonly FaceConstraint[] => index.constraints ?? [],
+};
+
 function storedObservation(value: unknown): value is StoredFaceObservation {
   return (
     isRecord(value) &&
@@ -888,9 +950,10 @@ function storedObservationLine(observation: FaceObservation): string {
  * six seconds of frozen JS thread, and it now lives in its own file.
  */
 function storedIndex(): StoredFaceIndex {
-  const { observations: _observations, ...rest } = index;
+  const { observations: _observations, constraints, ...rest } = index;
   return {
     ...rest,
+    ...(constraints ? { constraints: constraints.map(storedConstraint) } : {}),
     // Centroids are NOT cached: a person's centroid is recomputed on every
     // assignment and merge, so the object is live where observations are not.
     people: index.people.map((person) => ({
@@ -1220,7 +1283,7 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
       // index: losing the user's corrections is bad, but discarding every
       // embedding and re-scanning the library over them is far worse.
       constraints: Array.isArray(stored.constraints)
-        ? stored.constraints.filter(isFaceConstraint)
+        ? stored.constraints.filter(isStoredConstraint).map(loadedConstraint)
         : [],
     };
     return loaded.observations.every(validObservation) &&
@@ -1384,6 +1447,9 @@ export const __observationsFileForTest = {
   ): Promise<void> => persistObservations(fileSystem),
   rebuild: (): void => rebuildPeople(),
   peopleCount: (): number => index.people.length,
+  // Every person, including the low-support ones `getPeople` withholds from the
+  // grid -- a constraint has to work for those too, and they are most of them.
+  people: (): readonly Person[] => index.people,
   setPeople: (people: Person[]): void => {
     index.people = people;
   },
@@ -1678,14 +1744,58 @@ export function applyConstraintToPeople(
   return merged;
 }
 
+/** The bars a constraint anchor is resolved against, from the shipped policy. */
+function anchorBars(): AnchorBars {
+  const options = faceClusterOptions(index.threshold);
+  return {
+    assignment: options.threshold,
+    perceptual: options.perceptualThreshold,
+  };
+}
+
+/**
+ * The faces detected in each of these photos, for identifying an anchor inside
+ * one of them.
+ *
+ * Built in a single pass over every observation rather than searched per
+ * photo: `anchorFor` walks a person's assets until one yields a decisive
+ * anchor, and a 450-face person would otherwise scan 17,766 observations 450
+ * times over, from a tap.
+ *
+ * Centered, because that is the space the centroids these are compared against
+ * live in. A raw embedding measured against a centered centroid carries the
+ * whole population mean as noise -- on this library that mean alone was worth
+ * 0.714 of cosine, which is more than the answer.
+ */
+function facesByAsset(assetIds: ReadonlySet<string>): Map<string, number[][]> {
+  const faces = new Map<string, number[][]>();
+  for (const observation of index.observations) {
+    if (!assetIds.has(observation.assetId)) continue;
+    const face = centerEmbedding(observation.embedding, index.embeddingMean);
+    const known = faces.get(observation.assetId);
+    if (known) known.push(face);
+    else faces.set(observation.assetId, [face]);
+  }
+  return faces;
+}
+
 /**
  * Records that two people are (or are not) the same, and applies it immediately.
  *
  * The constraint is stored against ANCHOR ASSETS rather than person ids, which
- * are rebuilt from scratch on every recluster. Returns false when no unambiguous
- * anchor exists -- every one of that person's photos also containing somebody
- * else -- because a guess here attaches the correction to the wrong face and is
- * worse than declining.
+ * are rebuilt from scratch on every recluster. Returns false when no anchor can
+ * be resolved to one person -- because a guess here attaches the correction to
+ * the wrong face and is worse than declining.
+ *
+ * That refusal used to fire for anyone whose every photo also holds somebody
+ * else, which in a family library is a parent who is never photographed
+ * without the baby. Measured on a synthetic library at this one's shape
+ * (scratch/face-anchor-coverage), around 60% of clusters had no unshared photo
+ * and half the review's questions could not be answered; a single principal
+ * never photographed alone put repairs worth 450 photos behind that refusal.
+ * `anchorFor` now falls back to naming the FACE inside a shared photo, so the
+ * decline is reserved for anchors that genuinely cannot be pinned to one
+ * person.
  */
 async function recordConstraint(
   kind: FaceConstraint["kind"],
@@ -1693,25 +1803,50 @@ async function recordConstraint(
   personIdB: string,
 ): Promise<boolean> {
   if (personIdA === personIdB) return false;
-  const a = anchorAssetFor(index.people, personIdA);
-  const b = anchorAssetFor(index.people, personIdB);
-  if (!a || !b) return false;
-  // A must-link the cheap merge cannot express falls back to a full recluster,
-  // which reads every embedding. Loaded here rather than inside the callback
-  // because that callback is synchronous and cannot wait for a file.
-  if (kind === "must") await ensureObservations();
+  const bars = anchorBars();
+  let first = anchorFor(index.people, personIdA, bars);
+  let second = anchorFor(index.people, personIdB, bars);
+  // Only pay the 13.8MB embedding load when the cheap anchor is unavailable --
+  // or when a must-link is about to need every embedding anyway, because the
+  // recluster it can fall back to is synchronous and cannot wait for a file.
+  if (!first || !second || kind === "must") await ensureObservations();
+  if (!first || !second) {
+    const wanted = new Set([
+      ...assetIdsForPerson(personIdA),
+      ...assetIdsForPerson(personIdB),
+    ]);
+    const faces = facesByAsset(wanted);
+    const facesIn = (assetId: string): number[][] => faces.get(assetId) ?? [];
+    first ??= anchorFor(index.people, personIdA, bars, facesIn);
+    second ??= anchorFor(index.people, personIdB, bars, facesIn);
+  }
+  if (!first || !second) return false;
+  const a = first;
+  const b = second;
+  const anchored: FaceConstraint = {
+    kind,
+    a: a.assetId,
+    b: b.assetId,
+    ...(a.face ? { aFace: a.face } : {}),
+    ...(b.face ? { bFace: b.face } : {}),
+  };
   const constraints = index.constraints ?? [];
   // A later judgement replaces an earlier one about the same pair, so a user
   // who splits what they previously merged is not fighting their own history.
+  // Compared as ANCHORS rather than as asset ids: two faces in one pair of
+  // group photos are two different pairs of people, and treating them as one
+  // would delete a judgement the user never revisited.
+  const supersedes = (existing: FaceConstraint): boolean => {
+    const left: FaceAnchor = { assetId: existing.a, face: existing.aFace };
+    const right: FaceAnchor = { assetId: existing.b, face: existing.bFace };
+    return (
+      (sameAnchor(left, a) && sameAnchor(right, b)) ||
+      (sameAnchor(left, b) && sameAnchor(right, a))
+    );
+  };
   index.constraints = [
-    ...constraints.filter(
-      (existing) =>
-        !(
-          (existing.a === a && existing.b === b) ||
-          (existing.a === b && existing.b === a)
-        ),
-    ),
-    { kind, a, b },
+    ...constraints.filter((existing) => !supersedes(existing)),
+    anchored,
   ];
   markIndexDirty();
   const merged = applyConstraintToPeople(

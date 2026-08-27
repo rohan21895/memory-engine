@@ -187,7 +187,12 @@ function runCurrentAlgorithm(
     }
   }
 
-  const resolved = resolveConstraints(people, opts.constraints);
+  // Same bars `mergeBars` hands the shipped path, so a face-anchored
+  // constraint would resolve identically on both sides of the comparison.
+  const resolved = resolveConstraints(people, opts.constraints, {
+    assignment: opts.threshold,
+    perceptual: opts.perceptualThreshold,
+  });
   for (const [i, j] of resolved.cannot) {
     blocked[i].add(j);
     blocked[j].add(i);
