@@ -3202,6 +3202,32 @@ async function reclusterIfCalibrationChanged(
 const CONSOLIDATE_EVERY_BATCHES = 8;
 let batchesSinceConsolidation = 0;
 
+/**
+ * Photos a completed scan may add before it is re-clustered from scratch.
+ *
+ * Tied to the consolidation cadence rather than picked: a scan smaller than one
+ * cadence window is one the mid-scan sweep would not have consolidated even
+ * once, so "small enough to consolidate instead of rebuild" and "small enough
+ * that the cadence ignored it" are the same statement. 8 batches x 32 photos.
+ */
+const SMALL_SCAN_PHOTOS = CONSOLIDATE_EVERY_BATCHES * SCAN_BATCH_SIZE;
+
+/**
+ * Every bar a consolidating pass judges on, derived in ONE place.
+ *
+ * Both the mid-scan cadence and the end-of-scan consolidation read them, and a
+ * second copy of this arithmetic would let the two disagree about the same
+ * library -- the exact failure `mergeBars` was extracted to prevent one level
+ * down.
+ */
+function consolidatingClusterOptions(): ReturnType<typeof faceClusterOptions> {
+  return faceClusterOptions(index.threshold, {
+    evidencedMergeThreshold: evidencedMergeBar(index.observations),
+    temporalMergeThreshold: temporalMergeBar(index.observations),
+    constraints: index.constraints ?? [],
+  });
+}
+
 function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
   const assignments = new Map<FaceObservation, string>();
   // A batch that found NO faces cannot have changed a single cluster, so the
@@ -3232,16 +3258,11 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
   // Both bars walk every observation on record and both feed merging alone, so
   // on a batch that will not merge they are pure cost -- ~800ms per batch,
   // measured, and rising with the library.
-  const clusterOptions = faceClusterOptions(
-    index.threshold,
-    consolidate
-      ? {
-          evidencedMergeThreshold: evidencedMergeBar(index.observations),
-          temporalMergeThreshold: temporalMergeBar(index.observations),
-          constraints: index.constraints ?? [],
-        }
-      : { constraints: index.constraints ?? [] },
-  );
+  const clusterOptions = consolidate
+    ? consolidatingClusterOptions()
+    : faceClusterOptions(index.threshold, {
+        constraints: index.constraints ?? [],
+      });
   traceScanStage("calibrate", calibrateStartedAt);
   const clusterStartedAt = Date.now();
   index.people = extendFaceClusters(index.people, centeredForClustering(observations), {
@@ -3270,6 +3291,110 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
   traceScanCount("people", index.people.length);
   rebuildPersonIdsByAsset();
   return assignments;
+}
+
+/**
+ * Runs ONLY the cluster-to-cluster consolidation the scan's cadence deferred.
+ *
+ * The cheap end-of-scan path. Measured on a synthetic library the size of the
+ * owner's -- 17,768 faces over ~2,250 people -- a from-scratch `rebuildPeople`
+ * splits into 21.0s of greedy assignment, 2.7s of merge sweep and 0.03s of
+ * calibration. The assignment is the 82%, and for a scan that added a handful
+ * of photos every bit of it re-derives an answer the incremental
+ * `extendFaceClusters` already produced batch by batch. Only the merge sweep
+ * has genuinely outstanding work, so only the merge sweep is run.
+ *
+ * Strictly safer than the rebuild in three ways that matter here:
+ *  - ids are stable. The rebuild renumbers every person from `person-1`; this
+ *    keeps the survivor's id and only retires the ids it absorbs.
+ *  - avatars are kept rather than re-derived by similarity. `absorb` inherits
+ *    the absorbed person's face only into an empty slot.
+ *  - it cannot separate faces that are together today, because it never
+ *    reassigns one. The only way its grouping can differ from a rebuild's is a
+ *    pair left un-merged, which the next full rebuild repairs.
+ *
+ * Convergence is why this runs the WHOLE sweep rather than only the pairs this
+ * scan touched. Every pair is re-judged against freshly measured bars on every
+ * small scan, so a pair that missed the bar last month is reconsidered this
+ * month. Restricting the sweep to changed people would be another ~10x, and
+ * would also make a pair of untouched people that only a drifting bar could
+ * join wait for a rebuild that a phone adding two photos a day never triggers.
+ */
+function consolidatePeople(): void {
+  // Nothing was deferred, so the sweep has nothing to find that the last one
+  // did not. Same reasoning as the empty-batch guard in `appendPeople`: an
+  // O(people^2) pass to re-derive an unchanged answer is the most expensive
+  // possible way to do nothing.
+  if (batchesSinceConsolidation === 0) return;
+  const startedAt = Date.now();
+  const before = index.people.length;
+  // Marked before the call for the same reason `appendPeople` does: a throw
+  // partway through still leaves a partially merged `index.people` behind.
+  markIndexDirty();
+  index.people = extendFaceClusters(
+    index.people,
+    [],
+    consolidatingClusterOptions(),
+  );
+  batchesSinceConsolidation = 0;
+  markIndexDirty();
+  rebuildPersonIdsByAsset();
+  console.warn(
+    `[PhoteoFaceIndex] consolidated ${Date.now() - startedAt}ms ` +
+      `${before}->${index.people.length} people over ` +
+      `${index.observations.length} faces (no recluster)`,
+  );
+}
+
+/**
+ * Whether a finished scan has to re-cluster the whole library, or may simply
+ * consolidate.
+ *
+ * Pure and exported so the decision can be asserted directly. Measured on the
+ * owner's phone, the version of this that did not exist cost 175,747ms over
+ * 17,768 faces for a scan that found ONE new photo -- three minutes of frozen
+ * JS thread, during which the photo picker span on "Looking through your
+ * photos..." and gave up. The old guard excluded only the zero-new-photos case,
+ * so one photo paid exactly what ten thousand pay.
+ *
+ * Every `true` below is a reason the stored grouping can no longer be extended,
+ * only rebuilt:
+ *  - too many new photos: greedy assignment is order-dependent, and the rebuild
+ *    is what washes that dependence out. A handful of faces cannot accumulate
+ *    enough of it to matter; a re-walk of the library can.
+ *  - a forced bar: `rebuildPeople` is the only thing that honours one.
+ *  - a prune: `index.people` still lists photos the user deleted, and nothing
+ *    short of re-clustering the surviving observations takes them back out.
+ *  - a changed rule: centred and uncentred centroids are not in the same space.
+ *  - a moved bar: compared against the bar the STORED grouping was built at,
+ *    not the previous scan's, so a drift of 0.002 per scan still trips the
+ *    hysteresis once it has accumulated into a real difference rather than
+ *    resetting its own baseline every time.
+ */
+export function scanEndNeedsRecluster(scan: {
+  /** Photos this pass actually processed. */
+  newlyProcessed: number;
+  /** A caller naming an explicit bar. */
+  forcedThreshold?: number;
+  /** True when the prune dropped observations for photos that are now gone. */
+  observationsPruned: boolean;
+  /** The clustering rule a library this size should be on. */
+  wantedRule: string;
+  /** The rule the stored grouping was built under. */
+  storedRule?: string;
+  /** The bar the stored grouping was built at. */
+  storedThreshold: number;
+  /** The bar measured from the library as it stands now. */
+  measuredThreshold: number;
+}): boolean {
+  if (scan.newlyProcessed > SMALL_SCAN_PHOTOS) return true;
+  if (scan.forcedThreshold !== undefined) return true;
+  if (scan.observationsPruned) return true;
+  if (scan.storedRule !== scan.wantedRule) return true;
+  return (
+    Math.abs(scan.measuredThreshold - scan.storedThreshold) >=
+    RECALIBRATION_HYSTERESIS
+  );
 }
 
 function notifyFaceProgress(done: number, total: number): void {
@@ -3616,7 +3741,35 @@ async function runBuild(
     // top of the 5s it would spend loading the embeddings it did not otherwise
     // need. `rebuildPeople` refuses on its own if they are absent; this is what
     // keeps the common case from asking.
-    if (newlyProcessed > 0) rebuildPeople(opts.threshold);
+    //
+    // And ONE new photo is not ten thousand. The comment above estimated half a
+    // minute; measured on the owner's phone it is now 175,747ms over 17,768
+    // faces, because the rebuild is O(faces x people x dims) and the people
+    // count has since grown to 2,244. `scanEndNeedsRecluster` is where that
+    // distinction lives; `consolidatePeople` does the only work a small scan
+    // actually leaves outstanding.
+    //
+    // The `observationsLoaded` test is not redundant with the rebuild's own
+    // guard: without the embeddings there is no bar to measure, so the
+    // calibration below would compare the cold-start default against the stored
+    // bar and read a real move where nothing moved at all. A scan that
+    // processed photos but found no faces takes that branch, and
+    // `rebuildPeople` declines it exactly as it does today.
+    if (newlyProcessed > 0) {
+      const takeCheapPath =
+        observationsLoaded &&
+        !scanEndNeedsRecluster({
+          newlyProcessed,
+          forcedThreshold: opts.threshold,
+          observationsPruned: index.observations.length !== beforePrune,
+          wantedRule: calibrationRuleForLibrary(),
+          storedRule: index.calibration,
+          storedThreshold: index.threshold,
+          measuredThreshold: calibrationForLibrary().threshold,
+        });
+      if (takeCheapPath) consolidatePeople();
+      else rebuildPeople(opts.threshold);
+    }
     index.cursor = null;
     index.scanComplete = true;
     markIndexDirty();
