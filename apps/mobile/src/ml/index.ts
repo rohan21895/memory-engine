@@ -1,10 +1,12 @@
 import { probeFaceIdentityModel } from "./facenet";
-import { probeBodyPoseModel } from "./movenet";
+import { benchmarkPoseInference, probeBodyPoseModel } from "./movenet";
 import { StubOnDeviceModel } from "./stub-model";
-import { probeSemanticModel } from "./tinyclip";
+import { benchmarkSemanticInference, probeSemanticModel } from "./tinyclip";
+import type { InferenceBenchmark } from "./model-cache";
 import type { ModelResult, OnDeviceModel } from "./types";
 
 export type { ModelResult, OnDeviceModel } from "./types";
+export type { InferenceBenchmark } from "./model-cache";
 
 // Face detection does NOT run through this interface: it uses ML Kit via
 // ../faces/face-detector.ts, and identity embedding uses MobileFaceNet through
@@ -56,6 +58,34 @@ export function describeModelProbe(probe: ModelProbe): string {
   return (Object.keys(probe) as Array<keyof ModelProbe>)
     .map((name) => `${name}=${probe[name] ? "ok" : "MISSING"}`)
     .join(" ");
+}
+
+export type InferenceBenchmarks = {
+  tinyclip?: InferenceBenchmark;
+  movenet?: InferenceBenchmark;
+};
+
+/**
+ * What the two graphs cost when the JS thread has nothing else to do.
+ *
+ * Deliberately SEQUENTIAL. Running them together would put two invokes on the
+ * Nitro thread pool at once and reintroduce exactly the core contention the
+ * benchmark exists to exclude — and would then be indistinguishable from the
+ * concurrent pass it is meant to be the control for.
+ *
+ * Never throws and never rejects; a build must not fail because a diagnostic
+ * could not run.
+ */
+export async function benchmarkInferenceModels(
+  runs = 3,
+): Promise<InferenceBenchmarks> {
+  try {
+    const tinyclip = await benchmarkSemanticInference(runs);
+    const movenet = await benchmarkPoseInference(runs);
+    return { tinyclip, movenet };
+  } catch {
+    return {};
+  }
 }
 
 let healthCheck: Promise<ModelProbe> | undefined;

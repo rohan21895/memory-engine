@@ -1,6 +1,8 @@
 import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import { decode as decodeJpeg } from "jpeg-js";
 
+import { decodeBase64Image } from "./base64";
+import { measureSync } from "../selection/js-thread-profile";
 import type { ModelResult, OnDeviceModel } from "./types";
 
 const THUMBNAIL_WIDTH = 32;
@@ -9,8 +11,6 @@ const COLOR_BINS = 4;
 const FALLBACK_EMBEDDING_LENGTH = 32;
 const FNV_OFFSET_BASIS = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
-const BASE64_ALPHABET =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 function hashUri(imageUri: string): number {
   let hash = FNV_OFFSET_BASIS;
@@ -61,19 +61,24 @@ async function createPerceptualEmbedding(imageUri: string): Promise<number[]> {
       throw new Error("Image manipulator did not return thumbnail pixels.");
     }
 
-    const decoded = decodeJpeg(decodeBase64(thumbnail.base64), {
-      useTArray: true,
-      formatAsRGBA: true,
-      tolerantDecoding: true,
-      maxResolutionInMP: 1,
-      maxMemoryUsageInMB: 8,
-    });
+    const bytes = decodeBase64Image(thumbnail.base64, "perceptual.base64");
+    const decoded = measureSync("perceptual.jpeg-decode", () =>
+      decodeJpeg(bytes, {
+        useTArray: true,
+        formatAsRGBA: true,
+        tolerantDecoding: true,
+        maxResolutionInMP: 1,
+        maxMemoryUsageInMB: 8,
+      }),
+    );
 
     if (decoded.width < 1 || decoded.height < 1 || decoded.data.length < 4) {
       throw new Error("Decoded thumbnail is empty.");
     }
 
-    return fingerprintPixels(decoded.data, decoded.width, decoded.height);
+    return measureSync("perceptual.fingerprint", () =>
+      fingerprintPixels(decoded.data, decoded.width, decoded.height),
+    );
   } finally {
     // manipulateAsync always writes a cache file, base64 or not, and nothing
     // else ever reads this 32px one.
@@ -164,44 +169,6 @@ function l2Normalize(values: number[]): number[] {
   }
 
   return values.map((value) => value / magnitude);
-}
-
-function decodeBase64(value: string): Uint8Array {
-  const encoded = value
-    .replace(/^data:[^,]*,/u, "")
-    .replace(/\s/gu, "");
-  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
-  const bytes = new Uint8Array(
-    Math.max(0, Math.floor((encoded.length * 3) / 4) - padding),
-  );
-  let accumulator = 0;
-  let availableBits = 0;
-  let byteIndex = 0;
-
-  for (const character of encoded) {
-    if (character === "=") {
-      break;
-    }
-    const digit = BASE64_ALPHABET.indexOf(character);
-    if (digit < 0) {
-      throw new Error("Thumbnail contains invalid base64 data.");
-    }
-
-    accumulator = (accumulator << 6) | digit;
-    availableBits += 6;
-    if (availableBits >= 8) {
-      availableBits -= 8;
-      bytes[byteIndex] = (accumulator >>> availableBits) & 0xff;
-      byteIndex += 1;
-      accumulator &= availableBits === 0 ? 0 : (1 << availableBits) - 1;
-    }
-  }
-
-  if (byteIndex !== bytes.length || bytes.length === 0) {
-    throw new Error("Thumbnail base64 data is incomplete.");
-  }
-
-  return bytes;
 }
 
 /** Cheap pixel-based model used until the bundled ONNX models are wired. */

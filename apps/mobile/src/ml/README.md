@@ -26,8 +26,8 @@ no interpreter is ever disposed while a run is in flight.
 
 ## Delegates
 
-Every `loadTensorflowModel(...)` call passes an empty delegate list, which means
-XNNPACK on the CPU. Do not add GPU delegates:
+Every `loadTensorflowModel(...)` call passes an empty delegate list. Do not add
+GPU delegates:
 
 - fast-tflite 3.0.1 hardcodes the GPU delegate options with no serialization
   directory, so kernels are recompiled on every cold start - fatal for batch work;
@@ -35,6 +35,50 @@ XNNPACK on the CPU. Do not add GPU delegates:
 - its GPU path has an open batch-mismatch bug on ViT graphs (`tinyclip.ts`) and
   a reported PowerVR crash;
 - NNAPI is deprecated on Android 15.
+
+### The CPU path is single-threaded, and nothing here chose that
+
+"An empty delegate list means XNNPACK on the CPU" is half of what happens, and
+the missing half is the interesting one.
+
+`HybridTfliteModule::createModel` (fast-tflite 3.0.1,
+`node_modules/react-native-fast-tflite/cpp/HybridTfliteModule.cpp`) builds the
+interpreter like this:
+
+```cpp
+TfLiteInterpreterOptions* options = TfLiteInterpreterOptionsCreate();
+for (const TensorflowModelDelegate& d : delegates) { /* none */ }
+TfLiteInterpreter* interpreter = TfLiteInterpreterCreate(model, options);
+```
+
+It never calls `TfLiteInterpreterOptionsSetNumThreads`. The C API leaves
+`num_threads` at its sentinel, `InterpreterBuilder` then does not call
+`SetNumThreads` at all, and both the interpreter's own kernels and the
+default-applied XNNPACK delegate end up on **one thread**. The bundled
+`litert 1.4.0` AAR does contain XNNPACK (`TfLiteXNNPackDelegateCreate` and
+"Created TensorFlow Lite XNNPACK delegate for CPU." are both in
+`libtensorflowlite_jni.so`), so the delegate is there - it simply gets one
+thread to work with on a phone with eight cores.
+
+Two consequences worth knowing before anyone proposes a native module:
+
+1. The cheapest possible runtime change is **one line** in that file,
+   `TfLiteInterpreterOptionsSetNumThreads(options, n)`, applied with
+   `patch-package` (already this repo's `postinstall`). No new module, no new
+   binding, no new surface.
+2. `TfLiteInterpreterInvoke` does NOT run on the JS thread. Nitro's
+   `Promise::async` hands it to `ThreadPool::shared()` - 3 threads growing to
+   10 - and only the *resolution* comes back to JS. So a `model.run` span
+   measured in JS is `native invoke + delivery delay`, and the delivery delay
+   is a property of how busy the JS thread is. See
+   `selection/js-thread-profile.ts` and the `[album-runtime]` log line.
+
+To find out how much of a delegated graph XNNPACK actually took, the runtime
+already logs it at INFO with the `tflite` tag:
+
+```
+adb logcat -s tflite | grep "Replacing"
+```
 
 ## Legacy ONNX note
 

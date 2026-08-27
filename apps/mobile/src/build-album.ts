@@ -2,7 +2,8 @@
 // image quality -> selection -> the review UI's data shape.
 import { detectFaces, type FaceBox } from "./faces/face-detector";
 import type { PickedPhoto } from "./import/picked-photo";
-import { checkModelHealth, getModel } from "./ml";
+import { benchmarkInferenceModels, checkModelHealth, getModel } from "./ml";
+import type { InferenceBenchmark, InferenceBenchmarks } from "./ml";
 import { bodyPoseModelLoadStats, detectBodyPose } from "./ml/movenet";
 import {
   analyzeSemanticImage,
@@ -28,6 +29,12 @@ import {
   yieldToEventLoop,
 } from "./selection/concurrent-map";
 import { watchAlbumBuildLifecycle } from "./selection/album-build-lifecycle";
+import {
+  formatJsThreadProfile,
+  resetJsThreadProfile,
+  startEventLoopLagSampler,
+  type EventLoopLagReport,
+} from "./selection/js-thread-profile";
 import {
   loadCandidateProbeCache,
   probeCandidateWithCache,
@@ -325,6 +332,59 @@ function reportPoseDiversity(
 
 /** Mirrors the planner's `maxPerBodyPose` default, for the diagnostic above. */
 const POSE_DIVERSITY_CAP = 2;
+
+/**
+ * `[album-runtime]` — the line that decides whether M3 is a runtime problem.
+ *
+ * Three numbers, and the argument only works with all three:
+ *
+ * - `bench` is each graph's invoke cost with the JS thread quiet. It is the
+ *   control. `model-inference` is `Date.now()` around an `await` that resolves
+ *   ON the JS thread, so its 2,280 ms could be a slow kernel or a busy thread
+ *   and no amount of re-reading the old logs can separate them.
+ * - `cpu:<x>ms/<wall>ms` is JS-thread CPU inside measured synchronous blocks
+ *   against the stage's own wall clock. These DO sum — the thread is single and
+ *   the blocks cannot yield — so a share near 100% means the pass is JS-bound
+ *   and `ANALYZE_CONCURRENCY = 6` is buying nothing but peak memory.
+ * - `blocked` is how much of the stage a trivial timer could not run, i.e. how
+ *   long a resolution arriving from the Nitro thread pool waits to be seen.
+ *
+ * How to read the result:
+ *   bench ~2,000 ms  -> the runtime is genuinely that slow; delegate/thread
+ *                       work is justified and the JS thread is a side issue.
+ *   bench ~100-300 ms and blocked > 80% -> `model-inference` was measuring the
+ *                       thread. Move the pixel work or lower the concurrency;
+ *                       a native module would change nothing.
+ *   bench ~100-300 ms and blocked < 30% -> neither; look at the queue and at
+ *                       what happens between the spans.
+ *
+ * Reporting only. Never throws.
+ */
+function reportRuntimeProfile(
+  stageWallMs: number,
+  photoCount: number,
+  bench: InferenceBenchmarks,
+  stopLagSampler: () => EventLoopLagReport,
+): void {
+  try {
+    const lag = stopLagSampler();
+    const describe = (
+      name: string,
+      measured: InferenceBenchmark | undefined,
+    ): string =>
+      measured
+        ? `${name}:${formatMilliseconds(measured.meanMs)}` +
+          `(${measured.runs}x,${formatMilliseconds(measured.minMs)}..${formatMilliseconds(measured.maxMs)})`
+        : `${name}:unavailable`;
+    console.info(
+      `[album-runtime] photos=${photoCount} ` +
+        `idle-bench={${describe("tinyclip", bench.tinyclip)},${describe("movenet", bench.movenet)}} ` +
+        formatJsThreadProfile(stageWallMs, lag),
+    );
+  } catch {
+    // A diagnostic must never fail the album it is diagnosing.
+  }
+}
 
 function formatTiming(timing: BuildAlbumTiming): string {
   if (timing.stage === "analysis-degraded") {
@@ -714,6 +774,15 @@ async function buildAlbumImpl(
     elapsedMs: Date.now() - modelWaitStartedAt,
     itemCount: 1,
   });
+  // The control for every span the deep-analysis pass is about to report.
+  // Runs here on purpose: the models are loaded, the prepass is finished, and
+  // nothing else is in flight, so this is the only moment in a build when the
+  // JS thread is quiet enough to measure a graph rather than a queue.
+  throwIfCancelled(options.signal);
+  const inferenceBench = await benchmarkInferenceModels();
+  // Prepass costs are the prepass's; this window is the heavy pass alone.
+  resetJsThreadProfile();
+  const stopLagSampler = startEventLoopLagSampler();
   const analysisStartedAt = Date.now();
   const deepAnalysisTiming = new DeepAnalysisTimingCollector();
   // Photos that lost at least one signal, counted once however many they lost.
@@ -913,10 +982,23 @@ async function buildAlbumImpl(
           : lookingAtPhase(done, analysisInputs.length),
       });
     },
+  }).catch((error: unknown) => {
+    // A cancelled build unwinds past the report below, and the lag sampler is a
+    // self-rescheduling timer: leaving it running would keep a chained
+    // setTimeout alive for the life of the process. `stop` is idempotent.
+    stopLagSampler();
+    throw error;
   });
+  const analysisWallMs = Date.now() - analysisStartedAt;
+  reportRuntimeProfile(
+    analysisWallMs,
+    analysisInputs.length,
+    inferenceBench,
+    stopLagSampler,
+  );
   reportTiming(options, timings, {
     stage: "deep-analysis",
-    elapsedMs: Date.now() - analysisStartedAt,
+    elapsedMs: analysisWallMs,
     itemCount: analysisInputs.length,
   });
   for (const aggregate of deepAnalysisTiming.summarize()) {

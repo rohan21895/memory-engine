@@ -2,13 +2,15 @@ import type { PoseKeypoint } from "../selection/pose";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { createModelCache, reportDegraded, type ModelCacheLoadStats, type ModelExecutionTimingRecorder } from "./model-cache.ts";
+import { benchmarkInference, createModelCache, reportDegraded, type InferenceBenchmark, type ModelCacheLoadStats, type ModelExecutionTimingRecorder } from "./model-cache.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { decodeBase64Image } from "./base64.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { measureSync } from "../selection/js-thread-profile.ts";
 
 const INPUT_SIZE = 192;
 const KEYPOINT_COUNT = 17;
 const OUTPUT_VALUES = KEYPOINT_COUNT * 3;
-const BASE64_ALPHABET =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 export type MoveNetResult = {
   keypoints: PoseKeypoint[];
@@ -145,6 +147,40 @@ export async function probeBodyPoseModel(): Promise<boolean> {
 }
 
 /**
+ * MoveNet's invoke cost with the JS thread quiet. See `InferenceBenchmark`.
+ *
+ * The pair matters more than either number. MoveNet is int8 and a CNN;
+ * TinyCLIP is float32 and a ViT. On the device they measured 1,111 ms and
+ * 2,280 ms — a 2.05x ratio against this Mac's 2.82x. If a quiet thread returns
+ * that same pair, the runtime is the story. If both collapse toward the Mac's
+ * few milliseconds, the spans were the thread.
+ */
+export async function benchmarkPoseInference(
+  runs = 3,
+): Promise<InferenceBenchmark | undefined> {
+  const job = inferenceQueue.then(async () => {
+    try {
+      const model = await modelCache.acquire();
+      if (!model || !isExpectedModel(model)) return undefined;
+      // uint8 input, raw 0..255 RGB — the same identity mapping the real path
+      // uses, so this benchmarks the shipped tensor contract and not another.
+      const input = new Uint8Array(INPUT_SIZE * INPUT_SIZE * 3).fill(128);
+      return await benchmarkInference(
+        () => model.run([input.buffer as ArrayBuffer]),
+        runs,
+      );
+    } catch {
+      return undefined;
+    }
+  });
+  inferenceQueue = job.then(
+    () => undefined,
+    () => undefined,
+  );
+  return job;
+}
+
+/**
  * Tensor contract, read straight out of the bundled flatbuffer:
  *   input  serving_default_input:0  UINT8   [1,192,192,3]  no quantization record
  *   output StatefulPartitionedCall:0 FLOAT32 [1,1,17,3]
@@ -223,13 +259,16 @@ async function imageRgbTensor(
       throw new Error("MoveNet preprocessing returned no pixels.");
     }
 
-    const decoded = decodeJpeg(decodeBase64(resized.base64), {
-      useTArray: true,
-      formatAsRGBA: true,
-      tolerantDecoding: true,
-      maxResolutionInMP: 1,
-      maxMemoryUsageInMB: 16,
-    });
+    const bytes = decodeBase64Image(resized.base64, "movenet.base64");
+    const decoded = measureSync("movenet.jpeg-decode", () =>
+      decodeJpeg(bytes, {
+        useTArray: true,
+        formatAsRGBA: true,
+        tolerantDecoding: true,
+        maxResolutionInMP: 1,
+        maxMemoryUsageInMB: 16,
+      }),
+    );
     if (
       decoded.width < 1 ||
       decoded.height < 1 ||
@@ -238,7 +277,9 @@ async function imageRgbTensor(
     ) {
       throw new Error("MoveNet preprocessing returned the wrong image size.");
     }
-    return letterboxRgbaToRgb(decoded.data, decoded.width, decoded.height);
+    return measureSync("movenet.letterbox", () =>
+      letterboxRgbaToRgb(decoded.data, decoded.width, decoded.height),
+    );
   } finally {
     // saveAsync always writes a cache file, base64 or not. Nothing else ever
     // reads this one, so leaving it behind grows the cache by one JPEG per
@@ -352,34 +393,6 @@ export function parseMoveNetOutput(
     scores.push(clamp01(score));
   }
   return { keypoints, scores };
-}
-
-function decodeBase64(value: string): Uint8Array {
-  const encoded = value.replace(/^data:[^,]*,/u, "").replace(/\s/gu, "");
-  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
-  const bytes = new Uint8Array(
-    Math.max(0, Math.floor((encoded.length * 3) / 4) - padding),
-  );
-  let accumulator = 0;
-  let availableBits = 0;
-  let byteIndex = 0;
-
-  for (const character of encoded) {
-    if (character === "=") break;
-    const digit = BASE64_ALPHABET.indexOf(character);
-    if (digit < 0) throw new Error("Invalid base64 image data.");
-    accumulator = (accumulator << 6) | digit;
-    availableBits += 6;
-    if (availableBits >= 8) {
-      availableBits -= 8;
-      bytes[byteIndex++] = (accumulator >>> availableBits) & 0xff;
-      accumulator &= availableBits === 0 ? 0 : (1 << availableBits) - 1;
-    }
-  }
-  if (byteIndex !== bytes.length || bytes.length === 0) {
-    throw new Error("Incomplete base64 image data.");
-  }
-  return bytes;
 }
 
 function clamp01(value: number): number {
