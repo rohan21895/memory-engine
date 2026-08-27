@@ -1,3 +1,5 @@
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { FREQUENT_MERGE_CO_OCCURRENCE_RATE, RARE_MERGE_CO_OCCURRENCE_RATE } from "../../faces/face-cluster.ts";
 import type { MergeSuggestion } from "../../faces/face-cluster";
 import type { FaceIndexPerson } from "../../faces/face-index";
 
@@ -18,32 +20,14 @@ export function faceMergeReviewPair(
 }
 
 /**
- * Co-occurrence rates at which the two readings separate.
- *
- * Measured across the owner's library on the pairs the same-photo rule blocks.
- * Two populations, and the gap between them is empty:
- *
- *   0.6% - 3.6%   eleven pairs holding 1,065 faces. Two clusters of 180 and 310
- *                 faces sharing exactly ONE photo. Far more often one person
- *                 with a reflection, a framed photo on a wall, or a duplicate
- *                 detection in a single frame than two people who met once.
- *   7.7% - 57%    people who really are two people. A parent and child who are
- *                 photographed together constantly sit at 52%.
- *
- * Nothing lands between 3.6% and 7.7%, so the bands below are reading a real
- * separation rather than slicing a continuum at a convenient place.
- */
-const LIKELY_DOUBLE_DETECTION = 0.05;
-const LIKELY_TWO_PEOPLE = 0.15;
-
-/**
  * Appearances below which the RATE carries no information and no conclusion is
  * stated.
  *
- * The bands above were measured on pairs with real denominators. Applied to a
- * small one they invert: two people who each appear in a single photo, and that
- * photo is the same one, give 1/1 = 100%, sail past LIKELY_TWO_PEOPLE and are
- * announced as "usually two different people" — when what actually happened is
+ * The bands in `face-cluster.ts` were measured on pairs with real denominators.
+ * Applied to a small one they invert: two people who each appear in a single
+ * photo, and that photo is the same one, give 1/1 = 100%, sail past
+ * `FREQUENT_MERGE_CO_OCCURRENCE_RATE` and are announced as "usually two
+ * different people" — when what actually happened is
  * that ONE face was found twice, which is the opposite conclusion and the more
  * common cause by far.
  *
@@ -83,38 +67,62 @@ export function coOccurrenceEvidence(
   if (!blockedByCoOccurrence || sharedAssets <= 0 || appearances <= 0) {
     return undefined;
   }
-  const photos = `${sharedAssets === 1 ? "1 photo" : `${sharedAssets} photos`}`;
-  const of = `of ${appearances.toLocaleString()}`;
   const rate = sharedAssets / appearances;
-  // Every photo either has is the double-detection signature, not evidence of
-  // two people — and on a denominator this small the rate would claim the
-  // opposite with total confidence. Said plainly, because this is the case the
-  // owner actually hit.
+  const percentage = Math.round(rate * 1_000) / 10;
+  const shared = `${sharedAssets.toLocaleString()} ${
+    sharedAssets === 1 ? "photo" : "photos"
+  }`;
+  const total = `${appearances.toLocaleString()} ${
+    appearances === 1 ? "photo" : "photos"
+  }`;
+  const fact = `${shared} out of ${total} (${percentage}%) ${
+    sharedAssets === 1 ? "shows" : "show"
+  } both faces.`;
+  // Every photo either of them has is the SAME photo. That is the
+  // double-detection signature, not evidence of two people — and on a
+  // denominator this small the rate would claim the opposite with total
+  // confidence. Checked before the rate, because this is the case the owner
+  // actually hit and 1/1 = 100% sails straight past the frequent bar.
   if (sharedAssets >= appearances) {
     return (
-      `Each of these appears in ${photos}, and it is the same photo. ` +
+      `Each of these appears in ${shared}, and it is the same photo. ` +
       `That usually means one face was counted twice rather than two people ` +
       `who were photographed together.`
     );
   }
-  if (appearances < MIN_APPEARANCES_FOR_A_CONCLUSION) {
-    return `They appear together in ${photos} ${of}.`;
-  }
-  if (rate <= LIKELY_DOUBLE_DETECTION) {
+  if (appearances < MIN_APPEARANCES_FOR_A_CONCLUSION) return fact;
+  if (rate <= RARE_MERGE_CO_OCCURRENCE_RATE) {
     return (
-      `They appear together in only ${photos} ${of}. ` +
-      `That usually means one face was counted twice in that photo — a mirror, ` +
-      `a picture on the wall, or the same head found twice.`
+      `${fact} In this library, seeing both this rarely can happen when one ` +
+      `face was counted twice — in a mirror, a framed photo, or the same head ` +
+      `found twice.`
     );
   }
-  if (rate >= LIKELY_TWO_PEOPLE) {
+  if (rate >= FREQUENT_MERGE_CO_OCCURRENCE_RATE) {
     return (
-      `They appear together in ${photos} ${of}. ` +
-      `People who are photographed together this often are usually two ` +
-      `different people.`
+      `${fact} Seeing both this often can mean they are two different people ` +
+      `who are often photographed together.`
     );
   }
-  return `They appear together in ${photos} ${of}.`;
+  return fact;
+}
+
+export type FaceMergeReviewProgress = {
+  answered: number;
+  photosRepaired: number;
+};
+
+/** Advances the two numbers the owner sees after a recorded answer. */
+export function advanceFaceMergeReviewProgress(
+  progress: FaceMergeReviewProgress,
+  suggestion: MergeSuggestion,
+  samePerson: boolean,
+): FaceMergeReviewProgress {
+  return {
+    answered: progress.answered + 1,
+    photosRepaired:
+      progress.photosRepaired + (samePerson ? suggestion.photosFixed : 0),
+  };
 }
 
 /**

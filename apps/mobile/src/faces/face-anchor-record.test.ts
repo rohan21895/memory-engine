@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { __constraintStorageForTest as storage, __observationsFileForTest as file, clearFaceConstraints, faceConstraintCount, markSamePerson } from "./face-index.ts";
+import { __constraintStorageForTest as storage, __observationsFileForTest as file, faceConstraintCount, markSamePerson, undoLastFaceConstraint } from "./face-index.ts";
 import type { FaceObservation, Person } from "./types.ts";
 
 function assert(value: unknown, message: string): asserts value {
@@ -138,20 +138,31 @@ file.rebuild();
 }
 
 // ---------------------------------------------------------------------------
-// Vacuity guard. If the constraint were being silently ignored, the rebuild
-// above would have produced six people again -- so forget it and check that
-// six is exactly what comes back.
+// Undo must remove only the latest answer AND reverse its in-memory merge.
 // ---------------------------------------------------------------------------
-await clearFaceConstraints();
+assert(await undoLastFaceConstraint(), "the latest answer must be undoable");
 {
   const people = file.people();
-  assert(faceConstraintCount() === 0, "clearing forgets the answer");
+  assert(faceConstraintCount() === 0, "undo forgets the latest answer");
   assert(
     people.length === 6,
-    `without the answer the mother splits again (got ${people.length}) -- if this is 5, ` +
-      "the merge above was the clusterer's doing and the constraint proved nothing",
+    `undo must split the mother again (got ${people.length})`,
   );
 }
+
+// Sabotage guard: put the same answer back and verify the exact assertion above
+// would now fail because the mother is fused again. This proves undo changed
+// the grouping rather than merely decrementing a counter.
+const earlyAgain = withAssets(file.people(), ["newborn", "park"]);
+const lateAgain = withAssets(file.people(), ["birthday"]);
+assert(await markSamePerson(earlyAgain.id, lateAgain.id), "the sabotage answer must be recorded");
+assert(faceConstraintCount() === 1, "the sabotage must actually restore the saved answer");
+assert(
+  file.people().length === 5,
+  `with the answer restored, the six-person undo assertion must fail (got ${file.people().length})`,
+);
+assert(await undoLastFaceConstraint(), "the sabotage answer must be removable for test isolation");
+assert(file.people().length === 6 && faceConstraintCount() === 0, "the test leaves no saved correction behind");
 
 // eslint-disable-next-line no-console
 console.log("anchor-record self-check passed");

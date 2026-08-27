@@ -1,9 +1,5 @@
-import {
-  coOccurrenceEvidence,
-  faceMergeReviewPair,
-  remainingFaceMergeSuggestions,
-  // @ts-expect-error Node's TypeScript runner requires the source extension.
-} from "./face-merge-review.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { advanceFaceMergeReviewProgress, coOccurrenceEvidence, faceMergeReviewPair, remainingFaceMergeSuggestions } from "./face-merge-review.ts";
 import type { MergeSuggestion } from "../../faces/face-cluster";
 import type { FaceIndexPerson } from "../../faces/face-index";
 
@@ -23,7 +19,7 @@ const suggestion: MergeSuggestion = {
   similarity: 0.539,
   bar: 0.509,
   sharedAssets: 1,
-  appearances: 180,
+  appearances: 24,
   photosFixed: 180,
   blockedByCoOccurrence: true,
 };
@@ -52,16 +48,14 @@ assert(
  * The evidence line, which exists because "1 shared photo" is not a fact the
  * user can act on without its denominator.
  *
- * The real pair this is modelled on: person-16 (180 faces) and person-187 (310
- * faces) share exactly one photo out of 180 — 0.6%. Two clusters that large
- * sharing a single frame is a double detection far more often than it is two
- * people who met once.
+ * The real pair this is modelled on: person-27 (463 faces) and person-729 (24
+ * faces) share exactly one photo out of 24 — 4.2%.
  */
 {
   const line = coOccurrenceEvidence(suggestion);
   assert(line !== undefined, "a co-occurrence-blocked pair must explain itself");
   assert(
-    line.includes("1 photo") && line.includes("180"),
+    line.includes("1 photo") && line.includes("24") && line.includes("4.2%"),
     `both halves of the rate must be shown, got: ${line}`,
   );
   assert(
@@ -70,8 +64,35 @@ assert(
   );
 }
 
+// Progress distinguishes answers saved from photos actually brought together.
+// "Not the same" is valuable protection, but must never inflate the repair
+// total merely because it advanced the queue.
+{
+  const start = { answered: 0, photosRepaired: 0 };
+  const keptApart = advanceFaceMergeReviewProgress(start, suggestion, false);
+  assert(
+    keptApart.answered === 1 && keptApart.photosRepaired === 0,
+    `a safe separate answer advances only the answer count, got ${JSON.stringify(keptApart)}`,
+  );
+  const broughtTogether = advanceFaceMergeReviewProgress(keptApart, suggestion, true);
+  assert(
+    broughtTogether.answered === 2 &&
+      broughtTogether.photosRepaired === suggestion.photosFixed,
+    `a same-person answer must report its repair, got ${JSON.stringify(broughtTogether)}`,
+  );
+  // Sabotage guard: run the opposite answer through the same function and
+  // verify it produces a different total. A constant or inert implementation
+  // cannot satisfy both sides of this check.
+  const sabotaged = advanceFaceMergeReviewProgress(keptApart, suggestion, false);
+  assert(suggestion.photosFixed > 0, "the sabotage needs a non-zero repair to suppress");
+  assert(
+    sabotaged.photosRepaired !== broughtTogether.photosRepaired,
+    "changing Same person to Not the same must actually suppress the repair count",
+  );
+}
+
 // THE case the denominator exists for. The same single shared photo reads the
-// opposite way when it is one of two rather than one of 180 — and a version
+// opposite way when it is ten of nineteen rather than one of 24 — and a version
 // that only ever printed "1 shared photo" could not tell these apart at all.
 {
   const alwaysTogether = coOccurrenceEvidence({

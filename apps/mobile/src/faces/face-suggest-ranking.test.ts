@@ -1,7 +1,5 @@
-import {
-  suggestMerges,
-  // @ts-expect-error Node's TypeScript runner requires the source extension.
-} from "./face-cluster.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { RARE_MERGE_CO_OCCURRENCE_RATE, suggestMerges } from "./face-cluster.ts";
 import type { Person } from "./types.ts";
 
 function assert(value: unknown, message: string): asserts value {
@@ -18,11 +16,10 @@ function assert(value: unknown, message: string): asserts value {
  * gains real merges. So the answer has to come from him, and the only thing
  * this code controls is which questions are worth his taps.
  *
- * It was spending them badly. Ranked by fewest-shared-photos, six of the first
- * twenty slots on his index went to pairs of single-face strangers -- one photo
- * each -- while person-16 (257 faces) split from person-745 (150 faces) sat at
- * rank fourteen. Every question costs the same tap; what differs is the size of
- * the repair.
+ * It was spending them badly. The useful first population is the one that
+ * rarely appears together (the signature of one face found twice), and within
+ * that population every question costs the same tap while the size of the
+ * repair varies enormously.
  */
 
 const at = (degrees: number): number[] => {
@@ -88,6 +85,71 @@ const options = { threshold: 0.5, identityMergeThreshold: 0.6 };
     simOf("tiny-a") > simOf("big-a"),
     `the small pair must score higher, or the ordering proves nothing ` +
       `(tiny ${simOf("tiny-a").toFixed(3)} vs big ${simOf("big-a").toFixed(3)})`,
+  );
+}
+
+/**
+ * Rare co-occurrence outranks a larger but usually-two-people pattern.
+ *
+ * Modelled on the measured pair person-27 (463 faces) x person-729 (24 faces):
+ * one shared photo out of 24, or 4.2%. A larger pair that shares a quarter of
+ * its photos is more likely to earn "not the same" than to repair anything, so
+ * raw size alone must not put it first.
+ */
+{
+  const sharedRare = ["rare-shared"];
+  const sharedOften = Array.from({ length: 20 }, (_unused, i) => `often-shared-${i}`);
+  const rareRepair = [
+    person(
+      "person-27",
+      463,
+      0,
+      [...sharedRare, ...Array.from({ length: 462 }, (_unused, i) => `r-big-${i}`)],
+    ),
+    person(
+      "person-729",
+      24,
+      51,
+      [...sharedRare, ...Array.from({ length: 23 }, (_unused, i) => `r-small-${i}`)],
+    ),
+  ];
+  const oftenTogether = [
+    person(
+      "often-a",
+      300,
+      150,
+      [...sharedOften, ...Array.from({ length: 280 }, (_unused, i) => `o-big-${i}`)],
+    ),
+    person(
+      "often-b",
+      80,
+      201,
+      [...sharedOften, ...Array.from({ length: 60 }, (_unused, i) => `o-small-${i}`)],
+    ),
+  ];
+  const out = suggestMerges([...oftenTogether, ...rareRepair], {
+    ...options,
+    limit: 10,
+  });
+  assert(out.length === 2, `only the two intended pairs should clear the floor, got ${out.length}`);
+  const rare = out.find((candidate: any) => candidate.a === "person-27");
+  const often = out.find((candidate: any) => candidate.a === "often-a");
+  assert(rare !== undefined && often !== undefined, "both measured patterns must be offered");
+  assert(
+    out[0] === rare,
+    `the 4.2% pair must rank first, got ${out[0]?.a}+${out[0]?.b}`,
+  );
+  // Sabotage guard: raw repair size really points the opposite way. If the
+  // rare-rate tier is removed, the 80-photo pair wins and the assertion above
+  // fails rather than passing by fixture coincidence.
+  assert(
+    often.photosFixed > rare.photosFixed,
+    `the competing pair must be the larger raw repair (${often.photosFixed} vs ${rare.photosFixed})`,
+  );
+  assert(
+    rare.sharedAssets / rare.appearances <= RARE_MERGE_CO_OCCURRENCE_RATE &&
+      often.sharedAssets / often.appearances > RARE_MERGE_CO_OCCURRENCE_RATE,
+    "the sabotage must actually place the pairs on opposite sides of the rare-rate tier",
   );
 }
 

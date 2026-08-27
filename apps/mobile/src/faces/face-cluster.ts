@@ -1379,6 +1379,39 @@ export type MergeSuggestion = {
 };
 
 /**
+ * The measured gap used to put the most repairable review questions first.
+ *
+ * Measured across the owner's library on the pairs the same-photo rule blocks.
+ * Two populations, and the gap between them is empty:
+ *
+ *   0.6% - 3.6%   eleven pairs holding 1,065 faces. Two clusters of 180 and 310
+ *                 faces sharing exactly ONE photo. Far more often one person
+ *                 with a reflection, a framed photo on a wall, or a duplicate
+ *                 detection in a single frame than two people who met once.
+ *   7.7% - 57%    people who really are two people. A parent and child who are
+ *                 photographed together constantly sit at 52%.
+ *
+ * Nothing lands between 3.6% and 7.7%, so these bands read a real separation
+ * rather than slicing a continuum at a convenient place. Both are ranking and
+ * wording hints only: the app still never answers for the user.
+ *
+ * Neither band means anything on a denominator of one or two. The screen guards
+ * that separately (`MIN_APPEARANCES_FOR_A_CONCLUSION`) — 1 shared photo of 1 is
+ * 100%, which is the DOUBLE-DETECTION signature and not the frequent-together
+ * one, and reading it through this constant states the opposite conclusion.
+ */
+export const RARE_MERGE_CO_OCCURRENCE_RATE = 0.05;
+
+/** Above this, the evidence sentence warns that two people may travel together. */
+export const FREQUENT_MERGE_CO_OCCURRENCE_RATE = 0.15;
+
+function mergeCoOccurrenceRate(suggestion: MergeSuggestion): number {
+  return suggestion.appearances > 0
+    ? suggestion.sharedAssets / suggestion.appearances
+    : Number.POSITIVE_INFINITY;
+}
+
+/**
  * Pairs of people that ALMOST merged, ranked by how close they came.
  *
  * Getting a threshold exactly right for every face in a library is not
@@ -1494,15 +1527,17 @@ export function suggestMerges(
   // apart only by co-occurrence, so they are the ones where the app is most
   // likely to be wrong and the user's answer is worth most.
   //
-  // Within that group, the biggest repair first. These pairs have ALREADY
-  // passed the similarity test, so confidence is no longer what separates them
-  // -- what separates them is how much each answer is worth, and that is the
-  // smaller cluster's size. Ordering them by fewest-shared-photos instead
-  // treated a pair of one-face strangers as the most urgent question in the
-  // library: on the owner's index six of the first twenty slots went to pairs
-  // worth one photo each, while person-16 (257 faces) split from person-745
-  // (150 faces) ranked fourteenth. Shared photos stays as the tiebreak, since
-  // one shared frame is far weaker evidence of two people than ten.
+  // Within that group, ask the rare-co-occurrence population first. These pairs
+  // have ALREADY passed the similarity test, and on the measured library the
+  // pairs at <= 5% are the ones with the signature of a real split: one face
+  // found twice in a mirror, framed photo, or single frame. High co-occurrence
+  // pairs are more often two relatives who are genuinely photographed together;
+  // putting a large one first merely earns a quick "not the same" rather than
+  // repairing the library.
+  //
+  // Within each population, the biggest repair comes first. Every question
+  // costs the same tap, so the smaller side's size is how much that tap can put
+  // right. The exact rate then breaks ties before similarity.
   //
   // The pairs BELOW their bar keep similarity first. There confidence IS the
   // binding constraint, and a wrong merge is unrecoverable, so a large tile is
@@ -1511,7 +1546,14 @@ export function suggestMerges(
     (x, y) =>
       Number(y.blockedByCoOccurrence) - Number(x.blockedByCoOccurrence) ||
       (x.blockedByCoOccurrence
-        ? y.photosFixed - x.photosFixed || x.sharedAssets - y.sharedAssets
+        ? Number(
+            mergeCoOccurrenceRate(y) <= RARE_MERGE_CO_OCCURRENCE_RATE,
+          ) -
+            Number(
+              mergeCoOccurrenceRate(x) <= RARE_MERGE_CO_OCCURRENCE_RATE,
+            ) ||
+          y.photosFixed - x.photosFixed ||
+          mergeCoOccurrenceRate(x) - mergeCoOccurrenceRate(y)
         : 0) ||
       y.similarity - x.similarity ||
       (x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0),
