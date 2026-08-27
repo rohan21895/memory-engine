@@ -361,9 +361,13 @@ type Coverage = {
   facesAnchorless: number;
 };
 
-function coverage(people: Person[], bars: AnchorBars): Coverage {
+function coverage(
+  people: Person[],
+  bars: AnchorBars,
+  facesInAsset?: FacesInAsset,
+): Coverage {
   const anchorless = people.filter(
-    (person) => anchorFor(people, person.id, bars) === undefined,
+    (person) => anchorFor(people, person.id, bars, facesInAsset) === undefined,
   );
   return {
     people: people.length,
@@ -392,13 +396,19 @@ function percent(part: number, whole: number): string {
  * `suggestedFaceMerges` asks for 60. A suggestion is REFUSED when either side
  * has no unambiguous anchor asset, which is exactly `recordConstraint`'s test.
  */
-function reviewOutcome(people: Person[], options: object, bars: AnchorBars, limit: number) {
+function reviewOutcome(
+  people: Person[],
+  options: object,
+  bars: AnchorBars,
+  limit: number,
+  facesInAsset?: FacesInAsset,
+) {
   const suggestions = suggestMerges(people, { ...options, limit });
   const anchorable = new Map<string, boolean>();
   const canAnchor = (id: string): boolean => {
     const known = anchorable.get(id);
     if (known !== undefined) return known;
-    const answer = anchorFor(people, id, bars) !== undefined;
+    const answer = anchorFor(people, id, bars, facesInAsset) !== undefined;
     anchorable.set(id, answer);
     return answer;
   };
@@ -523,18 +533,28 @@ function anchorAudit(
   );
 }
 
+/**
+ * The faces of one photo, in the space the stored centroids live in.
+ *
+ * `anchorFor` declines to guess without this, which is exactly the BEFORE
+ * behaviour -- so passing it or omitting it is what separates the two halves
+ * of the measurement below.
+ */
+type FacesInAsset = (assetId: string) => readonly (readonly number[])[];
+
 function report(
   label: string,
   people: Person[],
   options: { threshold?: number; perceptualThreshold?: number },
   truth?: Truth,
+  facesInAsset?: FacesInAsset,
 ): void {
   const bars: AnchorBars = {
     assignment: options.threshold ?? 0,
     perceptual: options.perceptualThreshold ?? 1,
   };
-  const found = coverage(people, bars);
-  const review = reviewOutcome(people, options, bars, 60);
+  const found = coverage(people, bars, facesInAsset);
+  const review = reviewOutcome(people, options, bars, 60, facesInAsset);
   console.log(`\n== ${label}`);
   console.log(
     `people ${found.people}  faces ${found.facesTotal}  ` +
@@ -605,7 +625,43 @@ if (indexAt !== -1) {
     centroid: decodeCentroid(person.centroid),
   }));
   console.log(`face-index.json: ${path}`);
-  report("DEVICE INDEX", people, faceClusterOptions(stored.threshold));
+  const options = faceClusterOptions(stored.threshold);
+
+  // Without `--observations` only the BEFORE half is answerable. face-index.json
+  // carries person centroids and asset ids but not the individual faces, and a
+  // face anchor is a claim about WHICH face in a shared photo -- so the fix
+  // cannot be evaluated from this file alone, and reporting one number here
+  // would silently be the old rule's.
+  const observationsAt = process.argv.indexOf("--observations");
+  if (observationsAt === -1) {
+    report("DEVICE INDEX (photo anchors only)", people, options);
+    console.log(
+      "\npass --observations <face-observations.jsonl> to measure face anchors too",
+    );
+  } else {
+    const facesByAsset = new Map<string, number[][]>();
+    let faces = 0;
+    for (const line of readFileSync(process.argv[observationsAt + 1], "utf8").split("\n")) {
+      if (!line) continue;
+      const stored = JSON.parse(line) as { assetId: string; embedding: string };
+      const existing = facesByAsset.get(stored.assetId);
+      const embedding = decodeCentroid(stored.embedding);
+      if (existing) existing.push(embedding);
+      else facesByAsset.set(stored.assetId, [embedding]);
+      faces += 1;
+    }
+    // Raw space, deliberately. `centeredForClustering` is a no-op while
+    // USE_CENTERED_CLUSTERING is false, so `index.embeddingMean` is never set
+    // and the stored centroids are raw. Centering these faces would compare
+    // them against centroids in a different space and quietly invalidate every
+    // number below.
+    console.log(
+      `face-observations.jsonl: ${faces} faces over ${facesByAsset.size} photos (raw space)`,
+    );
+    const facesInAsset: FacesInAsset = (assetId) => facesByAsset.get(assetId) ?? [];
+    report("BEFORE — photo anchors only", people, options);
+    report("AFTER — face anchors", people, options, undefined, facesInAsset);
+  }
 } else {
   const seed = argument("seed", 20260827);
   const scale = argument("scale", 1);

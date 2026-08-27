@@ -131,3 +131,41 @@ under-fragmented and understated it, which the agent predicted it would.
 The fix lets an anchor name *which face* inside a shared photo, resolved only when the
 winning face clears the assignment bar and beats the runner-up by 0.15 — a margin
 measured against confusable relatives, not chosen. Old constraints load unchanged.
+
+### Measured after the fix, on the same library
+
+The numbers above were the BEFORE half, and only the before half — `face-index.json`
+carries person centroids and asset ids but not individual faces, and a face anchor is a
+claim about *which* face in a shared photo. `anchorFor` declines to guess without them,
+so a run given only the index silently reports the old rule's answer no matter which
+code is checked out. The harness now takes `--observations` and reports both:
+
+```
+node --experimental-strip-types scratch/face-anchor-coverage/measure.ts \
+  --index face-index.json --observations face-observations.jsonl
+```
+
+```
+                          BEFORE            AFTER
+people with no anchor     1450 (64.6%)      9 (0.4%)
+faces they hold           4096 (25.9%)      9 (0.1%)
+review refused            43/60 (71.7%)     6/60 (10.0%)
+  of the first 20         17                6
+  of the first 5          3                 0
+photos at stake           191               6
+refusals worth 4+ photos  15                0
+largest refusal           21 photos         1 photo
+```
+
+Every one of the nine people still without an anchor holds exactly **one** face, and the
+six residual refusals are worth one photo each. The substantial repairs — the 15 pairs
+worth four or more photos, the 21-photo one at the top — are all now recordable.
+
+Two cautions on reading this. The before figures differ slightly from the run in the
+section above (71.7% against 61.7%) because that run used the previous day's export, at
+2,226 people rather than 2,244; the conclusion is unchanged but the exact rate moves with
+the library. And these faces are compared in **raw** space on purpose:
+`centeredForClustering` is a no-op while `USE_CENTERED_CLUSTERING` is false, so
+`embeddingMean` is never set and the stored centroids are raw. Centering the faces here
+would compare them against centroids in a different space and quietly invalidate the
+whole table.
