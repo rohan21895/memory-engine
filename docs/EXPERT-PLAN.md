@@ -1,905 +1,483 @@
-# Photeo — Implementation Plan for Claude Code
+# Photeo expert plan — reconciled with measured evidence
 
-> Received from an external expert review, 2026-08-27. Verbatim. Our analysis of
-> it, and what we actually intend to build, lives in `docs/EXPERT-PLAN-REVIEW.md`.
+**Status:** live implementation guidance, reconciled 2026-08-27.
 
-Photeo is an Android app (React Native + TFLite) that privately scans the phone's photo
-library, groups people by face, understands events and trips, and builds a small,
-beautiful, socially presentable album for any filter the user chooses — entirely
-on-device, nothing uploaded.
+This document supersedes the outside expert's original M0–M9 proposal. The original
+is preserved in Git history; it is not retained inline because several of its central
+claims are now falsified, and leaving them beside corrections would make them too easy
+to mistake for current guidance. For a two-minute version, read
+[`EXPERT-PLAN-STATUS.md`](EXPERT-PLAN-STATUS.md).
 
-The core product distinction: **photo scoring decides whether an individual photograph
-is good; album optimization decides whether that photograph adds value to this
-particular collection.** An excellent portrait can be omitted because the album already
-has three similar ones; a slightly imperfect photo can be kept because it is the only
-image of an important person, place or moment.
+This is a plan for the current Android/React Native product in `apps/mobile`. It does
+not supersede the product architecture and ownership rules in
+[`memory-engine-build-plan.md`](memory-engine-build-plan.md).
 
----
+## 1. How to read this plan
 
-## 1. How Claude Code must use this plan
+The status words are deliberate:
 
-Do not implement the whole plan in one pass. The workflow is:
+- **SHIPPED** means the production path uses it.
+- **BUILT / FLAG OFF** means an implementation and reproducible comparison exist, but
+  the production path does not use it.
+- **MEASURED / REJECTED** means the proposed mechanism lost on the measured library or
+  fixtures. Do not repeat it without new evidence that changes the premise.
+- **REJECTED ON MECHANISM** means the method is invalid for the proposed inputs even
+  though no product A/B was run.
+- **BLOCKED ON MECHANISM** means the named implementation route cannot exercise the
+  claimed behavior. It is not evidence that a different runtime or graph could not.
+- **OPEN** means the milestone still has product work to do.
 
-```text
-read this plan once → inspect the actual repository → implement only the
-CURRENT PHASE (section 20) → run the required parity/performance tests →
-report measured results and blockers → the phase pointer is advanced for the next run
-```
+Numbers below come from tracked measurements or reproducible repository harnesses.
+Device-specific results are not generalized to other hardware unless the graph
+structure itself makes the result portable.
 
-Ground rules for every phase:
+## 2. What from the expert plan still stands
 
-- Inspect the repo before naming files, packages, RN versions, native-module
-  architecture, worker classes or database libraries. Report the actual files,
-  data flow, JS/native boundary and covering tests before coding.
-- Treat every number in section 3 as the measured baseline, not an estimate.
-- Never silently change a model, preprocessing step, threshold or selection weight
-  while doing a storage or infrastructure migration.
-- Never fabricate model weights, benchmark outcomes or accuracy claims. Never ship
-  random/untrained weights as a "model". If an experiment can't run (missing
-  checkpoint, dataset, device), build the reproducible harness, document the exact
-  blocker, and leave production behaviour unchanged.
-- Every behaviour change lands behind a feature flag with the legacy path retained
-  until parity is demonstrated. Every expensive operation is resumable; every derived
-  result is versioned.
-- No magic numbers: thresholds, weights, budgets and windows live in versioned
-  configuration (section 21) and are logged with results.
-- No per-photo or per-face work crosses the RN bridge item-by-item. Embeddings never
-  materialize as JS number arrays or JSON/base64 — ArrayBuffers/typed arrays only,
-  similarity math in native code (C++ JSI or batched Kotlin).
-- Use transactions for multi-row writes; commit job results and job completion
-  together where feasible.
-- Extend the existing stage timers (`cache-load`, `candidate-probe`,
-  `candidate-rank`, `deep-analysis`) to every new stage.
-- End each phase with a completion report: what changed, measured before/after,
-  gates passed/failed, open blockers.
+The following are still live guidance:
 
----
+1. Separate per-photo quality from album-level value. A photograph can be good but
+   redundant, or imperfect but uniquely important.
+2. Keep analysis versioned, incremental, resumable, deterministic, and local. Missing
+   evidence stays unknown rather than becoming false certainty.
+3. Persist expensive signals once per asset/model/preprocessing version. Album builds
+   should consume stored evidence rather than rerun inference.
+4. Keep hard constraints for actual product invariants, especially user exclusions and
+   near-duplicate suppression. Use soft evidence for taste.
+5. Evaluate model and scoring changes on decisions and held-out events, not only mean
+   embedding similarity.
+6. Keep privacy, sensitive biometric handling, bounded memory, crash-safe writes, and
+   deterministic fallbacks as standing requirements.
 
-## 2. Non-negotiable invariants
+The plan's detailed prescriptions for TinyCLIP quantization, multi-prototype identity,
+facility location, DPP evaluation, the M1 parse fix, and the framing tie-break are no
+longer live guidance. Their measured disposition is below.
 
-**On-device privacy.** Photos, thumbnails, face crops, face and semantic embeddings,
-pose descriptors, clusters, events, scores, selections and preference data never leave
-the device. No cloud inference, no remote search, no analytics or crash logs containing
-image paths, vectors or full DB rows. Face embeddings are sensitive derived biometric
-data: app-private storage, never logged, invalidated on permission revocation or user
-reset, never used for authentication or demographic inference. Downloading approved
-model files is allowed; it must never involve uploading user content.
+## 3. Corrected measured baseline
 
-**Determinism.** Same library, asset revisions, model versions, preprocessing versions,
-configuration and user constraints → same clusters and same album. All tie-breaking is
-deterministic (stable asset ID). Deliberately stochastic experiments record their seed.
+### 3.1 Deep analysis is slow, but the timer is not kernel time
 
-**Incrementality.** A new photo must not rebuild the library. A model update
-invalidates only its own outputs and dependents. A changed photo invalidates only
-itself.
-
-**Explainability (dev builds).** For each selected photo the system can answer: base
-quality, coverage added (moment/location/people/shot type), which duplicate group it
-represents, which similar photos it beat, why a higher-scoring photo was omitted, which
-constraints applied.
-
-**Graceful uncertainty.** Uncertain faces stay unassigned ("Unsorted"), framing can be
-`UNKNOWN`, event boundaries carry confidence, quality carries uncertainty, a person
-merge can stay pending. Never convert ambiguity into false certainty.
-
----
-
-## 3. Measured baseline (owner's phone and library)
-
-| Metric | Value |
-|---|---:|
-| Photos indexed | 11,853 |
-| On-device storage | 40 GB (mean 4.7 MB/photo) |
-| Faces detected | 17,766 |
-| Person clusters | 2,237 (932 with 2+ faces) |
-
-Family library: many group photos, a small recurring cast, visually similar relatives,
-and an infant photographed across the first two years. False identity merges are
-maximally damaging here; one-vector identities are unsuitable.
-
-Current pipeline: ML Kit face detection (box, landmarks, eye-open, Euler angles);
-`w600k-mbf` 512-d embeddings (13.6 MB fp32); average-linkage clustering, one centroid
-per person, assignment bar 0.449, merge bar 0.600; same-photo cannot-link with a 0.72
-similarity escape; MoveNet Lightning single-pose (2.9 MB int8); TinyCLIP ViT-8M/16
-(33.2 MB fp32); 76-value perceptual fingerprint, collapse ≥0.92; hand-crafted quality
-rules; global top-64 prepass → ~24 selected; storage in `face-index.json` (2.5 MB) +
-`face-observations.jsonl` (13.8 MB); inference via `react-native-fast-tflite`,
-XNNPACK CPU only. Verify in the audit whether both bundled face models
-(`mobilefacenet-192` and `w600k-mbf`) are active before touching either.
-
-Timings (3,000-photo event): cache load 758 ms; candidate probe 3,263 ms; candidate
-rank 2,368 ms; deep analysis ~140 s for 64 photos (~2.2 s/photo); cold album 148 s;
-repeat 26 s. JSONL: 137 ms disk read but **6,694 ms atomic Hermes `JSON.parse`**.
-Full-library deep analysis at current speed ≈ 7.2 h.
-
-Identity threshold evidence (co-occurrence as known-different-person labels):
-
-| Merge bar | Impostors admitted | Real merges gained |
-|---:|---:|---:|
-| 0.60 | 8 | 0 |
-| 0.50 | 40 | 8 |
-| 0.45 | 59 | 106 |
-| 0.40 | 80 | 326 |
-
-Genuine splits sit at 0.50–0.52 average linkage. A single global threshold cannot fix
-fragmentation without admitting impostors — the representation must change (section 9).
-
----
-
-## 4. Architecture decisions
-
-1. **Storage:** SQLite with binary BLOB embeddings replaces whole-file JSON/JSONL.
-2. **Analysis timing:** compute each expensive signal once per (asset revision, model
-   version, preprocessing version), progressively in tiers — not everything at first
-   run, and never at album time only.
-3. **Inference:** benchmark matrix before any runtime switch; quantization ladder from
-   lowest risk upward; face-embedding changes gated by a labelled verification
-   benchmark; thresholds recalibrated after any model change.
-4. **Identity:** 1–6 quality-controlled, time-diverse medoid prototypes per person;
-   strict same-photo cannot-links with **no similarity escape**; robust multi-evidence
-   merges; temporal chaining for infant appearance drift.
-5. **Candidates:** remove the global top-64; build candidates from moments and
-   coverage first, quality fill second; budget ≈ 5× album size.
-6. **Selection:** constrained submodular (facility-location + saturating coverage)
-   with lazy greedy and bounded swaps; DPP only as an offline baseline.
-7. **Quality:** a multi-output learned scorer plus objective signals — never one
-   opaque beauty score; hand-crafted rules become features/soft penalties except a
-   small high-confidence exclusion set.
-8. **Framing:** cheap pass for all photos; multi-person pose/segmentation only for
-   finalists; framing is a confidence state, never a guarantee.
-9. **Licensing:** out of scope for this internal prototype; record provenance where
-   trivially available; a separate release gate handles model/dependency/training-data
-   licensing before any commercial release.
-
----
-
-## 5. Storage
-
-Choose the SQLite library in the M0 audit against hard requirements — JSI-based,
-ArrayBuffer/typed-array BLOB reads, prepared statements, transactions, no
-multi-megabyte JS materialization. op-sqlite, react-native-nitro-sqlite and
-expo-sqlite are all acceptable if the repo supports them. Similarity math stays native:
-brute-force NEON dot products over fp16 BLOBs are <10 ms at 17.8k × 512 — no vector
-extension.
-
-Schema sketch (adapt names to repo conventions; every derived row carries asset
-revision + model + preprocessing versions):
-
-```sql
-photos(id PK, uri, taken_at, time_confidence, lat, lon, width, height, subtype,
-       asset_revision, phash BLOB, clip BLOB /* fp16*512 */, scene_tags,
-       technical JSON, quality JSON, sig_ver_core, sig_ver_clip, sig_ver_quality)
-faces(id PK, photo_id FK, bbox, landmarks BLOB, eye_open, smile, yaw, pitch, roll,
-      quality REAL, quality_tier, emb BLOB /* fp16*512 */, align_transform,
-      prototype_id, identity_id, observation_type, sig_ver_face)
-prototypes(id PK, identity_id, medoid_face_id, centroid BLOB, t_min, t_max, support_n)
-identities(id PK, name, aliases, clustering_version, flags)
-constraints(a, b, kind /* must|cannot|chain */, score, source, evidence, immutable)
-dupe_groups(photo_id, group_id, kind /* exact|edited|burst */, similarity)
-moments(id, event_id, t_start, t_end, importance)
-events(id, t_start, t_end, geo_cluster, label, importance)
-analysis_jobs(id PK, photo_id, signal_type, priority, state, lease_owner,
-              lease_expires_ms, attempt_count, available_after_ms, updated_at_ms)
-selections(album_id, photo_id, explanation JSON, selector_config_version)
-annotations(id, mode, payload JSON, created_at)
-config_versions(id, kind, json, created_at)
-```
-
-Binary rules: embeddings are fp16 BLOBs end to end; a sampled round-trip parity check
-(~100 cosines pre/post) guards the codec.
-
-**Migration:** incremental, idempotent, resumable importer from `face-index.json` +
-`face-observations.jsonl` with a source fingerprint; dual-read validation mode; photo,
-person and face counts must match; existing IDs and cluster assignments unchanged;
-fixture album outputs unchanged; startup no longer parses the JSONL; legacy files
-retained behind a debug flag for rollback.
-
----
-
-## 6. Progressive analysis
-
-At 2.2 s/photo, mandatory full first-run analysis ≈ 7 hours — unacceptable. Use
-persistent progressive computation:
-
-- **Tier A — initial indexing (cheap):** MediaStore metadata + revisions, small
-  thumbnail, perceptual fingerprint, face detection + alignment + embedding, exposure
-  histogram, global and face-region sharpness, screenshot/document metadata. Resumable,
-  with visible progress.
-- **Tier B — selected-event priority:** when the user picks a filter, enqueue that
-  universe's missing deep signals at top priority — semantic embedding, quality
-  features, pose, group lower-tail face quality, crop flexibility, framing, optional
-  finalist segmentation. Show a preliminary album that improves as signals arrive, or
-  wait for a bounded high-priority set (product-test which).
-- **Tier C — background backfill:** opportunistic under charging/battery, thermal,
-  execution-window, storage and no-pending-user-work conditions. Correctness never
-  depends on Android granting unlimited background time.
-
-Priority classes (higher wins; ties by capture time then stable ID):
+On the owner's OPlus CPH2649, a real 3,000-photo build reported:
 
 ```text
-1000 user-requested finalist verification   900 user-requested candidate deep analysis
- 800 visible people-cluster repair          700 newly captured photo Tier A
- 500 recently viewed event backfill         300 general charging backfill
- 100 maintenance/reindex
+deep-analysis                    148,837 ms / 64 photos   2.33 s/photo
+tinyclip.model-inference span    145,952 ms total         2,280 ms mean
+movenet.model-inference span      71,113 ms total         1,111 ms mean
 ```
 
-Job leasing (atomic; adapt if `RETURNING` unavailable):
+TinyCLIP is the longer concurrent span, but `model-inference` is `Date.now()` around
+`await model.run(...)`. With `ANALYZE_CONCURRENCY = 6`, resolution returns to the JS
+thread while other photos can be decoding JPEGs and normalizing tensors there. The
+span is therefore **kernel execution + JS scheduling delay + contention**, not pure
+inference. The two model spans overlap inside one `Promise.all`; they must not be
+summed. Evidence: [`DEEP-ANALYSIS-TIMING.md`](DEEP-ANALYSIS-TIMING.md) and
+`apps/mobile/src/ml/tinyclip.ts:97-128`, `apps/mobile/src/build-album.ts:70-83`.
 
-```sql
-UPDATE analysis_jobs SET state='RUNNING', lease_owner=?, lease_expires_ms=?,
-  attempt_count=attempt_count+1, updated_at_ms=?
-WHERE id IN (SELECT id FROM analysis_jobs
-             WHERE state IN ('PENDING','RETRY')
-               AND (available_after_ms IS NULL OR available_after_ms<=?)
-             ORDER BY priority DESC, id ASC LIMIT ?)
-RETURNING *;
+The environment attribution is supported by a cross-check, not by intuition. On the
+measured Mac at one thread, TinyCLIP fp32 took 6.03 ms, MoveNet int8 2.14 ms, and
+w600k fp32 3.93 ms. Comparing a deliberately generous 20x phone projection with the
+device spans leaves an approximately 19–26x multiplier on both an fp32 ViT and an int8
+CNN. That shared multiplier points to the execution environment. It does not prove
+which part is scheduling, contention, runtime overhead, or device throttling.
+
+MoveNet currently overlaps TinyCLIP, so it adds no wall time while TinyCLIP remains
+longer. It does set the current-path floor: even if TinyCLIP took zero time, the stage
+would remain near the observed 1,111 ms MoveNet span under the same load. MoveNet is
+also still used for pose diversity, so deletion is not an M3 optimization.
+
+### 3.2 TinyCLIP quantization was tried and rejected
+
+A quantized model **can** be produced from the shipped `.tflite` without the source
+checkpoint: ai-edge-litert 2.2.0 exposes `CalibrationWrapper` for flatbuffer-to-
+flatbuffer post-training quantization. Feasibility is settled.
+
+The result is not viable:
+
+| Variant | Result |
+|---|---|
+| Full int8 TinyCLIP | Conversion stops at `DIV`: `Quantization not yet supported for op: 'DIV'`. |
+| Mixed int8 TinyCLIP | 33.2 MB → 8.5 MB, but 6.55 ms → 22.15 ms on the measured Mac: 3.4x slower. |
+| Mixed graph structure | 71 `QUANTIZE`/`DEQUANTIZE` boundary ops surround the unconverted regions. |
+
+This is a bad conversion, not evidence that int8 arithmetic is intrinsically slow.
+The shipped graph has zero `FULLY_CONNECTED` ops; 61 of 81 `BATCH_MATMUL` ops have a
+constant weight operand. Its 22 LayerNorms are decomposed into raw arithmetic: 44
+`MEAN`, 23 `SQRT`, 23 `DIV`, and 22 `SUB` ops. That shape defeats the quantizer and
+gives XNNPACK the wrong operators. The experiment and structural counts are recorded
+in [`DEEP-ANALYSIS-TIMING.md`](DEEP-ANALYSIS-TIMING.md); fidelity gates remain in
+`apps/mobile/src/quant/`.
+
+The 3.4x slowdown was measured on a Mac and may not transfer numerically to ARM. The
+71 conversion boundaries, missing `FULLY_CONNECTED` ops, and full-int8 `DIV` blocker
+are properties of the graph and do transfer. Re-conversion from the upstream
+checkpoint or a different runtime remains a legitimate new experiment; re-running
+mixed int8 on this flatbuffer as though it were untried does not.
+
+### 3.3 FP16 CPU is blocked on mechanism in the current integration
+
+The original ladder treated “FP16 weights on XNNPACK CPU” as an acceleration rung.
+Default XNNPACK expands fp16 weights to fp32 at load unless its `FORCE_FP16` flag is
+set. The pinned `react-native-fast-tflite` 3.0.1 API constructs default delegate
+options and exposes no route to that flag; the app calls the runtime with an empty
+delegate list (`apps/mobile/package.json:28`, `apps/mobile/src/ml/README.md:27-37`,
+`apps/mobile/src/ml/tinyclip.ts:140-152`).
+
+No FP16-CPU TinyCLIP run was performed. The conclusion is narrower: **the named
+mechanism cannot be exercised through the current wrapper**, so the plan's 1.4 s
+target cannot be credited to that rung. A custom LiteRT wrapper that exposes the flag,
+or another runtime, would be a different experiment.
+
+### 3.4 M1's parse premise was already fixed; memory is the live problem
+
+The original 6,694 ms atomic observations parse was real, but it is not the launch
+path anymore. Embeddings were split out of the launch index. A later launch measured
+`readMs=35 parseMs=545`, and the on-demand observations parse now yields every 500
+rows. The device number is preserved in commit `8d316e8`; the current split and chunk
+size are in `apps/mobile/src/faces/face-index.ts:45-70` and
+`apps/mobile/src/faces/face-index.ts:1366-1384`.
+
+The remaining measured cost is lifetime memory. On 17,768 faces × 512 dimensions,
+the app's `number[]` representation consumed 89.5 MB versus 15.5 MB for the incoming
+`Int8Array`, a 5.8x ratio and 74.0 MB difference. Once observations load, there is no
+release path. This is resident-process memory and a background-kill risk; it is not
+the ART Java heap that produced the separately observed album-build OOM. Evidence:
+[`EMBEDDING-MEMORY.md`](EMBEDDING-MEMORY.md).
+
+The harness ran under V8 rather than Hermes. The representation ratio is the finding;
+the exact runtime-specific absolute constant is indicative.
+
+### 3.5 M4 multi-prototype identity lost to the centroid
+
+The proposed 1–6 prototype representation was built in shadow form and measured on
+the owner's library. It does not beat the shipped centroid:
+
+- Of 937 people with at least two faces, zero had mean intra-tile cosine below the
+  library's calibrated assignment bar of 0.448; p05 was 0.477 and the median 0.625.
+  The premise that one tile spans several appearances is false here. Infant drift is
+  between tiles, not within a tile for a prototype to separate.
+- At a 60-impostor budget, the centroid gained 152 presumed merges, the appearance
+  split 161, and a random partition with the same `k` and piece sizes 162. The small
+  gain is the maximum over `k × k` pairs, not appearance modelling.
+- At impostor budgets 0, 2, 4, and 8, every measured policy gained zero merges.
+
+`MULTI_PROTOTYPE_ENABLED` remains false and the module is not wired into clustering.
+Evidence and reproduction: `apps/mobile/src/faces/face-prototypes.ts:1-69` and
+`scratch/multi-prototype/measure.ts:1-110`.
+
+This rejects multi-prototype activation **on this library and model**, not on all face
+libraries. A new embedding model, materially different library, or corrected capture-
+time evidence may justify rerunning the same harness.
+
+### 3.6 M6 facility location was built, measured, and left off
+
+The submodular path and its ablations were run on the three pinned 64-candidate,
+24-photo fixtures. Removing facility location from the full objective changed only
+1, 0, and 1 selected photos:
+
+| Fixture | Full objective vs shipped | Remove facility: photos changed vs full | Facility only: moment / people coverage |
+|---|---:|---:|---:|
+| birthday | 3 / 24 | 1 / 24 | 6/8 moments, 5/6 people (full: 8/8, 6/6) |
+| twoyears | 1 / 24 | 0 / 24 | 14/16 moments, 5/6 people (full: 16/16, 6/6) |
+| trip | 2 / 24 | 1 / 24 | 7/7 moments, 4/4 people (no coverage gain over full) |
+
+The birthday near-duplicate count fell from one to zero under the full objective, but
+it also stayed zero with facility removed and even with both facility and coverage
+removed. The win came entirely from the hard near-duplicate constraint now present in
+the planner. Reproduce with:
+
+```sh
+node --experimental-strip-types apps/mobile/src/selection/album-selector-ab.ts
 ```
 
-Expired leases return to retryable. A job is complete only if a row exists for
-(photo_id, asset_revision, signal_type, model_id, preprocessing_version); re-runs
-no-op or replace transactionally.
-
-Dependency invalidation (explicit in code):
-
-```text
-asset revision changed   → fingerprint, faces, semantic, pose, quality, moments, albums
-face detector changed    → face observations, embeddings, identities, person features, albums
-face embedder changed    → embeddings, prototypes, identities, person-based albums
-semantic model changed   → semantic embedding, semantic moments, learned heads, albums
-quality model changed    → quality outputs and albums only
-selector config changed  → album builds only
-```
-
-Keep prior-version outputs temporarily for A/B and rollback.
-
----
-
-## 7. Decode and preprocessing
-
-Decode once per photo per batch at target size (`ImageDecoder`/`inSampleSize` — never
-full 4.7 MB decode then downscale); derive face-detector input, face crops, semantic
-input, pose input, quality regions and thumbnail from the one working bitmap; release
-buffers; never hold dozens of large bitmaps. Resolution tiers: metadata-only →
-224–320 px model input → 512–768 px working image → native-resolution patches for
-finalist verification only.
-
-One canonical orientation: all boxes/landmarks stored normalized to the correctly
-oriented image; test all 8 EXIF orientations; fingerprints orientation-invariant or
-consistently canonicalized. Every model has an immutable preprocessing contract (colour
-space, resize, aspect policy, channel order, pixel range, normalization, output L2) —
-a model ID is incomplete without its preprocessing version. Never stretch photos square
-for composition scoring; letterbox with padding features, multi-crop, or trained-for
-centre crop. Track native memory (bitmaps, tensors, ByteBuffers, JSI ArrayBuffers);
-buffer pools only after correctness tests.
-
----
-
-## 8. Inference, quantization and acceleration
-
-TinyCLIP fp32 on XNNPACK CPU is the dominant cost. The question is not "GPU or INT8?"
-but which model/runtime combination wins end-to-end latency, memory, thermal and
-fidelity across supported devices. Build a narrow native benchmark module first; do not
-rewrite inference wholesale.
-
-**TinyCLIP benchmark ladder** (cheapest, lowest-risk first; identical semantics and
-preprocessing across variants):
-
-```text
-1. FP16 weights, XNNPACK CPU   (ARMv8.2 half precision — verify the fp16 path engaged)
-2. Dynamic-range INT8, CPU
-3. Full INT8, CPU              (broad-device production candidate)
-4. FP16, GPU delegate
-5. Native LiteRT CompiledModel prototype (CPU/GPU)
-6. Optional NPU/QNN tier on qualifying SoCs
-```
-
-For every variant report **cold delegate init, warm init (with kernel-cache
-serialization dir + model token), first inference, steady inference** — separately.
-Delegate serialization fixes initialization, not steady-state cost. Record delegated
-operator coverage; partial delegation can be slower than CPU. Never claim a backend is
-active because delegate creation succeeded — confirm the execution plan and outputs.
-
-Full-integer calibration: 500–2,000 inputs through the exact production preprocessing,
-stratified across indoor/outdoor, day/night, portrait/couple/group, infant, landscape,
-food/objects, screenshots, saturated edits, dark/noisy, panoramas, multiple cameras.
-
-Fidelity gates (never mean cosine alone — small average drift can still reorder close
-neighbours): mean and p1/p5 cosine vs fp32; nearest-neighbour recall@1/5/10 (initial
-gate: recall@10 ≥ 0.98 on the local benchmark, to be validated); Spearman of pairwise
-similarities; near-duplicate group changes; moment clustering changes; candidate-pool
-and final-album overlap (reported, not required identical); A/B album non-inferiority
-before a production switch.
-
-**Face embedding quantization** is more sensitive — thresholds and cluster geometry
-depend on it. Order: fp32 baseline → fp16 → dynamic-range/weight-only with float I/O →
-full INT8 only after the labelled verification benchmark (section 18) exists. Always:
-identical crops and alignment, dequantize output, **L2-normalize in float**, recompute
-similarity distributions, recalibrate 0.449/0.600, re-run cluster evaluation. No
-universal accuracy claim substitutes for the owner's close-relative and infant pairs.
-
-Runtime selection in production: device capability profile (SDK, SoC, accelerators,
-variant support, self-test result, warm latency class, thermal/memory class) with a
-first-launch self-test, cached; fallback order validated-NPU → validated-GPU-fp16 →
-validated-CPU-int8 → current CPU float; crashing/invalid backends quarantined per
-device/runtime/model version. QNN/NPU is an optional high-end tier — never a
-prerequisite for acceptable performance. Keep long-lived model instances (never load
-TinyCLIP 64 times); bounded instance pool; batch at application level (load once,
-run N prepared inputs, reuse buffers, commit outputs in one transaction).
-
-Preferred integration: a thin native module on LiteRT for the two heavy models rather
-than perpetually patching `react-native-fast-tflite`; a patched-library experiment only
-if the audit justifies it.
-
----
-
-## 9. Faces and identity
-
-**Detection and alignment.** ML Kit supplies box, landmarks, Euler angles, eye-open and
-smile — reliable only for near-frontal faces; off-angle/unavailable classification is
-`UNKNOWN`, never "closed" or "no smile". Document the exact current alignment pipeline
-before changing anything; store alignment transform, confidence, crop padding and
-preprocessing version. **An alignment change is a face-model change** and forces
-threshold recalibration.
-
-**Face quality** is a vector (pixel size, relative area, sharpness, exposure,
-occlusion, landmark confidence, yaw/pitch/roll, truncation, noise, alignment residual,
-eye-state availability) combined into `faceQuality` with components preserved. Tiers:
-
-```text
-SEED_QUALITY        can create/represent a prototype
-ASSIGNMENT_QUALITY  can be assigned to an established identity
-DISPLAY_ONLY        shown, but never automatic identity evidence
-REJECTED            likely false detection / unusable crop
-```
-
-Store all faces per photo (group shots: importance from area, centrality, sharpness,
-event importance, foreground association, truncation; background faces count for
-context, not quality gating). Flag likely false detections (posters, statues,
-reflections, photo-of-photo) with an observation type; keep them out of ordinary
-clusters.
-
-**Multi-prototype identities.** One centroid cannot represent a growing infant or
-profile/lighting modes — the mean lands between modes and matches none. Represent each
-person as 1–6 **medoids** (real, auditable face crops), count tiered by size:
-1–2 reliable faces → 1; 3–7 → up to 2; 8–20 → up to 4; 21+ → up to 6. Selection:
-filter to SEED_QUALITY; pick highest quality first; then greedily maximize weighted
-distance from existing medoids with bonuses for uncovered time buckets and view/
-lighting novelty; reject unsupported outliers. Infant identities get explicit temporal
-coverage buckets (0–3, 3–6, 6–9, 9–12, 12–18, 18–24, 24–36 months of that identity's
-observed timeline — temporal representation, never age classification from the face).
-
-**Face→person score:** `s(f,P) = max over prototypes cos(f,p)`; optionally blend top-2
-prototype similarities when the second is independently supported. High-quality frontal
-faces use the normal bar; low-quality/profile faces require *stronger* evidence or stay
-uncertain — never a lowered bar. Assignment uses high/grey/low bands; grey stays
-unassigned or pending.
-
-**Merges** never use a single average over all pairs. A merge is eligible only if:
-
-```text
-no immutable cannot-link and no ordinary same-photo conflict
-≥2 supporting pairs above pairSupportThreshold, from ≥2 distinct source photos
-at least one reciprocal nearest person/prototype pair
-robust top-k score above mergeThreshold, with a quality minimum
-```
-
-**Temporal chaining** bridges infant drift: 3 mo ↔ 5 mo ↔ 8 mo ↔ 12 mo ↔ 18 mo — local
-reliable matches across adjacent windows link sub-clusters a direct 3↔20-month
-comparison never could. Chaining is supporting evidence only; it never overrides
-cannot-links or close-relative caution. Config seeds: window 45 days, chain pair bar
-0.52, ≥2 supporting pairs from ≥2 photos. Chain-only merges land in a suggested-merge
-confirmation queue until measured precision justifies auto-merge.
-
-**Same-photo rule:** two distinct faces in one ordinary photo are **strictly
-cannot-linked — remove the current `unless similarity ≥ 0.72` escape.** High similarity
-between co-occurring relatives is exactly the failure mode to prevent. Until dedicated
-mirror/collage/photo-of-photo/duplicate-face detectors exist, log high-similarity
-same-photo pairs for developer review and keep the cannot-link; each future exception
-requires a stored reason and evidence. Accepted, audited side effect: genuine mirror
-shots stay split until those detectors ship. Don't materialize inherited cannot-links
-quadratically — store observation-level constraints and test membership pairs at merge
-time (compact conflict sets per identity, rebuilt transactionally on merge).
-
-**User corrections** ("same person", "different people", "move face", "remove face")
-are high-priority immutable constraints; confirmed merges preserve source aliases.
-
-**Splitting:** detect over-merges via internal same-photo conflicts, disconnected
-prototype graphs, bimodal structure, unsupported prototypes, impossible co-occurrence;
-keep the stable ID on the largest/user-labelled component.
-
-**Rollout:** shadow mode. Keep `legacy-centroid-v1` while `multiprototype-shadow-v1`
-runs in parallel; compare false merges/splits, B-cubed P/R/F1, key-person
-fragmentation, unassigned rate, same-photo violations; inspect key relatives; then
-activate. **False merges are weighted more severely than false splits.**
-
----
-
-## 10. Duplicates, bursts, moments, events, trips
-
-Hierarchy and default album behaviour:
-
-```text
-exact/edited duplicate group → max 1        ordinary burst → max 1 (sometimes 2)
-important moment → 1–3 by diversity         major event/day → minimum coverage
-trip → cover days, places, companions
-```
-
-Three distinct concepts, three detectors: **exact** (size/metadata prefilter → decoded
-thumbnail hash → lazy cryptographic hash; don't hash 40 GB at first run), **edited**
-(orientation-normalized fingerprint + current 76-value descriptor + semantic embedding
-+ colour histogram + local-feature verification for ambiguous pairs; keep the 0.92 bar
-until a labelled benchmark exists; store continuous similarity, not just group ID),
-**burst** (time gap, same people, face positions, semantic + pose similarity, device,
-GPS continuity — high semantic similarity alone is insufficient: two views of one
-monument are meaningfully different). Group via candidate edges (time windows +
-fingerprint neighbours) then verify; use connected components only where transitivity
-is safe, else complete-link, to avoid chaining distinct views. Representative
-selection within a group uses subject/face sharpness, eyes-open for important frontal
-faces, expression, truncation, motion blur, exposure, composition, pose, memorability,
-crop flexibility — alternates stay in the DB for instant one-tap replacement.
-Live/Motion Photo best-frame extraction is a later milestone; model storage so one
-logical asset can hold multiple frame candidates.
-
-**Moments/events:** sort by corrected capture time; per adjacent pair compute log time
-gap, day boundary, GPS distance, implied speed, location-cluster change, semantic
-distance, person-set overlap, near-dup similarity, shot-type transition, source/device
-change; boundary probability from a versioned heuristic first (logged feature
-contributions), a small logistic/GBM once labels exist; segment with smoothing
-(DP/Viterbi/PELT) — never split on one gap alone. Location: metric conversion, stay
-points, clusters, travel transitions; infer the home region only when permitted, keep
-it coarse. Time confidence handles WhatsApp/download timestamps, scans, screenshots of
-old photos, timezone and clock errors — one suspicious timestamp must not distort an
-event. Event importance: photo count, distinct moments, important people, location
-rarity, action/emotion, favourites, user focus. The user's filter (date/location/
-person/album/auto-event) defines the candidate universe; moments are built within it.
-
----
-
-## 11. Per-photo signals
-
-Persist independently versioned families: metadata; duplicate features; face
-observations; semantic embedding; composition; technical quality; portrait/group
-quality; pose; shot type; utility probability; memorability; framing/crop flexibility;
-sensitivity flags. Cheap technical signals (luminance stats, clipping ratios, contrast,
-saturation, Laplacian/Tenengrad sharpness globally and per face region, noise,
-blockiness, entropy, horizon) are computed in Tier A — never summed raw across scales;
-normalized per content class, weighted later. Regional quality evaluates where viewers
-look (important faces, main subject, foreground, proposed crop): a soft background
-face in a group portrait is not a soft central face.
-
-The TinyCLIP embedding is stored once, normalized, and reused for similarity, scene
-grouping, diversity, utility features and learned heads — derived classifiers never
-rerun the backbone. **No text tower ships:** shot-type and concept features come from
-concept vectors computed offline with the exact backbone + preprocessing version and
-bundled as versioned constants (screenshot, document, receipt, whiteboard, meme, wide
-establishing, landscape, architecture, food, group, couple, selfie, pet, action, night,
-indoor, outdoor); regenerate on any backbone/preprocessing change. Shot type is
-multi-label. Person-set representation: weighted (person_id, importance, confidence,
-quality), with unknown faces kept as unknowns for layout comparison. Pose descriptor:
-hip/torso-centred, scale-normalized, careful mirror handling, joint angles, body
-orientation, face yaw, visibility mask — compact descriptor plus raw landmarks.
-Memorability is contextual value (rarity of location/person-combination/scene, moment
-importance, position in event arc, favourites, only-photo-of-X) — not a second
-aesthetic score. Sensitivity: rely on existing hidden/secure-folder metadata and user
-exclusions; no invented sensitive-content classifier.
-
----
-
-## 12. Quality and aesthetic scoring
-
-Rules handle severe defects; they cannot rank two acceptable photos by composition,
-expression and social appeal. The scorer outputs **separate calibrated heads**:
-
-```text
-technicalQuality  aestheticQuality  portraitQuality  groupQuality
-memorability      utilityProbability  cropFlexibility  uncertainty
-```
-
-Baseline model: small MLP on the semantic embedding plus objective features (technical
-stats, face count, largest face area, weighted face-quality mean and lower tail,
-eye-state, yaw distribution, pose/framing, shot type, subject area, crop flexibility,
-utility signals). Architecture sketch: normalize → Dense 512/256 + GELU + dropout →
-Dense 128 + GELU → independent heads.
-
-**Training path (in order):**
-
-1. *Public bootstrap:* compute embeddings for AVA (fallbacks TAD66K, PARA) through the
-   exact production TinyCLIP preprocessing and train the heads there. Existing
-   "improved aesthetic predictor" weights are OpenAI ViT-L/14-based and **cannot** be
-   reused on TinyCLIP features — train from scratch. This satisfies the
-   no-untrained-weights rule before local labels exist.
-2. *Owner labels:* fine-tune on annotation-tool output (section 18) — burst winners
-   and pairwise preferences with Bradley–Terry/logistic ranking loss, listwise loss
-   within bursts, regression for technical attributes, binary utility. **Split by
-   event**, never randomly, so burst near-duplicates don't leak between train and
-   validation.
-3. *Local personalization:* `q_user = q_global + wᵤᵀx` with bounded, regularized
-   pairwise online updates `P(i≻j) = σ(wᵤᵀ(xᵢ−xⱼ))`; optional per-context profiles
-   (portrait / family event / travel / print / social) only once enough feedback
-   exists; reset and disable controls; no full-model on-device fine-tuning.
-
-Never train on raw like counts — likes encode audience size, timing and platform
-ranking, not photo quality. Pairwise preferences beat 1–10 scores.
-
-**Content router** blends head weights by class (portrait/couple/group/child/
-landscape/architecture/food/pet/action/night/utility): portraits weight expression and
-face sharpness; groups weight the lower tail; landscapes weight composition; action
-tolerates slight motion blur; infant memories let memorability outweigh minor flaws.
-Group quality starting hypothesis (to validate):
-
-```text
-Q_group = 0.55·weightedMean(q_f) + 0.30·weightedP20(q_f) + 0.15·importantMin(q_f)
-```
-
-with weights by face area, centrality and event importance.
-
-**Soft penalties** for moderate flaws (partly closed eyes, slight blur, small cut face,
-background softness, minor exposure, off-angle); **hard exclusion only** for corrupt
-files, non-representative exact duplicates, near-black frames, high-confidence
-utilities when excluded, severe failures with no unique coverage, and user-hidden
-content. A unique memory survives moderate flaws. Uncertainty is emitted at minimum
-when content class is unknown, important faces are tiny, input was heavily
-padded/cropped, or signals disagree. **High-resolution verification** runs on
-finalists only (eye focus, motion blur, artifacts, texture, print resolution,
-clipping); a failing finalist is replaced from the same moment.
-
----
-
-## 13. Multi-person framing and crops
-
-Two stages: cheap pass for all (ML Kit faces + MoveNet single pose + box heuristics);
-deep pass for high-value candidates only. Deep-stage benchmark, three candidates:
-
-1. MediaPipe Pose Landmarker (IMAGE mode, `numPoses = clamp(faceCount, 1, max)`,
-   masks only for the framing experiment, lite tier first) — measure size, init,
-   latency at 1/2/4/8 people, pose recall vs face count, memory with masks.
-2. ML Kit subject segmentation — multi-subject masks, but beta and unbundled
-   (Play-services download): handle first-use unavailability; optional path with
-   fallback only.
-3. Bundled MediaPipe selfie segmentation (general model, ~250 KB) — the guaranteed
-   offline baseline mask for border-contact features.
-
-Framing features: head/hair proximity to top edge, face box crossing edges,
-shoulder/torso visibility, wrist/ankle endpoint confidence near edges, mask touching
-frame, body-box truncation, crop-safe margin. Face↔pose association via head-region
-containment, geometry, scale, Hungarian assignment. Output is a state, never a
-guarantee:
-
-```text
-COMPLETE | LIKELY_TRUNCATED | UNKNOWN
-```
-
-Framing feeds **soft penalties** into portrait/group quality — never hard gates
-(measured hard gates cost 2.7–13.8% of good selections on group-heavy libraries).
-Crop proposals per aspect (original, 1:1, 4:5, 16:9, 9:16, print ratios) scored by
-face/limb retention, saliency, headroom, edge safety, post-crop composition, remaining
-resolution, horizon; stored as normalized rectangles. cropFlexibility = best score per
-ratio + usable-ratio count + hero/spread/pairing suitability. Print readiness from
-crop pixel dimensions vs target DPI, profile-defined, never hardcoded.
-
----
-
-## 14. Candidate generation
-
-The global top-64 prepass destroys coverage before the selector runs — it can discard
-the only photo of a day, the only establishing view, a rare relative, the only action
-shot, a unique-but-soft infant moment. No optimizer recovers what the prepass dropped.
-
-Construction order for album size K:
-
-```text
-filter universe → remove inaccessible/excluded → exact/edited-dup + burst groups
-→ moments → rank within groups → per-moment reservoirs → coverage reservations
-→ global quality fill → deep-analyse missing signals → re-rank → selector
-```
-
-Budget `B = clamp(5K, 96, 192)`, configurable cap 256 — applied **after** cheap
-duplicate collapse and moment formation. Per-moment reservoirs: ordinary 2; important
-3–5; large group portraits extra alternates (eyes/expressions vary); unique moments ≥1
-even at moderate quality — and keep *typed* candidates (best technical / best
-portrait-group / best composition / most memorable / most crop-flexible) so one scalar
-can't hide a photo that is best for a specific role. Reservations (candidate
-guarantees, not final-selection guarantees) for significant days, important locations,
-high-importance people, rare person combinations, establishing shots, activity/candid,
-details, closing images. Person importance within the event: frequency across moments,
-face area/centrality, key-moment appearances, user filters/labels — background
-strangers get no quota. Flexible quality floor: severe failures out; moderate failures
-stay when uniquely covering; floor scales with album size. Missing deep signals ≠ zero
-quality: estimate from cheap signals + uncertainty penalty + priority job; when latency
-matters, wait only for the most promising missing candidates. Record entry reasons
-(`BEST_IN_BURST`, `MOMENT_RESERVE`, `DAY_RESERVE`, `LOCATION_RESERVE`,
-`PERSON_RESERVE`, `SHOT_TYPE_RESERVE`, `GLOBAL_QUALITY_FILL`, `MEMORABILITY_RESERVE`,
-`USER_FAVOURITE`) as a compact bitset.
-
----
-
-## 15. Album selection objective
-
-Submodularity matches the product: the first good photo of a person is valuable, the
-sixth near-identical portrait adds almost nothing; covering a new moment is valuable,
-repeated coverage saturates. Production objective:
-
-```text
-F(S) = λq·Q(S) + λf·FL(S)
-     + Σ_categories λc·Cc(S)      over moment, people, location, day, shot, role, pose
-
-Q(S)  = Σ_{i∈S} w_i·q_i
-FL(S) = Σ_{u∈U} a_u·max_{i∈S} sim(u,i)          (facility location)
-Cc(S) = Σ_{g∈category} ω_g·h(count_g(S)),  h concave:
-        h(n) = 1 − e^(−τn)   or piecewise 0 → 1.0 → 1.45 → 1.65 → slow saturation
-```
-
-Similarity blend (v1 config, logged per component, non-negative and consistently
-scaled for FL):
-
-```text
-sim(i,j) = 0.30·semantic + 0.18·people + 0.15·pose + 0.12·composition
-         + 0.10·location + 0.10·moment + 0.05·colour
-
-people: weighted Jaccard  Σ min(w_ip,w_jp) / Σ max(w_ip,w_jp)
-pose:   descriptor similarity for solos; assignment-matched layout sets for groups;
-        fall back to box layout + higher uncertainty when pose is missing
-```
-
-Hard constraints: |S| = K; max 1 per exact/edited duplicate group; exclude
-inaccessible/hidden/user-excluded; hero-slot minimum resolution. Configurable
-hard-or-soft: max 1 per ordinary burst; max 2 per ordinary moment; person-dominance
-cap; **minimum coverage for explicitly user-selected people**; major-day coverage —
-soft when hardness would make the problem infeasible, with a documented relaxation
-order.
-
-Algorithm: **feasible lazy greedy** — priority queue of marginal-gain upper bounds;
-pop, skip if a hard constraint blocks, recompute true gain, accept if still ≥ next
-bound else re-push; cache category counts and FL maxima so marginals are O(small);
-deterministic ties by stable ID. Then a **bounded 1-swap pass** (plus targeted
-2-for-1 around missing coverage), keep swaps improving by >ε, log each. Guard against
-diversity-at-any-cost: base quality term + uniqueness-scaled quality floor + moment
-importance + finalist verification — the user should see diversity among *good*
-photographs.
-
-Persist a selection explanation per photo (baseQuality, marginalGain, coverage added,
-duplicate group, represented-candidate count, nearest-selected similarity, constraints)
-and support a debug query for omitted candidates (best substitute, redundancy,
-violated constraint, terminal marginal gain).
-
-DPP remains an **offline baseline only**, compared on album-level human preference
-against MMR, the current heuristic, and submodular greedy ± swaps. A valid DPP kernel
-must be PSD — `L = diag(q)·Φ·Φᵀ·diag(q)` with real feature rows Φ; never assume a
-hand-blended distance matrix is PSD.
-
-**Story ordering (after selection):** assign primary roles (ESTABLISHING, ARRIVAL,
-PEOPLE_INTRODUCTION, PORTRAIT, GROUP, ACTIVITY, CANDID_INTERACTION, DETAIL,
-TRANSITION, CLIMAX, CLOSING); chronology is the backbone with only small local
-reorders (establishing before close-ups, avoid portrait-portrait runs, stronger
-closer) — never a materially false sequence; transition costs penalize adjacent
-near-dups/same-pose repeats and reward wide→medium→close and arrival→climax→closing
-arcs. Layout feedback (needs one landscape hero, two complementary portraits, a
-panorama, a detail) can later request replacements from the selector — do not block
-the curation work on it.
-
----
-
-## 16. Performance, thermal, background
-
-WorkManager with charging + idle constraints for Tier C; foreground service (with
-Android 15+ timeout handling) for user-initiated "index now" with progress;
-`PowerManager.getThermalHeadroom()` between batches, pause on severe; battery
-thresholds; storage checks; slice work into resumable batches sized for Android 16 job
-quotas. Memory: bounded bitmap/tensor lifetimes, no simultaneous GPU spikes unless
-benchmarked. Respect Android 14+ Selected Photos Access (partial grants) and
-permission revocation.
-
----
-
-## 17. Reliability and recovery
-
-Process death: leases expire, jobs resume, no corrupt state. Model update: invalidate
-per the dependency graph only. Photo edit: new asset revision invalidates that photo's
-signals only. Permission revocation: mark assets inaccessible; purge on permanent
-revocation or user reset. DB corruption: detect, rebuild from sources, report. Low
-storage: pause Tier C, degrade gracefully. Analysis failures: bounded retries with
-backoff, quarantine poison inputs, log. Configuration is versioned; every result row
-knows which config produced it.
-
----
-
-## 18. Evaluation program and standing gates
-
-**Structural (free) supervision:** same-photo faces = different-person negatives;
-bursts = natural ranking tasks; exact duplicates validate fingerprinting; favourites
-and replacements hint preference. Useful for bootstrapping, never perfect ground truth.
-
-**Annotation tool** (local, developer-only), four modes: face pair (same / different /
-unsure); burst winner (pick best of 2–6, optionally rank top two); photo pair (better
-social post / better family-album photo / better technical capture); album A/B
-(two 20–30-photo albums from one event: better representation, less repetitive, would
-share, would print). **Active learning:** annotate near thresholds, close relatives,
-infant gaps, proposed merges, conflicting-signal bursts, selector disagreements,
-repeatedly replaced photos — not obvious pairs. Dataset targets: 500–1,000 same-person
-pairs; 2,000+ ordinary negatives; every high-similarity same-photo negative; hundreds
-of close-relative negatives; infant positives across adjacent and long gaps; manual
-labels for the 20–50 most important people; 500 burst groups; 1,000–3,000 photo pairs;
-50–100 held-out events; 100+ album A/B over time. Split train/val/test **by event**.
-One owner's labels optimize the owner's experience — broad "social-media standard"
-claims need external evaluators later. Freeze held-out sets before tuning; repeated
-peeking turns a test set into a dev set. When labels are sparse, use **disagreement
-audits** (old vs new system, fp32 vs int8, centroid vs multi-prototype, heuristic vs
-submodular) and review only changed outcomes.
-
-**Standing gates — run on every PR touching a model, runtime, threshold or scorer:**
-
-1. *Frozen-pair drift.* Pair categories: adult same-person short/long gap; infant
-   same-person adjacent / 6–12 mo / 12–24 mo; same-photo close-relative negatives;
-   different-photo close-relative negatives; ordinary negatives; low-quality/profile
-   positives. Report ROC, TAR@FAR 1%/0.1% (0.01% where samples permit), EER,
-   similarity histograms, false accepts/rejects at current thresholds, cluster-level
-   false merge/split changes, and the count of pairs crossing 0.449/0.600 in either
-   direction.
-2. *Degradation monotonicity.* 200 photos × {blur σ = 1/2/4, ±1.5 EV, crop through
-   the main face} — every score must decrease monotonically; violations <2%.
-3. *Eyes-open ordering.* In burst groups where ML Kit eye-open differs (≥0.8 vs ≤0.2,
-   UNKNOWN excluded), scorers rank the open frame higher ≥95%.
-4. *Semantic fidelity* set (section 8) for any TinyCLIP variant.
-5. *Fixture-album diff* for the pinned events, printed for human review.
-6. *Timing report* against section 3 baselines and section 22 targets, cold/warm
-   separated.
-
-Metric vocabulary: identity (B-cubed P/R/F1, pairwise P/R, false merges > false
-splits, key-person fragmentation, unassigned rate, same-photo violations); duplicates
-(precision/recall per kind, representative top-1 accuracy, distinct-view false
-collapse); ranking (pairwise accuracy, NDCG within burst, Spearman/Kendall, burst
-winner top-1, closed-eye miss rate, severe-blur selection rate); albums (A/B win rate,
-replacements per 20, accept-without-change rate, near-duplicate rate,
-moment/day/location/person coverage, dominance, shot-type diversity, pose repetition,
-severe-failure rate). **North star: how many edits before the user happily saves,
-shares or prints the album.**
-
----
-
-## 19. Milestone roadmap
-
-One milestone per Claude Code run. Sequencing principle: storage correctness →
-persistent computation → runtime acceleration → identity quality → candidate quality →
-set selection → learned preference → advanced framing/layout.
-
-| M | Outcome | Primary risk removed |
+The production default remains `selector: "coverage-keys"`; see
+`apps/mobile/src/selection/album-planner.ts:8-17` and `:100-148`. The M6 code remains
+an offline experiment, not a pending rollout.
+
+The DPP alternative is **rejected on mechanism for the proposed similarity blend**.
+A DPP requires a positive-semidefinite kernel. The product's blend of semantic cosine,
+face-set overlap, pose, place, and time has no PSD guarantee; with a non-PSD kernel,
+`log det(L_S)` is undefined for some subsets and MAP optimization can silently optimize
+garbage. No DPP product A/B was run. A future DPP would first need an explicit feature
+map `L = diag(q) ΦΦᵀ diag(q)` or another construction that proves PSD; it cannot reuse
+the current blended matrix. Evidence: `apps/mobile/src/selection/album-objective.ts:11-23`.
+
+### 3.7 The framing tie-break shipped, never fired, and was deleted
+
+The selection wiring required exact equality of a raw quality double before consulting
+body coverage. Across 100,000 simulated near-duplicate pairs there were zero exact
+ties. Byte-identical duplicates tie on both quality and keypoints, so framing still
+cannot choose between them. The wiring was deleted; current selection explicitly does
+not consult framing (`apps/mobile/src/selection/select-best-shots.ts:603-611`).
+
+This does not reject pose features or M8's multi-person crop-readiness goal. It rejects
+one inert consumer with an unreviewed full-body preference. Full evidence:
+[`framing-tiebreak-measurement.md`](framing-tiebreak-measurement.md).
+
+## 4. Reconciled sequence
+
+The old linear sequence M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 is retired.
+
+1. **Close the remaining M0 evidence gap and diagnose M3's environment first.** The
+   runtime/scheduling problem gates any honest candidate budget and full-library tier.
+2. **Do the respecified M1 memory/storage work needed by M2.** Do not rebuild the
+   already-fixed launch parse. Prefer the smallest safe lifetime-memory fix; adopt
+   bounded binary storage when M2's durable signal/job queries require it.
+3. **Build M2 durable signals and resumable priority jobs after the timing model is
+   trustworthy.** Persistence prevents repeat work; it does not make a seven-hour
+   first pass acceptable by itself.
+4. **Build M5 hierarchy and measure candidate-budget curves only after M2 reuse and
+   M3 throughput are available.** At 2.33 s/photo, K=24's proposed `5K=120` deep
+   candidates cost about 280 s (4.7 minutes) if all are missing.
+5. **Remove M4 and M6 from the delivery chain.** They are completed negative
+   experiments, not prerequisites.
+6. **Collect M7 preference data now; train later.** M7 does not depend on M6. Its model
+   should start only when event-split labels and a checkpoint pipeline exist, and must
+   beat the shipped zero-shot TinyCLIP axes plus rules.
+7. **Prepare M8's group-photo truth set independently; integrate after M3 establishes
+   a finalist latency/memory budget.** M7 is not a prerequisite for model acquisition
+   or pose-recall measurement.
+8. **Do M9 after M5 supplies durable moment/candidate structure and M7 supplies a
+   measured preference signal.** Preference-event capture can continue meanwhile.
+
+## 5. Milestone disposition
+
+### M0 — audit, manifest, fixtures, standing gates
+
+**Status: substantially built; one standing gate remains blocked.**
+
+**Plan assumed:** active model paths, preprocessing, fixtures, and regression gates
+were unknown.
+
+**Measured:** the live model path and manifest are documented in
+[`CX-21-PLAN-AUDIT.md`](CX-21-PLAN-AUDIT.md). Three pinned album fixtures exist. The
+one-command CX-25 runner currently passes degradation monotonicity and frozen-pair
+drift, but the eyes-open gate reports no eligible real ML Kit open/closed comparisons.
+
+**Left to do:** add a real near-duplicate eye-state fixture set before treating 95% as
+a metric; keep model manifests and timing instrumentation current; do not call M0 fully
+closed while a standing gate is data-blocked. Reproduce with
+`node apps/mobile/src/eval-gates/run-cx25-gates.ts`.
+
+### M1 — bounded embedding storage and lifetime
+
+**Status: OPEN, RESCOPED.**
+
+**Plan assumed:** SQLite was needed mainly to remove a 6.7 s atomic launch parse and
+int8 storage was new.
+
+**Measured:** the launch parse was already split and reduced; the remaining parse
+yields every 500 rows. Embeddings are already int8/base64 on disk, then expanded into
+89.5 MB of `number[]` memory with no release path. Startup and the observations load
+are different paths.
+
+**Left to do:** define a bounded query contract (rows, bytes, latency, and peak/resident
+memory), then choose the smallest safe solution: guarded release, typed/native
+arithmetic, or SQLite BLOB queries. If SQLite is selected, retain the original parity,
+idempotence, resume, source-fingerprint, and rollback requirements. Success is bounded
+access and controlled lifetime, not “load every embedding in under 150 ms.”
+
+### M2 — Tier A/B/C durable analysis and jobs
+
+**Status: OPEN.**
+
+**Plan assumed:** a new tiered queue could precede M3 and turn repeated 148 s work into
+cached reads.
+
+**Measured:** only cheap candidate probes persist. Pose, TinyCLIP outputs, ML Kit face
+results, the perceptual fingerprint, and full pixel-quality results are recomputed and
+discarded. The foreground/headless face scan is resumable via a cursor, but it is not
+the proposed versioned deep-signal lease queue. See `CX-21-PLAN-AUDIT.md:16-18` and
+`apps/mobile/src/selection/candidate-probe-cache.ts`.
+
+**Left to do:** persist each deep signal by asset revision + model + preprocessing
+version; add user-priority jobs, leases, cancellation, retries, dependency invalidation,
+and process-death resume. Define Tier C by measured hours, charging-window assumptions,
+energy, thermals, and completion rate. Sequence implementation after M3 exposes the
+true per-photo cost, while doing only the storage foundation M2 actually requires.
+
+### M3 — inference and runtime acceleration
+
+**Status: OPEN, WITH THE PROPOSED QUANTIZATION RUNG REJECTED.**
+
+**Plan assumed:** the 140 s stage was TinyCLIP kernel time; current-graph int8 or FP16
+CPU would reach 0.8/1.4 s per photo.
+
+**Measured:** the timing span includes scheduling and contention. Current-graph full
+int8 cannot convert; mixed int8 is structurally fragmented and measured 3.4x slower on
+Mac. The FP16-CPU behavior cannot be engaged through fast-tflite 3.0.1. MoveNet's
+concurrent 1,111 ms span is above the 0.8 s target even with zero TinyCLIP time.
+
+**Left to do:** isolate kernel time from JS scheduling by varying concurrency and
+preprocessing placement on device; measure cold/warm init, true invoke time, thermal
+behavior, and operator coverage; then test a cleanly reconverted graph or native LiteRT
+runtime that exposes required delegate options and deterministic release. Preserve
+fidelity and product-decision gates. Do not infer Android performance from the Mac
+slowdown.
+
+### M4 — multi-prototype identities
+
+**Status: BUILT / MEASURED / REJECTED; FLAG OFF.**
+
+**Plan assumed:** existing person tiles contained multiple time/view/lighting modes, so
+one centroid sat between modes and caused fragmentation.
+
+**Measured:** zero of 937 multi-face people fell below the calibrated intra-tile bar;
+random partitions produced the same risk/reward curve; no policy gained a merge at safe
+impostor budgets.
+
+**Left to do:** nothing under the original activation milestone. Keep the reproducible
+harness and flag off. Treat remaining identity fragmentation as separate measured work
+(correction/review flow, false cannot-link evidence, timestamp quality, or a new
+embedder). Rerun prototypes only after an input change that could make tiles genuinely
+multi-modal.
+
+### M5 — duplicate/burst/moment hierarchy and candidate budget
+
+**Status: OPEN.**
+
+**Plan assumed:** the current top-64 was quality-only and `clamp(5K, 96, 192)` could be
+adopted after grouping.
+
+**Measured:** the cap already has diminishing-return axes for time, place, BlurHash
+content, and familiar people, so “add diversity” is not the task. It still operates
+before durable moments and explicit reservations, so it can lose unique evidence.
+The proposed budget is not currently affordable: 96–192 missing deep candidates at
+2.33 s/photo are approximately 224–447 s (3.7–7.5 minutes).
+
+**Left to do:** add durable exact/edited duplicate, burst, moment, and event hierarchy;
+explicit reservations and entry reasons; representative/alternate behavior; and
+coverage-recall fixtures. After M2/M3, sweep candidate count against latency, unique-
+moment recall, and final-album changes. Select the smallest measured budget that
+saturates value; do not canonize `5K` without that curve.
+
+### M6 — constrained submodular selector
+
+**Status: BUILT / MEASURED / REJECTED; PRODUCTION FLAG OFF.**
+
+**Plan assumed:** facility location plus saturating coverage would materially improve
+the shipped discrete-key greedy, and a DPP remained useful as an offline baseline.
+
+**Measured:** facility location was nearly inert on all three fixtures; facility alone
+degraded moment/people coverage on two; the duplicate improvement came wholly from the
+hard constraint. The current blended similarity cannot be used as a valid DPP kernel.
+
+**Left to do:** keep the shipped coverage selector and hard duplicate constraint. No
+facility-location rollout and no DPP baseline are pending. Reopen only with broader
+held-out events and a predeclared product metric capable of justifying added complexity;
+a DPP additionally requires a provably PSD kernel construction.
+
+### M7 — learned multi-output quality and aesthetic head
+
+**Status: OPEN; LABEL CAPTURE PARTLY BUILT.**
+
+**Plan assumed:** the baseline was hand-written rules with no aesthetic signal, and a
+small learned head would follow M6.
+
+**Measured:** the shipped TinyCLIP path already supplies zero-shot `aesthetic`,
+`composed`, and `cleanFrame` axes; the planner weights them alongside objective
+signals (`apps/mobile/src/ml/tinyclip.ts`, `apps/mobile/src/selection/album-planner.ts:122-133`).
+The app now stores bounded, pseudonymous near-duplicate and album-edit pairwise labels,
+but there is no trained multi-output checkpoint or held-out preference win
+(`apps/mobile/src/selection/preference-label-store.ts:1-7`, `:225-280`).
+
+**Left to do:** continue collecting real edits; freeze event-level train/validation/test
+splits; build a reproducible training/checkpoint pipeline; measure pairwise ranking,
+group lower-tail behavior, severe-defect non-inferiority, calibration/uncertainty, and
+album preference. The baseline to beat is zero-shot axes + current rules, not rules
+alone. M6 is not a prerequisite; M2's durable features are the useful dependency.
+
+### M8 — multi-person framing and crop readiness
+
+**Status: OPEN; THE EXACT-TIE CONSUMER IS REJECTED.**
+
+**Plan assumed:** single-person MoveNet could be supplemented by multi-person pose or
+segmentation for finalists, producing soft framing states and crop proposals.
+
+**Measured:** no multi-person pose or segmentation dependency is installed. MoveNet is
+single-person and remains useful for diversity. The shipped exact-equality framing
+tie-break fired zero times in 100,000 pairs and was removed; that says nothing positive
+or negative about multi-person recall or crop safety.
+
+**Left to do:** acquire a real group-photo truth set; integrate and license a candidate
+model; measure pose recall against face count, first-use/download failure, latency,
+memory, masks, and fallback; persist aspect-specific crop candidates; verify important-
+face retention. Run only on finalists within an M3-established budget. Never revive
+the old raw-double tie gate or claim complete-body guarantees.
+
+### M9 — story, personalization, and layout feedback
+
+**Status: OPEN; FOUNDATIONS PARTLY BUILT.**
+
+**Plan assumed:** chronological story roles, bounded local preference learning, and
+layout-requested replacements would follow M7/M8.
+
+**Measured:** the current planner presents selected photos chronologically, and the app
+captures bounded pairwise preference events. Narrative roles/arc optimization, a
+learned local preference update, disable/reset behavior, layout-driven replacement,
+and held-out edit/reorder improvement are not implemented. `docs/selection-roadmap.md`
+still lists narrative arc ordering as planned and Bradley–Terry learning as waiting for
+enough events.
+
+**Left to do:** keep collecting versioned decisions now. After M5 provides durable
+moments and M7 proves a preference signal, add story roles with chronology as a hard
+backbone, train the bounded local model with reset/disable, and define a typed layout-
+replacement contract. Gate on held-out edits/reorders and album preference, not the
+existence of a new ordering algorithm.
+
+## 6. Section 22 — corrected targets
+
+The old section mixed valid regression bars, unmeasurable aspirations, wrong baselines,
+and targets below the current-path floor. This table is authoritative.
+
+| Original target | Verdict | Replacement guidance |
 |---|---|---|
-| M0 | Repo audit, model manifest, fixtures, standing gates | Unknown code paths, unmeasurable regressions |
-| M1 | SQLite binary migration, dual-read parity | 6.7 s Hermes parse, all-or-nothing loads |
-| M2 | Tier A/B/C progressive analysis, job queue | Repeated 148 s cold work |
-| M3 | Inference benchmark ladder + acceleration | 140 s / 64-photo TinyCLIP bottleneck |
-| M4 | Multi-prototype identities (shadow → active) | Fragmented relatives, infant drift |
-| M5 | Duplicate/burst/moment hierarchy + candidates | Top-64 coverage loss |
-| M6 | Constrained submodular selector | Discrete-key diversity heuristic |
-| M7 | Learned multi-output quality scorer | Rules can't rank beauty/social appeal |
-| M8 | Multi-person framing + crop readiness | Single-body framing limit |
-| M9 | Story, personalization, layout feedback | Album polish and taste |
-| Gate | Licensing, privacy, release validation | Commercial/legal risk (separate) |
+| Embedding load `<150 ms` after M1, baseline 6.7 s | **Invalid baseline and wrong operation.** Launch no longer loads observations; loading all embeddings into JS contradicts bounded access. | Measure a specified query by rows/bytes, p50/p95 latency, peak memory, and retained memory. Launch must not parse observations. |
+| Warm 3k build `≤5 s`; repeat `≤2 s` after M2+M5 | **Not an M5 gate and not currently grounded.** M5 cannot meet it while deep signals are missing and rerun. | Measure separately: zero-missing-signal query/selection time and builds with N missing signals. Set a wall target only after M2 persistence and M3 throughput are measured. |
+| Deep signal `≤1.4 s` after FP16 CPU | **Unreachable by the named current integration.** Default XNNPACK does not execute fp16 arithmetic without `FORCE_FP16`, and fast-tflite 3.0.1 does not expose it. FP16 was not run. | First expose and verify the backend or use a different runtime; then set a target from a real device run. |
+| Deep signal `≤0.8 s` after int8 | **Below the current-path floor.** `max(TinyCLIP, MoveNet)` is the concurrent wall; `max(0, 1.111 s) ≈ 1.111 s > 0.8 s`. Current-graph TinyCLIP int8 is also rejected. | A sub-0.8 s goal requires changing pose/runtime/environment as well as TinyCLIP. Replace the target only after isolated device measurements. |
+| Face pair-AUC drop `≤0.2` percentage point | **Usable regression bar once the labelled set and previous result are frozen.** | Keep with pair crossings and category metrics; never substitute it for impostor-merge counts. |
+| Degradation violations `<2%` | **Usable standing gate.** | Keep the denominator and vacuity guard visible. The current deterministic fixture runner passes; expand real coverage without silently changing the bar. |
+| Eyes-open ordering `≥95%` | **Currently unmeasurable, not an open performance question.** The checked-in corpus has zero eligible real ML Kit open/closed comparisons. | Gate only after a minimum eligible real-pair denominator is checked in; until then report **BLOCKED**, never 0% or 100%. |
+| TinyCLIP NN recall@10 `≥0.98` | **Valid initial fidelity gate, not a speed target.** | Retain alongside p1/p5 agreement, pairwise similarity ordering, threshold shifts, and album changes. It cannot rescue a structurally slow conversion. |
+| Tier-C backfill “within a few charging sessions” | **Not a numeric gate.** “Few” and session duration are undefined, and the proposed scheduler is not built. | Specify library size, device class, charging hours, thermal/battery conditions, interruptions, completion rate, and energy before choosing a threshold. |
+| Key-person fragmentation `≥60%` reduction vs 2,237 clusters, zero impostor merges | **Dimensionally invalid.** 2,237 is total clusters, not key-person fragmentation, and no frozen key-person truth set defines the numerator. | Name the key people; freeze pair/cluster truth; report B-cubed and per-person fragments plus auto-confirmed impostor merges. Set a reduction target only from that baseline. |
 
-Milestone acceptance (condensed; every milestone also passes the standing gates and
-ships a completion report):
+## 7. Do-not-redo list and caveats
 
-- **M0:** actual code paths documented with files/functions; every bundled model has
-  SHA-256, active/unused status, shapes, dtypes, preprocessing record; current timings
-  reproduced within run variance; ≥3 event fixtures with expected selected-photo IDs;
-  current cluster counts and key-person fragmentation recorded; standing-gate suites
-  runnable by one script; storage-library decision recorded with repo evidence; **no
-  behaviour change**.
-- **M1:** versioned schema migration; idempotent, resumable import; counts match
-  legacy; IDs and cluster assignments unchanged; embedding round-trip parity; fixture
-  albums unchanged; startup no longer parses JSONL; bounded batch queries; no
-  multi-MB JS embedding representation; before/after timings reported; legacy files
-  retained.
-- **M2:** signal rows carry asset/model/preprocessing versions; user-event jobs
-  outrank backfill; signals reused across filters; process death resumes; cancellation
-  commits completed items and releases leases; asset revision invalidates only
-  dependents; cache hit rate and avoided inference logged; repeat build no longer
-  depends on an in-memory cache alone.
-- **M3:** benchmark covers cold/warm init + first/steady inference on identical
-  inputs; fidelity metrics reported; operator coverage reported; thermal behaviour for
-  a 64-photo sequence reported; runtime fallback tested; **no face INT8 production
-  switch without the labelled verification benchmark**; backend switch stays
-  feature-flagged until gates pass.
-- **M4:** 1–6 prototypes selected deterministically with time/view coverage;
-  same-photo high-similarity pairs remain cannot-linked (no escape) unless an explicit
-  evidenced exception exists; merges require multiple evidence pairs; user corrections
-  persist; merge/split audit queryable; shadow metrics report false merges/splits; key
-  infant/relative fragmentation improves or the blocker is precisely documented.
-- **M5:** candidate pool built after duplicate/burst grouping; every important moment
-  contributes; budget configurable; reservations visible in debug explanations; old vs
-  new pools comparable; unique-moment recall improves on fixtures; deep analysis stays
-  bounded by budget.
-- **M6:** objective components unit-tested; deterministic lazy greedy; hard
-  constraints never violated; explicit soft-relaxation order; bounded deterministic
-  swap pass; per-photo marginal-gain explanation; A/B report with quality, coverage
-  and repetition; current planner retained for rollback.
-- **M7:** train/held-out events separated; checkpoint supplied or produced by the
-  pipeline; pairwise ranking beats the hand-crafted baseline; group lower-tail
-  behaviour evaluated; severe-defect selection non-inferior; album preference
-  measured; uncertainty stored and used.
-- **M8:** multi-person models evaluated on real group photos; pose recall vs face
-  count reported; segmentation download/unavailable states handled; framing emits the
-  three states; crops preserve important faces; latency/memory fit a finalist-only
-  budget; fallback works; **no completeness guarantee claimed**.
-- **M9:** ordering stays materially chronological; feedback updates the bounded local
-  preference model; personalization can be disabled/reset; layout roles can request
-  replacements; held-out edit/reorder count improves.
+Do not repeat these as though they are untested:
 
-**Deferred (off the critical path):** post-M3, if M7 heads prove ceiling-limited by
-TinyCLIP-8M/16 features *and* compute headroom exists, run a backbone-replacement
-experiment (e.g., MobileCLIP2-S0 image tower) through the same fidelity and standing
-gates — invalidation and concept-constant regeneration are already handled by the
-versioning system; its licensing belongs to the release gate. Live/Motion Photo best
-frames, joint selection-layout optimization, and any sensitive-content classifier are
-likewise later.
+- mixed-int8 conversion of the shipped TinyCLIP flatbuffer;
+- full-int8 conversion of that graph without addressing its `DIV`/LayerNorm structure;
+- FP16 CPU through the current fast-tflite API;
+- multi-prototype activation on the current owner library;
+- facility-location rollout on the current three fixtures;
+- a DPP over the current hand-blended similarity matrix;
+- an exact-raw-double framing tie-break.
 
----
+Do not overread the negative results either:
 
-## 20. CURRENT PHASE — M0 audit + M1 SQLite binary migration
+- The int8 slowdown is a Mac measurement; Android/ARM latency was not measured.
+- FP16 CPU was never run; only the current access route was ruled out.
+- DPP was rejected for lack of a valid kernel, not by an album preference A/B.
+- Multi-prototype identity lost on one library/model whose existing tiles are already
+  coherent; another distribution could differ.
+- The current timing spans contain environment delay; they are not kernel benchmarks.
 
-**Objective.** Establish measurement, then remove the storage bottleneck — with zero
-algorithm changes.
+## 8. Evidence and reproduction index
 
-**Before coding**, report: relevant files/functions and current data flow; the actual
-JS/native boundary; how `face-index.json` and `face-observations.jsonl` are read and
-written; which of the two face models is active; existing tests; the SQLite library
-choice against section 5 requirements with repo evidence; the exact change strategy.
-
-**Required work.**
-
-1. M0 deliverables: architecture map; model manifest (SHA-256, shapes, dtypes,
-   preprocessing, active/unused); structured timing events; ≥3 private event fixtures
-   with expected selected-photo IDs; baseline identity/duplicate metrics where labels
-   exist; the standing-gate suites (frozen pairs, degradation, eyes-open) runnable via
-   one script against an exported index; a list of unverified assumptions.
-2. M1 deliverables: schema (section 5 sketch, adapted) with versioned migration;
-   BLOB embedding codec with sampled round-trip parity; incremental, idempotent,
-   resumable importer with source fingerprinting and dual-read validation; bounded
-   query APIs; startup path that never parses the full JSONL; feature-flagged switch
-   with legacy files retained.
-
-**Non-negotiable parity:** photo/person/face counts match; existing IDs and cluster
-assignments unchanged; fixture album outputs identical; no model, threshold or
-preprocessing touched.
-
-**Tests:** migration idempotence and resume-after-kill; codec parity; bounded-query
-correctness vs legacy reads; fixture-album regression; timing before/after
-(embedding-load target <150 ms vs 6.7 s baseline).
-
-**Completion report:** measured startup and query timings, parity results,
-gate outputs, storage-library rationale, blockers.
-
----
-
-## 21. Configuration seeds (versioned, tunable — never hardcoded constants)
-
-```text
-identity.assignment_bar        0.449   (existing; recalibrate on any model change)
-identity.merge_bar             0.600   (existing; recalibrate on any model change)
-identity.pair_support_min      2 pairs from ≥2 source photos
-identity.chain.window_days     45
-identity.chain.pair_bar        0.52
-identity.prototypes.max        6 (size-tiered: 1 / 2 / 4 / 6)
-dupes.fingerprint_bar          0.92    (until labelled benchmark)
-candidates.budget              clamp(5K, 96, 192), cap 256
-selector.sim_blend             v1 weights per section 15
-selector.coverage_curve        h(n) = 1 − e^(−τn), τ per category (v1 table 0/1.0/1.45/1.65)
-quality.group                  0.55·wMean + 0.30·wP20 + 0.15·importantMin (hypothesis)
-```
-
-## 22. Numeric targets (initial gates to validate — a miss triggers the next ladder rung or a documented blocker, never silent relaxation)
-
-```text
-embedding load path            < 150 ms          (baseline 6.7 s)        after M1
-warm album build, 3k filter    ≤ 5 s; repeat ≤ 2 s (baseline 148 s / 26 s) after M2+M5
-deep signal per photo          ≤ 1.4 s after FP16-CPU; ≤ 0.8 s after INT8  in M3
-face pair-AUC drop per change  ≤ 0.2 pt after any threshold re-fit         gate 1
-degradation violations         < 2 %                                       gate 2
-eyes-open ordering             ≥ 95 %                                      gate 3
-NN recall@10 (TinyCLIP var.)   ≥ 0.98 on local benchmark                   gate 4
-Tier-C full-library backfill   completes within a few charging sessions;
-                               if the M3 winner projects worse, that is the
-                               trigger for the native-LiteRT / NPU rungs
-key-person fragmentation       ≥ 60 % reduction vs 2,237-cluster baseline,
-                               zero auto-confirmed impostor merges          M4
-```
+- Repository audit and original section-22 critique:
+  [`CX-21-PLAN-AUDIT.md`](CX-21-PLAN-AUDIT.md)
+- Device timing, concurrency correction, quantization result, and graph structure:
+  [`DEEP-ANALYSIS-TIMING.md`](DEEP-ANALYSIS-TIMING.md)
+- Embedding representation and lifetime:
+  [`EMBEDDING-MEMORY.md`](EMBEDDING-MEMORY.md)
+- Multi-prototype implementation and measurement:
+  `apps/mobile/src/faces/face-prototypes.ts`, `scratch/multi-prototype/measure.ts`
+- Submodular objective, production-off flag, and A/B:
+  `apps/mobile/src/selection/album-objective.ts`,
+  `apps/mobile/src/selection/album-planner.ts`,
+  `apps/mobile/src/selection/album-selector-ab.ts`
+- Framing tie-break measurement and deleted consumer:
+  [`framing-tiebreak-measurement.md`](framing-tiebreak-measurement.md),
+  `apps/mobile/src/selection/select-best-shots.ts:603-611`
+- Current standing gates:
+  `apps/mobile/src/eval-gates/run-cx25-gates.ts`
