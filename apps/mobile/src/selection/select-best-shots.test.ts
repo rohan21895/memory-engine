@@ -2,7 +2,13 @@ import type { PickedPhoto } from "../import/picked-photo";
 
 import type { FaceSignal, QualitySignals } from "./quality-signals.ts";
 // @ts-expect-error Node's native TypeScript runner requires the extension.
-import { albumQualityFloor, selectBestShots } from "./select-best-shots.ts";
+import { preferenceAssetId } from "./preference-label-store.ts";
+// @ts-expect-error Node's native TypeScript runner requires the extension.
+import {
+  albumQualityFloor,
+  selectBestShots,
+  selectBestShotsWithObservations,
+} from "./select-best-shots.ts";
 // @ts-expect-error Node's native TypeScript runner requires the extension.
 import "./selection-quality-regression.test.ts";
 
@@ -32,6 +38,32 @@ const duplicateResult = selectBestShots(
     photo("burst-b", nearDuplicateB),
   ],
   { count: 10 },
+);
+const observedDuplicateResult = selectBestShotsWithObservations(
+  [
+    photo("burst-a", nearDuplicateA),
+    photo("burst-b", nearDuplicateB),
+  ],
+  { count: 10 },
+);
+assert(
+  JSON.stringify(observedDuplicateResult.album) === JSON.stringify(duplicateResult),
+  "attaching the observer must not change any album selection output",
+);
+assert(
+  observedDuplicateResult.observations.nearDuplicateGroups.length === 1,
+  "a real two-frame take must emit one non-vacuous preference group",
+);
+const observedGroup = observedDuplicateResult.observations.nearDuplicateGroups[0];
+assert(
+  observedGroup.winnerAssetId === preferenceAssetId(duplicateResult.selected[0].media_id) &&
+    observedGroup.candidates.length === 2,
+  "the observation must name the actual winner and every loser",
+);
+assert(
+  observedGroup.candidates.every(({ features }) =>
+    Number.isFinite(features.qualityScore) && features.groupingEmbedding?.length === 64),
+  "every label must retain the decision-time derived features",
 );
 
 assert(
@@ -172,6 +204,26 @@ assert(
     "subject blinking",
   ),
   "the rejected duplicate should cite blinking",
+);
+const privateIdObservation = selectBestShotsWithObservations(
+  [
+    photo(
+      "folder-0-file:///private/family/blink.jpg",
+      nearDuplicateA,
+      portraitSignals(blinkingFace, { sharpness: 1 }),
+    ),
+    photo(
+      "folder-1-file:///private/family/open.jpg",
+      nearDuplicateA,
+      portraitSignals(openFace, { sharpness: 0.25 }),
+    ),
+  ],
+  { count: 1 },
+).observations;
+const privateObservationJson = JSON.stringify(privateIdObservation);
+assert(
+  !privateObservationJson.includes("file://") && !privateObservationJson.includes(".jpg"),
+  "path-shaped fallback asset ids must be pseudonymized in every observation field",
 );
 
 const noFullyOpenResult = selectBestShots(

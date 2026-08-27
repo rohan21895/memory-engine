@@ -52,12 +52,16 @@ import {
 import { clusterPoses, makePose } from "./selection/pose";
 import { bodyCoverage } from "./selection/pose-framing";
 import {
+  captureNearDuplicateRankingLabels,
+  preferenceAssetId,
+} from "./selection/preference-label-store";
+import {
   classifyCategory,
   isScreenshotOrDocument,
   type FaceSignal,
   type QualitySignals,
 } from "./selection/quality-signals";
-import { selectBestShots } from "./selection/select-best-shots";
+import { selectBestShotsWithObservations } from "./selection/select-best-shots";
 import type { AlbumData } from "./selection/types";
 
 // A face whose box sits within 1% of any border is treated as cut off.
@@ -860,15 +864,33 @@ async function buildAlbumImpl(
     phase: "Choosing the best shots",
   });
   const selectionStartedAt = Date.now();
-  const album: AlbumData = selectBestShots(enriched, {
+  const selection = selectBestShotsWithObservations(enriched, {
     count: Math.min(count, Math.max(1, enriched.length)),
   });
+  const album: AlbumData = selection.album;
   reportTiming(options, timings, {
     stage: "choose-best-shots",
     elapsedMs: Date.now() - selectionStartedAt,
     itemCount: enriched.length,
   });
   throwIfCancelled(options.signal);
+
+  // This write observes a completed decision. It is deliberately outside the
+  // selector and fail-neutral, so persistence can never change selectedIds.
+  // Selected groups go last so bounded compaction preserves the context the
+  // live swap UI can turn into a human pairwise preference.
+  const selectedPreferenceIds = new Set(
+    album.selected.map(({ media_id }) => preferenceAssetId(media_id)),
+  );
+  const observedGroups = selection.observations.nearDuplicateGroups;
+  await captureNearDuplicateRankingLabels({
+    albumId: album.album_id,
+    groups: [
+      ...observedGroups.filter(({ winnerAssetId }) => !selectedPreferenceIds.has(winnerAssetId)),
+      ...observedGroups.filter(({ winnerAssetId }) => selectedPreferenceIds.has(winnerAssetId)),
+    ],
+    capturedAt: Date.now(),
+  });
 
   const reviewStartedAt = Date.now();
   const uriById = new Map(photos.map((photo) => [photo.id, photo.uri]));

@@ -21,6 +21,7 @@ import {
   type ReviewMedia,
   type ReviewSelected,
 } from "./mock-data";
+import { captureAlbumEditPreference } from "../selection/preference-label-store";
 
 type Swaps = Record<string, string>;
 type ViewerState = { mode: LightboxMode; initialIndex: number; slotMediaId?: string };
@@ -147,19 +148,36 @@ export default function ReviewScreen({
     setViewer({ initialIndex, mode: "browse-alternatives", slotMediaId });
   }, [data.selected, swaps]);
 
-  const useThisPhoto = useCallback((item: LightboxItem) => {
-    const slotMediaId = viewer?.slotMediaId;
-    if (!slotMediaId) return;
+  const replaceInSlot = useCallback((
+    slotMediaId: string,
+    chosenMediaId: string,
+    decisionSurface: "swap-sheet" | "lightbox",
+  ) => {
+    const rejectedMediaId = swaps[slotMediaId] ?? slotMediaId;
+    void captureAlbumEditPreference({
+      albumId: data.album_id,
+      slotAssetId: slotMediaId,
+      rejectedAssetId: rejectedMediaId,
+      chosenAssetId: chosenMediaId,
+      decisionSurface,
+      capturedAt: Date.now(),
+    });
     setSwaps((current) => {
-      if (item.media_id === slotMediaId) {
+      if (chosenMediaId === slotMediaId) {
         const next = { ...current };
         delete next[slotMediaId];
         return next;
       }
-      return { ...current, [slotMediaId]: item.media_id };
+      return { ...current, [slotMediaId]: chosenMediaId };
     });
+  }, [data.album_id, swaps]);
+
+  const useThisPhoto = useCallback((item: LightboxItem) => {
+    const slotMediaId = viewer?.slotMediaId;
+    if (!slotMediaId) return;
+    replaceInSlot(slotMediaId, item.media_id, "lightbox");
     setViewer(null);
-  }, [viewer?.slotMediaId]);
+  }, [replaceInSlot, viewer?.slotMediaId]);
 
   return (
     <View style={styles.root}>
@@ -272,9 +290,7 @@ export default function ReviewScreen({
         }}
         onPick={(mediaId) => {
           if (!swapSlot) return;
-          setSwaps((current) => mediaId === swapSlot
-            ? Object.fromEntries(Object.entries(current).filter(([key]) => key !== swapSlot))
-            : { ...current, [swapSlot]: mediaId });
+          replaceInSlot(swapSlot, mediaId, "swap-sheet");
         }}
         selected={swapSlot ? data.selected.find((item) => item.media_id === swapSlot) ?? null : null}
         visible={swapSlot !== null}
