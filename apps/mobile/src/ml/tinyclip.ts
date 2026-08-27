@@ -1,12 +1,14 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { createModelCache, reportDegraded, type ModelCacheLoadStats, type ModelExecutionTimingRecorder } from "./model-cache.ts";
+import { benchmarkInference, createModelCache, reportDegraded, type InferenceBenchmark, type ModelCacheLoadStats, type ModelExecutionTimingRecorder } from "./model-cache.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { decodeBase64Image } from "./base64.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { measureSync } from "../selection/js-thread-profile.ts";
 
 const INPUT_SIZE = 224;
 const EMBEDDING_SIZE = 512;
-const BASE64_ALPHABET =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 /**
  * OpenAI CLIP's published image statistics, which TinyCLIP inherits along with
  * the rest of the CLIP preprocessing recipe. Applied to RGB (not BGR) channels
@@ -175,6 +177,37 @@ export async function probeSemanticModel(): Promise<boolean> {
   return job;
 }
 
+/**
+ * TinyCLIP's invoke cost with the JS thread quiet. See `InferenceBenchmark`.
+ *
+ * Runs on the inference queue like everything else, so it can never overlap a
+ * real photo's run or an interpreter swap. The input is a fixed mid-grey
+ * tensor: the graph is dense float32, its cost does not depend on the values,
+ * and a constant keeps the benchmark comparable between builds.
+ */
+export async function benchmarkSemanticInference(
+  runs = 3,
+): Promise<InferenceBenchmark | undefined> {
+  const job = inferenceQueue.then(async () => {
+    try {
+      const model = await modelCache.acquire();
+      if (!model || !isExpectedModel(model)) return undefined;
+      const input = new Float32Array(INPUT_SIZE * INPUT_SIZE * 3).fill(0.5);
+      return await benchmarkInference(
+        () => model.run([input.buffer as ArrayBuffer]),
+        runs,
+      );
+    } catch {
+      return undefined;
+    }
+  });
+  inferenceQueue = job.then(
+    () => undefined,
+    () => undefined,
+  );
+  return job;
+}
+
 function isExpectedModel(model: TensorflowModel): boolean {
   const input = model.inputs[0];
   const output = model.outputs[0];
@@ -251,17 +284,22 @@ async function imageFloatTensor(
     outputUri = thumbnail.uri;
     if (!thumbnail.base64) throw new Error("TinyCLIP preprocessing returned no pixels.");
 
-    const decoded = decodeJpeg(decodeBase64(thumbnail.base64), {
-      useTArray: true,
-      formatAsRGBA: true,
-      tolerantDecoding: true,
-      maxResolutionInMP: 1,
-      maxMemoryUsageInMB: 16,
-    });
+    const bytes = decodeBase64Image(thumbnail.base64, "tinyclip.base64");
+    const decoded = measureSync("tinyclip.jpeg-decode", () =>
+      decodeJpeg(bytes, {
+        useTArray: true,
+        formatAsRGBA: true,
+        tolerantDecoding: true,
+        maxResolutionInMP: 1,
+        maxMemoryUsageInMB: 16,
+      }),
+    );
     if (decoded.width !== INPUT_SIZE || decoded.height !== INPUT_SIZE) {
       throw new Error("TinyCLIP preprocessing returned the wrong image size.");
     }
-    return normalizeClipPixels(decoded.data, decoded.width, decoded.height);
+    return measureSync("tinyclip.normalize", () =>
+      normalizeClipPixels(decoded.data, decoded.width, decoded.height),
+    );
   } finally {
     // saveAsync always writes a cache file, base64 or not. Nothing else ever
     // reads this one, so leaving it behind grows the cache by one JPEG per
@@ -405,31 +443,4 @@ function validDimension(value: number | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
     : undefined;
-}
-
-function decodeBase64(value: string): Uint8Array {
-  const encoded = value.replace(/^data:[^,]*,/u, "").replace(/\s/gu, "");
-  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
-  const bytes = new Uint8Array(
-    Math.max(0, Math.floor((encoded.length * 3) / 4) - padding),
-  );
-  let accumulator = 0;
-  let availableBits = 0;
-  let byteIndex = 0;
-  for (const character of encoded) {
-    if (character === "=") break;
-    const digit = BASE64_ALPHABET.indexOf(character);
-    if (digit < 0) throw new Error("Invalid base64 image data.");
-    accumulator = (accumulator << 6) | digit;
-    availableBits += 6;
-    if (availableBits >= 8) {
-      availableBits -= 8;
-      bytes[byteIndex++] = (accumulator >>> availableBits) & 0xff;
-      accumulator &= availableBits === 0 ? 0 : (1 << availableBits) - 1;
-    }
-  }
-  if (byteIndex !== bytes.length || bytes.length === 0) {
-    throw new Error("Incomplete base64 image data.");
-  }
-  return bytes;
 }

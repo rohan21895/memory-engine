@@ -64,6 +64,73 @@ export function reportDegraded(
   }
 }
 
+/**
+ * One graph's inference cost with NOTHING else on the JS thread.
+ *
+ * This is the number M3 has been arguing about without. `model-inference` is
+ * `Date.now()` around `await model.run(...)`, and the await resolves on the JS
+ * thread while five other photos are decoding JPEGs on it — so a 2,280 ms span
+ * is `native invoke + delivery delay` and the two cannot be told apart after
+ * the fact. Run the same graph when the thread is quiet and the delay term goes
+ * to zero, leaving the invoke.
+ *
+ * On the phone that measured 2,280 ms against this Mac's 6.03 ms, the two
+ * outcomes are opposite recommendations:
+ *   ~2,000 ms here -> the runtime really is that slow, and only a delegate or a
+ *                     thread count can help. Native work is justified.
+ *   ~100-300 ms here -> the graph is fine and the span is the JS thread. Native
+ *                     work would buy nothing; move the pixel work instead.
+ */
+export type InferenceBenchmark = {
+  runs: number;
+  meanMs: number;
+  minMs: number;
+  maxMs: number;
+};
+
+/**
+ * Time `runOnce` with the caller's thread otherwise idle.
+ *
+ * The first run is discarded: it pays for lazy tensor allocation and first
+ * touch of the weight arena, which no steady-state photo pays. Bounded by
+ * `budgetMs` so a genuinely slow runtime costs a few seconds of a build rather
+ * than making the build worse to prove that it was already bad. The budget is
+ * checked BETWEEN runs, so the worst case is one warmup plus one measured run:
+ * at the device's 2,280 ms that is ~4.6 s per graph, and at a healthy ~120 ms
+ * all three runs finish inside half a second. `runs` is reported, so a
+ * single-sample result says so rather than passing itself off as a mean of
+ * three.
+ */
+export async function benchmarkInference(
+  runOnce: () => Promise<unknown>,
+  runs = 3,
+  budgetMs = 3000,
+  now: () => number = Date.now,
+): Promise<InferenceBenchmark | undefined> {
+  try {
+    const startedAt = now();
+    await runOnce();
+    const samples: number[] = [];
+    for (let index = 0; index < runs; index += 1) {
+      if (now() - startedAt > budgetMs) break;
+      const runStartedAt = now();
+      await runOnce();
+      samples.push(Math.max(0, now() - runStartedAt));
+    }
+    if (samples.length === 0) return undefined;
+    const total = samples.reduce((sum, sample) => sum + sample, 0);
+    return {
+      runs: samples.length,
+      meanMs: total / samples.length,
+      minMs: Math.min(...samples),
+      maxMs: Math.max(...samples),
+    };
+  } catch {
+    // A benchmark must never fail the album it is benchmarking.
+    return undefined;
+  }
+}
+
 export type ModelCacheLoadStats = {
   sequence: number;
   coldLoads: number;

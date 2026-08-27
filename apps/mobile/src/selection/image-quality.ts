@@ -1,3 +1,8 @@
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { decodeBase64Image } from "../ml/base64.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { measureSync } from "./js-thread-profile.ts";
+
 /**
  * Analysis width for pixel-level quality, in pixels.
  *
@@ -38,8 +43,6 @@ const QUALITY_SAMPLE_WIDTH = 512;
  * and "visibly soft" is the first bucket to fall under a 0.35 floor.
  */
 const LAPLACIAN_STDDEV_FULL_SCALE = 50;
-const BASE64_ALPHABET =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 export type MeasuredImageQuality = {
   sharpness?: number;
@@ -396,40 +399,43 @@ export async function measureImageQuality(
       return {};
     }
 
-    const gray = rgbaToGrayscale(
-      loaded.rgba,
-      loaded.width,
-      loaded.height,
-    );
-    const exposure = exposureFromPixels(gray, loaded.width, loaded.height);
-    const region = toPixelRegion(
-      options.subjectBox,
-      loaded.width,
-      loaded.height,
-    );
-    const { inside, outside } = laplacianStats(
-      gray,
-      loaded.width,
-      loaded.height,
-      region,
-    );
-    // Reuse the exact-face split for full-frame sharpness, then measure the
-    // expanded subject independently so blurred hair/body cannot hide in the
-    // frame average.
-    const subjectQuality = subjectQualityFromPixelStats(
-      gray,
-      loaded.width,
-      loaded.height,
-      region,
-      { inside, outside },
-    );
+    // One `measureSync` around the whole pixel pass, not one per stage: these
+    // four loops run back to back without an await between them, so they are a
+    // single uninterruptible block on the JS thread and that block's length is
+    // what delays every other photo's `model.run` resolution.
+    const image = loaded;
+    return measureSync("quality.pixel-maths", () => {
+      const gray = rgbaToGrayscale(image.rgba, image.width, image.height);
+      const exposure = exposureFromPixels(gray, image.width, image.height);
+      const region = toPixelRegion(
+        options.subjectBox,
+        image.width,
+        image.height,
+      );
+      const { inside, outside } = laplacianStats(
+        gray,
+        image.width,
+        image.height,
+        region,
+      );
+      // Reuse the exact-face split for full-frame sharpness, then measure the
+      // expanded subject independently so blurred hair/body cannot hide in the
+      // frame average.
+      const subjectQuality = subjectQualityFromPixelStats(
+        gray,
+        image.width,
+        image.height,
+        region,
+        { inside, outside },
+      );
 
-    return {
-      sharpness: normalizeSharpness(varianceOf(combine(inside, outside))),
-      exposure: exposure.exposure,
-      clippedFraction: exposure.clippedFraction,
-      ...subjectQuality,
-    };
+      return {
+        sharpness: normalizeSharpness(varianceOf(combine(inside, outside))),
+        exposure: exposure.exposure,
+        clippedFraction: exposure.clippedFraction,
+        ...subjectQuality,
+      };
+    });
   } catch (error) {
     try {
       options.onDegraded?.(error);
@@ -477,18 +483,21 @@ async function loadQualityImageWithExpo(
       return { rgba: new Uint8Array(), width: 0, height: 0, cleanup };
     }
 
-    const decoded = decodeJpeg(decodeBase64(thumbnail.base64), {
-      useTArray: true,
-      formatAsRGBA: true,
-      tolerantDecoding: true,
-      // Raised from 1 MP / 8 MB along with the analysis width. At width 512 a
-      // normal frame is ~0.35 MP, but a tall panorama can reach ~1 MP and would
-      // otherwise trip the old guard and silently lose its quality signals.
-      // Still a hard bound: the resize above fixes the width, so only the
-      // aspect ratio varies, and 4 MP covers up to roughly 15:1.
-      maxResolutionInMP: 4,
-      maxMemoryUsageInMB: 48,
-    });
+    const bytes = decodeBase64Image(thumbnail.base64, "quality.base64");
+    const decoded = measureSync("quality.jpeg-decode", () =>
+      decodeJpeg(bytes, {
+        useTArray: true,
+        formatAsRGBA: true,
+        tolerantDecoding: true,
+        // Raised from 1 MP / 8 MB along with the analysis width. At width 512 a
+        // normal frame is ~0.35 MP, but a tall panorama can reach ~1 MP and would
+        // otherwise trip the old guard and silently lose its quality signals.
+        // Still a hard bound: the resize above fixes the width, so only the
+        // aspect ratio varies, and 4 MP covers up to roughly 15:1.
+        maxResolutionInMP: 4,
+        maxMemoryUsageInMB: 48,
+      }),
+    );
     return {
       rgba: decoded.data,
       width: decoded.width,
@@ -563,42 +572,6 @@ function hasCompleteBuffer(
 function pixelAt(gray: Uint8Array | number[], index: number): number {
   const value = gray[index];
   return Number.isFinite(value) ? Math.max(0, Math.min(255, value)) : 0;
-}
-
-function decodeBase64(value: string): Uint8Array {
-  const encoded = value.replace(/^data:[^,]*,/u, "").replace(/\s/gu, "");
-  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
-  const bytes = new Uint8Array(
-    Math.max(0, Math.floor((encoded.length * 3) / 4) - padding),
-  );
-  let accumulator = 0;
-  let availableBits = 0;
-  let byteIndex = 0;
-
-  for (const character of encoded) {
-    if (character === "=") {
-      break;
-    }
-    const digit = BASE64_ALPHABET.indexOf(character);
-    if (digit < 0) {
-      throw new Error("Thumbnail contains invalid base64 data.");
-    }
-
-    accumulator = (accumulator << 6) | digit;
-    availableBits += 6;
-    if (availableBits >= 8) {
-      availableBits -= 8;
-      bytes[byteIndex] = (accumulator >>> availableBits) & 0xff;
-      byteIndex += 1;
-      accumulator &= availableBits === 0 ? 0 : (1 << availableBits) - 1;
-    }
-  }
-
-  if (byteIndex !== bytes.length || bytes.length === 0) {
-    throw new Error("Thumbnail base64 data is incomplete.");
-  }
-
-  return bytes;
 }
 
 function clamp01(value: number): number {
