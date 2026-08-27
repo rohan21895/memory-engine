@@ -73,6 +73,7 @@ export type CandidateAnalysisProxy = {
  */
 export async function prepareCandidateAnalysisProxy(
   uri: string,
+  onDegraded?: (error: unknown) => void,
 ): Promise<CandidateAnalysisProxy | undefined> {
   try {
     const [{ Image }, { ImageManipulator, SaveFormat }] = await Promise.all([
@@ -110,7 +111,15 @@ export async function prepareCandidateAnalysisProxy(
     } finally {
       source.release();
     }
-  } catch {
+  } catch (error) {
+    // The most expensive silence in the pipeline: without a proxy the photo
+    // reaches the planner scored on metadata alone -- no sharpness, no faces,
+    // no pose, no semantics -- and until this callback existed nothing said so.
+    try {
+      onDegraded?.(error);
+    } catch {
+      // Reporting must never fail the album it is reporting on.
+    }
     return undefined;
   }
 }

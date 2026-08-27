@@ -2,7 +2,7 @@ import type { PoseKeypoint } from "../selection/pose";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { createModelCache, type ModelCacheLoadStats, type ModelExecutionTimingRecorder } from "./model-cache.ts";
+import { createModelCache, reportDegraded, type ModelCacheLoadStats, type ModelExecutionTimingRecorder } from "./model-cache.ts";
 
 const INPUT_SIZE = 192;
 const KEYPOINT_COUNT = 17;
@@ -52,7 +52,11 @@ export async function detectBodyPose(
   let input: Uint8Array;
   try {
     input = await imageRgbTensor(imageUri, sourceWidth, sourceHeight);
-  } catch {
+  } catch (error) {
+    // Still non-fatal, no longer silent. This catch covers the native resize
+    // and the JPEG decode, so it is where a memory failure during preprocessing
+    // lands and where it used to disappear.
+    reportDegraded(timing, error);
     return undefined;
   }
 
@@ -85,7 +89,8 @@ export async function detectBodyPose(
       }
       if (!outputs) return undefined;
       return parseMoveNetOutput(outputs[0]);
-    } catch {
+    } catch (error) {
+      reportDegraded(timing, error);
       return undefined;
     }
   });
