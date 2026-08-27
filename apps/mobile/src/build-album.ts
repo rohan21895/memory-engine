@@ -42,6 +42,7 @@ import {
   type NormalizedBox,
 } from "./selection/image-quality";
 import { clusterPoses, makePose } from "./selection/pose";
+import { bodyCoverage } from "./selection/pose-framing";
 import {
   classifyCategory,
   isScreenshotOrDocument,
@@ -547,6 +548,7 @@ async function buildAlbumImpl(
           boxes: [] as FaceBox[],
           quality: probedQuality ?? {},
           pose: undefined,
+          coverage: undefined,
           semantic: undefined,
           analysisWidth: photo.width,
           analysisHeight: photo.height,
@@ -606,6 +608,18 @@ async function buildAlbumImpl(
         pose: detectedPose
           ? makePose(detectedPose.keypoints, detectedPose.scores)
           : undefined,
+        // The SAME keypoints read positionally instead of as angles. The
+        // dimensions must be the ones `detectBodyPose` letterboxed with —
+        // analysisWidth/analysisHeight, not the original photo's — or every
+        // in-frame test silently inverts on a non-square photo.
+        coverage: detectedPose
+          ? bodyCoverage(
+              detectedPose.keypoints,
+              detectedPose.scores,
+              analysisWidth,
+              analysisHeight,
+            )
+          : undefined,
         semantic,
         analysisWidth,
         analysisHeight,
@@ -647,6 +661,7 @@ async function buildAlbumImpl(
       result,
       boxes,
       quality,
+      coverage,
       semantic,
       analysisWidth,
       analysisHeight,
@@ -666,6 +681,9 @@ async function buildAlbumImpl(
           ? `movenet:${poseLabel}`
           : photo.poseCluster,
       faces: result.faces,
+      // Tie-break only: `selectBestShots` reads this to settle near-duplicate
+      // frames of one take that every measured signal scored exactly alike.
+      bodyCoverage: coverage,
       perceptualEmbedding: result.embedding,
       // `selectBestShots` uses this field for hard take collapse. Semantic
       // similarity is too broad for that job (two different beach moments can
