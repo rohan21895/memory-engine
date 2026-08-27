@@ -6,6 +6,7 @@ import {
   contentUri,
   faceIndexStatus,
   getFaceIndexPerson,
+  cachedFaceMergeSuggestions,
   markNotSamePerson,
   markSamePerson,
   suggestedFaceMerges,
@@ -43,8 +44,18 @@ function afterPaint(): Promise<void> {
 
 export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
   const { width } = useWindowDimensions();
-  const [phase, setPhase] = useState<ReviewPhase>("idle");
-  const [suggestions, setSuggestions] = useState<MergeSuggestion[]>([]);
+  // Work already done is not announced again. If the stored queue is still
+  // valid this opens straight on a question -- no intro card, no "Find possible
+  // matches" tap, no fifteen-second warning for something that will not take
+  // fifteen seconds. Reading it costs no observations parse and no sweep, so it
+  // is safe during render; `useState` keeps it to once per mount.
+  const [restored] = useState(() => cachedFaceMergeSuggestions());
+  const [phase, setPhase] = useState<ReviewPhase>(
+    restored && restored.length > 0 ? "review" : "idle",
+  );
+  const [suggestions, setSuggestions] = useState<MergeSuggestion[]>(
+    restored ?? [],
+  );
   const [answering, setAnswering] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);

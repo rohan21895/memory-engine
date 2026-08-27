@@ -2280,6 +2280,28 @@ function suggestionCacheKey(): string {
   });
 }
 
+/**
+ * The stored review queue when it is still valid — synchronous, and cheap.
+ *
+ * Deliberately does NOT touch observations, so the screen can call it while it
+ * renders and open straight on a question. That is the whole point: caching the
+ * sweep removed the 45-second wait, but the screen still met him with an intro
+ * card and a "Find possible matches" button every single time, which is the same
+ * "why am I seeing this again" from his side. Work already done should not be
+ * re-announced.
+ *
+ * A cache computed for a longer list answers a shorter request; the reverse is
+ * refused, because it would silently hand back a truncated queue.
+ */
+export function cachedFaceMergeSuggestions(
+  limit = 60,
+): MergeSuggestion[] | undefined {
+  const cached = index.mergeSuggestions;
+  return cached && cached.limit >= limit && cached.key === suggestionCacheKey()
+    ? cached.list.slice(0, limit)
+    : undefined;
+}
+
 /** Exact by design: any bar movement requires the historical full sweep. */
 export function sameConsolidationBars(
   previous: ConsolidationBars | undefined,
@@ -4478,13 +4500,9 @@ export async function suggestedFaceMerges(
   limit = 60,
 ): Promise<MergeSuggestion[]> {
   // Checked BEFORE `ensureObservations`, because the parse is most of what this
-  // is avoiding. A cache computed for a longer list still answers a shorter
-  // request; the reverse would silently hand back a truncated queue.
-  const key = suggestionCacheKey();
-  const cached = index.mergeSuggestions;
-  if (cached && cached.key === key && cached.limit >= limit) {
-    return cached.list.slice(0, limit);
-  }
+  // is avoiding.
+  const ready = cachedFaceMergeSuggestions(limit);
+  if (ready) return ready;
   // Both bars are measured over every face on record.
   await ensureObservations();
   const list = suggestMerges(
