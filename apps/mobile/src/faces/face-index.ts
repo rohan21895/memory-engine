@@ -1374,9 +1374,34 @@ async function loadObservations(): Promise<void> {
       }
       if (end < lines.length) await yieldToEventLoop();
     }
+    // Repair duplicates that a previous version appended.
+    //
+    // Until the append site started superseding an asset's stored faces, a photo
+    // processed twice kept both sets, and the per-batch dedupe could not see
+    // across passes. Measured on the owner's library: 81 duplicate faces over 33
+    // photos, each real face beside a near-copy at cosine 0.988-0.994, far above
+    // the 0.72 bar meant to have deleted them.
+    //
+    // Done on LOAD rather than behind an INDEX_VERSION bump, because bumping
+    // that makes `parseIndex` reject the file and re-scan the whole library --
+    // discarding 17,768 good embeddings to delete 81 bad ones. This is a cheap
+    // pass over faces already in memory, and it is idempotent: on an index with
+    // no duplicates it removes nothing and costs one comparison per same-photo
+    // sibling.
+    const deduped = dedupeFaceObservations(loaded);
+    if (deduped.length !== loaded.length) {
+      console.warn(
+        `[PhoteoFaceIndex] repaired ${loaded.length - deduped.length} duplicate ` +
+          `faces on load (${loaded.length} -> ${deduped.length})`,
+      );
+      // Persist the repair and re-group, or the duplicates return on the next
+      // load and the people built from them keep their split tiles.
+      observationsDirty = true;
+      markIndexDirty();
+    }
     // Assigned only after the whole file is read. A partial list assigned early
     // would look complete to `persistObservations` and truncate the file.
-    index.observations = loaded;
+    index.observations = deduped;
     observationsLoaded = true;
     console.warn(
       `[PhoteoFaceIndex] observations bytes=${raw.length} readMs=${readMs} ` +
@@ -3784,6 +3809,42 @@ async function runBuild(
           // Loaded HERE rather than before the loop, so a pass that turns out
           // to have nothing new never pulls 13.8MB off disk at all.
           await ensureObservations();
+          // A re-processed photo REPLACES its faces; it does not add to them.
+          //
+          // `dedupeFaceObservations` runs per asset over the batch that was
+          // just detected (see its call site), so it cannot see faces already
+          // stored for the same photo from an earlier pass. This was a plain
+          // push, so a photo processed twice kept both sets. Measured on the
+          // owner's library: 81 duplicate faces across 33 photos, each real
+          // face paired with a near-copy at cosine 0.988-0.994 -- far above the
+          // 0.72 same-photo bar that was supposed to have deleted them.
+          //
+          // 0.5% of the library, but they land where they hurt most. Two copies
+          // of one face become two one-face people who share a photo, which is
+          // an absolute cannot-link, so clustering can never join them and they
+          // go to the review queue instead: 10 of the owner's top 60 questions
+          // were a picture of somebody next to the identical picture again.
+          // Worse, they are unanswerable -- the anchor needs the winning face to
+          // beat the runner-up, and a face cannot beat its own copy, so the
+          // answer is refused after he gives it.
+          //
+          // Replacement rather than a cross-batch dedupe because a fresh
+          // detection is authoritative for its photo: it used the current
+          // models and preprocessing, where the stored copy may predate a model
+          // swap entirely.
+          const rescanned = new Set(observations.map((o) => o.assetId));
+          const superseded = index.observations.filter((stored) =>
+            rescanned.has(stored.assetId),
+          ).length;
+          if (superseded > 0) {
+            index.observations = index.observations.filter(
+              (stored) => !rescanned.has(stored.assetId),
+            );
+            console.warn(
+              `[PhoteoFaceIndex] superseded ${superseded} stored faces over ` +
+                `${rescanned.size} re-processed photos`,
+            );
+          }
           index.observations.push(...observations);
           // Only when something actually arrived. Marking it unconditionally
           // meant every empty batch rewrote the whole 13.8MB embeddings file --

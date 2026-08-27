@@ -128,4 +128,50 @@ assert(
   );
 }
 
+// The case the owner actually hit, and which every test above sailed past.
+//
+// One face found twice becomes two one-face people whose only photo is the same
+// photo: sharedAssets 1, appearances 1. The rate is then 1/1 = 100%, which sails
+// past LIKELY_TWO_PEOPLE, so the screen showed him a picture of his wife beside
+// the identical picture of his wife and told him underneath that people
+// photographed together this often are usually two different people. Exactly
+// backwards, stated with total confidence, on ten of his top sixty questions.
+{
+  const doubleDetection = { ...suggestion, sharedAssets: 1, appearances: 1 };
+  const line = coOccurrenceEvidence(doubleDetection);
+  assert(
+    line !== undefined && !line.includes("different people"),
+    `1 shared photo of 1 must NOT be called two different people, got: ${line}`,
+  );
+  assert(
+    line !== undefined && line.includes("counted twice"),
+    `1 shared photo of 1 is the double-detection signature, got: ${line}`,
+  );
+
+  // A denominator too small to separate the two populations must state the fact
+  // and stop rather than pick a side.
+  const thin = coOccurrenceEvidence({ ...suggestion, sharedAssets: 1, appearances: 3 });
+  assert(
+    thin !== undefined &&
+      !thin.includes("different people") &&
+      !thin.includes("counted twice"),
+    `1 of 3 cannot support a conclusion either way, got: ${thin}`,
+  );
+
+  // VACUITY: the "two different people" sentence must still be reachable when
+  // the denominator IS big enough. Without this, deleting that branch entirely
+  // would pass every assertion above while destroying the function's purpose.
+  const genuine = coOccurrenceEvidence({ ...suggestion, sharedAssets: 12, appearances: 30 });
+  assert(
+    genuine !== undefined && genuine.includes("different people"),
+    `40% of a real denominator must still read as two people, got: ${genuine}`,
+  );
+  // VACUITY: and so must the low-rate reading, for the same reason.
+  const sparse = coOccurrenceEvidence({ ...suggestion, sharedAssets: 1, appearances: 400 });
+  assert(
+    sparse !== undefined && sparse.includes("counted twice"),
+    `1 of 400 must still read as a duplicate detection, got: ${sparse}`,
+  );
+}
+
 console.log("face merge review self-check passed");

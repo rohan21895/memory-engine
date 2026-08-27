@@ -37,6 +37,28 @@ const LIKELY_DOUBLE_DETECTION = 0.05;
 const LIKELY_TWO_PEOPLE = 0.15;
 
 /**
+ * Appearances below which the RATE carries no information and no conclusion is
+ * stated.
+ *
+ * The bands above were measured on pairs with real denominators. Applied to a
+ * small one they invert: two people who each appear in a single photo, and that
+ * photo is the same one, give 1/1 = 100%, sail past LIKELY_TWO_PEOPLE and are
+ * announced as "usually two different people" — when what actually happened is
+ * that ONE face was found twice, which is the opposite conclusion and the more
+ * common cause by far.
+ *
+ * That was not hypothetical. The owner opened the review, was shown a picture of
+ * his wife beside the identical picture of his wife, and was told underneath
+ * that people photographed together this often are usually two different people.
+ * Ten of his top sixty questions were that same shape.
+ *
+ * Four matches `MERGE_EVIDENCE_MIN_FACES`, the count this codebase already uses
+ * to mean "enough to be evidence". Below it the sentence reports the fact and
+ * stops; a denominator of one cannot separate two populations.
+ */
+const MIN_APPEARANCES_FOR_A_CONCLUSION = 4;
+
+/**
  * The evidence the app is asking the user to overrule, in a sentence.
  *
  * These pairs cleared the merge bar on face evidence and are held apart ONLY by
@@ -64,6 +86,20 @@ export function coOccurrenceEvidence(
   const photos = `${sharedAssets === 1 ? "1 photo" : `${sharedAssets} photos`}`;
   const of = `of ${appearances.toLocaleString()}`;
   const rate = sharedAssets / appearances;
+  // Every photo either has is the double-detection signature, not evidence of
+  // two people — and on a denominator this small the rate would claim the
+  // opposite with total confidence. Said plainly, because this is the case the
+  // owner actually hit.
+  if (sharedAssets >= appearances) {
+    return (
+      `Each of these appears in ${photos}, and it is the same photo. ` +
+      `That usually means one face was counted twice rather than two people ` +
+      `who were photographed together.`
+    );
+  }
+  if (appearances < MIN_APPEARANCES_FOR_A_CONCLUSION) {
+    return `They appear together in ${photos} ${of}.`;
+  }
   if (rate <= LIKELY_DOUBLE_DETECTION) {
     return (
       `They appear together in only ${photos} ${of}. ` +
