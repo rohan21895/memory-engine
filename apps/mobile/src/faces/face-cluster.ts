@@ -542,6 +542,18 @@ type ClusterOptions = {
    * codebase already prefers.
    */
   skipMerge?: boolean;
+  /**
+   * Person ids whose clusters changed since the last completed consolidation.
+   *
+   * When present, the initial merge sweep only has to seed pairs touching one
+   * of these people. Every other pair was already rejected at the same bars
+   * with the same endpoints. A merge keeps its survivor active and refreshes
+   * that survivor against every remaining person, so indirect changes still
+   * propagate to the same fixed point as the full sweep.
+   *
+   * Omit for a full sweep. An empty set deliberately visits no measured pair.
+   */
+  mergeSeedPersonIds?: ReadonlySet<string>;
 };
 
 /**
@@ -745,6 +757,7 @@ export function extendFaceClusters(
       temporalMergeThreshold,
       opts.constraints ?? [],
       bars,
+      opts.mergeSeedPersonIds,
       opts.onMerge,
     );
   }
@@ -862,6 +875,8 @@ function mergeSimilarPeople(
   constraints: readonly FaceConstraint[],
   /** Bars a face-anchored constraint is resolved against; see `AnchorBars`. */
   bars: AnchorBars,
+  /** Undefined means the historical full sweep. */
+  mergeSeedPersonIds?: ReadonlySet<string>,
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void,
 ): void {
   const comparable = (a: MutablePerson, b: MutablePerson): boolean =>
@@ -927,16 +942,41 @@ function mergeSimilarPeople(
   // frame are two people whichever space measured them.
   const origins = people.map((_person, index) => new Set([index]));
   const blocked = people.map(() => new Set<number>());
-  for (let i = 0; i < people.length; i += 1) {
-    for (let j = i + 1; j < people.length; j += 1) {
-      const a = people[i];
-      const b = people[j];
-      if (!comparable(a, b)) continue;
-      if (!sharesAsset(a.assetIdSet, b.assetIdSet)) continue;
-      blocked[i].add(j);
-      blocked[j].add(i);
+  const active =
+    mergeSeedPersonIds === undefined
+      ? undefined
+      : new Set(
+          people
+            .filter((person) => mergeSeedPersonIds.has(person.id))
+            .map((person) => person.id),
+        );
+  const forEachSeedPair = (visit: (i: number, j: number) => void): void => {
+    if (!active) {
+      for (let i = 0; i < people.length; i += 1) {
+        for (let j = i + 1; j < people.length; j += 1) visit(i, j);
+      }
+      return;
     }
-  }
+    // Enumerate active rows, not the whole upper triangle with a cheap guard:
+    // the latter still visits O(people^2) pairs and is exactly the phone cost
+    // this path exists to remove. The active-active condition avoids duplicates.
+    for (let i = 0; i < people.length; i += 1) {
+      if (!active.has(people[i].id)) continue;
+      for (let j = 0; j < people.length; j += 1) {
+        if (i === j) continue;
+        if (active.has(people[j].id) && j < i) continue;
+        visit(Math.min(i, j), Math.max(i, j));
+      }
+    }
+  };
+  forEachSeedPair((i, j) => {
+    const a = people[i];
+    const b = people[j];
+    if (!comparable(a, b)) return;
+    if (!sharesAsset(a.assetIdSet, b.assetIdSet)) return;
+    blocked[i].add(j);
+    blocked[j].add(i);
+  });
 
   // The user's own judgements, layered on top of the measured ones. A "not the
   // same person" joins the same `blocked` structure the same-photo rule uses,
@@ -965,7 +1005,12 @@ function mergeSimilarPeople(
     if (i === -1 || j === -1 || i === j) continue;
     if (!comparable(people[i], people[j])) continue;
     const [keep, drop] = i < j ? [i, j] : [j, i];
+    const survivorId = people[keep].id;
     absorb(people, origins, blocked, keep, drop, onMerge);
+    // A forced merge changes the survivor even when neither endpoint arrived
+    // in this scan. Treat it as touched so its new centroid, size, time span,
+    // and inherited cannot-links are compared with every remaining person.
+    active?.add(survivorId);
   }
 
   type MergeCandidate = {
@@ -1050,6 +1095,10 @@ function mergeSimilarPeople(
       : identityMergeThreshold;
     const threshold =
       a.embeddingKind === "identity" ? identityBar : perceptualThreshold;
+    // Same-photo cannot-links skipped by the restricted pre-pass are recovered
+    // exactly when their pair becomes reachable. Since absorbed asset sets are
+    // unions, a block can never disappear while a chain of merges proceeds.
+    if (active && sharesAsset(a.assetIdSet, b.assetIdSet)) return;
     // `blocked` must be read on every survivor-row refresh because an absorb
     // unions both endpoints' inherited cannot-links.
     if (intersects(blocked[i], origins[j])) return;
@@ -1068,11 +1117,7 @@ function mergeSimilarPeople(
   };
 
   // The forced-merge pass has completed before this one full similarity sweep.
-  for (let i = 0; i < people.length; i += 1) {
-    for (let j = i + 1; j < people.length; j += 1) {
-      scanPair(i, j);
-    }
-  }
+  forEachSeedPair(scanPair);
 
   for (;;) {
     const candidate = popCandidate();
@@ -1096,6 +1141,8 @@ function mergeSimilarPeople(
     const survivorId = people[keepIndex].id;
     const absorbedId = people[dropIndex].id;
     absorb(people, origins, blocked, keepIndex, dropIndex, onMerge);
+    active?.delete(absorbedId);
+    active?.add(survivorId);
 
     indexById.delete(absorbedId);
     versions.delete(absorbedId);

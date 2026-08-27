@@ -1,8 +1,9 @@
 // Times ONLY the consolidation sweep -- `extendFaceClusters(people, [], opts)`,
 // which is exactly what `consolidatePeople` runs at the end of a small scan.
 //
-// Run identically in an unbounded and a bounded checkout; the only difference
-// between the two runs is the code under test.
+// Reports a same-process full-sweep control beside the touched-row path, so the
+// speedup is not distorted by the much longer synthetic-library setup or load
+// changes between two executions.
 //
 // Deterministic: a seeded LCG, so both checkouts see the same library.
 // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -61,10 +62,19 @@ const settleStart = Date.now();
 const people = clusterFaces(observations, options);
 const settleMs = Date.now() - settleStart;
 
-// The measurement. Consolidation only -- no new faces, exactly the end-of-scan
-// path for a library that just gained a handful of photos.
+// The measurement. Consolidation only -- no new faces are assigned inside the
+// timed region, exactly the end-of-scan path after one small append changed a
+// single existing person. `people` is already a fixed point at these same bars,
+// which is the persisted-bar precondition for the restricted sweep.
+const touched = new Set([people[0].id]);
+const fullSweepStart = Date.now();
+const fullSweep = extendFaceClusters(people, [], options);
+const fullSweepMs = Date.now() - fullSweepStart;
 const sweepStart = Date.now();
-const consolidated = extendFaceClusters(people, [], options);
+const consolidated = extendFaceClusters(people, [], {
+  ...options,
+  mergeSeedPersonIds: touched,
+});
 const sweepMs = Date.now() - sweepStart;
 
 const faces = consolidated.reduce(
@@ -75,9 +85,12 @@ console.log(
   JSON.stringify({
     faces: observations.length,
     people: people.length,
+    fullSweepAfter: fullSweep.length,
     afterSweep: consolidated.length,
+    touched: touched.size,
     facesAccountedFor: faces,
     settleMs,
+    fullSweepMs,
     sweepMs,
   }),
 );
