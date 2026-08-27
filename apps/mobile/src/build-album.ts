@@ -264,6 +264,68 @@ function formatDegradation(timing: BuildAlbumTiming): string {
   );
 }
 
+/**
+ * Whether the pose cap actually stopped one person recurring in one pose.
+ *
+ * That is the product goal for pose detection, and nothing has ever checked it
+ * on a real library. It cannot be checked off-device: the synthetic fixtures
+ * label pose per moment from a four-word vocabulary, so three or four distinct
+ * poses have to cover a 24-photo album and `maxPerBodyPose` is FORCED to relax.
+ * Any "over the cap" count measured there describes the fixture.
+ *
+ * `capacity` is printed for exactly that reason. When `distinctPoses x cap` is
+ * below the album size the cap could not have held whatever the planner did, so
+ * `worstBucket` says nothing about the planner and the line marks itself
+ * unmeasurable rather than inviting the wrong conclusion.
+ *
+ * `noPose` is the other half, and it is the one this library is likely to fail
+ * on. A photo whose pose MoveNet could not read is keyed `nopose:<mediaId>`,
+ * unique to itself, so it is never capped at all -- and MoveNet fits ONE person,
+ * while most photos here hold several.
+ *
+ * Reporting only: it observes a finished decision and changes nothing.
+ */
+function reportPoseDiversity(
+  enriched: readonly { id: string; poseCluster?: string; personIds?: readonly string[] }[],
+  album: AlbumData,
+): void {
+  try {
+    const byId = new Map(enriched.map((photo) => [photo.id, photo]));
+    const chosen = album.selected
+      .map((selected) => byId.get(selected.media_id))
+      .filter((photo): photo is (typeof enriched)[number] => photo !== undefined);
+    const readable = chosen.filter((photo) => photo.poseCluster);
+    const buckets = new Map<string, number>();
+    for (const photo of readable) {
+      const key = photo.poseCluster!;
+      buckets.set(key, (buckets.get(key) ?? 0) + 1);
+    }
+    const personPose = new Map<string, number>();
+    for (const photo of readable) {
+      for (const person of photo.personIds ?? []) {
+        const key = `${person}|${photo.poseCluster}`;
+        personPose.set(key, (personPose.get(key) ?? 0) + 1);
+      }
+    }
+    const repeats = [...personPose.values()].filter((count) => count > 1).length;
+    const capacity = buckets.size * POSE_DIVERSITY_CAP;
+    console.info(
+      `[album-pose-diversity] chosen=${chosen.length} noPose=${chosen.length - readable.length} ` +
+        `distinctPoses=${buckets.size} capacity=${capacity} ` +
+        `worstBucket=${buckets.size > 0 ? Math.max(...buckets.values()) : 0} ` +
+        `samePersonSamePose=${repeats}` +
+        (capacity < chosen.length
+          ? ' note="capacity below album size, so the cap had to relax; worstBucket is unmeasurable here"'
+          : ""),
+    );
+  } catch {
+    // Diagnostics must never fail an album the user is waiting for.
+  }
+}
+
+/** Mirrors the planner's `maxPerBodyPose` default, for the diagnostic above. */
+const POSE_DIVERSITY_CAP = 2;
+
 function formatTiming(timing: BuildAlbumTiming): string {
   if (timing.stage === "analysis-degraded") {
     return formatDegradation(timing);
@@ -971,6 +1033,7 @@ async function buildAlbumImpl(
     count: Math.min(count, Math.max(1, enriched.length)),
   });
   const album: AlbumData = selection.album;
+  reportPoseDiversity(enriched, album);
   reportTiming(options, timings, {
     stage: "choose-best-shots",
     elapsedMs: Date.now() - selectionStartedAt,
