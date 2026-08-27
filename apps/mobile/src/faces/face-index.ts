@@ -291,6 +291,13 @@ export type BuildFaceIndexOptions = {
   threshold?: number;
 };
 
+export type ConsolidationBars = {
+  identity: number;
+  perceptual: number;
+  evidenced: number;
+  temporal: number;
+};
+
 export type FaceScanAsset = {
   id: string;
   width: number;
@@ -411,6 +418,12 @@ type PersistedFaceIndex = {
   threshold: number;
   /** Which clustering rule produced `people`; see CLUSTER_CALIBRATION. */
   calibration?: string;
+  /** Exact merge bars used by the last completed consolidation of `people`. */
+  consolidationBars?: ConsolidationBars;
+  /** Person rows changed since that consolidation; persisted across a kill. */
+  pendingConsolidationPersonIds?: string[];
+  /** True when observations arrived after the last completed consolidation. */
+  consolidationPending?: boolean;
   /** Frozen population mean the stored centroids are centered against. */
   embeddingMean?: number[];
   /** What the user said about who is who. Survives every recluster. */
@@ -466,6 +479,8 @@ function emptyIndex(): PersistedFaceIndex {
     total: 0,
     threshold: DEFAULT_FACE_INDEX_THRESHOLD,
     calibration: CLUSTER_CALIBRATION,
+    pendingConsolidationPersonIds: [],
+    consolidationPending: false,
   };
 }
 
@@ -1336,6 +1351,20 @@ function trueRecord(value: unknown): value is Record<string, true> {
   return isRecord(value) && Object.values(value).every((entry) => entry === true);
 }
 
+function validConsolidationBars(value: unknown): value is ConsolidationBars {
+  return (
+    isRecord(value) &&
+    typeof value.identity === "number" &&
+    Number.isFinite(value.identity) &&
+    typeof value.perceptual === "number" &&
+    Number.isFinite(value.perceptual) &&
+    typeof value.evidenced === "number" &&
+    Number.isFinite(value.evidenced) &&
+    typeof value.temporal === "number" &&
+    Number.isFinite(value.temporal)
+  );
+}
+
 function parseIndex(contents: string): PersistedFaceIndex | null {
   try {
     const value: unknown = JSON.parse(contents);
@@ -1357,7 +1386,16 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
       typeof value.total !== "number" ||
       !Number.isFinite(value.total) ||
       typeof value.threshold !== "number" ||
-      !Number.isFinite(value.threshold)
+      !Number.isFinite(value.threshold) ||
+      (value.consolidationBars !== undefined &&
+        !validConsolidationBars(value.consolidationBars)) ||
+      (value.pendingConsolidationPersonIds !== undefined &&
+        (!Array.isArray(value.pendingConsolidationPersonIds) ||
+          !value.pendingConsolidationPersonIds.every(
+            (personId) => typeof personId === "string",
+          ))) ||
+      (value.consolidationPending !== undefined &&
+        typeof value.consolidationPending !== "boolean")
     ) {
       return null;
     }
@@ -1378,6 +1416,9 @@ function parseIndex(contents: string): PersistedFaceIndex | null {
       constraints: Array.isArray(stored.constraints)
         ? stored.constraints.filter(isStoredConstraint).map(loadedConstraint)
         : [],
+      pendingConsolidationPersonIds:
+        stored.pendingConsolidationPersonIds ?? [],
+      consolidationPending: stored.consolidationPending ?? false,
     };
     return loaded.observations.every(validObservation) &&
       loaded.people.every(validPerson)
@@ -1731,6 +1772,11 @@ function indexShape(): string {
     index.people.filter((person) => person.avatarUri !== undefined).length,
     index.threshold,
     index.calibration,
+    index.consolidationBars
+      ? `${index.consolidationBars.identity},${index.consolidationBars.perceptual},${index.consolidationBars.evidenced},${index.consolidationBars.temporal}`
+      : "legacy-bars",
+    index.pendingConsolidationPersonIds?.join(",") ?? "",
+    index.consolidationPending ?? false,
     // Included so a correction the user just made forces a write even though
     // no count changed -- two people merging by hand leaves the face total
     // identical and would otherwise look clean to the fingerprint.
@@ -1974,7 +2020,17 @@ async function recordConstraint(
     personIdB,
     rebuildPeople,
   );
-  if (merged) rebuildPersonIdsByAsset();
+  if (merged) {
+    rebuildPersonIdsByAsset();
+    // The direct user merge changed a centroid without running the measured
+    // sweep. Carry its survivor into the next consolidation so indirect joins
+    // are not missed merely because the next scan touched somebody else.
+    const survivorId = index.people.some((person) => person.id === personIdA)
+      ? personIdA
+      : personIdB;
+    markPersonPendingConsolidation(survivorId);
+    index.consolidationPending = true;
+  }
   await persistFaceIndex(true);
   return true;
 }
@@ -2078,6 +2134,36 @@ export function faceClusterOptions(
   };
 }
 
+function consolidationBarsFrom(
+  options: ReturnType<typeof faceClusterOptions>,
+): ConsolidationBars {
+  return {
+    identity: options.identityMergeThreshold,
+    perceptual: options.perceptualThreshold,
+    evidenced: options.evidencedMergeThreshold,
+    // `mergeBars` applies this final clamp before the sweep judges a temporal
+    // pair. Persist the EFFECTIVE bar, not the caller's looser request.
+    temporal: Math.min(
+      options.evidencedMergeThreshold,
+      options.temporalMergeThreshold,
+    ),
+  };
+}
+
+/** Exact by design: any bar movement requires the historical full sweep. */
+export function sameConsolidationBars(
+  previous: ConsolidationBars | undefined,
+  current: ConsolidationBars,
+): boolean {
+  return (
+    previous !== undefined &&
+    previous.identity === current.identity &&
+    previous.perceptual === current.perceptual &&
+    previous.evidenced === current.evidenced &&
+    previous.temporal === current.temporal
+  );
+}
+
 /**
  * Removes the shared direction every embedding carries, then re-normalizes.
  *
@@ -2148,14 +2234,15 @@ function centeredForClustering(
 function peopleFromObservations(
   observations: FaceObservation[],
   threshold = DEFAULT_FACE_INDEX_THRESHOLD,
+  options = faceClusterOptions(threshold, {
+    evidencedMergeThreshold: evidencedMergeBar(observations),
+    temporalMergeThreshold: temporalMergeBar(observations),
+    constraints: index.constraints ?? [],
+  }),
 ): Person[] {
   return clusterFaces(
     centeredForClustering(observations),
-    faceClusterOptions(threshold, {
-      evidencedMergeThreshold: evidencedMergeBar(observations),
-      temporalMergeThreshold: temporalMergeBar(observations),
-      constraints: index.constraints ?? [],
-    }),
+    options,
   );
 }
 
@@ -3357,7 +3444,20 @@ function rebuildPeople(requested?: number): void {
     ? embeddingMean(index.observations)
     : undefined;
   index.threshold = safeThreshold(requested ?? calibration.threshold);
-  index.people = peopleFromObservations(index.observations, index.threshold);
+  const clusterOptions = consolidatingClusterOptions();
+  // Undefined is the crash-safe state: a failed rebuild must never claim that
+  // its partially changed grouping reached a fixed point at these bars.
+  index.consolidationBars = undefined;
+  index.consolidationPending = true;
+  index.people = peopleFromObservations(
+    index.observations,
+    index.threshold,
+    clusterOptions,
+  );
+  index.consolidationBars = consolidationBarsFrom(clusterOptions);
+  index.pendingConsolidationPersonIds = [];
+  index.consolidationPending = false;
+  batchesSinceConsolidation = 0;
   const keptAvatars = reattachAvatars(previousPeople, index.people);
   if (previousPeople.length > 0) {
     const had = previousPeople.filter((person) => person.avatarUri).length;
@@ -3484,6 +3584,33 @@ function consolidatingClusterOptions(): ReturnType<typeof faceClusterOptions> {
   });
 }
 
+function pendingConsolidationPeople(): Set<string> {
+  return new Set(index.pendingConsolidationPersonIds ?? []);
+}
+
+function storePendingConsolidationPeople(people: ReadonlySet<string>): void {
+  index.pendingConsolidationPersonIds = [...people].sort();
+}
+
+function markPersonPendingConsolidation(personId: string): void {
+  const pending = pendingConsolidationPeople();
+  pending.add(personId);
+  storePendingConsolidationPeople(pending);
+}
+
+function transferPendingConsolidationPerson(
+  pending: Set<string>,
+  absorbedPersonId: string,
+  survivingPersonId: string,
+): void {
+  // Even if neither endpoint was directly touched, an absorb changes the
+  // survivor's centroid, size, span and inherited constraints. It is therefore
+  // touched from this point onward and its whole row must be refreshed.
+  pending.delete(absorbedPersonId);
+  pending.add(survivingPersonId);
+  storePendingConsolidationPeople(pending);
+}
+
 function appendPeople(observations: FaceObservation[]): Map<FaceObservation, string> {
   const assignments = new Map<FaceObservation, string>();
   // A batch that found NO faces cannot have changed a single cluster, so the
@@ -3494,7 +3621,10 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
   // faces=0` cost `cluster=35463ms` -- thirty-five seconds of frozen JS thread
   // to re-derive an unchanged answer. Re-scanning a library that is already
   // complete walks hundreds of empty batches, so this fired repeatedly.
-  if (observations.length > 0) batchesSinceConsolidation += 1;
+  if (observations.length > 0) {
+    batchesSinceConsolidation += 1;
+    index.consolidationPending = true;
+  }
   const consolidate =
     observations.length > 0 &&
     batchesSinceConsolidation >= CONSOLIDATE_EVERY_BATCHES;
@@ -3519,26 +3649,48 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
     : faceClusterOptions(index.threshold, {
         constraints: index.constraints ?? [],
       });
+  const bars = consolidationBarsFrom(clusterOptions);
+  const pending = pendingConsolidationPeople();
+  const restrictSweep =
+    consolidate && sameConsolidationBars(index.consolidationBars, bars);
   traceScanStage("calibrate", calibrateStartedAt);
   const clusterStartedAt = Date.now();
+  // A throw from a consolidating call must fail toward another full sweep, not
+  // leave a persisted claim that this grouping was settled at these bars.
+  if (consolidate) index.consolidationBars = undefined;
   index.people = extendFaceClusters(index.people, centeredForClustering(observations), {
     // Calibrated from every face on record, not just the arriving batch: an
     // incremental append sees a handful of faces, far too few to measure a bar
     // from, and would otherwise fall back to the strict constant and merge
     // differently than a full rebuild over the same library.
     ...clusterOptions,
-    onAssign: (observation, personId) => assignments.set(observation, personId),
-      onMerge: (absorbedPersonId, survivingPersonId) => {
-        for (const [observation, personId] of assignments) {
-          if (personId === absorbedPersonId) {
-            assignments.set(observation, survivingPersonId);
-          }
+    onAssign: (observation, personId) => {
+      assignments.set(observation, personId);
+      pending.add(personId);
+      storePendingConsolidationPeople(pending);
+    },
+    onMerge: (absorbedPersonId, survivingPersonId) => {
+      transferPendingConsolidationPerson(
+        pending,
+        absorbedPersonId,
+        survivingPersonId,
+      );
+      for (const [observation, personId] of assignments) {
+        if (personId === absorbedPersonId) {
+          assignments.set(observation, survivingPersonId);
         }
-      },
+      }
+    },
     threshold: index.threshold,
     perceptualThreshold: PERCEPTUAL_FACE_INDEX_THRESHOLD,
     skipMerge: !consolidate,
+    mergeSeedPersonIds: restrictSweep ? pending : undefined,
   });
+  if (consolidate) {
+    index.consolidationBars = bars;
+    index.pendingConsolidationPersonIds = [];
+    index.consolidationPending = false;
+  }
   traceScanStage("cluster", clusterStartedAt);
   if (consolidate) traceScanCount("consolidated");
   // Counted so a slow `cluster` can be read against the thing that drives it:
@@ -3569,36 +3721,56 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
  *    reassigns one. The only way its grouping can differ from a rebuild's is a
  *    pair left un-merged, which the next full rebuild repairs.
  *
- * Convergence is why this runs the WHOLE sweep rather than only the pairs this
- * scan touched. Every pair is re-judged against freshly measured bars on every
- * small scan, so a pair that missed the bar last month is reconsidered this
- * month. Restricting the sweep to changed people would be another ~10x, and
- * would also make a pair of untouched people that only a drifting bar could
- * join wait for a rebuild that a phone adding two photos a day never triggers.
+ * A stored snapshot of the last completed consolidation's exact merge bars is
+ * what makes the common case sub-quadratic. If any bar moved, the whole sweep
+ * runs exactly as before. If none moved, two untouched endpoints are bit-for-
+ * bit the same pair already rejected at those bars, so only touched rows seed
+ * the queue. An absorb makes its survivor touched indirectly and the clusterer
+ * refreshes that whole row, preserving every merge chain and the same fixed
+ * point. Missing legacy state also fails toward the historical full sweep.
  */
 function consolidatePeople(): void {
   // Nothing was deferred, so the sweep has nothing to find that the last one
   // did not. Same reasoning as the empty-batch guard in `appendPeople`: an
   // O(people^2) pass to re-derive an unchanged answer is the most expensive
   // possible way to do nothing.
-  if (batchesSinceConsolidation === 0) return;
+  if (!index.consolidationPending) return;
   const startedAt = Date.now();
   const before = index.people.length;
+  const options = consolidatingClusterOptions();
+  const bars = consolidationBarsFrom(options);
+  const pending = pendingConsolidationPeople();
+  const restrictSweep = sameConsolidationBars(index.consolidationBars, bars);
   // Marked before the call for the same reason `appendPeople` does: a throw
   // partway through still leaves a partially merged `index.people` behind.
   markIndexDirty();
+  index.consolidationBars = undefined;
   index.people = extendFaceClusters(
     index.people,
     [],
-    consolidatingClusterOptions(),
+    {
+      ...options,
+      mergeSeedPersonIds: restrictSweep ? pending : undefined,
+      onMerge: (absorbedPersonId, survivingPersonId) => {
+        transferPendingConsolidationPerson(
+          pending,
+          absorbedPersonId,
+          survivingPersonId,
+        );
+      },
+    },
   );
   batchesSinceConsolidation = 0;
+  index.consolidationBars = bars;
+  index.pendingConsolidationPersonIds = [];
+  index.consolidationPending = false;
   markIndexDirty();
   rebuildPersonIdsByAsset();
   console.warn(
     `[PhoteoFaceIndex] consolidated ${Date.now() - startedAt}ms ` +
       `${before}->${index.people.length} people over ` +
-      `${index.observations.length} faces (no recluster)`,
+      `${index.observations.length} faces (no recluster, ` +
+      `${restrictSweep ? `${pending.size} touched` : "full sweep"})`,
   );
 }
 

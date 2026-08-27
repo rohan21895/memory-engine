@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { scanEndNeedsRecluster } from "./face-index.ts";
+import { sameConsolidationBars, scanEndNeedsRecluster } from "./face-index.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { clusterFaces, extendFaceClusters } from "./face-cluster.ts";
 // A type-only import is erased before the extension can matter, so unlike the
@@ -109,6 +109,32 @@ assert(
   "a bar that genuinely moved must still get the full rebuild",
 );
 
+// Every consolidation bar is compared exactly. A tolerance here would reset
+// its own baseline on every scan and could postpone an untouched merge forever.
+const mergeBars = {
+  identity: 0.55,
+  perceptual: 0.72,
+  evidenced: 0.43,
+  temporal: 0.41,
+};
+assert(
+  sameConsolidationBars(mergeBars, { ...mergeBars }),
+  "identical persisted merge bars permit a touched-only sweep",
+);
+assert(
+  !sameConsolidationBars(undefined, mergeBars),
+  "a legacy index with no persisted merge bars must take the full sweep",
+);
+for (const field of ["identity", "perceptual", "evidenced", "temporal"] as const) {
+  assert(
+    !sameConsolidationBars(mergeBars, {
+      ...mergeBars,
+      [field]: mergeBars[field] + Number.EPSILON,
+    }),
+    `VACUITY: moving ${field} by one representable step must disable restriction`,
+  );
+}
+
 // --- 3. Equivalence: the cheap path may split, it may never fuse. ------------
 
 function atDegrees(degrees: number): number[] {
@@ -172,7 +198,17 @@ const appended = extendFaceClusters(settledPeople, arriving, {
   ...options,
   skipMerge: true,
 });
-const cheap = extendFaceClusters(appended, [], options);
+const touchedPersonId = appended.find((person) =>
+  person.assetIds.includes("new-1"),
+)?.id;
+assert(
+  touchedPersonId !== undefined,
+  "VACUITY: the arriving face must actually touch a person before the restricted sweep",
+);
+const cheap = extendFaceClusters(appended, [], {
+  ...options,
+  mergeSeedPersonIds: new Set([touchedPersonId]),
+});
 
 const faceTotal = (people: Person[]): number =>
   people.reduce((sum, person) => sum + person.faceCount, 0);
@@ -254,6 +290,70 @@ assert(
         person.avatarUri === withAvatars[position].avatarUri,
     ),
   "a settled library consolidates to itself, ids and avatars untouched",
+);
+
+// --- 5. A touched row must propagate through indirect merges. ---------------
+//
+// The arriving face moves A just far enough to merge B at the strict bar. That
+// absorb raises the survivor above the four-face evidence gate, which lowers
+// its bar against C and enables a SECOND merge. C was not directly touched;
+// reaching it proves that an absorb keeps the survivor active and refreshes its
+// entire row instead of stopping at direct neighbours of the new face.
+
+const person = (
+  id: string,
+  degrees: number,
+  faceCount: number,
+): Person => ({
+  id,
+  faceCount,
+  assetIds: Array.from({ length: faceCount }, (_, index) => `${id}-${index}`),
+  centroid: atDegrees(degrees),
+  embeddingKind: "identity",
+});
+
+const chainOptions = {
+  threshold: 0.95,
+  identityMergeThreshold: 0.95,
+  evidencedMergeThreshold: 0.825,
+  temporalMergeThreshold: 0.825,
+};
+const chainStart = [
+  person("person-a", 0, 3),
+  person("person-b", 20, 1),
+  person("person-c", 39, 4),
+];
+const chainAppended = extendFaceClusters(
+  chainStart,
+  [face("chain-new", 9.4)],
+  { ...chainOptions, skipMerge: true },
+);
+const chainFull = extendFaceClusters(chainAppended, [], chainOptions);
+const chainRestricted = extendFaceClusters(chainAppended, [], {
+  ...chainOptions,
+  mergeSeedPersonIds: new Set(["person-a"]),
+});
+
+assert(
+  chainFull.length === 1,
+  "VACUITY: the full sweep fixture must actually contain the two-link merge chain",
+);
+assert(
+  JSON.stringify(partition(chainRestricted)) === JSON.stringify(partition(chainFull)),
+  "the touched-only sweep must reach the full sweep's fixed point through an indirect absorb",
+);
+
+// Sabotage the touch bookkeeping itself. Naming only C omits the row whose
+// centroid moved, so the fixture must remain split; otherwise the equivalence
+// assertion above could pass without the seed restriction doing real work.
+const wrongSeed = extendFaceClusters(chainAppended, [], {
+  ...chainOptions,
+  mergeSeedPersonIds: new Set(["person-c"]),
+});
+assert(
+  wrongSeed.length > chainFull.length &&
+    JSON.stringify(partition(wrongSeed)) !== JSON.stringify(partition(chainFull)),
+  "VACUITY: sabotaging the touched id must make this chain test fail",
 );
 
 console.log("face-index recluster-cost self-check passed");
