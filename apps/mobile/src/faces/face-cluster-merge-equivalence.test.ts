@@ -3,7 +3,7 @@ import {
   DEFAULT_MERGE_THRESHOLD,
   DEFAULT_PERCEPTUAL_THRESHOLD,
   MERGE_EVIDENCE_MIN_FACES,
-  SAME_PHOTO_EXCEPTION_SIMILARITY,
+  SAME_PHOTO_DUPLICATE_SIMILARITY,
   TEMPORAL_MERGE_WINDOW_MS,
   extendFaceClusters,
   // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -181,7 +181,9 @@ function runCurrentAlgorithm(
       const b = people[j];
       if (!comparable(a, b)) continue;
       if (!sharesAsset(a.assetIdSet, b.assetIdSet)) continue;
-      if (linkage(a, b) >= SAME_PHOTO_EXCEPTION_SIMILARITY) continue;
+      // No similarity escape: co-occurrence is an absolute cannot-link. The
+      // mirror case is removed earlier by `dedupeFaceObservations`, so anything
+      // reaching here is two surviving faces in one frame.
       blocked[i].add(j);
       blocked[j].add(i);
     }

@@ -18,7 +18,7 @@
  * without ever naming them.
  */
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_MERGE_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY } from "./face-cluster.ts";
+import { DEFAULT_MERGE_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY } from "./face-cluster.ts";
 
 /** Faces this calibration reads. Structurally a subset of FaceObservation. */
 export type CalibrationFace = {
@@ -168,7 +168,7 @@ export function samePhotoImpostorScores(
     for (let i = 0; i < group.length; i += 1) {
       for (let j = i + 1; j < group.length; j += 1) {
         const score = cosine(group[i].embedding, group[j].embedding);
-        if (score < SAME_PHOTO_EXCEPTION_SIMILARITY) {
+        if (score < SAME_PHOTO_DUPLICATE_SIMILARITY) {
           scores.push(score);
         }
       }

@@ -1,5 +1,5 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_IDENTITY_THRESHOLD, DEFAULT_MERGE_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, extendFaceClusters } from "./face-cluster.ts";
+import { DEFAULT_IDENTITY_THRESHOLD, DEFAULT_MERGE_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, extendFaceClusters } from "./face-cluster.ts";
 
 // Local assert to match the house test style (the app tsconfig has no
 // @types/node, so node:test / node:assert are intentionally not imported).
@@ -78,25 +78,32 @@ const cooccurring = extendFaceClusters(
     obs("group-photo", 1, 0),
     {
       ...obs("group-photo", 0, 0),
-      embedding: atCosine(SAME_PHOTO_EXCEPTION_SIMILARITY - 0.05),
+      embedding: atCosine(SAME_PHOTO_DUPLICATE_SIMILARITY - 0.05),
     },
   ],
   { identityMergeThreshold: LOW_MERGE_REQUEST },
 );
 assert(cooccurring.length === 2, "ordinary co-faces stay a strict cannot-link");
 
+// Even ABOVE the old 0.72 exception, two faces in one frame stay two people.
+// The escape that used to permit this is gone: it could not tell a mirror from
+// two relatives, and `dedupeFaceObservations` already removes real duplicate
+// detections before clustering ever sees them.
 const mirroredDuplicate = extendFaceClusters(
   [],
   [
     obs("panorama", 1, 0),
     {
       ...obs("panorama", 0, 0),
-      embedding: atCosine(SAME_PHOTO_EXCEPTION_SIMILARITY + 0.05),
+      embedding: atCosine(SAME_PHOTO_DUPLICATE_SIMILARITY + 0.05),
     },
   ],
   { identityMergeThreshold: LOW_MERGE_REQUEST },
 );
-assert(mirroredDuplicate.length === 1, "above the exception a mirror/panorama duplicate is permitted");
+assert(
+  mirroredDuplicate.length === 2,
+  `co-occurrence is absolute, even above ${SAME_PHOTO_DUPLICATE_SIMILARITY}, got ${mirroredDuplicate.length}`,
+);
 
 const collisionFree = extendFaceClusters(
   [
@@ -193,7 +200,7 @@ assert(supportedSplit.length === 2, "two well-supported clusters get no merge di
 const noisyOverlap = extendFaceClusters(
   [
     { id: "person-1", faceCount: 20, assetIds: ["shared", ...Array.from({ length: 19 }, (_, i) => `a-${i}`)], centroid: [1, 0], embeddingKind: "identity" },
-    { id: "person-2", faceCount: 20, assetIds: ["shared", ...Array.from({ length: 19 }, (_, i) => `b-${i}`)], centroid: atCosine(SAME_PHOTO_EXCEPTION_SIMILARITY - 0.05), embeddingKind: "identity" },
+    { id: "person-2", faceCount: 20, assetIds: ["shared", ...Array.from({ length: 19 }, (_, i) => `b-${i}`)], centroid: atCosine(SAME_PHOTO_DUPLICATE_SIMILARITY - 0.05), embeddingKind: "identity" },
   ],
   [],
   { identityMergeThreshold: LOW_MERGE_REQUEST },
@@ -210,6 +217,26 @@ const frequentOverlap = extendFaceClusters(
 );
 assert(frequentOverlap.length === 2, "lower-similarity co-faces remain a hard cannot-link");
 
+/**
+ * The satellite: a small cluster whose every photo is also the big cluster's.
+ *
+ * At cosine 0.86 and 100% overlap this looks like one person found twice in the
+ * same four frames, and the old escape merged it automatically. It no longer
+ * does, and that is deliberate rather than a regression:
+ *
+ *  - The same shape describes two people who are ALWAYS photographed together.
+ *    On the owner's library those exist and sit at 52-57% co-occurrence, and
+ *    merging them fuses, say, a parent with their child, permanently.
+ *  - Similarity cannot separate the two readings. Only the user can.
+ *  - In the real pipeline this rarely arises anyway: `dedupeFaceObservations`
+ *    deletes repeat detections inside a single photo, on box geometry as well as
+ *    identity, long before clustering sees them. This fixture builds the
+ *    clusters directly and so skips that step.
+ *
+ * So it stays split and becomes a review question, ranked near the top because
+ * the repair is large. Failing toward two tiles is recoverable with one tap;
+ * failing toward one is not recoverable at all.
+ */
 const sparseSatellite = extendFaceClusters(
   [
     { id: "person-1", faceCount: 12, assetIds: Array.from({ length: 12 }, (_, i) => `anchor-${i}`), centroid: [1, 0], embeddingKind: "identity" },
@@ -218,7 +245,25 @@ const sparseSatellite = extendFaceClusters(
   [],
   { identityMergeThreshold: 0.37 },
 );
-assert(sparseSatellite.length === 1, "an extremely close overlapping satellite rejoins its anchor");
+assert(
+  sparseSatellite.length === 2,
+  `an overlapping satellite stays a question, not an automatic merge (got ${sparseSatellite.length})`,
+);
+
+// Vacuity guard: the same satellite on its OWN photos rejoins immediately, so
+// the split above is co-occurrence rather than the 0.86 pair failing the bar.
+const detachedSatellite = extendFaceClusters(
+  [
+    { id: "person-1", faceCount: 12, assetIds: Array.from({ length: 12 }, (_, i) => `anchor-${i}`), centroid: [1, 0], embeddingKind: "identity" },
+    { id: "person-2", faceCount: 4, assetIds: Array.from({ length: 4 }, (_, i) => `own-${i}`), centroid: atCosine(0.86), embeddingKind: "identity" },
+  ],
+  [],
+  { identityMergeThreshold: 0.37 },
+);
+assert(
+  detachedSatellite.length === 1,
+  `a satellite with its own photos still rejoins its anchor (got ${detachedSatellite.length})`,
+);
 
 const assignableOnly = extendFaceClusters(
   [],

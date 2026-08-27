@@ -1,6 +1,6 @@
 import {
   ASSIGNABLE_CENTROID_WEIGHT,
-  SAME_PHOTO_EXCEPTION_SIMILARITY,
+  SAME_PHOTO_DUPLICATE_SIMILARITY,
   extendFaceClusters,
   updateCentroid,
   // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -86,13 +86,10 @@ function referenceAssign(faces: Face[], threshold: number): string[][] {
     for (let index = 0; index < people.length; index += 1) {
       const person = people[index];
       if (embedding.length === 0 || embedding.length !== person.centroid.length) continue;
+      // Co-occurrence is an absolute cannot-link, so this is decided before the
+      // similarity is even consulted -- matching the real assignment loop.
+      if (person.assetSet.has(face.assetId)) continue;
       const similarity = referenceSimilarity(embedding, person.centroid);
-      if (
-        person.assetSet.has(face.assetId) &&
-        similarity < SAME_PHOTO_EXCEPTION_SIMILARITY
-      ) {
-        continue;
-      }
       if (similarity >= threshold && similarity > best) {
         bestIndex = index;
         best = similarity;
@@ -168,13 +165,22 @@ for (const spread of [0.02, 0.035, 0.06, 0.12]) {
 }
 
 /**
- * The mirror/panorama exception, isolated.
+ * The same-photo cannot-link, isolated, at the hardest input it has.
  *
- * A person already holding a face from this photo may only take another if the
- * similarity clears 0.72 -- far above the assignment bar. An early exit that
- * asked only for the assignment bar would abandon the dot product before it
- * could be tested against the exception, and two faces from one photo would
- * silently stop joining. These two are near-identical AND share a photo.
+ * These two faces are as similar as two vectors get -- one is the other plus
+ * 0.005 of noise -- AND they share a photo. There used to be an exception that
+ * let a pair like this merge above 0.72, on the theory that only a mirror or a
+ * panorama stitch could produce it.
+ *
+ * It is gone. The exception could not distinguish "one person photographed
+ * twice in a frame" from "two relatives who resemble each other", and in a
+ * family library the second mistake fuses a parent with their child and cannot
+ * be undone. The genuine mirror case is removed earlier and on better evidence
+ * by `dedupeFaceObservations`, which sees the actual boxes; by the time
+ * clustering runs, two surviving faces in one frame are two people.
+ *
+ * So the correct answer here is TWO clusters, however similar the vectors are,
+ * and the user can join them by hand if the app has it wrong.
  */
 const mirrorBase = unit(Array.from({ length: DIMS }, () => gauss()));
 const mirrored = extendFaceClusters(
@@ -190,9 +196,28 @@ const mirrored = extendFaceClusters(
   { threshold: 0.35, skipMerge: true },
 );
 assert(
-  mirrored.length === 1 && mirrored[0].faceCount === 2,
-  "a near-identical repeat of one face in one photo still joins it -- the early " +
-    "exit must clear the same-photo exception bar, not the assignment bar",
+  mirrored.length === 2,
+  `two faces in one photo stay two people no matter how alike, got ${mirrored.length}`,
+);
+
+// Vacuity guard: the SAME two embeddings in DIFFERENT photos do join, so the
+// split above is the co-occurrence rule and not a threshold that rejects
+// everything.
+const separated = extendFaceClusters(
+  [],
+  [
+    { assetId: "shot-1", embedding: mirrorBase, embeddingKind: "identity" as const },
+    {
+      assetId: "shot-2",
+      embedding: unit(mirrorBase.map((value) => value + gauss() * 0.005)),
+      embeddingKind: "identity" as const,
+    },
+  ],
+  { threshold: 0.35, skipMerge: true },
+);
+assert(
+  separated.length === 1 && separated[0].faceCount === 2,
+  `the same pair in two photos must still join, got ${separated.length}`,
 );
 
 console.log(

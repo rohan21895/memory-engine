@@ -1,5 +1,5 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { SAME_PHOTO_EXCEPTION_SIMILARITY } from "./face-cluster.ts";
+import { SAME_PHOTO_DUPLICATE_SIMILARITY } from "./face-cluster.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { CENTERED_FACE_INDEX_THRESHOLD, DEFAULT_FACE_INDEX_THRESHOLD, FACE_INDEX_IDENTITY_MERGE_THRESHOLD, PERCEPTUAL_FACE_INDEX_THRESHOLD, applyConstraintToPeople, createFacePeopleQuery, createPersonIdsByAsset, dedupeFaceBoxes, dedupeFaceObservations, dequantizeEmbedding, faceQualityTier, quantizeEmbedding, scanFaceAssets } from "./face-index.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -245,7 +245,7 @@ assert(
 
 {
   // CHANGED (face-index v20): the dedupe bar moved 0.75 -> 0.85 to match
-  // SAME_PHOTO_EXCEPTION_SIMILARITY. Both rules answer "are these two boxes in
+  // SAME_PHOTO_DUPLICATE_SIMILARITY. Both rules answer "are these two boxes in
   // one photo the same person?" and they used to disagree across the whole
   // 0.75-0.85 band: clustering treated a same-photo pair at cosine 0.80 as two
   // people who merely posed together, while this function had already deleted
@@ -258,7 +258,7 @@ assert(
   // derived from the bar: at 0.85 these could sit 40 degrees apart, but in
   // w600k_mbf space the exception is lower, so they have to be further apart to
   // still be three distinct people rather than one face found three times.
-  const spreadDegrees = (Math.acos(SAME_PHOTO_EXCEPTION_SIMILARITY) * 180) / Math.PI * 1.15;
+  const spreadDegrees = (Math.acos(SAME_PHOTO_DUPLICATE_SIMILARITY) * 180) / Math.PI * 1.15;
   const atDegrees = (degrees: number): number[] => [
     Math.cos((degrees * Math.PI) / 180),
     Math.sin((degrees * Math.PI) / 180),

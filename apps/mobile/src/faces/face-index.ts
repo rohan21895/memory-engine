@@ -6,7 +6,7 @@ import { faceEmbeddingPathCounts } from "../ml/facenet.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } from "../ml/face-align.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, cosine, extendFaceClusters, mergeExistingPeople, suggestMerges, type MergeSuggestion } from "./face-cluster.ts";
+import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, clusterFaces, cosine, extendFaceClusters, mergeExistingPeople, suggestMerges, type MergeSuggestion } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { anchorAssetFor, isFaceConstraint, pruneConstraints, type FaceConstraint } from "./face-constraints.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
@@ -1057,7 +1057,7 @@ export function isAvatarFace(box: FaceBox): boolean {
 /**
  * Removes repeat detections of one face while preserving distinct co-faces.
  *
- * Tied to SAME_PHOTO_EXCEPTION_SIMILARITY on purpose: this rule and the
+ * Tied to SAME_PHOTO_DUPLICATE_SIMILARITY on purpose: this rule and the
  * clustering cannot-link both answer "are these two boxes in one photo the same
  * person?", and they must not answer it differently. At the old 0.75 they
  * disagreed across a whole band — clustering treated a same-photo pair at
@@ -1070,7 +1070,7 @@ export function isAvatarFace(box: FaceBox): boolean {
  */
 export function dedupeFaceObservations(
   observations: FaceObservation[],
-  similarityThreshold = SAME_PHOTO_EXCEPTION_SIMILARITY,
+  similarityThreshold = SAME_PHOTO_DUPLICATE_SIMILARITY,
 ): FaceObservation[] {
   const kept: FaceObservation[] = [];
   const byAsset = new Map<string, FaceObservation[]>();

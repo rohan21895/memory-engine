@@ -77,24 +77,39 @@ export const TEMPORAL_MERGE_WINDOW_MS = 60 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PERCEPTUAL_THRESHOLD = 0.92;
 
 /**
- * Same-photo cannot-link escape hatch.
+ * Above this, two faces in ONE photo are the same face counted twice.
  *
- * Two faces detected in ONE photo are almost never the same person, so a shared
- * asset id is a hard constraint: without it a parent absorbs their child and
- * siblings collapse into a single tile, which is the worst-looking failure in a
- * family library. The exception is a face that legitimately appears twice in a
- * single frame — mirrors, panorama stitches, collages, photos-of-photos — and
- * those land far above any identity bar; anything below the bar stays split even
- * when the identity threshold passes.
+ * Two things read it, and they agree because they are the same judgement:
+ *   - `dedupeFaceObservations` deletes the repeat — ML Kit re-firing on one
+ *     head, a mirror, a photo of a photo.
+ *   - `samePhotoImpostorScores` refuses to count the pair as an impostor when
+ *     calibrating a merge bar, since it is a genuine match wearing an impostor's
+ *     label and sits exactly where the quantile is read.
  *
- * Ported with the w600k_mbf swap by holding its old offset above the merge bar
- * (0.85 against a 0.72 merge). Unlike the identity bar this offset is NOT
- * separately measured — there is no labelled corpus of mirrors and collages to
- * measure against. It fails safe: too high only leaves a legitimate
- * double-appearance split into two people, which the user can merge by hand,
- * whereas too low fuses a parent with their child irreversibly.
+ * There was a THIRD reader until now: an escape that let two clusters merge
+ * despite sharing a photo if they were similar enough. It is gone, and the
+ * reason is worth recording, because it looked like a safety valve and was not.
+ *
+ * Measured on the owner's library, the escape had never once fired — 0 of 7,986
+ * co-occurring cluster pairs reached 0.72, the highest being 0.6992. That is not
+ * luck. `dedupeFaceObservations` runs FIRST and deletes every same-photo pair
+ * above this same constant, so by the time clustering looked, no surviving pair
+ * could possibly qualify. The escape was unreachable by construction.
+ *
+ * What it did do was carry risk: the case it protected (one person appearing
+ * twice in a frame) is indistinguishable by similarity alone from the case it
+ * endangered (two relatives who resemble each other), and in a family library
+ * fusing a parent with their child is the one unrecoverable failure. So the
+ * mirror case is handled where it can be handled — at detection, on box
+ * geometry and identity together — and co-occurrence is now an absolute
+ * cannot-link that only the user can overrule.
+ *
+ * Not separately measured, and it cannot be until there is a labelled corpus of
+ * mirrors and collages. It fails safe in both remaining uses: too high keeps a
+ * duplicate detection (the user sees one extra tile) and discards a few real
+ * impostor pairs from a distribution built on thousands.
  */
-export const SAME_PHOTO_EXCEPTION_SIMILARITY = 0.72;
+export const SAME_PHOTO_DUPLICATE_SIMILARITY = 0.72;
 
 /** True when two people draw on at least one common photo (a cannot-link). */
 function sharesAsset(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -651,6 +666,12 @@ export function extendFaceClusters(
       // is what makes abandoning it early lossless.
       const required =
         bestSimilarity > threshold ? bestSimilarity : threshold;
+      // Cannot-link, with no way across it: this person already owns a face from
+      // this very photo, so joining would fuse two people who merely posed
+      // together. Checked BEFORE the dot product rather than after — the answer
+      // cannot depend on the similarity any more, so computing it is wasted work
+      // on exactly the comparisons a group photo makes most often.
+      if (person.assetIdSet.has(observation.assetId)) continue;
       // Average linkage: the mean cosine between this face and every face
       // already in the person, NOT the cosine against their mean. See
       // `centroidScale`.
@@ -661,27 +682,9 @@ export function extendFaceClusters(
         person.centroid,
         person.inverse,
         person.suffix,
-        // A person holding a face from this photo needs the much higher
-        // mirror/panorama bar, so asking for `required` here would abandon the
-        // dot product before it could be compared against that bar. Only the
-        // exception is at stake -- such a person can never be chosen on
-        // `required` alone -- so it is the exception that must be cleared.
-        person.assetIdSet.has(observation.assetId)
-          ? SAME_PHOTO_EXCEPTION_SIMILARITY
-          : required,
+        required,
       );
       if (similarity === Number.NEGATIVE_INFINITY) continue;
-      // Cannot-link: this person already owns a face from this very photo, so
-      // joining would fuse two people who merely posed together. Only the
-      // mirror/panorama exception may cross it, and on average linkage that
-      // exception now means what it says — the face must average 0.85 against
-      // the WHOLE cluster, which a sprawling one can no longer fake.
-      if (
-        person.assetIdSet.has(observation.assetId) &&
-        similarity < SAME_PHOTO_EXCEPTION_SIMILARITY
-      ) {
-        continue;
-      }
       if (similarity >= threshold && similarity > bestSimilarity) {
         bestIndex = index;
         bestSimilarity = similarity;
@@ -807,7 +810,7 @@ export function mergeExistingPeople(
  * frames never match). Repeatedly merge the CLOSEST pair of same-kind people
  * above a calibrated centroid bar — closest-first, not first-found, so the
  * outcome does not depend on the order people were discovered in. Co-occurrence
- * stays a cannot-link below SAME_PHOTO_EXCEPTION_SIMILARITY, and the merged
+ * stays a cannot-link below SAME_PHOTO_DUPLICATE_SIMILARITY, and the merged
  * asset set inherits both constraints, so identities cannot be chained through
  * a bridge cluster. Every round removes exactly one person, so the loop is
  * bounded by the initial people count. The older cluster (lower index) survives,
@@ -815,7 +818,7 @@ export function mergeExistingPeople(
  *
  * The cannot-link is FROZEN before the first merge, because a live re-check is
  * defeated by exactly the chain it is supposed to stop. It used to re-evaluate
- * `similarity >= SAME_PHOTO_EXCEPTION_SIMILARITY` against the current centroids,
+ * `similarity >= SAME_PHOTO_DUPLICATE_SIMILARITY` against the current centroids,
  * so absorbing an unrelated bridge cluster could walk a centroid far enough to
  * clear the exception and void a constraint that held moments earlier:
  *
@@ -883,7 +886,6 @@ function mergeSimilarPeople(
       const b = people[j];
       if (!comparable(a, b)) continue;
       if (!sharesAsset(a.assetIdSet, b.assetIdSet)) continue;
-      if (linkage(a, b) >= SAME_PHOTO_EXCEPTION_SIMILARITY) continue;
       blocked[i].add(j);
       blocked[j].add(i);
     }
@@ -1135,6 +1137,24 @@ export type MergeSuggestion = {
    */
   sharedAssets: number;
   /**
+   * Photos the smaller cluster appears in at all — the denominator that makes
+   * `sharedAssets` mean something.
+   *
+   * One shared photo is not one fact, it is a RATE, and the rate is what
+   * separates the two populations. Measured across the owner's library on pairs
+   * the same-photo rule blocks: clusters that really are two people who are
+   * always photographed together sit at 15-57% co-occurrence, while eleven pairs
+   * holding 1,065 faces between them sit at 0.6-3.6% — two clusters of 180 and
+   * 310 faces sharing exactly ONE photo. The gap between 3.6% and 7.7% is empty.
+   *
+   * A pair at the bottom of that range is far more likely to be one person with
+   * a reflection, a framed photo on a wall, or a duplicate detection in a single
+   * frame than two people who met once. The app must not act on that on its own
+   * -- low is evidence, not proof -- but the user can settle it instantly if
+   * shown the number, and cannot if shown only "1 shared photo".
+   */
+  appearances: number;
+  /**
    * Photos this answer would put right: the size of the smaller cluster, since
    * that is the one absorbed.
    *
@@ -1248,8 +1268,9 @@ export function suggestMerges(
         : bars.identity;
       const bar = a.embeddingKind === "identity" ? identityBar : bars.perceptual;
       const sharedAssets = countSharedAssets(a.assetIdSet, b.assetIdSet);
-      const vetoed =
-        sharedAssets > 0 && similarity < SAME_PHOTO_EXCEPTION_SIMILARITY;
+      // Co-occurrence is now an absolute veto, so every shared photo produces a
+      // question rather than some of them being crossed automatically.
+      const vetoed = sharedAssets > 0;
       // Over the bar and NOT vetoed: merging handles it, so it is not a
       // question. Over the bar and vetoed is the most valuable question there
       // is, and used to be silently dropped here -- see `blockedByCoOccurrence`.
@@ -1262,6 +1283,7 @@ export function suggestMerges(
         similarity,
         bar,
         sharedAssets,
+        appearances: Math.min(first.assetIdSet.size, second.assetIdSet.size),
         photosFixed: Math.min(first.faceCount, second.faceCount),
         blockedByCoOccurrence: vetoed && similarity >= bar,
       });

@@ -1,5 +1,5 @@
 import {
-  SAME_PHOTO_EXCEPTION_SIMILARITY,
+  SAME_PHOTO_DUPLICATE_SIMILARITY,
   clusterFaces,
   suggestMerges,
   // @ts-expect-error Node's TypeScript runner requires the source extension.
@@ -178,7 +178,7 @@ assert(farIndex !== 0, "a distant pair must never outrank a near one");
     asked.every((s) => !s.blockedByCoOccurrence),
     `a pair that failed its BAR is not a pair the veto stopped -- at similarity ` +
       `${asked[0]?.similarity.toFixed(3)} against the ` +
-      `${SAME_PHOTO_EXCEPTION_SIMILARITY} exception it would not have merged anyway`,
+      `${SAME_PHOTO_DUPLICATE_SIMILARITY} exception it would not have merged anyway`,
   );
   assert(
     asked.every((s) => s.sharedAssets === 1),

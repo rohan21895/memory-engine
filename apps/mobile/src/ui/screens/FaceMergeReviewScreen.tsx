@@ -13,7 +13,7 @@ import {
 import type { MergeSuggestion } from "../../faces/face-cluster";
 import { fonts } from "../fonts";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
-import { faceMergeReviewPair, remainingFaceMergeSuggestions } from "./face-merge-review";
+import { coOccurrenceEvidence, faceMergeReviewPair, remainingFaceMergeSuggestions } from "./face-merge-review";
 
 type ReviewPhase = "idle" | "loading" | "review" | "done" | "error";
 
@@ -37,6 +37,7 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
   const pair = suggestions[0]
     ? faceMergeReviewPair(suggestions[0], getFaceIndexPerson)
     : undefined;
+  const evidence = pair ? coOccurrenceEvidence(pair.suggestion) : undefined;
   const tileWidth = Math.max(132, Math.min(238, (width - layout.screenPadding * 2 - spacing.sm) / 2));
 
   const findMatches = async () => {
@@ -122,6 +123,11 @@ export function FaceMergeReviewScreen({ onBack }: { onBack: () => void }) {
               <Text style={styles.sharedCount}>{pair.suggestion.sharedAssets.toLocaleString()}</Text>
               <Text style={styles.sharedText}>{pair.suggestion.sharedAssets === 1 ? "photo has both groups" : "photos have both groups"}</Text>
             </View>
+            {/* The evidence being overruled. A shared photo is the ONLY reason
+                these two are still apart, and the count alone cannot be acted
+                on -- one photo out of four hundred means the opposite of one
+                out of two. */}
+            {evidence ? <Text style={styles.evidence}>{evidence}</Text> : null}
             <Text style={styles.question}>Are these the same person?</Text>
             <View style={styles.actions}>
               <Pressable
@@ -192,6 +198,7 @@ const styles = StyleSheet.create({
   disabled: { opacity: 0.42 },
   face: { backgroundColor: colors.quietSurface, borderCurve: "continuous", borderRadius: radii.lg },
   faceCount: { color: colors.text, fontFamily: fonts.bold, textAlign: "center", ...typeScale.small },
+  evidence: { color: colors.muted, fontFamily: fonts.regular, maxWidth: layout.maxReadableWidth, textAlign: "center", ...typeScale.small },
   helper: { color: colors.muted, fontFamily: fonts.regular, maxWidth: layout.maxReadableWidth, ...typeScale.body },
   intro: { backgroundColor: colors.panel, borderColor: colors.hairline, borderCurve: "continuous", borderRadius: radii.lg, borderWidth: 1, gap: spacing.xs, padding: spacing.lg },
   introText: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.body },

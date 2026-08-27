@@ -1,7 +1,7 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { CALIBRATION_MAX_THRESHOLD, CALIBRATION_MIN_PAIRS, CALIBRATION_MIN_THRESHOLD, calibrateMergeThreshold, calibrateThreshold, samePhotoImpostorScores } from "./face-calibration.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { SAME_PHOTO_EXCEPTION_SIMILARITY } from "./face-cluster.ts";
+import { SAME_PHOTO_DUPLICATE_SIMILARITY } from "./face-cluster.ts";
 
 // Local assert to match the house test style (the app tsconfig has no
 // @types/node, so node:test / node:assert are intentionally not imported).
@@ -64,7 +64,7 @@ const FALLBACK = 0.44;
   const clean = [...pairsAt(0.1, 990), ...pairsAt(0.5, 10, 990)];
   const withMirrors = [
     ...clean,
-    ...pairsAt(SAME_PHOTO_EXCEPTION_SIMILARITY + 0.2, 40, 2000),
+    ...pairsAt(SAME_PHOTO_DUPLICATE_SIMILARITY + 0.2, 40, 2000),
   ];
   const before = calibrateThreshold(clean, FALLBACK);
   const after = calibrateThreshold(withMirrors, FALLBACK);
@@ -78,7 +78,7 @@ const FALLBACK = 0.44;
   );
   assert(
     samePhotoImpostorScores(withMirrors).every(
-      (score) => score < SAME_PHOTO_EXCEPTION_SIMILARITY,
+      (score) => score < SAME_PHOTO_DUPLICATE_SIMILARITY,
     ),
     "no surviving pair may sit above the same-photo exception",
   );

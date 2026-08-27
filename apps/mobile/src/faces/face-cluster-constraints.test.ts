@@ -1,5 +1,5 @@
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_IDENTITY_THRESHOLD, DEFAULT_MERGE_THRESHOLD, SAME_PHOTO_EXCEPTION_SIMILARITY, clusterFaces, extendFaceClusters } from "./face-cluster.ts";
+import { DEFAULT_IDENTITY_THRESHOLD, DEFAULT_MERGE_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, clusterFaces, extendFaceClusters } from "./face-cluster.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { faceQualityTier, scanFaceAssets } from "./face-index.ts";
 
@@ -27,17 +27,16 @@ const partition = (people: { assetIds: string[] }[]) =>
     .sort()
     .join(" | ");
 
-// Ported with the w600k_mbf swap, holding its old offset above the merge bar.
-// The value matters less than the ordering asserted below it: the exception has
-// to sit ABOVE the merge bar, or a same-photo pair would merge through the
-// normal path and the cannot-link would be decorative.
+// Still the w600k_mbf-space value, but it no longer governs clustering at all --
+// it now only tells `dedupeFaceObservations` which repeat detections to delete
+// and keeps mirrors out of the calibration impostor set.
 assert(
-  SAME_PHOTO_EXCEPTION_SIMILARITY === 0.72,
-  "the mirror/panorama exception is the w600k_mbf-space bar",
+  SAME_PHOTO_DUPLICATE_SIMILARITY === 0.72,
+  "the duplicate-detection bar is the w600k_mbf-space value",
 );
 assert(
-  SAME_PHOTO_EXCEPTION_SIMILARITY > DEFAULT_MERGE_THRESHOLD,
-  "the same-photo exception must be stricter than an ordinary merge",
+  SAME_PHOTO_DUPLICATE_SIMILARITY > DEFAULT_MERGE_THRESHOLD,
+  "a duplicate detection must be more similar than an ordinary merge requires",
 );
 
 // (a) Two faces in the SAME photo are two different people — a parent and their
@@ -48,10 +47,10 @@ assert(
 // 0.72-space with the w600k_mbf swap, and literals would have quietly started
 // testing the opposite case.
 const BELOW_EXCEPTION = [0.15, 0.5, 0.9].map(
-  (fraction) => Number((SAME_PHOTO_EXCEPTION_SIMILARITY * fraction).toFixed(3)),
+  (fraction) => Number((SAME_PHOTO_DUPLICATE_SIMILARITY * fraction).toFixed(3)),
 );
 const ABOVE_EXCEPTION = [
-  Number((SAME_PHOTO_EXCEPTION_SIMILARITY + 0.02).toFixed(3)),
+  Number((SAME_PHOTO_DUPLICATE_SIMILARITY + 0.02).toFixed(3)),
   0.95,
 ];
 for (const similarity of BELOW_EXCEPTION) {
@@ -81,8 +80,16 @@ for (const similarity of BELOW_EXCEPTION) {
   );
 }
 
-// (b) Above the exception the same photo legitimately holds one face twice:
-// mirrors, panorama stitches, collages, a photo of a photo. Both paths merge.
+// (b) And ABOVE the old exception too. This block used to assert the opposite --
+// that a same-photo pair over 0.72 was a mirror and should merge. That escape is
+// removed: similarity alone cannot separate "one person twice in a frame" from
+// "two relatives who look alike", and fusing a parent with their child is the
+// one failure a family library never recovers from. Real duplicate detections
+// are deleted earlier by `dedupeFaceObservations`, which can see the boxes.
+//
+// Measured before removing it: on the owner's library the escape had never once
+// fired -- 0 of 7,986 co-occurring pairs reached 0.72 -- precisely because
+// dedupe had already taken every pair that could have qualified.
 for (const similarity of ABOVE_EXCEPTION) {
   const online = clusterFaces(
     [
@@ -92,8 +99,8 @@ for (const similarity of ABOVE_EXCEPTION) {
     { identityMergeThreshold: 0.37, threshold: 0.5 },
   );
   assert(
-    online.length === 1 && online[0].faceCount === 2,
-    `a mirrored face at cosine ${similarity} rejoins its person (got ${online.length})`,
+    online.length === 2,
+    `a same-photo pair at cosine ${similarity} still stays split (got ${online.length})`,
   );
 
   const merged = extendFaceClusters(
@@ -105,8 +112,23 @@ for (const similarity of ABOVE_EXCEPTION) {
     { identityMergeThreshold: 0.37 },
   );
   assert(
-    merged.length === 1,
-    `co-occurring clusters at cosine ${similarity} may merge (got ${merged.length})`,
+    merged.length === 2,
+    `co-occurring clusters at cosine ${similarity} must not merge (got ${merged.length})`,
+  );
+
+  // Vacuity guard: the identical pair in SEPARATE photos does merge at this
+  // similarity, so the split above is co-occurrence and not the bar.
+  const apart = extendFaceClusters(
+    [
+      { id: "person-1", faceCount: 6, assetIds: ["a-solo"], centroid: [1, 0], embeddingKind: "identity" },
+      { id: "person-2", faceCount: 6, assetIds: ["b-solo"], centroid: atCosine(similarity), embeddingKind: "identity" },
+    ],
+    [],
+    { identityMergeThreshold: 0.37 },
+  );
+  assert(
+    apart.length === 1,
+    `the same pair in separate photos must merge at ${similarity} (got ${apart.length})`,
   );
 }
 
@@ -274,20 +296,20 @@ assert(
   // scenario still sets itself up after a model swap moves the bar. The three
   // setup assertions are the point: if any stops holding, this test is no longer
   // testing chaining and would pass for the wrong reason.
-  const barDegrees = (Math.acos(SAME_PHOTO_EXCEPTION_SIMILARITY) * 180) / Math.PI;
+  const barDegrees = (Math.acos(SAME_PHOTO_DUPLICATE_SIMILARITY) * 180) / Math.PI;
   const calDegrees = barDegrees * 1.15;
   const bridgeDegrees = barDegrees * 0.45;
   const cosOf = (degrees: number) => Math.cos((degrees * Math.PI) / 180);
   assert(
-    cosOf(calDegrees) < SAME_PHOTO_EXCEPTION_SIMILARITY,
+    cosOf(calDegrees) < SAME_PHOTO_DUPLICATE_SIMILARITY,
     "setup: the forbidden pair starts BELOW the exception",
   );
   assert(
-    cosOf(bridgeDegrees) > SAME_PHOTO_EXCEPTION_SIMILARITY,
+    cosOf(bridgeDegrees) > SAME_PHOTO_DUPLICATE_SIMILARITY,
     "setup: the bridge is close enough to ana to merge",
   );
   assert(
-    cosOf(calDegrees - bridgeDegrees / 2) > SAME_PHOTO_EXCEPTION_SIMILARITY,
+    cosOf(calDegrees - bridgeDegrees / 2) > SAME_PHOTO_DUPLICATE_SIMILARITY,
     "setup: after the bridge moves ana's centroid, cal clears the exception",
   );
   const chained = extendFaceClusters(
@@ -298,8 +320,8 @@ assert(
     ],
     [],
     {
-      identityMergeThreshold: SAME_PHOTO_EXCEPTION_SIMILARITY,
-      threshold: SAME_PHOTO_EXCEPTION_SIMILARITY,
+      identityMergeThreshold: SAME_PHOTO_DUPLICATE_SIMILARITY,
+      threshold: SAME_PHOTO_DUPLICATE_SIMILARITY,
     },
   );
   const fused = chained.filter((person) => person.assetIds.includes("group-shot"));
@@ -357,7 +379,7 @@ assert(
 
   // Just under the exception: as hard as this test can be while the constraint
   // it checks still applies at all.
-  const IMPOSTOR = Number((SAME_PHOTO_EXCEPTION_SIMILARITY - 0.05).toFixed(3));
+  const IMPOSTOR = Number((SAME_PHOTO_DUPLICATE_SIMILARITY - 0.05).toFixed(3));
   const GENUINE = Number(((1 + IMPOSTOR) / 2).toFixed(3));
   const shared = unitVector();
   const identityCount = 4;
@@ -387,7 +409,7 @@ assert(
   // embeddings this poor; it may never put one photo's faces in one tile.
   for (const threshold of [
     DEFAULT_IDENTITY_THRESHOLD,
-    SAME_PHOTO_EXCEPTION_SIMILARITY,
+    SAME_PHOTO_DUPLICATE_SIMILARITY,
     0.85,
     0.95,
   ]) {
