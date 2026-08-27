@@ -286,6 +286,66 @@ contain it.
 photographed together exactly once would look identical in this table. That is precisely
 why the action is a user-answered question and not an auto-merge.
 
+## What Codex's audit added
+
+Full verification in `docs/CX-21-PLAN-AUDIT.md`. The findings that change decisions:
+
+**`w600k-mbf` is the live identity model, definitively** — `createFaceEmbedding` →
+`embedFaceIdentity` → the only identity load site. `mobilefacenet-192-float32.tflite` is
+**5.23 MB of dead weight**, and `ml/README.md` plus `MODEL-NOTICES.md` still describe the
+old 192-d contract. The manifest (SHA-256, shapes, dtypes, exact preprocessing for all
+four graphs, 55,011,716 bytes total) is done — most of task #27.
+
+**Decode-once is already built.** The plan's section 7 asks for one bounded working
+bitmap shared by every model. One 1280 px proxy already feeds all five deep-analysis
+tasks. Another milestone we would have partly rebuilt.
+
+**We already have an aesthetic signal, and the brief was wrong to say otherwise.**
+`semanticSignals` scores the TinyCLIP embedding against bundled text axes — `aesthetic`,
+`composed`, `cleanFrame`, `screenshotDocument` — weighted 0.55 / 0.25 / 0.35 in the
+planner ([tinyclip.ts:312](apps/mobile/src/ml/tinyclip.ts:312),
+[album-planner.ts:99](apps/mobile/src/selection/album-planner.ts:99)). So M7's baseline to
+beat is zero-shot CLIP, not hand-crafted rules. Higher bar, different experiment. The
+brief has been corrected.
+
+**M6 is smaller than the plan implies — L, not XL.** `album-planner.ts` already does
+greedy saturating coverage, moment grouping, per-person minimum and cap, rare-moment and
+scarce-person rescue, and deterministic reasons. M6 is formalization plus facility
+location, lazy bounds and a swap pass.
+
+**M2 is genuinely new.** `candidate-probe-cache.ts` persists only cheap probes — BlurHash
+and derived sharpness, exposure, clipped fraction, capped at 20,000 records. No pose, no
+TinyCLIP embedding, no ML Kit result, no fingerprint, no pixel quality survives a build.
+It also has a latent bug: the cache key covers asset identity but **not** model or
+preprocessing version, so changing a probe algorithm silently reuses stale values unless
+`CACHE_VERSION` is bumped by hand.
+
+**Segmentation is not an available option.** No dependency or module supplies subject or
+selfie segmentation, and MoveNet is single-person. Both MediaPipe Pose Landmarker and ML
+Kit subject segmentation need new native dependencies. M8 is bigger than the plan assumes,
+and "no cut limbs or hair" cannot be promised today.
+
+**Storage: `expo-sqlite`.** This is an Expo managed/CNG prebuild project — there is no
+checked-in `android/`. `op-sqlite` and `nitro-sqlite` are unverified against SDK 57 /
+RN 0.86 and are not locked; `react-native-nitro-modules` being present for fast-tflite is
+not evidence the SQLite driver works. `expo-sqlite` exposes BLOBs as `Uint8Array`, but
+zero-copy is unproven and needs a 17.7k × 512 benchmark before committing.
+
+**Codex reached the same sequencing verdict independently** — it flagged M2-before-M3 as an
+ordering defect, and separately found that M5 needs M2 and M3 rather than M4.
+
+**Several section-22 targets are invalid as written**, not merely ambitious:
+- *Embedding load < 150 ms* is misbaselined — startup already avoids observations, and
+  loading all 17.7k × 512 into JS would violate the plan's own no-materialization rule.
+  Define a bounded query instead.
+- *Key-person fragmentation ≥ 60% reduction vs the 2,237-cluster baseline* is
+  dimensionally invalid: 2,237 is the total cluster count, not a fragmentation metric, and
+  no frozen key-person truth set exists. Name the people and define B-cubed first.
+- *Eyes-open ≥ 95%* is not currently measurable — ML Kit values are often absent and no
+  fixture carries real multi-face pixels.
+- *Warm 3k build ≤ 5 s* cannot be met by M5 alone; it needs every required signal already
+  persisted by M2.
+
 ## Still open, to answer with measurement
 
 1. **Which face model is live?** `apps/mobile/src/ml/README.md` says MobileFaceNet;

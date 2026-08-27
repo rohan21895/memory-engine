@@ -122,10 +122,17 @@ Disk is not the problem — the read is 137 ms. `JSON.parse` in Hermes is **6.7 
 atomic, so it cannot yield. Anything needing embeddings stalls for that long. There is no
 database; queries are all-or-nothing loads.
 
-### 5. "Best photo" is hand-crafted rules, not a learned score — *quality*
+### 5. "Best photo" is rules plus a zero-shot axis, not a learned score — *quality*
 
-Sharpness, eyes-open and cut-face detection decide quality. There is no aesthetic model. Rules
-are good at ruling out the unacceptable and poor at ranking the beautiful.
+Sharpness, eyes-open and cut-face detection decide most of quality, and rules are good at ruling
+out the unacceptable and poor at ranking the beautiful.
+
+*Correction to the first version of this document, which said there was no aesthetic model at
+all.* There is one, and it is weaker than a trained head rather than absent: the TinyCLIP
+embedding is scored against bundled text axes — an "aesthetic" contrast, plus `composed`,
+`cleanFrame` and `screenshotDocument` — and the planner weights them 0.55, 0.25 and 0.35
+(`ml/tinyclip.ts:312`, `selection/album-planner.ts:99`). A learned scorer's baseline to beat is
+therefore zero-shot CLIP, not hand-crafted rules. That is a higher bar and a different experiment.
 
 A measured caution: every **hard** quality gate tested cost real selections — between 2.7% and
 13.8% of currently chosen photos — on a library that is mostly group shots where background faces
