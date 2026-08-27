@@ -263,3 +263,117 @@ assert(
   "the only member of a comparison class is not thereby one of its clearest",
 );
 
+// --- M6: the same product invariants under the submodular selector ----------
+//
+// `selector` is a rollback switch, which means somebody will eventually flip
+// it. Everything above is a promise the product makes about an album — a pin is
+// sovereign, an exclusion is absolute, nobody is left out, an album is never
+// SHORTER than it was asked for — and none of those promises are about which
+// decision rule computed it. So they are re-asserted here rather than left as
+// properties of one branch.
+
+const submodular = { selector: "submodular" } as const;
+
+// The flag must actually route. Without this, every assertion below could be
+// silently re-testing the discrete-key greedy and passing for that reason.
+const routed = planAlbum([candidate("a", 0.5), candidate("b", 0.6)], 1, {
+  policy: submodular,
+});
+assert(routed.objectiveTrace !== undefined, "the submodular selector must report an objective trace");
+assert(
+  planAlbum([candidate("a", 0.5), candidate("b", 0.6)], 1).objectiveTrace === undefined,
+  "VACUITY: the shipped selector must NOT report one, or the check above proves nothing",
+);
+
+assert(
+  planAlbum([], 24, { policy: submodular }).selectedIds.length === 0 &&
+    planAlbum([candidate("a", 0.5)], 0, { policy: submodular }).selectedIds.length === 0,
+  "an empty pool and a zero target must both return an empty album",
+);
+
+const subPin = planAlbum(
+  [
+    candidate("awful-pin", 0.01, { pinned: true, screenshotDocument: true, cutFace: true }),
+    candidate("good", 0.99),
+  ],
+  1,
+  { policy: submodular },
+);
+assert(subPin.selectedIds[0] === "awful-pin", "a pin must bypass every gate under either selector");
+
+const subExcluded = planAlbum(
+  [candidate("best", 0.99, { excluded: true }), candidate("second", 0.8)],
+  1,
+  { policy: submodular },
+);
+assert(subExcluded.selectedIds[0] === "second", "an excluded photo must never return under either selector");
+
+assert(
+  planAlbum([candidate("receipt", 0.99, { personIds: ["gran"], screenshotDocument: true })], 1, {
+    policy: submodular,
+  }).selectedIds.length === 0,
+  "a screenshot/document is never rescued under either selector",
+);
+
+const subPeople = planAlbum(
+  [
+    candidate("ava-best", 0.98, { personIds: ["ava"], embedding: axis(0) }),
+    candidate("ava-two", 0.96, { personIds: ["ava"], embedding: axis(1) }),
+    candidate("bo-only", 0.55, { personIds: ["bo"], embedding: axis(2) }),
+  ],
+  2,
+  { policy: submodular },
+);
+assert(subPeople.selectedIds.includes("bo-only"), "the quiet person must not be omitted under either selector");
+
+const subScarce = planAlbum(
+  [
+    candidate("gran-only", 0.2, { personIds: ["gran"], capturedAt: start }),
+    candidate("family", 0.9, { personIds: ["ava"], capturedAt: start + hour }),
+  ],
+  2,
+  { policy: submodular },
+);
+assert(subScarce.selectedIds.includes("gran-only"), "the only photo of a person must be rescued under either selector");
+
+// Each of the three relaxable caps, alone, must widen rather than shorten.
+assert(
+  planAlbum(
+    Array.from({ length: 30 }, (_, index) =>
+      candidate(`ava-${String(index).padStart(2, "0")}`, 0.6 + (index % 5) * 0.02, {
+        personIds: index % 3 === 0 ? ["ava", "bo"] : ["ava"],
+      }),
+    ),
+    20,
+    { policy: submodular },
+  ).selectedIds.length === 20,
+  "the per-person cap must relax rather than shorten the album",
+);
+assert(
+  planAlbum(
+    Array.from({ length: 4 }, (_, index) =>
+      candidate(`only-pose-${index}`, 0.9 - index * 0.01, {
+        poseCluster: "A",
+        embedding: axis(index),
+      }),
+    ),
+    4,
+    { policy: submodular },
+  ).selectedIds.length === 4,
+  "the pose cap must relax rather than shorten the album",
+);
+// The hard near-duplicate constraint is the one the submodular selector ADDS,
+// so it is the one most able to empty an album. Ten byte-identical embeddings
+// leave it no distinct choice at all; it must still return five photographs.
+const allIdentical = planAlbum(
+  Array.from({ length: 10 }, (_, index) =>
+    candidate(`same-${index}`, 0.5, { embedding: [1, 0, 0], capturedAt: start + index * 1_000 }),
+  ),
+  5,
+  { policy: submodular },
+);
+assert(
+  allIdentical.selectedIds.length === 5,
+  `the duplicate ceiling must relax rather than shorten the album (got ${allIdentical.selectedIds.length})`,
+);
+
