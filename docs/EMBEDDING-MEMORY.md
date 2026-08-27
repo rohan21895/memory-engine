@@ -10,9 +10,19 @@ Int8Array (as they arrive on disk): 15.5 MB     (872 bytes/face)
 ratio 5.8x   saving 74.0 MB
 ```
 
-The app's heap ceiling on this device is **268 MB** — that figure is not an estimate,
-it is what the `OutOfMemoryError` printed: `target footprint 268435456, growth limit
-268435456`. So the embeddings alone are a third of everything the process is allowed.
+> **Correction, and it removes this document's original headline.** The first version
+> said the embeddings were "a third of the 268 MB the process is allowed", quoting the
+> `OutOfMemoryError`'s `growth limit 268435456`. That was wrong: **268 MB is the ART Java
+> heap, and Hermes allocates its JS heap separately.** The 89.5 MB of `number[]`
+> embeddings is not inside that limit and cannot have contributed to that crash. (Nor
+> could a bitmap: since Android 8 `Bitmap` pixels live in native memory, also outside
+> ART. See the addendum in `DEEP-ANALYSIS-TIMING.md`.)
+>
+> So this is **not** a headroom argument for the album-build OOM, and the two should not
+> be reasoned about together. What survives is simpler and still worth fixing: 89.5 MB of
+> process memory, pinned for the lifetime of the app, holding data whose entire
+> information content is 9 MB. On a phone, resident set size is what gets an app killed
+> in the background — it just is not what threw that particular exception.
 
 ## Why they cost that much
 
@@ -41,27 +51,22 @@ the 89.5 MB is resident for the rest of the process lifetime:
 | `reclusterIfCalibrationChanged` | recalibration |
 | `clearFaceConstraints` | forgetting answers |
 
-## What this means for the album-build OOM
+## What this does *not* mean
 
-The album build itself does **not** load face embeddings — `selection/` never imports
-`face-index`, and the `.embedding` references in `build-album.ts` are the perceptual and
-TinyCLIP embeddings, not identity ones. So this is not the direct cause.
+It is unrelated to the album-build OOM, on two independent grounds.
 
-It is the headroom. The crash was:
+First, the album build never loads face embeddings at all: `selection/` does not import
+`face-index`, `familiarPersonPredicate` reaches only `getPeople()` which reads the small
+file, and the `.embedding` references in `build-album.ts` are perceptual and TinyCLIP
+ones.
 
-```
-Failed to allocate a 28975795 byte allocation with 25165824 free bytes
-and 24MB until OOM, target footprint 268435456, growth limit 268435456
-```
+Second — and this is the part that killed the headroom theory — the embeddings are in a
+different heap from the one that overflowed. The crash reported the ART Java heap;
+Hermes' JS heap is allocated separately. So even when the 89.5 MB is resident, it is not
+occupying any of the 268 MB.
 
-A 29 MB request arriving with 24 MB left. If the owner had scanned or opened the merge
-review earlier in that session — and the review is exactly what he is being asked to use
-— then 89.5 MB of the 268 MB was face embeddings that nothing was reading at the time.
-
-That does not make the 29 MB allocation innocent. A single 29 MB request is about 7.2
-megapixels at 4 bytes each, which is a full-resolution decode rather than the 1280 px
-analysis proxy, and it needs fixing on its own terms. But the build may be running with
-far less room than anyone assumed.
+The two problems are genuinely separate. This one is about resident set size and
+background kills; that one is a 27.63 MiB `byte[]` on the Java side.
 
 ## Measurement caveat, worth repeating because it bit this measurement
 
