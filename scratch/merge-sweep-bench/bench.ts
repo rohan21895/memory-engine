@@ -121,6 +121,13 @@ const FACES_PER_SMALL_SCAN = 32 * 2;
 const ENGAGEMENT_RUNS = 8;
 const settledFaceCount = FACES - FACES_PER_SMALL_SCAN * ENGAGEMENT_RUNS;
 let readBars = barsFor(calibrationObservations.slice(0, settledFaceCount));
+const executionProbe = clusterFaces(
+  [
+    { assetId: "probe-a", embedding: [1, 0], embeddingKind: "identity" },
+    { assetId: "probe-b", embedding: [0, 1], embeddingKind: "identity" },
+  ],
+  { threshold: 0.99, skipMerge: true },
+);
 let fastTaken = 0;
 let fastSkipped = 0;
 let exactComparisonSkipped = 0;
@@ -130,14 +137,30 @@ for (let run = 1; run <= ENGAGEMENT_RUNS; run += 1) {
   const exactComparison = compareConsolidationBars(readBars, compareBars);
   if (!exactComparison.equal) exactComparisonSkipped += 1;
   const plan = planConsolidationSweep(readBars, compareBars);
-  if (plan.restricted) fastTaken += 1;
+  let executedPath: "full" | "restricted" | undefined;
+  extendFaceClusters(executionProbe, [], {
+    threshold: 0.99,
+    mergeSeedPersonIds: plan.restricted
+      ? new Set([executionProbe[0].id])
+      : undefined,
+    onMergeSweep: (path) => {
+      executedPath = path;
+    },
+  });
+  if (executedPath === "restricted") fastTaken += 1;
   else fastSkipped += 1;
   console.log(
     JSON.stringify({
       run,
       facesAtRead: compareAt - FACES_PER_SMALL_SCAN,
       facesAtCompare: compareAt,
-      fast: plan.restricted ? "taken" : "skipped",
+      fast:
+        executedPath === "restricted"
+          ? "taken"
+          : executedPath === "full"
+            ? "skipped"
+            : "not-run",
+      planned: plan.restricted ? "restricted" : "full",
       read: readBars,
       compare: compareBars,
       delta: plan.delta,

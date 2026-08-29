@@ -3992,12 +3992,15 @@ function traceMergeSweepPath(
   read: ConsolidationBars | undefined,
   compareTime: ConsolidationBars,
   plan: ConsolidationSweepPlan,
+  executedPath: "full" | "restricted",
 ): void {
-  if (plan.restricted) mergeSweepPathCounts.taken += 1;
+  const fastTaken = executedPath === "restricted";
+  if (fastTaken) mergeSweepPathCounts.taken += 1;
   else mergeSweepPathCounts.skipped += 1;
   console.log(
     `[PhoteoFaceIndex] merge-sweep ${source} ` +
-      `fast=${plan.restricted ? "taken" : "skipped"} ` +
+      `fast=${fastTaken ? "taken" : "skipped"} ` +
+      `planned=${plan.restricted ? "restricted" : "full"} ` +
       `taken=${mergeSweepPathCounts.taken} skipped=${mergeSweepPathCounts.skipped} ` +
       `read=${formatConsolidationBars(read)} ` +
       `compare=${formatConsolidationBars(compareTime)} ` +
@@ -4078,17 +4081,10 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
       });
   const measuredBars = consolidationBarsFrom(measuredOptions);
   const pending = pendingConsolidationPeople();
+  const readBars = index.consolidationBars;
   const sweepPlan = consolidate
-    ? planConsolidationSweep(index.consolidationBars, measuredBars)
+    ? planConsolidationSweep(readBars, measuredBars)
     : undefined;
-  if (sweepPlan) {
-    traceMergeSweepPath(
-      "cadence",
-      index.consolidationBars,
-      measuredBars,
-      sweepPlan,
-    );
-  }
   const restrictSweep = sweepPlan?.restricted ?? false;
   const bars = sweepPlan?.bars ?? measuredBars;
   const clusterOptions = sweepPlan
@@ -4105,6 +4101,17 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
     // from, and would otherwise fall back to the strict constant and merge
     // differently than a full rebuild over the same library.
     ...clusterOptions,
+    onMergeSweep: (executedPath) => {
+      if (sweepPlan) {
+        traceMergeSweepPath(
+          "cadence",
+          readBars,
+          measuredBars,
+          sweepPlan,
+          executedPath,
+        );
+      }
+    },
     onAssign: (observation, personId) => {
       assignments.set(observation, personId);
       // Seeds the restricted sweep below. Load-bearing ORDER: `mergeSeedPersonIds`
@@ -4189,15 +4196,10 @@ function consolidatePeople(): void {
   const measuredOptions = consolidatingClusterOptions();
   const measuredBars = consolidationBarsFrom(measuredOptions);
   const pending = pendingConsolidationPeople();
+  const readBars = index.consolidationBars;
   const sweepPlan = planConsolidationSweep(
-    index.consolidationBars,
+    readBars,
     measuredBars,
-  );
-  traceMergeSweepPath(
-    "scan-end",
-    index.consolidationBars,
-    measuredBars,
-    sweepPlan,
   );
   const options = clusterOptionsAtConsolidationBars(sweepPlan.bars);
   // Marked before the call for the same reason `appendPeople` does: a throw
@@ -4210,6 +4212,15 @@ function consolidatePeople(): void {
     {
       ...options,
       mergeSeedPersonIds: sweepPlan.restricted ? pending : undefined,
+      onMergeSweep: (executedPath) => {
+        traceMergeSweepPath(
+          "scan-end",
+          readBars,
+          measuredBars,
+          sweepPlan,
+          executedPath,
+        );
+      },
       onMerge: (absorbedPersonId, survivingPersonId) => {
         transferPendingConsolidationPerson(
           pending,
