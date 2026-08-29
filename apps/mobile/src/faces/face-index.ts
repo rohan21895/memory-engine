@@ -331,6 +331,13 @@ export type ConsolidationBars = {
   temporal: number;
 };
 
+export type ConsolidationBarComparison = {
+  /** True when the touched-row sweep is safe at the bar being compared. */
+  restricted: boolean;
+  /** Signed movement from the persisted/read bar to the compare-time bar. */
+  delta?: ConsolidationBars;
+};
+
 export type FaceScanAsset = {
   id: string;
   width: number;
@@ -2258,7 +2265,7 @@ export function faceClusterOptions(
   };
 }
 
-function consolidationBarsFrom(
+export function consolidationBarsFrom(
   options: ReturnType<typeof faceClusterOptions>,
 ): ConsolidationBars {
   return {
@@ -2399,13 +2406,36 @@ export function sameConsolidationBars(
   previous: ConsolidationBars | undefined,
   current: ConsolidationBars,
 ): boolean {
-  return (
-    previous !== undefined &&
-    previous.identity === current.identity &&
-    previous.perceptual === current.perceptual &&
-    previous.evidenced === current.evidenced &&
-    previous.temporal === current.temporal
-  );
+  return compareConsolidationBars(previous, current).restricted;
+}
+
+/**
+ * The fast sweep's complete arithmetic, exported for the deterministic probe.
+ *
+ * A boolean alone can prove neither why the path was skipped nor whether the
+ * bar moved in the expected direction. Keep the signed per-bar deltas beside
+ * the exact decision so an on-device log and the checkout-only measurement are
+ * reading the same comparison the sweep actually makes.
+ */
+export function compareConsolidationBars(
+  read: ConsolidationBars | undefined,
+  compareTime: ConsolidationBars,
+): ConsolidationBarComparison {
+  if (!read) return { restricted: false };
+  const delta = {
+    identity: compareTime.identity - read.identity,
+    perceptual: compareTime.perceptual - read.perceptual,
+    evidenced: compareTime.evidenced - read.evidenced,
+    temporal: compareTime.temporal - read.temporal,
+  };
+  return {
+    restricted:
+      delta.identity === 0 &&
+      delta.perceptual === 0 &&
+      delta.evidenced === 0 &&
+      delta.temporal === 0,
+    delta,
+  };
 }
 
 /**
@@ -3887,6 +3917,35 @@ function consolidatingClusterOptions(): ReturnType<typeof faceClusterOptions> {
   });
 }
 
+let mergeSweepPathCounts = { taken: 0, skipped: 0 };
+
+function formatConsolidationBars(bars: ConsolidationBars | undefined): string {
+  if (!bars) return "legacy";
+  return [bars.identity, bars.perceptual, bars.evidenced, bars.temporal]
+    .map((bar) => bar.toFixed(6))
+    .join("/");
+}
+
+/** Logs the exact decision at the only two sites that can start a sweep. */
+function traceMergeSweepPath(
+  source: "cadence" | "scan-end",
+  read: ConsolidationBars | undefined,
+  compareTime: ConsolidationBars,
+): boolean {
+  const comparison = compareConsolidationBars(read, compareTime);
+  if (comparison.restricted) mergeSweepPathCounts.taken += 1;
+  else mergeSweepPathCounts.skipped += 1;
+  console.log(
+    `[PhoteoFaceIndex] merge-sweep ${source} ` +
+      `fast=${comparison.restricted ? "taken" : "skipped"} ` +
+      `taken=${mergeSweepPathCounts.taken} skipped=${mergeSweepPathCounts.skipped} ` +
+      `read=${formatConsolidationBars(read)} ` +
+      `compare=${formatConsolidationBars(compareTime)} ` +
+      `delta=${formatConsolidationBars(comparison.delta)}`,
+  );
+  return comparison.restricted;
+}
+
 function pendingConsolidationPeople(): Set<string> {
   return new Set(index.pendingConsolidationPersonIds ?? []);
 }
@@ -3960,7 +4019,8 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
   const bars = consolidationBarsFrom(clusterOptions);
   const pending = pendingConsolidationPeople();
   const restrictSweep =
-    consolidate && sameConsolidationBars(index.consolidationBars, bars);
+    consolidate &&
+    traceMergeSweepPath("cadence", index.consolidationBars, bars);
   traceScanStage("calibrate", calibrateStartedAt);
   const clusterStartedAt = Date.now();
   // A throw from a consolidating call must fail toward another full sweep, not
@@ -4054,7 +4114,11 @@ function consolidatePeople(): void {
   const options = consolidatingClusterOptions();
   const bars = consolidationBarsFrom(options);
   const pending = pendingConsolidationPeople();
-  const restrictSweep = sameConsolidationBars(index.consolidationBars, bars);
+  const restrictSweep = traceMergeSweepPath(
+    "scan-end",
+    index.consolidationBars,
+    bars,
+  );
   // Marked before the call for the same reason `appendPeople` does: a throw
   // partway through still leaves a partially merged `index.people` behind.
   markIndexDirty();
@@ -4288,6 +4352,7 @@ async function runBuild(
   opts: BuildFaceIndexOptions,
   control: { cancelled: boolean; foreground: boolean },
 ): Promise<void> {
+  mergeSweepPathCounts = { taken: 0, skipped: 0 };
   const stopWatching = await watchAppState(control);
   try {
     await loadFaceIndex();
