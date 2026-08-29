@@ -5,7 +5,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, fonts, spacing, typeScale } from "../ui";
 
-export type FinalPhoto = { media_id: string; uri: string; page: number };
+export type FinalPhoto = {
+  height?: number;
+  media_id: string;
+  page: number;
+  uri: string;
+  width?: number;
+};
 
 function QuietAction({ label, onPress }: { label: string; onPress?: () => void }) {
   return (
