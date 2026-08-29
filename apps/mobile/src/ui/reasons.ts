@@ -98,6 +98,7 @@ const chosenCopyByCode: Record<UiReasonCode, string> = {
   face_out_of_focus: copy.reasons.focusConcern,
   face_too_dark: copy.reasons.exposureConcern,
   hard_image_gate: copy.reasons.qualityConcern,
+  low_priority_people: copy.reasons.lowPriorityPeople,
   lower_smile: copy.reasons.lowerSmile,
   natural_expression: copy.reasons.naturalExpression,
   only_shot_of_person: copy.reasons.onlyShotOfPerson,
@@ -181,6 +182,10 @@ const alternativePriority: UiReasonCode[] = [
   "below_quality_floor",
   "hard_image_gate",
   "user_excluded",
+  // Above the generic "a stronger frame won" lines: when a photo is out because
+  // of who is in it, that is the honest reason and the one the user can act on
+  // by changing their answer, so it must not be masked by a quality excuse.
+  "low_priority_people",
   "stronger_frames",
   "similar_left_out",
 ];

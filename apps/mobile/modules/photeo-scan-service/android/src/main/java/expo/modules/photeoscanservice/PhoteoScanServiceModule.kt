@@ -4,10 +4,12 @@ import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Size
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.exception.Exceptions
@@ -87,6 +89,24 @@ class PhoteoScanServiceModule : Module() {
     }
 
     Function("isSupported") { Build.VERSION.SDK_INT >= Build.VERSION_CODES.O }
+
+    /**
+     * Writes one line to logcat, so a RELEASE build can be measured.
+     *
+     * React Native only bridges `console.log` to logcat in development. Every
+     * diagnostic this app already prints -- `rebuildPeople 27850ms`, the scan
+     * timings, the consolidation spike -- is therefore invisible on exactly the
+     * build the owner runs, which is why "the app is slow" kept being answered
+     * with guesses instead of numbers. This is the smallest thing that makes the
+     * release build observable.
+     *
+     * Synchronous on purpose: an async hop would reorder lines relative to the
+     * work they are timing, which is the one property a timeline needs.
+     */
+    Function("log") { message: String ->
+      android.util.Log.i("Photeo", message)
+      true
+    }
 
     /**
      * Whether Android will already let this app work with the screen off.
@@ -191,6 +211,93 @@ class PhoteoScanServiceModule : Module() {
         }
         source.copyTo(destination, overwrite = true)
         destination.absolutePath
+      } catch (error: Throwable) {
+        null
+      }
+    }
+
+    /**
+     * Groups every face in the library at once and returns one label per face.
+     *
+     * Lives natively because it cannot live anywhere else: see `FaceGraph` for
+     * the measurement, but the short version is that this pass ran seventeen
+     * minutes under Hermes without finishing and 59 seconds under Node, and the
+     * early-exit that was supposed to save it rejects 0.0% of real pairs.
+     *
+     * Returns null instead of throwing. An empty or malformed request must leave
+     * the caller free to fall back to the TypeScript path rather than take down
+     * a rebuild -- the fallback is slow, but slow beats a library that will not
+     * group at all.
+     *
+     * SYNCHRONOUS on purpose, despite blocking the JS thread while it runs. The
+     * TypeScript clusterer it replaces blocks that same thread for 175 seconds
+     * on the owner's library today (`face-index-recluster-cost.test.ts`), so the
+     * choice is not between a freeze and no freeze -- it is between a long one
+     * and a short one. Staying synchronous keeps `rebuildPeople` and its six
+     * callers exactly as they are, which matters: making a whole-library
+     * regrouping re-entrant is its own change, and two rebuilds interleaving
+     * over `index.people` would corrupt the grouping rather than slow it.
+     * Internally the work is still spread across every core.
+     */
+    /**
+     * A small on-disk thumbnail for one photo, as a `file://` URI.
+     *
+     * The grid currently paints `content://media/external/images/media/<id>`,
+     * which is the FULL-RESOLUTION original: every ~120dp tile decodes a 12-50
+     * megapixel JPEG. `ContentResolver.loadThumbnail` instead returns the
+     * thumbnail MediaStore has already generated, which is why this is worth a
+     * native hop rather than resizing in JS -- the saving is in never decoding
+     * the original at all.
+     *
+     * Cached by id AND size in the app's cache directory, so a second visit to
+     * a person costs one file read. The cache directory is used deliberately:
+     * Android may reclaim it under storage pressure, and everything here is
+     * regenerable.
+     *
+     * Returns null rather than throwing whenever it cannot help -- too old an
+     * Android, a deleted asset, a decode failure. The caller then falls back to
+     * the original URI and the grid still paints, just slowly.
+     */
+    AsyncFunction("thumbnailUri") { assetId: String, size: Int ->
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@AsyncFunction null
+      try {
+        val edge = size.coerceIn(64, 1024)
+        val cached = File(context.cacheDir, "thumbs/${assetId}_$edge.jpg")
+        if (cached.isFile && cached.length() > 0L) {
+          return@AsyncFunction Uri.fromFile(cached).toString()
+        }
+        val source =
+          Uri.parse("content://media/external/images/media/$assetId")
+        val bitmap =
+          context.contentResolver.loadThumbnail(source, Size(edge, edge), null)
+        cached.parentFile?.mkdirs()
+        // Written to a temporary name and renamed, so a reader can never see a
+        // half-written JPEG and cache a corrupt tile against this id.
+        val partial = File(cached.parentFile, "${cached.name}.part")
+        partial.outputStream().use { out ->
+          bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+        }
+        bitmap.recycle()
+        if (!partial.renameTo(cached)) {
+          partial.delete()
+          return@AsyncFunction null
+        }
+        Uri.fromFile(cached).toString()
+      } catch (error: Throwable) {
+        null
+      }
+    }
+
+    Function("clusterFaces") {
+      embeddings: String,
+      dim: Int,
+      assetGroup: IntArray,
+      bars: DoubleArray,
+      seed: Int,
+      rounds: Int,
+      ->
+      try {
+        FaceGraph.cluster(embeddings, dim, assetGroup, bars, seed, rounds)
       } catch (error: Throwable) {
         null
       }

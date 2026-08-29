@@ -6,7 +6,22 @@ import { faceEmbeddingPathCounts } from "../ml/facenet.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } from "../ml/face-align.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, clusterFaces, cosine, dequantized, extendFaceClusters, mergeExistingPeople, suggestMerges, type MergeSuggestion } from "./face-cluster.ts";
+import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, clusterFaces, clusterFacesByGraph, cosine, dequantized, extendFaceClusters, mergeExistingPeople, suggestMerges, type MergeSuggestion } from "./face-cluster.ts";
+
+/**
+ * Build people by graph propagation instead of greedy assignment.
+ *
+ * ON for this build so the result can be looked at on the device. The greedy
+ * path is untouched and one constant away: measured on the owner's own library,
+ * greedy leaves Aastha in 27 tiles where the graph leaves her in 1, and he
+ * confirmed that single tile was pure.
+ *
+ * It is NOT free. Building the graph is quadratic in the number of faces and
+ * measured 59s in JavaScript on a laptop for his 17,701 faces, so a phone will
+ * take several minutes. That is why this runs on a full rebuild only, never per
+ * scan batch, and why it must not sit on the foreground thread.
+ */
+const GRAPH_CLUSTERING = true;
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { anchorFor, isFaceConstraint, pruneConstraints, sameAnchor, type AnchorBars, type FaceAnchor, type FaceConstraint } from "./face-constraints.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
@@ -19,7 +34,7 @@ import { embedFaceIdentity, traceNextAlignments, type FaceImageSource } from "..
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { incrementalScanTarget } from "../import/incremental-index.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { isBatteryUnrestricted, requestBatteryUnrestricted, startScanService, stopScanService, updateScanService } from "../../modules/photeo-scan-service/src/index.ts";
+import { hasNativeClustering, isBatteryUnrestricted, mirrorConsoleToLogcat, primeNativeModule, requestBatteryUnrestricted, startScanService, stopScanService, updateScanService } from "../../modules/photeo-scan-service/src/index.ts";
 import type { FaceEmbeddingVector, FaceEmbeddingKind, FaceObservation, Person } from "./types";
 
 // v18 stores aligned embeddings as int8/base64. Older versions contain
@@ -176,7 +191,7 @@ export const DEFAULT_FACE_INDEX_THRESHOLD = 0.44;
  * embedding, re-scanning the whole library for what is a cheap recomputation
  * over data already on disk.
  */
-export const CLUSTER_CALIBRATION = "avg-linkage-w600k-mbf-calibrated-1";
+export const CLUSTER_CALIBRATION = "graph-cw-agebars-native-2";
 
 /**
  * Bar for the CENTERED space, and only valid there.
@@ -193,7 +208,7 @@ export const CLUSTER_CALIBRATION = "avg-linkage-w600k-mbf-calibrated-1";
  * on it. Measure before switching it on.
  */
 export const CENTERED_FACE_INDEX_THRESHOLD = 0.17;
-export const CENTERED_CLUSTER_CALIBRATION = "centered-avg-linkage-w600k-mbf-1";
+export const CENTERED_CLUSTER_CALIBRATION = "centered-graph-cw-agebars-native-1";
 
 /**
  * How far the calibrated bar must move before the whole grouping is rebuilt.
@@ -1728,6 +1743,16 @@ async function finishIndexMigration(): Promise<void> {
 
 async function hydrateFaceIndex(): Promise<void> {
   try {
+    // AWAITED, not fired and forgotten. Clustering reaches the native side
+    // synchronously, so it can only see a module that has already resolved --
+    // and the recluster that follows hydration beat the dynamic import when this
+    // was `void`, silently fell back to the TypeScript clusterer, and pinned the
+    // owner's phone at 860 MB on one core. Hydration is already async and this
+    // is one import; paying for it here is what makes the sync path honest.
+    await primeNativeModule();
+    // Diagnostics become visible the instant the module exists, so the timings
+    // printed by hydration itself are already in logcat.
+    mirrorConsoleToLogcat();
     const fileSystem = await fileSystemModule();
     if (!fileSystem.documentDirectory) {
       return;
@@ -2423,6 +2448,41 @@ function centeredForClustering(
   }));
 }
 
+/**
+ * The largest library the TypeScript graph clusterer may be handed.
+ *
+ * Building the graph is O(n^2), and Hermes interprets that loop: at 17,701
+ * faces it ran for seventeen minutes at 100% CPU and 860 MB without finishing,
+ * which is not a slow app, it is a dead one. 4,000 faces is ~8M pairs, a few
+ * seconds, and small libraries are exactly the ones that have not been scanned
+ * yet -- so the limit costs nothing where it applies.
+ */
+const GRAPH_CLUSTERING_JS_LIMIT = 4_000;
+
+/**
+ * Whether the graph clusterer can run WITHOUT freezing the app.
+ *
+ * Natively it is fine at any size. In TypeScript it is fine only on a small
+ * library. The alternative when neither holds is not "no people" -- it is the
+ * greedy clusterer this app shipped before, which shatters a person into more
+ * tiles but does it in seconds. A worse grouping is repairable; a phone that
+ * stops responding for a quarter of an hour is what the user actually reports.
+ *
+ * This existing rather than a silent fallback is the whole lesson from the run
+ * that froze the owner's phone: the native path was missing, nothing said so,
+ * and the app quietly chose the seventeen-minute option on his behalf.
+ */
+function graphClusteringIsAffordable(faceCount: number): boolean {
+  if (hasNativeClustering()) return true;
+  if (faceCount <= GRAPH_CLUSTERING_JS_LIMIT) return true;
+  console.warn(
+    `[PhoteoFaceIndex] native clustering unavailable and ${faceCount} faces is ` +
+      `too many for the JS graph pass (limit ${GRAPH_CLUSTERING_JS_LIMIT}); ` +
+      `using the greedy clusterer instead of freezing`,
+  );
+  return false;
+}
+
 function peopleFromObservations(
   observations: FaceObservation[],
   threshold = DEFAULT_FACE_INDEX_THRESHOLD,
@@ -2432,6 +2492,13 @@ function peopleFromObservations(
     constraints: index.constraints ?? [],
   }),
 ): Person[] {
+  if (GRAPH_CLUSTERING && graphClusteringIsAffordable(observations.length)) {
+    // No merge sweep afterwards: the graph pass already unites a person by
+    // propagating labels along the chain of their own photographs, which is the
+    // job the sweep was doing for the greedy pass. Running both would re-open
+    // exactly the joins the per-age bars were introduced to prevent.
+    return clusterFacesByGraph(centeredForClustering(observations), options);
+  }
   return clusterFaces(
     centeredForClustering(observations),
     options,

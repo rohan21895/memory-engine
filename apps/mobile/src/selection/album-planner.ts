@@ -98,6 +98,27 @@ export type PlannerPolicy = {
   pinnedMediaIds: readonly string[];
   excludedMediaIds: readonly string[];
   /**
+   * Who the album is for, as the user answered it. Anyone absent is LOW
+   * priority, which is a real answer and not a missing one.
+   *
+   * An EMPTY map means the question was never asked, and every gate and cap
+   * below then behaves exactly as it did before priorities existed. That
+   * distinction matters: "no preference" must not silently become "everyone is
+   * low priority" and empty the album.
+   */
+  personPriority: Readonly<Record<string, "high" | "medium">>;
+  /**
+   * A medium-priority person's cap, as a fraction of the ordinary per-person
+   * cap. Below 1 because the requirement is comparative -- most of the album is
+   * the high-priority people, and medium appears less -- so the two caps have to
+   * differ, and the medium one is the one that gives way.
+   *
+   * Derived from the live `personCap` rather than fixed, so that when the
+   * planner relaxes that cap to reach the requested count, this relaxes with it
+   * instead of becoming the new thing that blocks.
+   */
+  mediumPriorityCapFraction: number;
+  /**
    * M6 rollback switch. `coverage-keys` is the shipped discrete-key greedy;
    * `submodular` is the facility-location + saturating-coverage objective from
    * EXPERT-PLAN section 15. Both run the SAME gates, rescues, caps and
@@ -144,6 +165,8 @@ export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
   embraceSuppressPercentile: 0.85,
   pinnedMediaIds: [],
   excludedMediaIds: [],
+  personPriority: {},
+  mediumPriorityCapFraction: 0.5,
   selector: "coverage-keys",
 };
 
@@ -208,6 +231,7 @@ export type PlannerReasonCode =
   | "face_out_of_focus"
   | "face_too_dark"
   | "hard_image_gate"
+  | "low_priority_people"
   | "natural_expression"
   | "only_shot_of_person"
   | "person_cap"
@@ -317,7 +341,7 @@ export function planAlbum(
   const rejected: PlannerRejection[] = [];
   const absoluteSurvivors = ordered.filter((candidate) => {
     if (pinned.has(candidate.mediaId)) return true;
-    const reason = absoluteRejection(candidate, excluded);
+    const reason = absoluteRejection(candidate, excluded, policy);
     if (reason) rejected.push({ mediaId: candidate.mediaId, reason: reason.message, ...reason });
     return !reason;
   });
@@ -645,7 +669,11 @@ function greedySelect(
       const candidate = byId.get(mediaId)!;
       const atCap =
         candidate.personIds.length > 0 &&
-        candidate.personIds.some((personId) => (personCounts[personId] ?? 0) >= personCap);
+        candidate.personIds.some(
+          (personId) =>
+            (personCounts[personId] ?? 0) >=
+            priorityPersonCap(personId, personCap, policy),
+        );
       if (atCap) blocked.add(mediaId);
       if (reservedNow && candidate.personIds.length > 0) continue;
       if (atCap) {
@@ -887,7 +915,12 @@ function submodularSelect(
       if (poses[poseKey.get(mediaId)!] > allowedPerPose) return "pose";
       if (families[familyKey.get(mediaId)!] > allowedPerFamily) return "family";
       if (shots[shotKey.get(mediaId)!] > allowedPerShot) return "shot";
-      if (candidate.personIds.some((personId) => people[personId] > personCap)) {
+      if (
+        candidate.personIds.some(
+          (personId) =>
+            people[personId] > priorityPersonCap(personId, personCap, policy),
+        )
+      ) {
         return "person_cap";
       }
     }
@@ -1378,11 +1411,54 @@ function validatePolicy(policy: PlannerPolicy) {
   }
 }
 
-function absoluteRejection(candidate: NormalizedCandidate, excluded: Set<string>) {
+function absoluteRejection(
+  candidate: NormalizedCandidate,
+  excluded: Set<string>,
+  policy: PlannerPolicy,
+) {
   if (excluded.has(candidate.mediaId)) return plannerReason("user_excluded", "excluded by user");
   if (candidate.hardRejected) return plannerReason("hard_image_gate", candidate.hardRejectionReason || "failed a hard image gate");
   if (candidate.screenshotDocument) return plannerReason("screenshot", "screenshot or document");
+  if (lowPriorityOnly(candidate, policy)) {
+    return plannerReason("low_priority_people", "only lower-priority people are in it");
+  }
   return undefined;
+}
+
+/**
+ * A photograph whose people the user did NOT pick, and which has no one they
+ * did pick to earn it a place.
+ *
+ * ABSOLUTE rather than a score penalty, because the requirement is absolute:
+ * lower-priority people belong in the album only alongside someone chosen. A
+ * penalty would let a run of very good photographs of unchosen people outscore
+ * the chosen ones and quietly take over the album, which is the exact outcome
+ * asking the question was meant to prevent. Being absolute also puts it out of
+ * reach of `scarcePersonRescues`, which only ever sees candidates that already
+ * survived this.
+ *
+ * Photographs with NO people in them are never caught here. Scenery is not
+ * low-priority company; it is the album breathing, and it has its own reserve.
+ */
+function lowPriorityOnly(candidate: NormalizedCandidate, policy: PlannerPolicy) {
+  // No answer recorded means the question was never asked. Everything stays.
+  if (Object.keys(policy.personPriority).length === 0) return false;
+  if (candidate.personIds.length === 0) return false;
+  return !candidate.personIds.some((personId) => policy.personPriority[personId]);
+}
+
+/**
+ * How many photographs one person may hold, given how much the user wants them.
+ *
+ * Anyone not named medium keeps the ordinary cap, so a library with no answers
+ * recorded behaves exactly as it did before.
+ */
+function priorityPersonCap(personId: string, baseCap: number, policy: PlannerPolicy) {
+  if (policy.personPriority[personId] !== "medium") return baseCap;
+  return Math.max(
+    policy.minPerPerson,
+    Math.ceil(baseCap * policy.mediumPriorityCapFraction),
+  );
 }
 
 function softFailure(candidate: NormalizedCandidate, policy: PlannerPolicy) {

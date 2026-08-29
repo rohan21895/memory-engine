@@ -22,6 +22,16 @@ type ScanServiceNative = {
   isBatteryUnrestricted?(): boolean;
   requestBatteryUnrestricted?(): Promise<boolean>;
   openAppSettings?(): Promise<boolean>;
+  log?(message: string): boolean;
+  thumbnailUri?(assetId: string, size: number): Promise<string | null>;
+  clusterFaces?(
+    embeddings: string,
+    dim: number,
+    assetGroup: number[],
+    bars: number[],
+    seed: number,
+    rounds: number,
+  ): number[] | null;
 };
 
 /** `undefined` means "not looked up yet"; `null` means "looked up, absent". */
@@ -197,6 +207,134 @@ export async function openAppSettings(): Promise<boolean> {
     return (await native?.openAppSettings?.()) === true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * A small cached thumbnail for one photo, or null to use the original.
+ *
+ * The grid otherwise paints the full-resolution original into a ~120dp square,
+ * so every tile decodes a 12-50 megapixel JPEG. Null is a normal answer, not an
+ * error: an older Android, a deleted asset, or a decode failure all mean "paint
+ * the original instead", which is exactly what the grid did before this existed.
+ */
+export async function thumbnailUri(
+  assetId: string,
+  size: number,
+): Promise<string | null> {
+  try {
+    const native = await nativeModule();
+    return (await native?.thumbnailUri?.(assetId, size)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves the native module ahead of time so a synchronous caller can reach it.
+ *
+ * Every other function here is async purely because looking the module up needs
+ * `await import("expo")` -- importing it at module scope executes React Native's
+ * global setup, which is fine on a device and fatal in the offline test runner.
+ * Clustering cannot pay that cost: it runs inside `rebuildPeople`, which is
+ * synchronous and has six callers. So the lookup is done once, early, and the
+ * result cached; `clusterFacesNatively` then needs no await of its own.
+ *
+ * Safe to call repeatedly -- after the first time it is a resolved promise.
+ */
+export async function primeNativeModule(): Promise<boolean> {
+  await nativeModule();
+  return hasNativeClustering();
+}
+
+/**
+ * Whether native clustering is resolved and callable RIGHT NOW.
+ *
+ * Callers must be able to ask this before they commit to the graph clusterer,
+ * because the fallback is not a slower version of the same thing at library
+ * scale -- it is a seventeen-minute frozen app. Measured the hard way: priming
+ * used to be fire-and-forget, the first recluster after launch beat the dynamic
+ * import, and the TypeScript path took the whole library on one core at 860 MB.
+ * Silently degrading was the bug; refusing loudly is the fix.
+ */
+let mirrored = false;
+
+/**
+ * Mirrors this app's own diagnostics into logcat, where a RELEASE build can be
+ * measured.
+ *
+ * React Native bridges `console.log` to logcat in DEVELOPMENT ONLY. Every timing
+ * this app already prints -- `rebuildPeople 27850ms`, the scan batches, the
+ * consolidation spike -- is therefore invisible on the build the owner actually
+ * runs, which is how "the app is slow" kept being answered with guesses instead
+ * of numbers. Wrapping the console rather than editing dozens of call sites
+ * makes every diagnostic that already exists visible at once, and every future
+ * one free.
+ *
+ * Call after `primeNativeModule`; before that there is nothing to write to.
+ */
+export function mirrorConsoleToLogcat(): void {
+  if (mirrored) return;
+  mirrored = true;
+  for (const level of ["log", "warn", "error"] as const) {
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      original(...args);
+      try {
+        // Only this app's own tagged diagnostics. Mirroring every library's
+        // chatter would bury the timeline this exists to expose.
+        const first = args[0];
+        if (typeof first !== "string" || !first.startsWith("[Photeo")) return;
+        cached?.log?.(
+          args.map((value) => (typeof value === "string" ? value : String(value))).join(" "),
+        );
+      } catch {
+        // Diagnostics must never be able to break the thing they measure.
+      }
+    };
+  }
+}
+
+export function hasNativeClustering(): boolean {
+  return typeof cached?.clusterFaces === "function";
+}
+
+/**
+ * Groups every face in the library natively, returning one label per face.
+ *
+ * `null` means the native side could not do it -- an older APK, a web build, a
+ * lookup that has not been primed yet, or a request it rejected -- and the
+ * caller must fall back to the TypeScript clusterer. That fallback is the same
+ * algorithm and gives the same answer; it is just far too slow to be the only
+ * path, which is the entire reason this exists.
+ */
+export function clusterFacesNatively(
+  embeddings: string,
+  dim: number,
+  assetGroup: number[],
+  bars: number[],
+  seed: number,
+  rounds: number,
+): number[] | null {
+  try {
+    // Deliberately the cached value rather than a lookup: this is the
+    // synchronous path, and an unprimed module means "fall back", not "wait".
+    const native = cached;
+    const labels = native?.clusterFaces?.(
+      embeddings,
+      dim,
+      assetGroup,
+      bars,
+      seed,
+      rounds,
+    );
+    // A short answer is a broken answer, and silently clustering a prefix of the
+    // library would scatter people rather than fail.
+    return Array.isArray(labels) && labels.length === assetGroup.length
+      ? labels
+      : null;
+  } catch {
+    return null;
   }
 }
 

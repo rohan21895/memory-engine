@@ -1,6 +1,10 @@
 import type { FaceEmbeddingVector, FaceObservation, Person } from "./types";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { resolveConstraints, type AnchorBars, type FaceConstraint } from "./face-constraints.ts";
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { BABY_SCORE_CUT, babyScore } from "./face-age-prior.ts";
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { clusterFacesNatively } from "../../modules/photeo-scan-service/src/index.ts";
 
 /**
  * Cosine bar for "same person" when assigning an aligned face to an existing
@@ -1644,6 +1648,385 @@ export function suggestMerges(
       (x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0),
   );
   return found.slice(0, limit);
+}
+
+/**
+ * Bars for the graph clusterer, one per age band.
+ *
+ * A SINGLE bar cannot serve this library, and that is measured rather than
+ * assumed. On 10,298 of Rohan's faces with four identities he verified himself:
+ * at 0.40 Aastha lands in one tile but Ved and Krishiv weld into one person; at
+ * 0.46 the three children separate cleanly but Aastha shatters into eight tiles.
+ * An adult's face drifts over years, so it needs a forgiving bar; two children
+ * of similar age genuinely resemble each other, so they need a strict one.
+ *
+ * Splitting the bar by age settled both at once -- Aastha, Ved, Avika and
+ * Krishiv each in exactly ONE tile with zero fusions -- and it held across every
+ * pairing tried, so this is a wide plateau rather than a tuned coincidence.
+ */
+export const GRAPH_ADULT_SIMILARITY = 0.4;
+export const GRAPH_BABY_SIMILARITY = 0.5;
+
+/** Label-propagation passes. Convergence was reached well inside this on real data. */
+const GRAPH_ROUNDS = 20;
+
+/**
+ * Deterministic pseudo-random order.
+ *
+ * Chinese Whispers needs the visit order shuffled or labels propagate along
+ * whatever order the array happens to have. It must NOT be genuinely random:
+ * this app shows the user named people and remembers merges they confirmed, and
+ * a grouping that reshuffles on every scan is not something anyone can trust.
+ * Seeded, so the same photographs always produce the same people.
+ */
+function seededOrder(count: number, seed: number): number[] {
+  const order = Array.from({ length: count }, (_, i) => i);
+  let state = seed >>> 0 || 1;
+  for (let i = count - 1; i > 0; i -= 1) {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    const j = state % (i + 1);
+    const swap = order[i];
+    order[i] = order[j];
+    order[j] = swap;
+  }
+  return order;
+}
+
+/**
+ * Cluster faces as a graph rather than by greedy assignment.
+ *
+ * The greedy pass in `extendFaceClusters` decides each face against the clusters
+ * that exist at the moment it arrives, and never revisits that decision. It is
+ * cheap and incremental, but on the measured library it left Aastha in dozens of
+ * tiles: a face that arrives when a person owns only two photographs may miss
+ * the bar, start its own person, and never come back.
+ *
+ * Chinese Whispers instead links every sufficiently similar pair and lets labels
+ * propagate. That is what unites a person across years -- her face at the start
+ * and at the end need never be similar to EACH OTHER, only to the photographs in
+ * between. On Rohan's own library this took Aastha from 27 tiles to 1, and he
+ * confirmed the resulting tile was pure.
+ *
+ * COST: building the graph is O(n^2) in the number of faces, and that dominates
+ * -- the propagation itself is cheap. `boundedSimilarity` abandons a hopeless
+ * pair after as little as an eighth of the dot product, which is what makes this
+ * tolerable, but it is still quadratic. This is a deliberate rebuild, not
+ * something to run on every scan.
+ */
+export function clusterFacesByGraph(
+  observations: FaceObservation[],
+  opts: ClusterOptions & { seed?: number } = {},
+): Person[] {
+  const usable = observations.filter((o) => o.embeddingKind === "identity");
+  const count = usable.length;
+  if (count === 0) return [];
+
+  // Timed per stage, and reported even on the happy path. The whole-library
+  // regroup was measured at ~6 minutes wall against only ~118% average CPU --
+  // far too little for eight native worker threads -- so which stage actually
+  // costs the time is genuinely unknown. Averages over a whole process cannot
+  // answer that; these three numbers can.
+  const preparedAt = Date.now();
+  const { vectors, inverses, suffixes, bars } = prepareGraph(usable, opts);
+  const prepareMs = Date.now() - preparedAt;
+
+  // The same algorithm, run where a hot numeric loop can actually be compiled.
+  // Building this graph is 156 million pairs of 512 dimensions on the owner's
+  // library: Node does it in 142 seconds, Hermes did not finish it in seventeen
+  // minutes of phone CPU. Everything below is the identical TypeScript, kept
+  // working and kept correct, for every build that has no native side.
+  const graphAt = Date.now();
+  const nativeLabels = graphLabelsNatively(usable, bars, opts.seed ?? 1);
+  const graphMs = Date.now() - graphAt;
+  if (nativeLabels) {
+    const peopleAt = Date.now();
+    const people = peopleFromGraphLabels(
+      usable,
+      vectors,
+      inverses,
+      suffixes,
+      nativeLabels,
+      opts,
+    );
+    console.log(
+      `[PhoteoFaceCluster] native faces=${count} prepare=${prepareMs}ms ` +
+        `graph=${graphMs}ms people=${Date.now() - peopleAt}ms tiles=${people.length}`,
+    );
+    return people;
+  }
+
+  const neighbours: { at: number; weight: number }[][] = Array.from(
+    { length: count },
+    () => [],
+  );
+  for (let i = 0; i < count; i += 1) {
+    for (let j = i + 1; j < count; j += 1) {
+      // Two faces in one photograph are different people, so they are never
+      // linked -- the same rule the greedy pass enforces before its dot product.
+      if (usable[i].assetId === usable[j].assetId) continue;
+      // The stricter endpoint wins, so a child can never be pulled in on an
+      // adult's more forgiving terms.
+      const required = bars[i] > bars[j] ? bars[i] : bars[j];
+      const similarity = boundedSimilarity(
+        vectors[i],
+        inverses[i],
+        suffixes[i],
+        vectors[j],
+        inverses[j],
+        suffixes[j],
+        required,
+      );
+      if (similarity === Number.NEGATIVE_INFINITY || similarity < required) {
+        continue;
+      }
+      neighbours[i].push({ at: j, weight: similarity });
+      neighbours[j].push({ at: i, weight: similarity });
+    }
+  }
+
+  const labels = new Int32Array(count);
+  for (let i = 0; i < count; i += 1) labels[i] = i;
+  const order = seededOrder(count, opts.seed ?? 1);
+  for (let round = 0; round < GRAPH_ROUNDS; round += 1) {
+    let moved = 0;
+    for (const i of order) {
+      const near = neighbours[i];
+      if (near.length === 0) continue;
+      const weight = new Map<number, number>();
+      for (const { at, weight: w } of near) {
+        const label = labels[at];
+        weight.set(label, (weight.get(label) ?? 0) + w);
+      }
+      let best = labels[i];
+      let bestWeight = -Infinity;
+      for (const [label, total] of weight) {
+        // Ties broken by the smaller label, never randomly: two runs over the
+        // same photographs have to agree.
+        if (total > bestWeight || (total === bestWeight && label < best)) {
+          best = label;
+          bestWeight = total;
+        }
+      }
+      if (best !== labels[i]) {
+        labels[i] = best;
+        moved += 1;
+      }
+    }
+    if (moved === 0) break;
+  }
+
+  return peopleFromGraphLabels(usable, vectors, inverses, suffixes, labels, opts);
+}
+
+/**
+ * Everything both clustering paths need per face, computed once.
+ *
+ * Shared rather than duplicated because the native and TypeScript paths must
+ * cluster the SAME vectors on the SAME bars. Two copies of this loop that drift
+ * apart would show the user different people depending on which path ran, and
+ * the drift would be invisible until somebody's tiles split.
+ */
+function prepareGraph(
+  usable: FaceObservation[],
+  opts: ClusterOptions,
+): {
+  vectors: number[][];
+  inverses: Float64Array;
+  suffixes: Float64Array[];
+  bars: Float64Array;
+} {
+  const count = usable.length;
+  const vectors: number[][] = new Array(count);
+  const inverses = new Float64Array(count);
+  const suffixes: Float64Array[] = new Array(count);
+  const bars = new Float64Array(count);
+  const adultBar = Number.isFinite(opts.threshold)
+    ? (opts.threshold as number)
+    : GRAPH_ADULT_SIMILARITY;
+
+  for (let i = 0; i < count; i += 1) {
+    const embedding = unitEmbedding(usable[i].embedding);
+    vectors[i] = embedding;
+    inverses[i] = comparisonInverse(embedding);
+    suffixes[i] = suffixNorms(embedding);
+    // A child gets the strict bar. Erring toward "child" is the safe direction:
+    // it costs a split, which a merge question repairs, where the other mistake
+    // fuses two children and nothing repairs that.
+    bars[i] =
+      babyScore(embedding) > BABY_SCORE_CUT ? GRAPH_BABY_SIMILARITY : adultBar;
+  }
+  return { vectors, inverses, suffixes, bars };
+}
+
+/** Turns one label per face into people, whichever path produced the labels. */
+function peopleFromGraphLabels(
+  usable: FaceObservation[],
+  vectors: number[][],
+  inverses: Float64Array,
+  suffixes: Float64Array[],
+  labels: ArrayLike<number>,
+  opts: ClusterOptions,
+): Person[] {
+  const count = usable.length;
+  const groups = new Map<number, number[]>();
+  for (let i = 0; i < count; i += 1) {
+    const list = groups.get(labels[i]);
+    if (list) list.push(i);
+    else groups.set(labels[i], [i]);
+  }
+
+  // Emit in a stable order so person ids do not shuffle between identical runs.
+  const ordered = [...groups.values()].sort((a, b) => a[0] - b[0]);
+  const people: MutablePerson[] = [];
+  let nextPersonNumber = 1;
+  for (const members of ordered) {
+    const first = usable[members[0]];
+    if (members.length === 1 && first.seedable === false) continue;
+    const embedding = vectors[members[0]];
+    const person: MutablePerson = {
+      id: `person-${nextPersonNumber++}`,
+      faceCount: 1,
+      assetIds: [first.assetId],
+      centroid: embedding.slice(),
+      embeddingKind: first.embeddingKind,
+      assetIdSet: new Set([first.assetId]),
+      inverse: inverses[members[0]],
+      suffix: suffixes[members[0]],
+      weightSum: centroidWeight(first),
+      firstAt: spanTime(first.capturedAt),
+      lastAt: spanTime(first.capturedAt),
+    };
+    opts.onAssign?.(first, person.id);
+    for (let k = 1; k < members.length; k += 1) {
+      const observation = usable[members[k]];
+      const weight = centroidWeight(observation);
+      person.centroid = updateCentroid(
+        person.centroid,
+        vectors[members[k]],
+        person.weightSum,
+        weight,
+      );
+      refreshCentroidMagnitudes(person);
+      person.weightSum += weight;
+      person.faceCount += 1;
+      widenSpan(person, observation.capturedAt);
+      if (!person.assetIdSet.has(observation.assetId)) {
+        person.assetIdSet.add(observation.assetId);
+        person.assetIds.push(observation.assetId);
+      }
+      opts.onAssign?.(observation, person.id);
+    }
+    people.push(person);
+  }
+  return people.map(publicPerson);
+}
+
+const BASE64_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/**
+ * Base64 for a byte array, written out rather than reached for.
+ *
+ * `btoa` is not reliably present in React Native, and `Buffer` is not present at
+ * all. Emitted in chunks and joined because the payload is millions of bytes and
+ * repeated string concatenation on that scale is quadratic.
+ */
+function encodeBase64(bytes: Uint8Array): string {
+  const chunks: string[] = [];
+  let piece = "";
+  let index = 0;
+  for (; index + 2 < bytes.length; index += 3) {
+    const triple = (bytes[index] << 16) | (bytes[index + 1] << 8) | bytes[index + 2];
+    piece +=
+      BASE64_ALPHABET[(triple >> 18) & 63] +
+      BASE64_ALPHABET[(triple >> 12) & 63] +
+      BASE64_ALPHABET[(triple >> 6) & 63] +
+      BASE64_ALPHABET[triple & 63];
+    if (piece.length >= 8192) {
+      chunks.push(piece);
+      piece = "";
+    }
+  }
+  const left = bytes.length - index;
+  if (left === 1) {
+    const triple = bytes[index] << 16;
+    piece += `${BASE64_ALPHABET[(triple >> 18) & 63]}${BASE64_ALPHABET[(triple >> 12) & 63]}==`;
+  } else if (left === 2) {
+    const triple = (bytes[index] << 16) | (bytes[index + 1] << 8);
+    piece += `${BASE64_ALPHABET[(triple >> 18) & 63]}${BASE64_ALPHABET[(triple >> 12) & 63]}${BASE64_ALPHABET[(triple >> 6) & 63]}=`;
+  }
+  chunks.push(piece);
+  return chunks.join("");
+}
+
+/**
+ * The stored int8 bytes for every face, or null if any face is not stored that
+ * way.
+ *
+ * The native dot product is EXACT integer arithmetic over the stored bytes --
+ * the 1/127 dequantisation scale cancels out of a cosine entirely -- which is
+ * both why it is fast and why it needs the bytes rather than the floats. A face
+ * carrying a full-precision `number[]` cannot go down that path without being
+ * re-quantised, and quietly rounding somebody's embedding to make it fit is
+ * exactly the kind of invisible change that moves a person between tiles. So
+ * that case declines the native path instead.
+ */
+function packEmbeddings(
+  usable: FaceObservation[],
+  dim: number,
+): Uint8Array | null {
+  const packed = new Uint8Array(usable.length * dim);
+  for (let i = 0; i < usable.length; i += 1) {
+    const embedding = usable[i].embedding;
+    if (!(embedding instanceof Int8Array) || embedding.length !== dim) {
+      return null;
+    }
+    packed.set(new Uint8Array(embedding.buffer, embedding.byteOffset, dim), i * dim);
+  }
+  return packed;
+}
+
+/**
+ * The graph built natively, or null when this device cannot.
+ *
+ * Only the O(n^2) edge build and the label propagation move; the vectors, the
+ * bars and the people are all still built by the same TypeScript above. That
+ * split is the point -- the native side owns the one part that is purely
+ * arithmetic and has no judgement in it, so there is no second copy of any
+ * threshold or any rule to drift out of step.
+ */
+function graphLabelsNatively(
+  usable: FaceObservation[],
+  bars: Float64Array,
+  seed: number,
+): number[] | null {
+  const dim = usable[0].embedding.length;
+  if (dim <= 0) return null;
+  const packed = packEmbeddings(usable, dim);
+  if (!packed) return null;
+
+  // Photograph identity travels as an int: the native side only ever asks
+  // "same photo?", and comparing ints beats shipping and hashing strings.
+  const assetNumbers = new Map<string, number>();
+  const assetGroup: number[] = new Array(usable.length);
+  for (let i = 0; i < usable.length; i += 1) {
+    const assetId = usable[i].assetId;
+    let number = assetNumbers.get(assetId);
+    if (number === undefined) {
+      number = assetNumbers.size;
+      assetNumbers.set(assetId, number);
+    }
+    assetGroup[i] = number;
+  }
+
+  return clusterFacesNatively(
+    encodeBase64(packed),
+    dim,
+    assetGroup,
+    Array.from(bars),
+    seed,
+    GRAPH_ROUNDS,
+  );
 }
 
 export type { FaceObservation, Person } from "./types";

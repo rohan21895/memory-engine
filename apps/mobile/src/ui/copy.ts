@@ -225,6 +225,7 @@ export const copy = {
     qualityConcern: "This photo had a lower technical quality score.",
     userChoice: "You chose to keep this photo.",
     userExcluded: "You chose not to include this photo.",
+    lowPriorityPeople: "The people in this photo weren't ones you picked.",
   },
   lightbox: {
     close: "Close full screen photo",

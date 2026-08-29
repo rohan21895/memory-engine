@@ -1,5 +1,9 @@
 import { FlashList } from "@shopify/flash-list";
 import { Image } from "expo-image";
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { thumbnailUri } from "../../../modules/photeo-scan-service/src/index.ts";
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { isScreenshotOrDocument } from "../../selection/quality-signals.ts";
 import * as MediaLibrary from "expo-media-library/legacy";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -116,6 +120,50 @@ function rowsFor(assets: MediaLibrary.Asset[]): LibraryRow[] {
 }
 
 /**
+ * Below this many pixels a photo is a sticker, a WhatsApp thumbnail, a cached
+ * avatar or a downloaded icon -- not a photograph anyone took. 0.20 MP is
+ * roughly 500x400, comfortably under any real camera output including the
+ * oldest phone in a family library, so this cannot quietly eat memories.
+ */
+const MIN_PHOTO_PIXELS = 200_000;
+
+/**
+ * Is this a photograph, or is it clutter the gallery happens to store?
+ *
+ * Screenshot detection is `isScreenshotOrDocument`, the SAME rule the album
+ * selector uses, deliberately not a second one written here. Two independent
+ * definitions of "screenshot" drift, and then a photo the grid hides still turns
+ * up in an album, which reads as a bug in both places at once.
+ *
+ * Metadata only -- filename and dimensions, both already in hand from the
+ * MediaStore query. Nothing here opens a file, so filtering the whole library
+ * costs nothing measurable.
+ */
+function worthShowing(asset: MediaLibrary.Asset): boolean {
+  const width = Number(asset.width);
+  const height = Number(asset.height);
+  // Unknown dimensions are KEPT. A missing number is not evidence that a photo
+  // is junk, and the failure that matters here is hiding something real.
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+    if (width * height < MIN_PHOTO_PIXELS) return false;
+  }
+  return !isScreenshotOrDocument({
+    filename: asset.filename ?? "",
+    height,
+    width,
+  });
+}
+
+/**
+ * Thumbnails already resolved this session, so scrolling back up is free.
+ *
+ * Module-level rather than state: `FlashList` unmounts a tile the moment it
+ * leaves the screen, so anything held in the tile's own state is thrown away
+ * exactly when the user is most likely to scroll back to it.
+ */
+const thumbnailCache = new Map<string, string>();
+
+/**
  * One photo in the grid.
  *
  * An asset can disappear between the MediaStore query and the render — deleted,
@@ -124,21 +172,139 @@ function rowsFor(assets: MediaLibrary.Asset[]): LibraryRow[] {
  * panel instead, and nothing else: no filename, no URI, no error text. Whatever
  * a failed asset carries is not something to paint over the grid.
  */
-function PhotoTile({ assetId, size }: { assetId: string; size: number }) {
+function PhotoTile({
+  assetId,
+  onOpen,
+  size,
+}: {
+  assetId: string;
+  onOpen?: (assetId: string) => void;
+  size: number;
+}) {
   const [failed, setFailed] = useState(false);
+  // Requested at twice the tile so the grid stays sharp on a 3x screen, and
+  // quantised so every tile in a column asks for ONE size -- MediaStore caches
+  // per size, and a per-device pixel width would miss that cache every time.
+  const request = Math.min(512, Math.max(128, Math.round((size * 2) / 64) * 64));
+  const key = `${assetId}:${request}`;
+  const [thumb, setThumb] = useState<string | undefined>(() => thumbnailCache.get(key));
   const box = { height: size, width: size };
+
+  useEffect(() => {
+    if (thumbnailCache.has(key)) {
+      setThumb(thumbnailCache.get(key));
+      return;
+    }
+    let live = true;
+    // The original is painted while this resolves, so a slow thumbnail can only
+    // ever make the grid faster, never blank.
+    thumbnailUri(assetId, request)
+      .then((uri) => {
+        if (!uri) return;
+        thumbnailCache.set(key, uri);
+        if (live) setThumb(uri);
+      })
+      .catch(() => {
+        // Falling back to the original is the whole point; nothing to report.
+      });
+    return () => {
+      live = false;
+    };
+  }, [assetId, key, request]);
+
   if (failed) {
     return <View accessibilityLabel="Photo unavailable" accessibilityRole="image" style={[styles.tileMissing, box]} />;
   }
   return (
-    <Image
-      cachePolicy="memory-disk"
-      contentFit="cover"
-      onError={() => setFailed(true)}
-      recyclingKey={assetId}
-      source={contentUri(assetId)}
-      style={[styles.tile, box]}
-    />
+    <Pressable
+      accessibilityHint="Opens this photo full screen"
+      accessibilityLabel="Photo"
+      accessibilityRole="imagebutton"
+      onPress={onOpen ? () => onOpen(assetId) : undefined}
+    >
+      <Image
+        cachePolicy="memory-disk"
+        contentFit="cover"
+        onError={() => setFailed(true)}
+        // Keyed on WHICH uri is showing, not just the asset: without this the
+        // swap from original to thumbnail reuses the decoded original and the
+        // saving never lands.
+        recyclingKey={thumb ?? assetId}
+        source={thumb ?? contentUri(assetId)}
+        style={[styles.tile, box]}
+      />
+    </Pressable>
+  );
+}
+
+/**
+ * One photo, full screen, over the grid.
+ *
+ * Swipes between photos rather than trapping the user on the one they tapped:
+ * opening a photo and having to go back to see the next one is the thing that
+ * makes a gallery feel like a file browser.
+ *
+ * Deliberately paints the FULL-RESOLUTION original -- this is the one place
+ * where decoding it is the point. The grid's cached thumbnail is handed in as
+ * `placeholder`, so the photo appears instantly at low resolution and sharpens
+ * when the original finishes, instead of showing a black screen while it
+ * decodes.
+ */
+function PhotoViewer({
+  assets,
+  onClose,
+  startId,
+}: {
+  assets: MediaLibrary.Asset[];
+  onClose: () => void;
+  startId: string;
+}) {
+  const { height, width } = useWindowDimensions();
+  const startIndex = Math.max(0, assets.findIndex((asset) => asset.id === startId));
+  const [index, setIndex] = useState(startIndex);
+  const current = assets[index];
+  if (!current) return null;
+  const thumb = [...thumbnailCache.entries()].find(([key]) =>
+    key.startsWith(`${current.id}:`),
+  )?.[1];
+  return (
+    <View style={styles.viewer}>
+      <StatusBar hidden />
+      <FlashList
+        data={assets}
+        horizontal
+        initialScrollIndex={startIndex}
+        keyExtractor={(asset) => asset.id}
+        // Whole-screen pages, so a half-swipe never leaves two photos showing.
+        onMomentumScrollEnd={(event) => {
+          const next = Math.round(event.nativeEvent.contentOffset.x / width);
+          if (next !== index) setIndex(next);
+        }}
+        pagingEnabled
+        renderItem={({ item }) => (
+          <Pressable onPress={onClose} style={{ height, width }}>
+            <Image
+              cachePolicy="memory-disk"
+              contentFit="contain"
+              placeholder={item.id === current.id ? thumb : undefined}
+              recyclingKey={item.id}
+              source={contentUri(item.id)}
+              style={{ height, width }}
+            />
+          </Pressable>
+        )}
+        showsHorizontalScrollIndicator={false}
+      />
+      <Pressable
+        accessibilityLabel="Close photo"
+        accessibilityRole="button"
+        onPress={onClose}
+        style={styles.viewerClose}
+      >
+        <Text style={styles.viewerCloseText}>Done</Text>
+      </Pressable>
+      <Text style={styles.viewerCount}>{`${index + 1} of ${assets.length}`}</Text>
+    </View>
   );
 }
 
@@ -151,6 +317,8 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
   const [placeTiers, setPlaceTiers] = useState<PlaceTiers>(EMPTY_TIERS);
   const [placesModalVisible, setPlacesModalVisible] = useState(false);
   const [assets, setAssets] = useState<MediaLibrary.Asset[]>([]);
+  /** The photo showing full screen, or null for the grid. */
+  const [viewerId, setViewerId] = useState<string | null>(null);
   const [selectedPerson, setSelectedPerson] = useState<string | null>(null);
   const [selectedPlace, setSelectedPlace] = useState<string | null>(null);
   const [status, setStatus] = useState<"loading" | "denied" | "ready" | "error">("loading");
@@ -339,7 +507,8 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
       });
       cursor.current = page.endCursor;
       hasNextPage.current = page.hasNextPage;
-      matching.push(...(activeFilter ? page.assets.filter((asset) => activeFilter.has(asset.id)) : page.assets));
+      const worth = page.assets.filter(worthShowing);
+      matching.push(...(activeFilter ? worth.filter((asset) => activeFilter.has(asset.id)) : worth));
       if (page.assets.length === 0) break;
     }
     return matching;
@@ -684,7 +853,7 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
         ) : (
           <View style={styles.photoRow}>
             {item.assets.map((asset) => (
-              <PhotoTile assetId={asset.id} key={asset.id} size={tileSize} />
+              <PhotoTile assetId={asset.id} key={asset.id} onOpen={setViewerId} size={tileSize} />
             ))}
           </View>
         )}
@@ -702,6 +871,12 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
         states={filterStates}
         visible={placesModalVisible}
       />
+      {viewerId ? (
+        // Given `assets`, not the row data: swiping must move through everything
+        // the current filter matched, so opening a photo from Avika's tile pages
+        // through Avika's photos and stops at the edge of them.
+        <PhotoViewer assets={assets} onClose={() => setViewerId(null)} startId={viewerId} />
+      ) : null}
     </View>
   );
 }
@@ -767,4 +942,10 @@ const styles = StyleSheet.create({
   tile: { backgroundColor: colors.hairline },
   tileMissing: { backgroundColor: colors.quietSurface, borderColor: colors.hairline, borderWidth: 1 },
   title: { color: colors.text, fontFamily: fonts.extraBold, ...typeScale.title },
+  // Black rather than the app surface: a photograph is the only thing on screen
+  // here, and anything else competes with it for the eye.
+  viewer: { backgroundColor: "#000", bottom: 0, left: 0, position: "absolute", right: 0, top: 0, zIndex: 10 },
+  viewerClose: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, position: "absolute", right: spacing.sm, top: spacing.xl },
+  viewerCloseText: { color: "#fff", fontFamily: fonts.extraBold, ...typeScale.body },
+  viewerCount: { alignSelf: "center", bottom: spacing.xl, color: "#fff", fontFamily: fonts.regular, opacity: 0.7, position: "absolute", ...typeScale.small },
 });
