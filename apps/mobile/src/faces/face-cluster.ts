@@ -1694,6 +1694,19 @@ function seededOrder(count: number, seed: number): number[] {
  * pair after as little as an eighth of the dot product, which is what makes this
  * tolerable, but it is still quadratic. This is a deliberate rebuild, not
  * something to run on every scan.
+ *
+ * TWO THINGS THIS PASS OWES THE GREEDY ONE, both of which it silently did not
+ * pay until 08-29, and neither of which any passing test noticed -- every
+ * constraint test called `clusterFaces` directly, so they all went on proving
+ * things about the path that no longer ships:
+ *
+ *   1. The user's answers. `clusterFaces` applies them inside its merge sweep;
+ *      this pass deliberately runs no sweep, so they were simply dropped and
+ *      every "yes, these two are the same person" was forgotten on the next
+ *      full recluster. See `applyForcedMerges`.
+ *   2. The perceptual fallback. `usable` keeps only identity faces, so on a
+ *      phone where the identity model fails to load, People went from
+ *      "grouped conservatively" to "empty". See `perceptualPeople`.
  */
 export function clusterFacesByGraph(
   observations: FaceObservation[],
@@ -1701,7 +1714,7 @@ export function clusterFacesByGraph(
 ): Person[] {
   const usable = observations.filter((o) => o.embeddingKind === "identity");
   const count = usable.length;
-  if (count === 0) return [];
+  if (count === 0) return withPerceptual([], observations, opts);
 
   // Timed per stage, and reported even on the happy path. The whole-library
   // regroup was measured at ~6 minutes wall against only ~118% average CPU --
@@ -1719,24 +1732,50 @@ export function clusterFacesByGraph(
   // working and kept correct, for every build that has no native side.
   const graphAt = Date.now();
   const nativeLabels = takeStashedLabels(usable, opts.seed ?? 1);
+  const labels =
+    nativeLabels ?? propagateLabels(usable, vectors, inverses, suffixes, bars, opts);
   const graphMs = Date.now() - graphAt;
-  if (nativeLabels) {
-    const peopleAt = Date.now();
-    const people = peopleFromGraphLabels(
-      usable,
-      vectors,
-      inverses,
-      suffixes,
-      nativeLabels,
-      opts,
-    );
-    console.log(
-      `[PhoteoFaceCluster] native faces=${count} prepare=${prepareMs}ms ` +
-        `graph=${graphMs}ms people=${Date.now() - peopleAt}ms tiles=${people.length}`,
-    );
-    return people;
-  }
 
+  // ONE tail, deliberately. The native and TypeScript label sources used to
+  // have an exit each, which is how `applyForcedMerges` could be added to one
+  // and forgotten on the other -- and the one Node cannot reach is the one that
+  // ships, so no test would ever have said so. Everything that turns labels
+  // into people now happens exactly once, whoever produced the labels.
+  const peopleAt = Date.now();
+  const people = peopleFromGraphLabels(
+    usable,
+    vectors,
+    inverses,
+    suffixes,
+    labels,
+    opts,
+  );
+  const forced = applyForcedMerges(people, opts);
+  console.log(
+    `[PhoteoFaceCluster] ${nativeLabels ? "native" : "js"} faces=${count} ` +
+      `prepare=${prepareMs}ms graph=${graphMs}ms people=${Date.now() - peopleAt}ms ` +
+      `tiles=${people.length} forced=${forced}/${(opts.constraints ?? []).length}`,
+  );
+  return withPerceptual(people, observations, opts);
+}
+
+/**
+ * Chinese Whispers in TypeScript: build the edges, then propagate labels.
+ *
+ * The same algorithm the native side runs, kept working and kept correct for
+ * every build that has no native side. Extracted from `clusterFacesByGraph` so
+ * that function has a single tail -- see the comment at that tail for why that
+ * matters more than it looks.
+ */
+function propagateLabels(
+  usable: FaceObservation[],
+  vectors: number[][],
+  inverses: Float64Array,
+  suffixes: Float64Array[],
+  bars: Float64Array,
+  opts: ClusterOptions & { seed?: number },
+): Int32Array {
+  const count = usable.length;
   const neighbours: { at: number; weight: number }[][] = Array.from(
     { length: count },
     () => [],
@@ -1796,8 +1835,83 @@ export function clusterFacesByGraph(
     }
     if (moved === 0) break;
   }
+  return labels;
+}
 
-  return peopleFromGraphLabels(usable, vectors, inverses, suffixes, labels, opts);
+/**
+ * The user's "yes, these two are the same person", applied to a finished
+ * clustering.
+ *
+ * `clusterFaces` does this inside its merge sweep. The graph pass runs no
+ * sweep -- deliberately, since label propagation already does the sweep's job
+ * -- and so it dropped the answers on the floor. The consequence was not
+ * subtle: an answer held until the next full recluster and then vanished, and
+ * a full recluster is exactly what a graph rebuild is. Since a user-confirmed
+ * merge is the ONLY repair for the same-person splits that no threshold can
+ * fix, this was discarding the one signal that works.
+ *
+ * Order matches the greedy path: resolve against the pre-merge clusters, then
+ * translate to ids before touching anything, because `mergeExistingPeople`
+ * splices and every later index would address a different person. A missing id
+ * is the transitive case (A=B and B=C) and is not an error.
+ *
+ * Cannot-links are NOT applied here, and that is a real limit rather than an
+ * oversight: undoing a label-propagation join means splitting a cluster, which
+ * this function cannot do. `resolveConstraints` already reports such a pair as
+ * a contradiction, and the same-photo rule -- the cannot-link that fires in
+ * practice -- is enforced when the graph edges are built, not afterwards.
+ *
+ * Returns how many merges it forced, so the log line can show whether the
+ * answers reached the clustering at all.
+ */
+function applyForcedMerges(people: Person[], opts: ClusterOptions): number {
+  const constraints = opts.constraints ?? [];
+  if (constraints.length === 0) return 0;
+  const resolved = resolveConstraints(people, constraints, mergeBars(opts));
+  const forced = resolved.must.map(
+    ([ai, bi]) => [people[ai]?.id, people[bi]?.id] as const,
+  );
+  let merged = 0;
+  for (const [aId, bId] of forced) {
+    if (!aId || !bId) continue;
+    const i = people.findIndex((person) => person.id === aId);
+    const j = people.findIndex((person) => person.id === bId);
+    if (i === -1 || j === -1 || i === j) continue;
+    if (mergeExistingPeople(people, i, j, opts.onMerge)) merged += 1;
+  }
+  return merged;
+}
+
+/**
+ * Put the perceptual-fallback faces back, grouped by the greedy pass.
+ *
+ * The graph pass keeps only identity embeddings, and rightly so: Chinese
+ * Whispers propagates a label along a chain of similar faces, and a chain built
+ * out of an 8x8 luma grid would walk between strangers. But dropping them
+ * entirely is worse than grouping them badly -- a phone where the identity
+ * model fails to load showed NO people at all, where before it showed
+ * conservatively-grouped ones.
+ *
+ * They go through `clusterFaces`, which already handles them and already
+ * refuses to compare across kinds, rather than through a second copy of that
+ * logic here. In the normal case there are none of these and this costs one
+ * `some` over the observations.
+ */
+function withPerceptual(
+  people: Person[],
+  observations: readonly FaceObservation[],
+  opts: ClusterOptions,
+): Person[] {
+  const fallback = observations.filter(
+    (observation) => observation.embeddingKind === "perceptual",
+  );
+  if (fallback.length === 0) return people;
+  // Renumbered from where the graph pass stopped, so no two people share an id.
+  const extra = clusterFaces(fallback, opts).map((person, index) => ({
+    ...person,
+    id: `person-${people.length + index + 1}`,
+  }));
+  return people.concat(extra);
 }
 
 /**
