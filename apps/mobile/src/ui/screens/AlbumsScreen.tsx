@@ -1,7 +1,7 @@
 import { Image } from "expo-image";
 import { ActivityIndicator, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 
-import { type SavedAlbum } from "../../albums/album-store";
+import { albumSubtitle, type SavedAlbum } from "../../albums/album-store";
 import { PrimaryButton } from "../components/PrimaryButton";
 import { fonts } from "../fonts";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
@@ -14,13 +14,9 @@ export type SharedAlbumPreview = {
   color: string;
 };
 
-function albumMeta(album: SavedAlbum) {
-  const start = album.dateRange.start ? new Date(album.dateRange.start) : null;
-  const month = start && !Number.isNaN(start.getTime())
-    ? start.toLocaleDateString(undefined, { month: "short", year: "numeric" })
-    : new Date(album.createdAt).toLocaleDateString(undefined, { month: "short", year: "numeric" });
-  return `${album.photos.length} photos · ${month}`;
-}
+// Moved to album-store as `albumSubtitle` so the album screen shows the same
+// date this card does. They used to disagree.
+const albumMeta = albumSubtitle;
 
 export function AlbumsScreen({
   albums,
@@ -52,7 +48,10 @@ export function AlbumsScreen({
           <View style={styles.grid}>
             {albums.map((album) => (
               <Pressable accessibilityHint="Opens this album" accessibilityLabel={`${album.title}. ${albumMeta(album)}`} accessibilityRole="button" key={album.id} onPress={() => onOpen(album)} style={({ pressed }) => [styles.albumCard, pressed ? styles.pressed : null]}>
-                <Image cachePolicy="memory-disk" contentFit="cover" source={album.coverUri} style={styles.cover} transition={120} />
+                {/* Top-anchored for the same reason as the album hero: a square
+                    card cropping a tall portrait from the centre keeps torsos
+                    and drops faces. */}
+                <Image cachePolicy="memory-disk" contentFit="cover" contentPosition="top" source={album.coverUri} style={styles.cover} transition={120} />
                 <Text numberOfLines={1} style={styles.albumTitle}>{album.title}</Text>
                 <Text style={styles.albumMeta}>{albumMeta(album)}</Text>
               </Pressable>

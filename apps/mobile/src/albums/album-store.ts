@@ -173,3 +173,28 @@ export async function renameAlbum(id: string, title: string): Promise<SavedAlbum
 export async function deleteAlbum(id: string): Promise<SavedAlbum[]> {
   return mutate((albums) => albums.filter((album) => album.id !== id));
 }
+
+/**
+ * The one-line subtitle under an album's name, everywhere it appears.
+ *
+ * It used to be computed twice with different rules: the albums list preferred
+ * `dateRange.start` (when the photos were TAKEN) while the album screen used
+ * `createdAt` (when the album was MADE). The same album therefore showed two
+ * different dates depending on which screen you were on, and on the owner's
+ * device that read as "August 2025 memories" sitting directly above
+ * "30 photos - Aug 2026". For someone who is not going to reason about which
+ * date a screen happens to mean, that is simply wrong information.
+ *
+ * The photos' own date wins, because that is what the title is named for.
+ */
+export function albumSubtitle(album: SavedAlbum): string {
+  const taken = album.dateRange?.start ? new Date(album.dateRange.start) : null;
+  const when = taken && !Number.isNaN(taken.getTime())
+    ? taken
+    : new Date(album.createdAt);
+  const month = Number.isNaN(when.getTime())
+    ? ""
+    : when.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  const count = `${album.photos.length} ${album.photos.length === 1 ? "photo" : "photos"}`;
+  return month ? `${count} · ${month}` : count;
+}

@@ -21,7 +21,10 @@ const selectionSource = readFileSync(
 // Real-caller guard: a fixture that only exercises a made-up uncapped bridge is
 // precisely the silent failure this measurement is meant to avoid.
 assert(
-  appSource.includes("buildAlbum(next, 24,") &&
+  // The album size used to be hard-coded 24 here. It is now whatever the owner
+  // asked for on the setup screen, so the anchor follows the symbol that
+  // carries it rather than the number it used to be.
+  appSource.includes("buildAlbum(next, preferences.maxPhotos,") &&
     // The cap the real caller applies. It used to be the bare
     // HEAVY_ANALYSIS_CANDIDATE_LIMIT constant; it is now the measured budget
     // policy, which returns exactly that constant at today's per-candidate
@@ -33,7 +36,7 @@ assert(
     selectionSource.includes(
       "headSharpness: rankedTake.winner.analysis?.subjectSharpness",
     ),
-  "the harness must stay anchored to the real 24-pick, capped, face-region caller path",
+  "the harness must stay anchored to the real picked-count, capped, face-region caller path",
 );
 
 const corpus = syntheticCorpus();

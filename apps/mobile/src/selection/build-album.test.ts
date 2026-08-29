@@ -114,10 +114,29 @@ assert(
 // deep-signal-store.test.ts, analysis-tiers.test.ts and
 // deep-signal-parity.test.ts, against real values rather than substrings.
 
+// The store shipped OFF while it was new, on the rule that reading a stored
+// signal instead of recomputing one is a selection-affecting change. It is ON
+// now, and the reason is that the "selection-affecting" worry was measured and
+// found not to apply to THIS codec:
+//
+//   - deep-signal-parity.test.ts replans six fixtures through the production
+//     float32 codec and gets identical plans; the encoding it rejected (int8)
+//     is kept there as the sabotage, so the assertion is not vacuous.
+//   - the record key is `candidateProbeKey`, which carries the model and
+//     preprocessing version, so a model change misses rather than serving a
+//     stale vector, and `DEEP_SIGNAL_VERSION` retires the whole record shape.
+//   - a degraded photo is never written (guarded three assertions below).
+//
+// What it buys is the owner's actual complaint: a rebuild of the same photos
+// went 156s -> 7.3s when it was measured behind the flag.
+//
+// UNMEASURED, and worth saying plainly: the on-device hit RATE. The first build
+// with the flag on reported `hits:0`, which is correct -- nothing was cached
+// yet -- but no second build has been run on the phone since. That is a
+// question about how much this helps, not about whether it is safe.
 assert(
-  source.includes("const USE_DEEP_SIGNAL_CACHE = false;"),
-  "the Tier-B store must ship OFF: reading a stored signal instead of recomputing " +
-    "one is a selection-affecting change and the default has to stay today's behaviour",
+  source.includes("const USE_DEEP_SIGNAL_CACHE = true;"),
+  "the Tier-B store ships ON now that the codec is measured lossless and the key is versioned",
 );
 // VACUITY: the grep above passes on any file containing that string, including
 // one where the constant is never consulted. The flag has to reach a decision.

@@ -75,7 +75,7 @@ export default function FinalAlbum({
           accessibilityRole="button"
           onPress={leaveVia(onOpen)}
         >
-          <Image cachePolicy="memory-disk" contentFit="cover" source={photos[0].uri} style={styles.cover} transition={160} />
+          <Image cachePolicy="memory-disk" contentFit="cover" contentPosition="top" source={photos[0].uri} style={styles.cover} transition={160} />
         </Pressable>
       ) : <View style={styles.cover} />}
       <Text style={styles.eyebrow}>Album ready</Text>

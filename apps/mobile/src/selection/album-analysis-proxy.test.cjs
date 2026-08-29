@@ -51,9 +51,20 @@ assert(
     !nativeLoaderSource.includes("decodeByteArray("),
   "native loading must remain bounded before pixel allocation and never buffer originals",
 );
+// The diagnostic one-photo stopgap is over. It was pinned at 1 while the whole
+// app's AsyncFunctions shared a single Expo queue, so raising it bought nothing
+// and only risked OOM. Now that the scan service runs on its own queue and the
+// interpreters are multi-threaded, the measured build at concurrency 3 reported
+// `oom:0` and 0/64 degraded -- see the constant's own comment for the numbers.
+//
+// What still needs guarding is the ceiling, not the floor: this is the knob
+// that trades wall-clock for peak memory, and the OOM it caused was silent.
+const concurrency = Number(
+  buildAlbumSource.match(/const ANALYZE_CONCURRENCY = (\d+);/)?.[1],
+);
 assert(
-  buildAlbumSource.includes("const ANALYZE_CONCURRENCY = 1;"),
-  "the diagnostic one-photo concurrency stopgap must remain in place",
+  Number.isFinite(concurrency) && concurrency >= 1 && concurrency <= 3,
+  `analysis concurrency must stay within the range measured as oom-free (got ${concurrency})`,
 );
 
 console.log("album analysis proxy self-check passed");

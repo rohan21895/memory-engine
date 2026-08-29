@@ -268,11 +268,29 @@ const ANALYSIS_YIELD_ITEMS = 4;
  * quality, MoveNet, and TinyCLIP analysis over it.
  * They are at least an order of magnitude apart.
  *
- * This is a calibration knob, not a measurement — the phase text carries the
- * real counts, so a wrong value here only mis-shapes the bar. Tune it against a
- * stopwatch on the beta device.
+ * IT HAS NOW BEEN TUNED AGAINST THAT STOPWATCH, and 20 was too low. From the
+ * 08-29 18:35 build on the owner's phone -- 645 picked, 64 analysed:
+ *
+ *   total          74885ms
+ *   deep-analysis  65710ms   (87.7% of the wall, over 64 photos = 1027ms each)
+ *   everything else 9175ms   (12.3%, over 645 prepass photos = ~13.4ms each)
+ *
+ * so one analysis photo really costs about 1027 / 13.4 = 77 prepass photos.
+ * At 20 the bar gave the prepass 645/(645+1280) = 33% of its length for 12% of
+ * the wait: it surged to a third, then crawled the remaining two thirds for
+ * over a minute. At 77 the split is 645/(645+4928) = 11.6% against a measured
+ * 12.3% -- the bar now moves at roughly the rate the work is finishing.
+ *
+ * This got worse today rather than being long-broken: `capEngaged` used to
+ * require more than 500 picked photos, so `prepassWork` was almost always 0 and
+ * the bar was pure deep-analysis. Now that the cap engages on nearly every
+ * build, this weight is load-bearing on nearly every build.
+ *
+ * Re-tune when the ratio moves. The endpoint is not at risk either way -- the
+ * build emits `done: totalWork` when it finishes, so the bar always lands on
+ * 100%; a wrong value here only mis-shapes its pacing.
  */
-const ANALYSIS_WORK_UNITS = 20;
+const ANALYSIS_WORK_UNITS = 77;
 
 export type BuildAlbumProgress = {
   done: number;

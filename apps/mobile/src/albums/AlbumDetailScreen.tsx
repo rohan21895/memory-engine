@@ -4,7 +4,7 @@ import { Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-
 
 import { albumAnalysisProxy } from "../../modules/photeo-scan-service/src";
 import { aspectRatioOf, balanceIntoColumns } from "./album-wall";
-import type { SavedAlbum } from "./album-store";
+import { albumSubtitle, type SavedAlbum } from "./album-store";
 import Lightbox, { type LightboxItem } from "../review/Lightbox";
 import { colors, fonts, spacing, typeScale } from "../ui";
 
@@ -85,7 +85,8 @@ export function AlbumDetailScreen({
   onPrint: () => void;
   onShare: () => void;
 }) {
-  const created = new Date(album.createdAt).toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  // Same rule as the albums list, which prefers when the photos were taken.
+  const subtitle = albumSubtitle(album);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const frames = useAlbumFrames(album.photos);
 
@@ -117,13 +118,26 @@ export function AlbumDetailScreen({
       <StatusBar backgroundColor="transparent" barStyle="light-content" translucent />
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.hero}>
-          <Image cachePolicy="memory-disk" contentFit="cover" source={album.coverUri} style={StyleSheet.absoluteFill} />
+          {/*
+            Anchored to the top, not the centre. This hero is a wide 330px band
+            and the cover is usually a tall portrait, so a centre crop keeps the
+            middle of the frame -- which in his albums meant a nappy in one and
+            legs with the heads cut off in another. In family photographs the
+            faces are near the top, so that is the part worth keeping.
+          */}
+          <Image
+            cachePolicy="memory-disk"
+            contentFit="cover"
+            contentPosition="top"
+            source={album.coverUri}
+            style={StyleSheet.absoluteFill}
+          />
           <View style={styles.scrim} />
           <Pressable accessibilityLabel="Back to albums" accessibilityRole="button" onPress={onBack} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>
           <Pressable accessibilityRole="button" onPress={onManage} style={styles.edit}><Text style={styles.editText}>Edit</Text></Pressable>
           <View style={styles.heroCopy}>
             <Text style={styles.title}>{album.title}</Text>
-            <Text style={styles.meta}>{album.photos.length} photos · {created}</Text>
+            <Text style={styles.meta}>{subtitle}</Text>
           </View>
         </View>
         <View style={styles.actions}>
