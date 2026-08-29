@@ -211,12 +211,12 @@ export async function openAppSettings(): Promise<boolean> {
 }
 
 /**
- * A small cached thumbnail for one photo, or null to use the original.
+ * A small cached thumbnail for one photo, or null to show a placeholder.
  *
  * The grid otherwise paints the full-resolution original into a ~120dp square,
  * so every tile decodes a 12-50 megapixel JPEG. Null is a normal answer, not an
- * error: an older Android, a deleted asset, or a decode failure all mean "paint
- * the original instead", which is exactly what the grid did before this existed.
+ * error: inaccessible or corrupt media stays a quiet tile. Callers must never
+ * substitute the original URI, because that recreates the OOM this API avoids.
  */
 export async function thumbnailUri(
   assetId: string,

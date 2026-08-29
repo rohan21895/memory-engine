@@ -4,12 +4,13 @@ import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.os.Debug
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
-import android.util.Size
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import expo.modules.kotlin.exception.Exceptions
@@ -17,6 +18,7 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -30,17 +32,72 @@ import kotlinx.coroutines.asCoroutineDispatcher
  * caller's job is to fall back to foreground-only scanning, and an exception
  * here would turn a degraded mode into a crash.
  */
-private const val DIAGNOSTIC_LOG = "photeo-diagnostics.log"
-
-/** One session of timings is a few KB; this is a ceiling, not a target. */
-private const val MAX_DIAGNOSTIC_BYTES = 512L * 1024L
-
 /**
  * Enough decodes in flight to keep the grid ahead of a fast scroll, few enough
  * that four full-size bitmaps are the most alive at once. Raising this trades
  * heap for latency on a device that has already OOMed once.
  */
 private const val THUMBNAIL_THREADS = 4
+private const val THUMBNAIL_LOG_INTERVAL = 50L
+
+/** Aggregate-only diagnostics: no asset ids, paths, filenames, or EXIF. */
+private object ThumbnailMetrics {
+  private val count = AtomicLong()
+  private val totalNanos = AtomicLong()
+  private val maxTotalNanos = AtomicLong()
+  private val decodeCount = AtomicLong()
+  private val decodeNanos = AtomicLong()
+  private val maxDecodeNanos = AtomicLong()
+  private val cacheHits = AtomicLong()
+  private val mediaStoreHits = AtomicLong()
+  private val boundedFallbacks = AtomicLong()
+  private val misses = AtomicLong()
+  private val maxBitmapBytes = AtomicLong()
+  private val maxSampledPssKb = AtomicLong()
+
+  fun record(result: ResolvedThumbnail, elapsedNanos: Long) {
+    totalNanos.addAndGet(elapsedNanos)
+    if (result.source != ThumbnailSource.CACHE) {
+      decodeCount.incrementAndGet()
+      decodeNanos.addAndGet(result.decodeNanos)
+    }
+    updateMax(maxTotalNanos, elapsedNanos)
+    updateMax(maxDecodeNanos, result.decodeNanos)
+    updateMax(maxBitmapBytes, result.bitmapBytes)
+    when (result.source) {
+      ThumbnailSource.CACHE -> cacheHits.incrementAndGet()
+      ThumbnailSource.MEDIA_STORE -> mediaStoreHits.incrementAndGet()
+      ThumbnailSource.BOUNDED_FALLBACK -> boundedFallbacks.incrementAndGet()
+      ThumbnailSource.MISSING -> misses.incrementAndGet()
+    }
+
+    val completed = count.incrementAndGet()
+    if (completed % THUMBNAIL_LOG_INTERVAL != 0L) return
+    updateMax(maxSampledPssKb, Debug.getPss().toLong())
+    val decoded = maxOf(1L, decodeCount.get())
+    Log.i(
+      "PhoteoThumbnail",
+      "count=$completed totalAvgMs=${millis(totalNanos.get(), completed)} " +
+        "totalMaxMs=${millis(maxTotalNanos.get(), 1)} " +
+        "decodeAvgMs=${millis(decodeNanos.get(), decoded)} " +
+        "decodeMaxMs=${millis(maxDecodeNanos.get(), 1)} " +
+        "cache=${cacheHits.get()} mediaStore=${mediaStoreHits.get()} " +
+        "boundedFallback=${boundedFallbacks.get()} missing=${misses.get()} " +
+        "maxBitmapKiB=${maxBitmapBytes.get() / 1024L} " +
+        "maxSampledPssMiB=${maxSampledPssKb.get() / 1024L}",
+    )
+  }
+
+  private fun updateMax(target: AtomicLong, candidate: Long) {
+    var current = target.get()
+    while (candidate > current && !target.compareAndSet(current, candidate)) {
+      current = target.get()
+    }
+  }
+
+  private fun millis(nanos: Long, divisor: Long): String =
+    String.format(java.util.Locale.US, "%.1f", nanos.toDouble() / divisor / 1_000_000.0)
+}
 
 class PhoteoScanServiceModule : Module() {
   private val context: Context
@@ -145,26 +202,7 @@ class PhoteoScanServiceModule : Module() {
      * work they are timing, which is the one property a timeline needs.
      */
     Function("log") { message: String ->
-      // Logcat AND a file, because logcat alone loses them on this device.
-      // ColorOS enforces a per-process log quota -- measured on the owner's
-      // phone as `LOG_FLOWCTRL: LOGS OVER PROC QUOTA(300) ... DROPPED` -- and
-      // ML Kit's own chatter exhausts it during a scan, so the timings this
-      // exists to capture were being discarded by the OS before anyone could
-      // read them. That looked exactly like "the instrumentation doesn't work".
       android.util.Log.i("Photeo", message)
-      try {
-        val directory = context.getExternalFilesDir(null)
-        if (directory != null) {
-          val file = File(directory, DIAGNOSTIC_LOG)
-          // Truncated rather than rotated. This is a diagnostic the owner never
-          // asked for; it must not grow without bound on his phone, and only
-          // the current session is ever interesting.
-          if (file.length() > MAX_DIAGNOSTIC_BYTES) file.writeText("")
-          file.appendText("${System.currentTimeMillis()} $message\n")
-        }
-      } catch (error: Throwable) {
-        // Diagnostics must never break the thing they measure.
-      }
       true
     }
 
@@ -314,38 +352,15 @@ class PhoteoScanServiceModule : Module() {
      * Android may reclaim it under storage pressure, and everything here is
      * regenerable.
      *
-     * Returns null rather than throwing whenever it cannot help -- too old an
-     * Android, a deleted asset, a decode failure. The caller then falls back to
-     * the original URI and the grid still paints, just slowly.
+     * If MediaStore has no thumbnail, the fallback decoder receives its target
+     * dimensions before allocating pixels. If even that fails, null tells the
+     * tile to paint a quiet placeholder -- never the original.
      */
     AsyncFunction("thumbnailUri") { assetId: String, size: Int ->
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@AsyncFunction null
-      try {
-        val edge = size.coerceIn(64, 1024)
-        val cached = File(context.cacheDir, "thumbs/${assetId}_$edge.jpg")
-        if (cached.isFile && cached.length() > 0L) {
-          return@AsyncFunction Uri.fromFile(cached).toString()
-        }
-        val source =
-          Uri.parse("content://media/external/images/media/$assetId")
-        val bitmap =
-          context.contentResolver.loadThumbnail(source, Size(edge, edge), null)
-        cached.parentFile?.mkdirs()
-        // Written to a temporary name and renamed, so a reader can never see a
-        // half-written JPEG and cache a corrupt tile against this id.
-        val partial = File(cached.parentFile, "${cached.name}.part")
-        partial.outputStream().use { out ->
-          bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
-        }
-        bitmap.recycle()
-        if (!partial.renameTo(cached)) {
-          partial.delete()
-          return@AsyncFunction null
-        }
-        Uri.fromFile(cached).toString()
-      } catch (error: Throwable) {
-        null
-      }
+      val started = SystemClock.elapsedRealtimeNanos()
+      val result = resolveMediaStoreThumbnail(context, assetId, size)
+      ThumbnailMetrics.record(result, SystemClock.elapsedRealtimeNanos() - started)
+      result.uri
     }.runOnQueue(thumbnailScope)
 
     AsyncFunction("clusterFaces") {

@@ -5,7 +5,7 @@ import { thumbnailUri } from "../../../modules/photeo-scan-service/src/index.ts"
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { isScreenshotOrDocument } from "../../selection/quality-signals.ts";
 import * as MediaLibrary from "expo-media-library/legacy";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Linking,
   Pressable,
@@ -45,18 +45,6 @@ import { assetIdsForPlace, countryForState, getStates, stateForCity } from "../c
 import { buildPlaceTree, placeParentNames, topPlaces } from "../components/place-tree";
 import { fonts } from "../fonts";
 import {
-  capturedAtFor,
-  mergeByCapturedAt,
-  rowsFor,
-  samePeopleProjection,
-  type LibraryRow,
-} from "../photo-screen-model";
-import {
-  recordThumbnailResolution,
-  thumbnailRequestFor,
-  thumbnailUriCache,
-} from "../photo-thumbnail-cache";
-import {
   canWidenAccess,
   getPhotoAccess,
   NO_PHOTO_ACCESS,
@@ -79,20 +67,56 @@ const PLACE_RAIL_LIMIT = 12;
 
 type PlaceCard = PlaceSummary & { coverUri: string; parentName?: string };
 type PlaceTiers = { cities: PlaceSummary[]; countries: PlaceSummary[]; states: PlaceSummary[] };
+type LibraryRow =
+  | { key: string; kind: "month"; label: string }
+  | { key: string; kind: "photos"; assets: MediaLibrary.Asset[] };
+
+function monthFor(asset: MediaLibrary.Asset): { key: string; label: string } {
+  const timestamp = asset.creationTime || asset.modificationTime;
+  const date = new Date(timestamp);
+  if (!Number.isFinite(timestamp) || timestamp <= 0 || Number.isNaN(date.getTime())) {
+    return { key: "undated", label: "Undated" };
+  }
+  return {
+    key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`,
+    label: date.toLocaleDateString(undefined, { month: "long", year: "numeric" }),
+  };
+}
+
 const EMPTY_TIERS: PlaceTiers = { cities: [], countries: [], states: [] };
 
 function toFilterOption(place: PlaceSummary) {
   return { id: place.id, label: place.name, photoCount: place.count };
 }
 
-function samePlaces(
-  current: readonly PlaceSummary[],
-  next: readonly PlaceSummary[],
-): boolean {
-  return current.length === next.length && current.every((place, index) => {
-    const candidate = next[index];
-    return place.id === candidate.id && place.name === candidate.name && place.count === candidate.count;
-  });
+function rowsFor(assets: MediaLibrary.Asset[]): LibraryRow[] {
+  const rows: LibraryRow[] = [];
+  let activeMonth = "";
+  let activePhotos: MediaLibrary.Asset[] = [];
+
+  const flush = () => {
+    for (let start = 0; start < activePhotos.length; start += GRID_COLUMNS) {
+      const slice = activePhotos.slice(start, start + GRID_COLUMNS);
+      rows.push({
+        key: `photos:${activeMonth}:${slice.map((asset) => asset.id).join(":")}`,
+        kind: "photos",
+        assets: slice,
+      });
+    }
+    activePhotos = [];
+  };
+
+  for (const asset of assets) {
+    const month = monthFor(asset);
+    if (month.key !== activeMonth) {
+      flush();
+      activeMonth = month.key;
+      rows.push({ key: `month:${month.key}`, kind: "month", label: month.label });
+    }
+    activePhotos.push(asset);
+  }
+  flush();
+  return rows;
 }
 
 /**
@@ -131,6 +155,38 @@ function worthShowing(asset: MediaLibrary.Asset): boolean {
 }
 
 /**
+ * Thumbnails already resolved this session, so scrolling back up is free.
+ *
+ * Module-level rather than state: `FlashList` unmounts a tile the moment it
+ * leaves the screen, so anything held in the tile's own state is thrown away
+ * exactly when the user is most likely to scroll back to it.
+ */
+const thumbnailCache = new Map<string, string | null>();
+const thumbnailRequests = new Map<string, Promise<string | null>>();
+
+function requestThumbnail(assetId: string, request: number): Promise<string | null> {
+  const key = `${assetId}:${request}`;
+  if (thumbnailCache.has(key)) return Promise.resolve(thumbnailCache.get(key) ?? null);
+  const pending = thumbnailRequests.get(key);
+  if (pending) return pending;
+
+  const requestPromise = thumbnailUri(assetId, request)
+    .then((uri) => {
+      thumbnailCache.set(key, uri);
+      return uri;
+    })
+    .catch(() => {
+      thumbnailCache.set(key, null);
+      return null;
+    })
+    .finally(() => {
+      thumbnailRequests.delete(key);
+    });
+  thumbnailRequests.set(key, requestPromise);
+  return requestPromise;
+}
+
+/**
  * One photo in the grid.
  *
  * An asset can disappear between the MediaStore query and the render — deleted,
@@ -139,7 +195,7 @@ function worthShowing(asset: MediaLibrary.Asset): boolean {
  * panel instead, and nothing else: no filename, no URI, no error text. Whatever
  * a failed asset carries is not something to paint over the grid.
  */
-const PhotoTile = memo(function PhotoTile({
+function PhotoTile({
   assetId,
   onOpen,
   size,
@@ -148,52 +204,33 @@ const PhotoTile = memo(function PhotoTile({
   onOpen?: (assetId: string) => void;
   size: number;
 }) {
-  const [failedAssetId, setFailedAssetId] = useState<string | null>(null);
   // Requested at twice the tile so the grid stays sharp on a 3x screen, and
   // quantised so every tile in a column asks for ONE size -- MediaStore caches
   // per size, and a per-device pixel width would miss that cache every time.
-  const request = thumbnailRequestFor(size);
-  const [resolved, setResolved] = useState<{
-    assetId: string;
-    request: number;
-    uri: string;
-  } | null>(() => {
-    const uri = thumbnailUriCache.peek(assetId, request);
-    return uri ? { assetId, request, uri } : null;
-  });
-  const thumb = resolved?.assetId === assetId && resolved.request === request
-    ? resolved.uri
-    : thumbnailUriCache.peek(assetId, request);
+  const request = Math.min(512, Math.max(128, Math.round((size * 2) / 64) * 64));
+  const key = `${assetId}:${request}`;
+  const [thumb, setThumb] = useState<string | null | undefined>(() => thumbnailCache.get(key));
   const box = { height: size, width: size };
 
   useEffect(() => {
-    const cached = thumbnailUriCache.get(assetId, request);
-    if (cached) {
-      setResolved({ assetId, request, uri: cached });
+    if (thumbnailCache.has(key)) {
+      setThumb(thumbnailCache.get(key) ?? null);
       return;
     }
     let live = true;
-    const started = performance.now();
-    // The original is painted while this resolves, so a slow thumbnail can only
-    // ever make the grid faster, never blank.
-    thumbnailUri(assetId, request)
+    // A quiet tile is intentional while native resolution runs. Painting the
+    // original even briefly would let Glide buffer a 25-50 MiB JPEG before the
+    // MediaStore result arrives, defeating the memory fix.
+    setThumb(undefined);
+    requestThumbnail(assetId, request)
       .then((uri) => {
-        recordThumbnailResolution(performance.now() - started);
-        if (!uri) return;
-        thumbnailUriCache.set(assetId, { request, uri });
-        if (live) setResolved({ assetId, request, uri });
-      })
-      .catch(() => {
-        // Falling back to the original is the whole point; nothing to report.
+        if (live) setThumb(uri);
       });
     return () => {
       live = false;
     };
-  }, [assetId, request]);
+  }, [assetId, key, request]);
 
-  if (failedAssetId === assetId) {
-    return <View accessibilityLabel="Photo unavailable" accessibilityRole="image" style={[styles.tileMissing, box]} />;
-  }
   return (
     <Pressable
       accessibilityHint="Opens this photo full screen"
@@ -201,20 +238,28 @@ const PhotoTile = memo(function PhotoTile({
       accessibilityRole="imagebutton"
       onPress={onOpen ? () => onOpen(assetId) : undefined}
     >
-      <Image
-        cachePolicy="memory-disk"
-        contentFit="cover"
-        onError={() => setFailedAssetId(assetId)}
-        // Keyed on WHICH uri is showing, not just the asset: without this the
-        // swap from original to thumbnail reuses the decoded original and the
-        // saving never lands.
-        recyclingKey={thumb ?? assetId}
-        source={thumb ?? contentUri(assetId)}
-        style={[styles.tile, box]}
-      />
+      {thumb ? (
+        <Image
+          cachePolicy="memory-disk"
+          contentFit="cover"
+          onError={() => {
+            thumbnailCache.set(key, null);
+            setThumb(null);
+          }}
+          recyclingKey={key}
+          source={thumb}
+          style={[styles.tile, box]}
+        />
+      ) : (
+        <View
+          accessibilityLabel={thumb === null ? "Photo unavailable" : "Loading photo"}
+          accessibilityRole="image"
+          style={[styles.tileMissing, box]}
+        />
+      )}
     </Pressable>
   );
-});
+}
 
 /**
  * One photo, full screen, over the grid.
@@ -229,35 +274,7 @@ const PhotoTile = memo(function PhotoTile({
  * when the original finishes, instead of showing a black screen while it
  * decodes.
  */
-const ViewerPage = memo(function ViewerPage({
-  assetId,
-  height,
-  onClose,
-  onDisplay,
-  width,
-}: {
-  assetId: string;
-  height: number;
-  onClose: () => void;
-  onDisplay: (assetId: string) => void;
-  width: number;
-}) {
-  return (
-    <Pressable onPress={onClose} style={{ height, width }}>
-      <Image
-        cachePolicy="memory-disk"
-        contentFit="contain"
-        onDisplay={() => onDisplay(assetId)}
-        placeholder={thumbnailUriCache.peek(assetId)}
-        recyclingKey={assetId}
-        source={contentUri(assetId)}
-        style={{ height, width }}
-      />
-    </Pressable>
-  );
-});
-
-const PhotoViewer = memo(function PhotoViewer({
+function PhotoViewer({
   assets,
   onClose,
   startId,
@@ -267,39 +284,13 @@ const PhotoViewer = memo(function PhotoViewer({
   startId: string;
 }) {
   const { height, width } = useWindowDimensions();
-  const startIndex = useMemo(
-    () => Math.max(0, assets.findIndex((asset) => asset.id === startId)),
-    [assets, startId],
-  );
+  const startIndex = Math.max(0, assets.findIndex((asset) => asset.id === startId));
   const [index, setIndex] = useState(startIndex);
   const current = assets[index];
-  const openedAt = useRef(performance.now());
-  const firstFrameLogged = useRef(false);
-  const recordDisplay = useCallback((assetId: string) => {
-    if (firstFrameLogged.current || assetId !== startId) return;
-    firstFrameLogged.current = true;
-    console.log(
-      `[PhoteoUI] viewer first-frame=${(performance.now() - openedAt.current).toFixed(1)}ms ` +
-      `items=${assets.length} start=${startIndex}`,
-    );
-  }, [assets.length, startId, startIndex]);
-  const finishSwipe = useCallback((event: { nativeEvent: { contentOffset: { x: number } } }) => {
-    const next = Math.round(event.nativeEvent.contentOffset.x / width);
-    setIndex((currentIndex) => next === currentIndex ? currentIndex : next);
-  }, [width]);
-  const renderPage = useCallback(
-    ({ item }: { item: MediaLibrary.Asset }) => (
-      <ViewerPage
-        assetId={item.id}
-        height={height}
-        onClose={onClose}
-        onDisplay={recordDisplay}
-        width={width}
-      />
-    ),
-    [height, onClose, recordDisplay, width],
-  );
   if (!current) return null;
+  const thumb = [...thumbnailCache.entries()].find(([key, uri]) => uri &&
+    key.startsWith(`${current.id}:`),
+  )?.[1] ?? undefined;
   return (
     <View style={styles.viewer}>
       <StatusBar hidden />
@@ -309,9 +300,23 @@ const PhotoViewer = memo(function PhotoViewer({
         initialScrollIndex={startIndex}
         keyExtractor={(asset) => asset.id}
         // Whole-screen pages, so a half-swipe never leaves two photos showing.
-        onMomentumScrollEnd={finishSwipe}
+        onMomentumScrollEnd={(event) => {
+          const next = Math.round(event.nativeEvent.contentOffset.x / width);
+          if (next !== index) setIndex(next);
+        }}
         pagingEnabled
-        renderItem={renderPage}
+        renderItem={({ item }) => (
+          <Pressable onPress={onClose} style={{ height, width }}>
+            <Image
+              cachePolicy="memory-disk"
+              contentFit="contain"
+              placeholder={item.id === current.id ? thumb : undefined}
+              recyclingKey={item.id}
+              source={contentUri(item.id)}
+              style={{ height, width }}
+            />
+          </Pressable>
+        )}
         showsHorizontalScrollIndicator={false}
       />
       <Pressable
@@ -325,7 +330,7 @@ const PhotoViewer = memo(function PhotoViewer({
       <Text style={styles.viewerCount}>{`${index + 1} of ${assets.length}`}</Text>
     </View>
   );
-});
+}
 
 export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerson?: (person: NamePersonTarget) => void; onReviewFaceMerges?: () => void }) {
   const { width } = useWindowDimensions();
@@ -355,31 +360,9 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
   const hasNextPage = useRef(true);
   const loadingPage = useRef(false);
   const scansStarted = useRef(false);
-  const peopleRef = useRef<FaceIndexPerson[]>([]);
-  const placesRef = useRef<PlaceCard[]>([]);
-  const placeTiersRef = useRef<PlaceTiers>(EMPTY_TIERS);
-  const closeViewer = useCallback(() => setViewerId(null), []);
 
-  const refreshPeople = useCallback((reason: string) => {
-    const started = performance.now();
-    const next = getPeople();
-    const changed = !samePeopleProjection(peopleRef.current, next);
-    if (changed) {
-      peopleRef.current = next;
-      setPeople(next);
-      // A recluster can retire the selected id. Keeping it selected would leave
-      // the grid on an empty filter with no selected tile explaining why.
-      setSelectedPerson((selected) =>
-        selected && !next.some((person) => person.id === selected) ? null : selected,
-      );
-    }
-    console.log(
-      `[PhoteoUI] people projection=${(performance.now() - started).toFixed(1)}ms ` +
-      `reason=${reason} changed=${changed} people=${next.length}`,
-    );
-  }, []);
-
-  const refreshPlaces = useCallback(() => {
+  const refreshIndexes = useCallback(() => {
+    const nextPeople = getPeople();
     const tiers: PlaceTiers = { cities: getCities(), countries: getCountries(), states: getStates() };
     // One tier only in the strip. A country tile ("India, 2124 photos") sitting
     // beside a city tile it contains ("Gurugram, 990 photos") reads as two peers
@@ -402,23 +385,9 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
         parentName: parents.get(place.id),
       };
     });
-    const tiersChanged =
-      !samePlaces(placeTiersRef.current.cities, tiers.cities) ||
-      !samePlaces(placeTiersRef.current.countries, tiers.countries) ||
-      !samePlaces(placeTiersRef.current.states, tiers.states);
-    const stripChanged = !samePlaces(placesRef.current, nextPlaces) ||
-      placesRef.current.some((place, index) =>
-        place.coverUri !== nextPlaces[index]?.coverUri ||
-        place.parentName !== nextPlaces[index]?.parentName,
-      );
-    if (tiersChanged) {
-      placeTiersRef.current = tiers;
-      setPlaceTiers(tiers);
-    }
-    if (stripChanged) {
-      placesRef.current = nextPlaces;
-      setPlaces(nextPlaces);
-    }
+    setPeople(nextPeople);
+    setPlaceTiers(tiers);
+    setPlaces(nextPlaces);
   }, []);
 
   // Rebuilding the rails walks every person and every place tier, and the scan
@@ -432,7 +401,7 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
     const since = Date.now() - lastRailRefresh.current;
     if (since >= RAIL_REFRESH_MS) {
       lastRailRefresh.current = Date.now();
-      refreshPlaces();
+      refreshIndexes();
       return;
     }
     // A trailing call is already queued; it will pick up the newest index.
@@ -440,12 +409,33 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
     railTimer.current = setTimeout(() => {
       railTimer.current = null;
       lastRailRefresh.current = Date.now();
-      refreshPlaces();
+      refreshIndexes();
     }, RAIL_REFRESH_MS - since);
-  }, [refreshPlaces]);
+  }, [refreshIndexes]);
+
+  // The people rail gets its own throttle rather than sharing the places one:
+  // the two scans run concurrently and report on different cadences, so a
+  // shared timer would let a busy face scan starve the places rail of updates.
+  const lastPeopleRefresh = useRef(0);
+  const peopleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshPeopleSoon = useCallback(() => {
+    const since = Date.now() - lastPeopleRefresh.current;
+    if (since >= RAIL_REFRESH_MS) {
+      lastPeopleRefresh.current = Date.now();
+      setPeople(getPeople());
+      return;
+    }
+    if (peopleTimer.current) return;
+    peopleTimer.current = setTimeout(() => {
+      peopleTimer.current = null;
+      lastPeopleRefresh.current = Date.now();
+      setPeople(getPeople());
+    }, RAIL_REFRESH_MS - since);
+  }, []);
 
   useEffect(() => () => {
     if (railTimer.current) clearTimeout(railTimer.current);
+    if (peopleTimer.current) clearTimeout(peopleTimer.current);
   }, []);
 
   const startScans = useCallback(() => {
@@ -454,9 +444,8 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
         setPlaceScan({ done, total });
         refreshRailsSoon();
       },
-    }).then(refreshPlaces).catch(() => undefined).finally(() => setPlaceScan(null));
+    }).then(refreshIndexes).catch(() => undefined).finally(() => setPlaceScan(null));
     void buildFaceIndex({
-      onPeopleChanged: () => refreshPeople("face-index-change"),
       onProgress: (done, total) => {
         setScanningPeople(true);
         setFaceScan({ done, total });
@@ -464,15 +453,16 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
         // used to ignore: the scan reports once per batch, and each report
         // rebuilt every person summary and re-rendered the whole rail. The
         // counter above still ticks every time, so progress stays live.
+        refreshPeopleSoon();
       },
     })
-      .then(() => refreshPeople("scan-complete"))
+      .then(() => setPeople(getPeople()))
       .catch(() => undefined)
       .finally(() => {
         setScanningPeople(false);
         setFaceScan(null);
       });
-  }, [refreshPeople, refreshPlaces, refreshRailsSoon]);
+  }, [refreshIndexes, refreshRailsSoon]);
 
   useEffect(() => {
     let active = true;
@@ -500,8 +490,7 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
         void Promise.all([loadIndex(), loadFaceIndex()]).then(() => {
           if (!active) return;
           logFaceIndexDiagnostics("photos hydrated");
-          refreshPlaces();
-          refreshPeople("hydrate");
+          refreshIndexes();
           setIndexesReady(true);
         });
       } catch {
@@ -511,20 +500,16 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
     return () => {
       active = false;
     };
-  }, [refreshPeople, refreshPlaces]);
+  }, [refreshIndexes, startScans]);
 
-  const personFilterSet = useMemo(
-    () => selectedPerson ? new Set(assetIdsForPerson(selectedPerson)) : null,
-    // `people` changes only when the projection changed. Asset membership is
-    // part of that equality, so an active filter follows a semantic scan update.
-    [people, selectedPerson],
-  );
-  const placeFilterSet = useMemo(
+  const filterSet = useMemo(() => {
+    if (selectedPerson) return new Set(assetIdsForPerson(selectedPerson));
     // Any tier is selectable, so resolve country/state/place through one door.
-    () => selectedPlace ? new Set(assetIdsForPlace(selectedPlace)) : null,
-    [placeTiers, selectedPlace],
-  );
-  const filterSet = selectedPerson ? personFilterSet : selectedPlace ? placeFilterSet : null;
+    // Reads the live index rather than a snapshot so this stays keyed on the
+    // selection alone and a scan tick never re-pages the grid.
+    if (selectedPlace) return new Set(assetIdsForPlace(selectedPlace));
+    return null;
+  }, [selectedPerson, selectedPlace]);
   const filterSetRef = useRef<Set<string> | null>(null);
   filterSetRef.current = filterSet;
 
@@ -542,26 +527,11 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
         after: cursor.current,
         first: PAGE_SIZE,
         mediaType: [MediaLibrary.MediaType.photo],
-        // modificationTime, NOT creationTime. `creationTime` is MediaStore's
-        // `datetaken`, which is NULL on 9,481 of the owner's 12,128 photos --
-        // 78.2% -- and Android then reports the date the file was ADDED to this
-        // phone instead. Sorting by that files a February photograph under the
-        // October he copied it across, which is most of his library in the wrong
-        // month. `date_modified` is never null and survives the transfer.
-        sortBy: [[MediaLibrary.SortBy.modificationTime, false]],
+        sortBy: [MediaLibrary.SortBy.creationTime],
       });
       cursor.current = page.endCursor;
       hasNextPage.current = page.hasNextPage;
       const worth = page.assets.filter(worthShowing);
-      // Stamped once per photo, here, because `capturedAtFor` parses the
-      // filename and a sort comparator would run that regex O(n log n) times on
-      // the thread that paints the grid. Sorted newest first afterwards: the
-      // fetch order is only close, and the merge in `loadMore` needs each page
-      // sorted to place photos the filename moved out of their fetch page.
-      for (const asset of worth) {
-        (asset as { capturedAt?: number }).capturedAt = capturedAtFor(asset);
-      }
-      worth.sort((a, b) => capturedAtFor(b) - capturedAtFor(a));
       matching.push(...(activeFilter ? worth.filter((asset) => activeFilter.has(asset.id)) : worth));
       if (page.assets.length === 0) break;
     }
@@ -590,9 +560,7 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
     setLoadingMore(true);
     try {
       const next = await fetchBurst();
-      // Merged, not appended: a photo whose filename date disagrees with the
-      // `date_modified` MediaStore paged by can belong far above this page.
-      if (next.length > 0) setAssets((current) => mergeByCapturedAt(current, next));
+      if (next.length > 0) setAssets((current) => current.concat(next));
     } catch {
       setStatus("error");
     } finally {
@@ -644,11 +612,8 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
     () => new Map(people.map((person, index) => [person.id, copy.filters.personName(index)])),
     [people],
   );
-  const visiblePeople = useMemo(
-    () => people.filter((person) =>
-      (peopleLabels.get(person.id) ?? "").toLocaleLowerCase().includes(needle),
-    ),
-    [needle, people, peopleLabels],
+  const visiblePeople = people.filter((person) =>
+    (peopleLabels.get(person.id) ?? "").toLocaleLowerCase().includes(needle),
   );
   const visiblePlaces = places.filter((place) => place.name.toLocaleLowerCase().includes(needle));
   const placesTotal = placeTiers.cities.length + placeTiers.countries.length + placeTiers.states.length;
@@ -665,20 +630,7 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
   const filterCountries = useMemo(() => placeTiers.countries.map(toFilterOption), [placeTiers.countries]);
   const filterStates = useMemo(() => placeTiers.states.map(toFilterOption), [placeTiers.states]);
   const filterCities = useMemo(() => placeTiers.cities.map(toFilterOption), [placeTiers.cities]);
-  const rows = useMemo(() => {
-    const started = performance.now();
-    const next = rowsFor(assets, GRID_COLUMNS);
-    const elapsed = performance.now() - started;
-    // A row build over one frame is a user-visible hitch. This reaches logcat
-    // in release builds and includes enough scale to reproduce the regression.
-    if (elapsed >= 16) {
-      console.log(
-        `[PhoteoUI] grid rows=${elapsed.toFixed(1)}ms assets=${assets.length} ` +
-        `rows=${next.length}`,
-      );
-    }
-    return next;
-  }, [assets]);
+  const rows = useMemo(() => rowsFor(assets), [assets]);
   const searching = needle.length > 0;
   const showAccessBanner = access.limited && !accessDismissed;
   const peopleStatus = scanningPeople
@@ -689,38 +641,6 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
   const placeStatus = placeScan && placeScan.total > 0
     ? copy.states.scanningPhotos(placeScan.done, placeScan.total)
     : null;
-  const renderPerson = useCallback(({ item: person }: { item: FaceIndexPerson }) => {
-    const active = selectedPerson === person.id;
-    const label = peopleLabels.get(person.id) ?? "Person";
-    const openCorrection = () => onNamePerson?.({
-      id: person.id,
-      label,
-      faceThumbUri: person.faceThumbUri,
-      assetIds: assetIdsForPerson(person.id).slice(0, 8),
-    });
-    return (
-      <View style={styles.person}>
-        <Pressable accessibilityHint="Tap to filter photos. Hold to add a name." accessibilityLabel={`${label}. ${copy.filters.photoCount(person.assetIds.length)}`} accessibilityRole="button" accessibilityState={{ selected: active }} onLongPress={openCorrection} onPress={() => { setSelectedPlace(null); setSelectedPerson(active ? null : person.id); }} style={styles.personFilter}>
-          <Image cachePolicy="memory-disk" contentFit="cover" source={person.faceThumbUri ?? contentUri(person.coverAssetId)} style={[styles.avatar, active ? styles.avatarActive : null]} />
-          <Text numberOfLines={1} style={[styles.personName, active ? styles.activeText : null]}>{label}</Text>
-        </Pressable>
-        {active ? <Pressable accessibilityHint="Opens options to merge this tile with another person or keep them separate" accessibilityLabel={`Fix grouping for ${label}`} accessibilityRole="button" onPress={openCorrection} style={styles.personFix}><Text style={styles.personFixText}>Fix</Text></Pressable> : null}
-      </View>
-    );
-  }, [onNamePerson, peopleLabels, selectedPerson]);
-
-  const renderLibraryRow = useCallback(
-    ({ item }: { item: LibraryRow<MediaLibrary.Asset> }) => item.kind === "month" ? (
-      <Text style={styles.month}>{item.label}</Text>
-    ) : (
-      <View style={styles.photoRow}>
-        {item.assets.map((asset) => (
-          <PhotoTile assetId={asset.id} key={asset.id} onOpen={setViewerId} size={tileSize} />
-        ))}
-      </View>
-    ),
-    [tileSize],
-  );
 
   const header = (
     <View style={styles.header}>
@@ -790,7 +710,25 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
           contentContainerStyle={styles.peopleRow}
           showsHorizontalScrollIndicator={false}
           style={styles.rail}
-          renderItem={renderPerson}
+          renderItem={({ item: person }) => {
+            const active = selectedPerson === person.id;
+            const label = peopleLabels.get(person.id) ?? "Person";
+            const openCorrection = () => onNamePerson?.({
+              id: person.id,
+              label,
+              faceThumbUri: person.faceThumbUri,
+              assetIds: assetIdsForPerson(person.id).slice(0, 8),
+            });
+            return (
+              <View style={styles.person}>
+                <Pressable accessibilityHint="Tap to filter photos. Hold to add a name." accessibilityLabel={`${label}. ${copy.filters.photoCount(person.assetIds.length)}`} accessibilityRole="button" accessibilityState={{ selected: active }} onLongPress={openCorrection} onPress={() => { setSelectedPlace(null); setSelectedPerson(active ? null : person.id); }} style={styles.personFilter}>
+                  <Image cachePolicy="memory-disk" contentFit="cover" source={person.faceThumbUri ?? contentUri(person.coverAssetId)} style={[styles.avatar, active ? styles.avatarActive : null]} />
+                  <Text numberOfLines={1} style={[styles.personName, active ? styles.activeText : null]}>{label}</Text>
+                </Pressable>
+                {active ? <Pressable accessibilityHint="Opens options to merge this tile with another person or keep them separate" accessibilityLabel={`Fix grouping for ${label}`} accessibilityRole="button" onPress={openCorrection} style={styles.personFix}><Text style={styles.personFixText}>Fix</Text></Pressable> : null}
+              </View>
+            );
+          }}
         />
       ) : searching && people.length > 0 ? (
         <Text style={styles.noMatch}>No people match “{query.trim()}”.</Text>
@@ -934,7 +872,15 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
         ListHeaderComponent={header}
         onEndReached={() => void loadMore()}
         onEndReachedThreshold={1.2}
-        renderItem={renderLibraryRow}
+        renderItem={({ item }) => item.kind === "month" ? (
+          <Text style={styles.month}>{item.label}</Text>
+        ) : (
+          <View style={styles.photoRow}>
+            {item.assets.map((asset) => (
+              <PhotoTile assetId={asset.id} key={asset.id} onOpen={setViewerId} size={tileSize} />
+            ))}
+          </View>
+        )}
       />
       <LocationFilterModal
         cities={filterCities}
@@ -953,7 +899,7 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
         // Given `assets`, not the row data: swiping must move through everything
         // the current filter matched, so opening a photo from Avika's tile pages
         // through Avika's photos and stops at the edge of them.
-        <PhotoViewer assets={assets} onClose={closeViewer} startId={viewerId} />
+        <PhotoViewer assets={assets} onClose={() => setViewerId(null)} startId={viewerId} />
       ) : null}
     </View>
   );
