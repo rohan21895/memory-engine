@@ -114,6 +114,80 @@ const lonely = planAlbum(
 ).selectedIds;
 assert(lonely.length === 2, "a lone semantic photo must not be excluded by its own signal");
 
+// --- 3b. A burst must not fill a small album. --------------------------------
+//
+// The report that prompted this: a five-photo album where photos 1 and 2 were
+// near-identical and so were 3 and 4. Two of the five were wasted.
+//
+// The hard duplicate gate does not cover this. It fires at 0.92 and these pairs
+// sit below it -- "same room, same pose, two seconds apart" is not the same
+// frame twice, and a person still calls it the same photograph. So the only
+// thing standing between him and a repeated album is the redundancy penalty
+// beating a quality gap, and here the gap is large and in the wrong direction:
+// the burst frames are the sharpest photos in the pool by 0.24.
+//
+// Measured, at pair similarities of 0.885, 0.940 and 0.976, the planner takes
+// ONE frame from each burst and fills the rest with distinct photographs. This
+// pins that, because it is a property a threshold nudge could quietly undo.
+
+{
+  const unit = (values: number[]): number[] => {
+    const norm = Math.hypot(...values);
+    return values.map((value) => value / norm);
+  };
+  /** `blend` 0 is the base frame; larger is further from it. */
+  const near = (seed: number, blend: number): number[] => {
+    const base = Array.from({ length: 16 }, (_, i) => Math.cos((seed + 1) * (i + 1)));
+    const away = Array.from({ length: 16 }, (_, i) => Math.sin((seed + 7) * (i + 3)));
+    return unit(base.map((value, i) => value * (1 - blend) + away[i] * blend));
+  };
+  const shot = (mediaId: string, quality: number, vector: number[]): PlannerCandidate =>
+    candidate(mediaId, quality, { embedding: vector, semanticEmbedding: vector });
+
+  for (const blend of [0.2, 0.3, 0.4]) {
+    const burst = [
+      shot("burst-a1", 0.95, near(1, 0)),
+      shot("burst-a2", 0.94, near(1, blend)),
+      shot("burst-b1", 0.93, near(2, 0)),
+      shot("burst-b2", 0.92, near(2, blend)),
+      shot("solo-1", 0.7, near(3, 0)),
+      shot("solo-2", 0.68, near(4, 0)),
+      shot("solo-3", 0.66, near(5, 0)),
+      shot("solo-4", 0.64, near(6, 0)),
+    ];
+    const picked = planAlbum(burst, 5).selectedIds;
+    const pairs = [
+      ["burst-a1", "burst-a2"],
+      ["burst-b1", "burst-b2"],
+    ];
+    for (const [first, second] of pairs) {
+      assert(
+        !(picked.includes(first) && picked.includes(second)),
+        `both halves of a burst were chosen at blend ${blend} (got ${picked.join(", ")})`,
+      );
+    }
+    assert(
+      picked.length === 5,
+      `and the album must still be filled (got ${picked.length})`,
+    );
+  }
+
+  // VACUITY: without the penalty, quality alone fills the album with the burst.
+  // If this stops being true, the loop above is passing on quality ordering.
+  const blindBurst = [
+    shot("burst-a1", 0.95, near(1, 0)),
+    shot("burst-a2", 0.94, near(1, 0.3)),
+    shot("burst-b1", 0.93, near(2, 0)),
+    shot("burst-b2", 0.92, near(2, 0.3)),
+    shot("solo-1", 0.7, near(3, 0)),
+  ].map(({ embedding: _e, semanticEmbedding: _s, ...rest }) => rest);
+  const blindPick = planAlbum(blindBurst, 4).selectedIds;
+  assert(
+    blindPick.includes("burst-a1") && blindPick.includes("burst-a2"),
+    `VACUITY: with no signal at all the burst must win on quality (got ${blindPick.join(", ")})`,
+  );
+}
+
 // --- 4. Determinism. Selection is shown to users and must not shuffle. -------
 
 const forward = planAlbum(pool, 2).selectedIds;
