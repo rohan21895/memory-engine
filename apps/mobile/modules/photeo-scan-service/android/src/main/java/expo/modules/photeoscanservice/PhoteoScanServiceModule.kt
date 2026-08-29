@@ -25,6 +25,11 @@ import java.io.File
  * caller's job is to fall back to foreground-only scanning, and an exception
  * here would turn a degraded mode into a crash.
  */
+private const val DIAGNOSTIC_LOG = "photeo-diagnostics.log"
+
+/** One session of timings is a few KB; this is a ceiling, not a target. */
+private const val MAX_DIAGNOSTIC_BYTES = 512L * 1024L
+
 class PhoteoScanServiceModule : Module() {
   private val context: Context
     get() = appContext.reactContext ?: throw Exceptions.ReactContextLost()
@@ -104,7 +109,26 @@ class PhoteoScanServiceModule : Module() {
      * work they are timing, which is the one property a timeline needs.
      */
     Function("log") { message: String ->
+      // Logcat AND a file, because logcat alone loses them on this device.
+      // ColorOS enforces a per-process log quota -- measured on the owner's
+      // phone as `LOG_FLOWCTRL: LOGS OVER PROC QUOTA(300) ... DROPPED` -- and
+      // ML Kit's own chatter exhausts it during a scan, so the timings this
+      // exists to capture were being discarded by the OS before anyone could
+      // read them. That looked exactly like "the instrumentation doesn't work".
       android.util.Log.i("Photeo", message)
+      try {
+        val directory = context.getExternalFilesDir(null)
+        if (directory != null) {
+          val file = File(directory, DIAGNOSTIC_LOG)
+          // Truncated rather than rotated. This is a diagnostic the owner never
+          // asked for; it must not grow without bound on his phone, and only
+          // the current session is ever interesting.
+          if (file.length() > MAX_DIAGNOSTIC_BYTES) file.writeText("")
+          file.appendText("${System.currentTimeMillis()} $message\n")
+        }
+      } catch (error: Throwable) {
+        // Diagnostics must never break the thing they measure.
+      }
       true
     }
 

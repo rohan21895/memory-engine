@@ -2,7 +2,7 @@ import type { FaceEmbeddingVector, FaceObservation, Person } from "./types";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { resolveConstraints, type AnchorBars, type FaceConstraint } from "./face-constraints.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { BABY_SCORE_CUT, babyScore } from "./face-age-prior.ts";
+import { AGE_COEFFICIENTS, AGE_INTERCEPT, BABY_SCORE_CUT, babyScore } from "./face-age-prior.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { clusterFacesNatively } from "../../modules/photeo-scan-service/src/index.ts";
 
@@ -1826,6 +1826,60 @@ export function clusterFacesByGraph(
  * apart would show the user different people depending on which path ran, and
  * the drift would be invisible until somebody's tiles split.
  */
+/**
+ * Just the per-face bars, without materialising a single unit vector.
+ *
+ * `prepareGraph` costs 5.9 SECONDS on the owner's 18,165 faces (measured on
+ * device), and the precompute pass threw all of it away except this one array --
+ * it needs the bars to hand to the native side and nothing else. Running the
+ * full preparation twice put twelve seconds of avoidable work on the JS thread.
+ *
+ * The saving comes from the age probe being a plain dot product. For a stored
+ * vector v and its unit form v/|v|:
+ *
+ *   z = intercept + sum_d c_d * (v_d / |v|)  ==  intercept + dot(c, v) / |v|
+ *
+ * so the normalisation can be divided out at the end instead of being applied to
+ * all 512 components first. That turns three passes and a 512-element array per
+ * face into one pass over the stored bytes with two accumulators.
+ *
+ * Bit-for-bit agreement with `babyScore(unitEmbedding(...))` is not claimed --
+ * the two sum in a different order, so they can differ in the last ulp. That is
+ * safe HERE and nowhere else: the result is compared against `BABY_SCORE_CUT`,
+ * and a face within one ulp of the cut is one the probe is not confident about
+ * anyway. `face-age-bars.test.ts` pins that the two paths choose the same bar
+ * for every face in the fixture.
+ */
+function graphBarsOnly(
+  usable: FaceObservation[],
+  opts: ClusterOptions,
+): Float64Array {
+  const count = usable.length;
+  const bars = new Float64Array(count);
+  const adultBar = Number.isFinite(opts.threshold)
+    ? (opts.threshold as number)
+    : GRAPH_ADULT_SIMILARITY;
+  for (let i = 0; i < count; i += 1) {
+    const raw = dequantized(usable[i].embedding);
+    if (raw.length !== AGE_COEFFICIENTS.length) {
+      bars[i] = adultBar;
+      continue;
+    }
+    let dot = 0;
+    let squared = 0;
+    for (let d = 0; d < raw.length; d += 1) {
+      const value = raw[d];
+      dot += value * AGE_COEFFICIENTS[d];
+      squared += value * value;
+    }
+    const norm = Math.sqrt(squared);
+    const z = AGE_INTERCEPT + (norm > Number.EPSILON ? dot / norm : 0);
+    bars[i] =
+      1 / (1 + Math.exp(-z)) > BABY_SCORE_CUT ? GRAPH_BABY_SIMILARITY : adultBar;
+  }
+  return bars;
+}
+
 function prepareGraph(
   usable: FaceObservation[],
   opts: ClusterOptions,
@@ -2051,7 +2105,9 @@ export async function precomputeGraphLabels(
   const usable = observations.filter((o) => o.embeddingKind === "identity");
   if (usable.length === 0) return false;
   const seed = opts.seed ?? 1;
-  const { bars } = prepareGraph(usable, opts);
+  // Bars only: the precompute discards everything else prepareGraph builds, and
+  // building it cost 5.9s of JS thread on the owner's library, measured on device.
+  const bars = graphBarsOnly(usable, opts);
   const labels = await graphLabelsNatively(usable, bars, seed);
   if (!labels || labels.length !== usable.length) return false;
   stashedLabels = { key: graphStashKey(usable, seed), labels };

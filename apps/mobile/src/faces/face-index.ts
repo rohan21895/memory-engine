@@ -191,7 +191,7 @@ export const DEFAULT_FACE_INDEX_THRESHOLD = 0.44;
  * embedding, re-scanning the whole library for what is a cheap recomputation
  * over data already on disk.
  */
-export const CLUSTER_CALIBRATION = "graph-cw-agebars-native-2";
+export const CLUSTER_CALIBRATION = "graph-cw-agebars-native-3";
 
 /**
  * Bar for the CENTERED space, and only valid there.
@@ -4100,14 +4100,32 @@ export function scanEndNeedsRecluster(scan: {
   /** The bar measured from the library as it stands now. */
   measuredThreshold: number;
 }): boolean {
-  if (scan.newlyProcessed > SMALL_SCAN_PHOTOS) return true;
-  if (scan.forcedThreshold !== undefined) return true;
-  if (scan.observationsPruned) return true;
-  if (scan.storedRule !== scan.wantedRule) return true;
-  return (
-    Math.abs(scan.measuredThreshold - scan.storedThreshold) >=
-    RECALIBRATION_HYSTERESIS
+  // Reported, not just decided. The standing suspicion is that the last clause
+  // fires on essentially every scan -- the bar is a measurement over the whole
+  // library, so it drifts a little whenever the library grows -- which would
+  // mean the cheap restricted sweep this function exists to enable has never
+  // once run. That is a claim about a live library, and only the device can
+  // settle it. Naming the branch makes the answer readable instead of inferred.
+  const drift = Math.abs(scan.measuredThreshold - scan.storedThreshold);
+  const reason =
+    scan.newlyProcessed > SMALL_SCAN_PHOTOS
+      ? "large-scan"
+      : scan.forcedThreshold !== undefined
+        ? "forced-bar"
+        : scan.observationsPruned
+          ? "pruned"
+          : scan.storedRule !== scan.wantedRule
+            ? "rule-changed"
+            : drift >= RECALIBRATION_HYSTERESIS
+              ? "bar-drifted"
+              : null;
+  console.log(
+    `[PhoteoFaceIndex] sweep ${reason ? `FULL (${reason})` : "restricted"} ` +
+      `drift=${drift.toFixed(5)} hysteresis=${RECALIBRATION_HYSTERESIS} ` +
+      `stored=${scan.storedThreshold.toFixed(5)} measured=${scan.measuredThreshold.toFixed(5)} ` +
+      `newPhotos=${scan.newlyProcessed}`,
   );
+  return reason !== null;
 }
 
 function notifyFaceProgress(done: number, total: number): void {

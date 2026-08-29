@@ -24,9 +24,16 @@
  */
 export const BABY_SCORE_CUT = 0.05;
 
-const INTERCEPT = -4.144578;
+/**
+ * Exported so the clusterer can evaluate the probe straight off the STORED
+ * bytes: `z = INTERCEPT + dot(c, v) / |v|`, which avoids normalising all 512
+ * components first. There is still exactly ONE copy of the model -- these are
+ * the same numbers `babyScore` uses, not a second fitted set.
+ */
+export const AGE_INTERCEPT = -4.144578;
+const INTERCEPT = AGE_INTERCEPT;
 
-const COEFFICIENTS: readonly number[] = [
+export const AGE_COEFFICIENTS: readonly number[] = [
   -0.632089, 0.119915, 0.302403, 1.016979, -0.348694, 0.497715, 0.187029, 0.592311,
   0.530526, -0.270205, -0.380018, -0.216477, 0.662842, 1.121642, -0.104452, -0.462914,
   0.335459, 0.134075, 0.386100, 0.933342, -0.624949, -0.463141, -0.008301, -0.080397,
@@ -94,6 +101,8 @@ const COEFFICIENTS: readonly number[] = [
 ];
 
 /** Probability that a unit-normalised identity embedding is a young child. */
+const COEFFICIENTS = AGE_COEFFICIENTS;
+
 export function babyScore(embedding: readonly number[]): number {
   if (embedding.length !== COEFFICIENTS.length) return 0;
   let z = INTERCEPT;
