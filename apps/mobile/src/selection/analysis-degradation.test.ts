@@ -261,6 +261,34 @@ assert(
     buildAlbumSource.includes("oom:0` is the number that matters"),
   "the analysis concurrency must cite the measured build that justifies it",
 );
+// A 300-photo build then measured what the constant is actually worth, and the
+// answer was "almost nothing": tinyclip's awaited mean divided by its inference
+// mean came to 2.98 against a concurrency of 3, i.e. each photo waits behind
+// exactly the other two. That ratio is the single most useful number in this
+// file, because it is what makes "just raise the concurrency" a dead end. The
+// comment must keep it, and must keep the correction to its own earlier claim
+// that quality-decode was the thing that scaled.
+assert(
+  buildAlbumSource.includes("3105.7") &&
+    buildAlbumSource.includes("1042.9") &&
+    /2\.98/.test(buildAlbumSource),
+  "the comment must carry TinyCLIP's serialisation ratio, not just its raw timings",
+);
+assert(
+  buildAlbumSource.includes("oom:0 across 300 photos"),
+  "...and must rest the value on the 300-photo evidence, not the 36-photo one",
+);
+assert(
+  /was half wrong and is corrected|1\.46x, not 3x/.test(buildAlbumSource),
+  "the superseded 'quality-decode scales' claim must stay visibly corrected",
+);
+// VACUITY: this file is the thing being asserted about, so a typo in the search
+// strings would pass silently against a comment that says nothing. Anchor on a
+// string that must NOT be there -- the old reasoning's load-bearing sentence.
+assert(
+  !buildAlbumSource.includes("the one with no shared lock. Three covers it"),
+  "VACUITY: the refuted 'no shared lock' reasoning must be gone, not merely appended to",
+);
 // The allocation must stay RETRACTED. It was once identified as expo's
 // `toByteArray()`; that is refuted twice (the 1280 px proxy cannot hold
 // 27.63 MiB, and the call only runs under `base64: true`, whose sites here top

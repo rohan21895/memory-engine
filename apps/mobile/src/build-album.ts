@@ -123,15 +123,32 @@ const EDGE_FRACTION = 0.01;
  * did not need to be once the route was gone -- but do not let that absence
  * invite the refuted answer back.
  *
- * WHY THREE, and not six. The models do not scale with this number:
- *   - TinyCLIP and MobileFaceNet run through PhoteoLiteRt, whose invokes hold a
- *     per-interpreter lock, so concurrent photos serialise on the same
- *     interpreter however many are admitted here. TinyCLIP alone is a
- *     36 x 630ms = ~23s floor for the build above.
- *   - MoveNet runs on fast-tflite, a separate path.
- * What DOES scale is quality-decode at 1299ms -- the largest per-photo cost, and
- * the one with no shared lock. Three covers it without stacking model work that
- * cannot overlap anyway.
+ * WHY THREE -- and why the number barely matters. A 300-photo build on the
+ * owner's phone (08-29 17:30) settled this:
+ *
+ *   tinyclip     awaited mean 3105.7ms   inference mean 1042.9ms   total 312856ms
+ *   movenet      awaited mean 2462.8ms   inference mean  527.3ms   total 158176ms
+ *   quality-decode  awaited mean 2660.5ms
+ *   deep-analysis 415114ms / 300         analysis-degraded 0/300, oom:0
+ *
+ * Read the first row twice: 3105.7 / 1042.9 = 2.98, against a concurrency of 3.
+ * TinyCLIP is serialised to the last decimal -- each admitted photo waits behind
+ * exactly the other two, so raising this number raises the queue by the same
+ * factor and finishes no sooner. And TinyCLIP inference alone is 312856ms of a
+ * 415114ms wall: 75% of an album build is one model, computing one photo at a
+ * time. This constant cannot reach that.
+ *
+ * So the earlier claim here -- that quality-decode is the thing that scales --
+ * was half wrong and is corrected: its mean went 1299ms at concurrency 1 to
+ * 2660.5ms at three, so it gains about 1.46x, not 3x. Real, but it is not the
+ * wall. Per-photo wall moved 1439.8ms to 1390.7ms across the two builds (3.4%,
+ * and different photo sets, so treat it as "no worse" rather than a speedup).
+ *
+ * Three stays because it is measured-safe -- oom:0 across 300 photos, eight
+ * times the evidence the previous value had -- not because it is fast. If an
+ * album build has to get faster, this constant is the wrong lever; the levers
+ * are fewer photos reaching TinyCLIP, a second interpreter to break the lock,
+ * or a GPU/NNAPI delegate.
  *
  * Do not raise this without re-reading `analysis-degraded` from a real build.
  * `oom:0` is the number that matters; if it stops being zero, this went too far.
