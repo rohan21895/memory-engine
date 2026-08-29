@@ -113,8 +113,33 @@ const EDGE_FRACTION = 0.01;
  * is 9-18x more bytes than the bound permits, and a 27.63 MiB JPEG implies
  * roughly 15-29 MP. So the failed allocation comes from something that still
  * sees a full-size image, not from the proxy that was added to prevent exactly
- * that. A 27.63 MiB read of an ORIGINAL file is the obvious next suspect and
- * has NOT been checked. Do not treat #41's allocation as identified.
+ * that. Do not treat #41's allocation as identified.
+ *
+ * A second, independent argument kills the same hypothesis. The `toByteArray()`
+ * at ImageManipulatorModule.kt:127 sits inside the `if (base64)` branch, so it
+ * runs ONLY for `saveAsync({base64: true})`. Every such call site in this app is
+ * bounded well below the size needed: image-quality resamples to
+ * QUALITY_SAMPLE_WIDTH = 512, face-index saves a FACE_THUMBNAIL_SIZE crop, and
+ * the tinyclip / movenet / facenet wrappers encode at their model input size.
+ * The largest is 1280 px. None can hold 27.63 MiB of compressed JPEG. Two
+ * separate arguments, one from the proxy bound and one from the base64 gate,
+ * both exclude that call.
+ *
+ * WHAT THE NUMBER DOES MATCH is an ORIGINAL. His library contains DSLR JPEGs of
+ * 25-27 MiB (largest found on the archived copy: 27,863,843 bytes), against a
+ * failed allocation of 28,975,783. Same class of file, same order of magnitude.
+ * The most probable allocation is therefore the original's own bytes being
+ * buffered while it is opened -- inside Glide/expo-image or the ContentResolver,
+ * not in this repo's Kotlin, which contains no full-file read. The bound is
+ * applied AFTER the file is opened, so a 1280 px cap never prevents it.
+ *
+ * That makes #41 and #59 the same root cause: this app still hands full-size
+ * originals to the image pipeline. Fixing #59 -- decode MediaStore thumbnails
+ * instead of originals -- should remove the pressure that causes #41, and is a
+ * better lead than anything further down the saveAsync path.
+ *
+ * Confirming the exact frame needs the phone, which was locked. Read the phase
+ * label from a concurrency-one run (see below) before believing any successor.
  *
  * The `quality-decode` label is not evidence of the culprit either, and this is
  * why the whole attribution came apart. `measureImageQuality` is only ever
