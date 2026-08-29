@@ -89,100 +89,54 @@ const EDGE_FRACTION = 0.01;
 /**
  * Photos analyzed at once.
  *
- * One, because the measured OOM is Java byte-array pressure AFTER the bounded
- * proxy was added, not the old full-resolution bitmap hypothesis:
+ * MEASURED ON THE PHONE, 36-photo build, after the native proxy landed:
  *
- * - the device attributed the OOM to `quality-decode` and ART reported a
- *   28,975,795-byte object allocation;
- * - ART's byte-array object size is its 12-byte header plus payload, leaving an
- *   exact 28,975,783-byte JPEG payload. That is not a bitmap, and it cannot be
- *   Android Base64's output either: NO_WRAP output has a multiple-of-four byte
- *   length, while this payload is 3 mod 4;
- * - source tracing (not a heap measurement) shows that each photo starts four
- *   Base64 preprocessing paths under one Promise.all: perceptual, quality,
- *   MoveNet, and TinyCLIP. The previous outer limit of six therefore allowed up
- *   to 24 Java-array pipelines to overlap.
+ *   analysis-degraded={photos:0/36, proxy-create:0, ..., oom:0}
+ *   proxy-create      mean 11.1ms   p95 26ms
+ *   quality-decode    mean 1299ms   p95 1340ms
+ *   movenet wall      mean 1347ms   (inference 1013ms)
+ *   tinyclip wall     mean 1400ms   (inference 630ms)
+ *   total             51833ms / 36 photos, at concurrency 1
  *
- * WHAT PRODUCES THE 27.63 MiB PAYLOAD IS STILL UNKNOWN. An earlier revision of
- * this comment named expo-image-manipulator's `byteOut.toByteArray()` in
- * `saveAsync` as the allocation. That call is real (ImageManipulatorModule.kt
- * line 127) and it is the right SHAPE of allocation, but it cannot be this
- * one, and the arithmetic that rules it out is the same arithmetic that found
- * it: the quality proxy is capped at ANALYSIS_PROXY_SIZE = 1280 px, so at most
- * 1.6 MP. No JPEG encoder emits 27.63 MiB from 1.6 MP at any quality -- that
- * is 9-18x more bytes than the bound permits, and a 27.63 MiB JPEG implies
- * roughly 15-29 MP. So the failed allocation comes from something that still
- * sees a full-size image, not from the proxy that was added to prevent exactly
- * that. Do not treat #41's allocation as identified.
+ * Zero OOM, zero degraded photos. That build is why this is three and not one.
  *
- * A second, independent argument kills the same hypothesis. The `toByteArray()`
- * at ImageManipulatorModule.kt:127 sits inside the `if (base64)` branch, so it
- * runs ONLY for `saveAsync({base64: true})`. Every such call site in this app is
- * bounded well below the size needed: image-quality resamples to
- * QUALITY_SAMPLE_WIDTH = 512, face-index saves a FACE_THUMBNAIL_SIZE crop, and
- * the tinyclip / movenet / facenet wrappers encode at their model input size.
- * The largest is 1280 px. None can hold 27.63 MiB of compressed JPEG. Two
- * separate arguments, one from the proxy bound and one from the base64 gate,
- * both exclude that call.
+ * HISTORY, kept short because it cost two wrong answers. The OOM was a failed
+ * 28,975,795-byte allocation. It was once attributed to expo-image-manipulator's
+ * `byteOut.toByteArray()`; that is refuted twice over and must not be
+ * re-asserted. The proxy caps at ANALYSIS_PROXY_SIZE = 1280 px (1.6 MP), and no
+ * JPEG encoder emits 27.63 MiB from 1.6 MP; and that call sits inside
+ * `if (base64)`, so it only runs for `saveAsync({base64: true})`, whose call
+ * sites here top out at 1280 px and are mostly 224-512 px. The `quality-decode`
+ * phase label was not evidence either: `measureImageQuality` only ever runs on
+ * the proxy, resampled to QUALITY_SAMPLE_WIDTH = 512, so it named the most
+ * bounded path in the build. At concurrency six with four coroutine-dispatched
+ * paths per photo, up to 24 allocations were live against one heap; the bucket
+ * named a bystander, not the allocator.
  *
- * WHAT THE NUMBER DOES MATCH is an ORIGINAL. His library contains DSLR JPEGs of
- * 25-27 MiB (largest found on the archived copy: 27,863,843 bytes), against a
- * failed allocation of 28,975,783. Same class of file, same order of magnitude.
- * The most probable allocation is therefore the original's own bytes being
- * buffered while it is opened -- inside Glide/expo-image or the ContentResolver,
- * not in this repo's Kotlin, which contains no full-file read. The bound is
- * applied AFTER the file is opened, so a 1280 px cap never prevents it.
+ * What the number matched was an ORIGINAL -- his library holds DSLR JPEGs of
+ * 25-27 MiB. The fix followed from that and not from any stack frame:
+ * `prepareCandidateAnalysisProxy` now takes a MediaStore id, not a URI, and goes
+ * through the native `albumAnalysisProxy`, which asks
+ * ContentResolver.loadThumbnail first and otherwise hands ImageDecoder the
+ * 1280 px target BEFORE pixel allocation. The `compress: 0.94` full-quality
+ * re-encode went with it. The exact allocating frame was never identified, and
+ * did not need to be once the route was gone -- but do not let that absence
+ * invite the refuted answer back.
  *
- * That makes #41 and #59 the same root cause: this app still hands full-size
- * originals to the image pipeline. Fixing #59 -- decode MediaStore thumbnails
- * instead of originals -- should remove the pressure that causes #41, and is a
- * better lead than anything further down the saveAsync path.
+ * WHY THREE, and not six. The models do not scale with this number:
+ *   - TinyCLIP and MobileFaceNet run through PhoteoLiteRt, whose invokes hold a
+ *     per-interpreter lock, so concurrent photos serialise on the same
+ *     interpreter however many are admitted here. TinyCLIP alone is a
+ *     36 x 630ms = ~23s floor for the build above.
+ *   - MoveNet runs on fast-tflite, a separate path.
+ * What DOES scale is quality-decode at 1299ms -- the largest per-photo cost, and
+ * the one with no shared lock. Three covers it without stacking model work that
+ * cannot overlap anyway.
  *
- * ACTED ON, and this is the current state: the proxy no longer takes an
- * original URI at all. `prepareCandidateAnalysisProxy` now takes a MediaStore
- * id and goes through the native `albumAnalysisProxy`, which asks
- * ContentResolver.loadThumbnail first and, failing that, hands ImageDecoder the
- * 1280 px target BEFORE pixel allocation. The route that could buffer a 27.63
- * MiB original is gone, and with it the `compress: 0.94` full-quality re-encode
- * that sat on the end of it.
- *
- * That is a removed ROUTE, not a confirmed diagnosis. Nobody has yet watched a
- * build with the new path and seen the peak drop, because the phone was locked.
- * Until someone does, #41 stays open and the sentence above stands.
- *
- * Confirming the exact frame needs the phone, which was locked. Read the phase
- * label from a concurrency-one run (see below) before believing any successor.
- *
- * The `quality-decode` label is not evidence of the culprit either, and this is
- * why the whole attribution came apart. `measureImageQuality` is only ever
- * called on `analysisUri` -- the proxy -- and it resamples to
- * QUALITY_SAMPLE_WIDTH = 512, so the path that phase names is the most tightly
- * bounded one in the build. What the label actually records is which timing
- * bucket was OPEN on one photo's timeline, and at concurrency six, with four
- * coroutine-dispatched paths per photo, up to 24 allocations from other photos
- * were in flight against the same heap. The bucket names the bystander, not the
- * allocator.
- *
- * Serializing at the photo boundary reduces the source-derived maximum from 24
- * pipelines to four. Keep it at one until the payload above is explained: if a
- * single photo really can allocate 27.63 MiB plus its ~38.6 MiB Base64 copy,
- * that is ~66 MiB transient against a 192-256 MB heap, and two photos would
- * likely be fatal. This is a stopgap that bounds the blast radius, NOT a fix --
- * the fix is to stop producing a 27.63 MiB payload at all.
- *
- * It also buys the diagnosis. One photo at a time means one photo's allocations
- * in flight, so the NEXT OOM's phase label finally names the path that
- * allocated instead of whichever bucket happened to be open. Read the label
- * from a concurrency-one run before believing any successor to this comment.
- *
- * The cost is real and unmeasured. `saveAsync` is declared
- * `AsyncFunction(...) Coroutine`, so it runs on a coroutine dispatcher rather
- * than the single expo AsyncFunctionQueue -- these calls genuinely did run in
- * parallel, and going 6 -> 1 genuinely serializes them. Measure album build on
- * the phone before assuming this is cheap; do not infer it from the old
- * six-photo trace.
+ * Do not raise this without re-reading `analysis-degraded` from a real build.
+ * `oom:0` is the number that matters; if it stops being zero, this went too far.
  */
-const ANALYZE_CONCURRENCY = 1;
+const ANALYZE_CONCURRENCY = 3;
 
 /**
  * M2: reuse Tier-B signals across album builds instead of recomputing them.

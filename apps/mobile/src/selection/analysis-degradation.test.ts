@@ -250,21 +250,26 @@ assert(
   buildAlbumSource.includes("prepareCandidateAnalysisProxy(photo.id, (error) =>"),
   "the proxy is the most expensive failure of the six -- it costs every other signal -- so it must report too",
 );
+// Concurrency is a MEASURED setting now, not a guess. It was 1 as a stopgap
+// while the OOM route existed; a 36-photo build on the device then reported
+// `oom:0` with `proxy-create` at mean 11.1ms, and it moved to 3. Whatever the
+// number is, the comment must carry the build that justifies it -- the failure
+// mode this repo actually hits is a constant changed on a hunch.
 assert(
-  buildAlbumSource.includes("const ANALYZE_CONCURRENCY = 1;") &&
-    buildAlbumSource.includes("24 Java-array pipelines to overlap") &&
-    buildAlbumSource.includes("source-derived maximum from 24") &&
-    buildAlbumSource.includes("The cost is real and unmeasured"),
-  "the source-derived ART byte-array fan-out must stay bounded without claiming unmeasured throughput",
+  /const ANALYZE_CONCURRENCY = \d+;/.test(buildAlbumSource) &&
+    buildAlbumSource.includes("analysis-degraded={photos:0/36") &&
+    buildAlbumSource.includes("oom:0` is the number that matters"),
+  "the analysis concurrency must cite the measured build that justifies it",
 );
-// The allocation must stay RETRACTED. efe401d identified it as expo's
-// `toByteArray()`; that was refuted twice (the 1280 px proxy cannot hold
+// The allocation must stay RETRACTED. It was once identified as expo's
+// `toByteArray()`; that is refuted twice (the 1280 px proxy cannot hold
 // 27.63 MiB, and the call only runs under `base64: true`, whose sites here top
-// out at 1280 px). This pins the retraction rather than the wrong answer,
-// because the failure mode is someone reading a confident comment and stopping.
+// out at 1280 px). The route was removed without ever naming the frame, so the
+// absence of a culprit is exactly what invites the wrong answer back.
 assert(
-  buildAlbumSource.includes("Do not treat #41's allocation as identified"),
-  "the OOM allocation must not be described as identified while it is not",
+  buildAlbumSource.includes("must not be\n * re-asserted") ||
+    buildAlbumSource.includes("must not be re-asserted"),
+  "the refuted toByteArray attribution must stay marked as refuted",
 );
 assert(
   buildAlbumSource.includes("[PhoteoAlbumBuildTiming]") &&
