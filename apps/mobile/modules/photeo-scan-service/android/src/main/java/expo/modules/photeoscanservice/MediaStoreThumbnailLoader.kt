@@ -1,0 +1,197 @@
+package expo.modules.photeoscanservice
+
+import android.content.ContentUris
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import android.util.Size
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.max
+import kotlin.math.roundToInt
+
+internal enum class ThumbnailSource {
+  CACHE,
+  MEDIA_STORE,
+  BOUNDED_FALLBACK,
+  MISSING,
+}
+
+internal data class ResolvedThumbnail(
+  val uri: String?,
+  val source: ThumbnailSource,
+  val decodeNanos: Long = 0L,
+  val bitmapBytes: Long = 0L,
+)
+
+/** One lock per cache key prevents duplicate bitmaps for the same visible tile. */
+private val thumbnailLocks = ConcurrentHashMap<String, Any>()
+
+/**
+ * Resolves a small on-disk JPEG for a MediaStore id.
+ *
+ * The normal path is ContentResolver.loadThumbnail: Android's media provider
+ * returns its thumbnail without handing this process the full original. If an
+ * OEM/provider has no thumbnail, ImageDecoder is allowed to open the source but
+ * is given the final target dimensions before it decodes any pixels. That
+ * fallback can therefore never allocate a full-resolution bitmap.
+ */
+internal fun resolveMediaStoreThumbnail(
+  context: Context,
+  assetId: String,
+  requestedEdge: Int,
+): ResolvedThumbnail {
+  val id = assetId.toLongOrNull() ?: return ResolvedThumbnail(null, ThumbnailSource.MISSING)
+  val edge = requestedEdge.coerceIn(64, 1024)
+  val cached = File(context.cacheDir, "thumbs/${id}_$edge.jpg")
+  if (cached.isUsableThumbnail()) {
+    return ResolvedThumbnail(Uri.fromFile(cached).toString(), ThumbnailSource.CACHE)
+  }
+
+  val cacheKey = "${id}_$edge"
+  val lock = thumbnailLocks.computeIfAbsent(cacheKey) { Any() }
+  try {
+    return synchronized(lock) {
+      if (cached.isUsableThumbnail()) {
+        return@synchronized ResolvedThumbnail(
+          Uri.fromFile(cached).toString(),
+          ThumbnailSource.CACHE,
+        )
+      }
+
+      val source = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+      val decodeStarted = System.nanoTime()
+      val decoded = decodeThumbnail(context, source, id, edge)
+      val decodeNanos = System.nanoTime() - decodeStarted
+      if (decoded == null) {
+        return@synchronized ResolvedThumbnail(
+          null,
+          ThumbnailSource.MISSING,
+          decodeNanos,
+        )
+      }
+
+      val bitmap = decoded.first
+      val bitmapBytes = bitmap.allocationByteCount.toLong()
+      try {
+        if (!writeAtomically(bitmap, cached)) {
+          return@synchronized ResolvedThumbnail(
+            null,
+            ThumbnailSource.MISSING,
+            decodeNanos,
+            bitmapBytes,
+          )
+        }
+        ResolvedThumbnail(
+          Uri.fromFile(cached).toString(),
+          decoded.second,
+          decodeNanos,
+          bitmapBytes,
+        )
+      } finally {
+        bitmap.recycle()
+      }
+    }
+  } finally {
+    thumbnailLocks.remove(cacheKey, lock)
+  }
+}
+
+private fun decodeThumbnail(
+  context: Context,
+  source: Uri,
+  id: Long,
+  edge: Int,
+): Pair<Bitmap, ThumbnailSource>? {
+  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    try {
+      val bitmap = context.contentResolver.loadThumbnail(source, Size(edge, edge), null)
+      return boundUnexpectedProviderBitmap(bitmap, edge) to ThumbnailSource.MEDIA_STORE
+    } catch (_: Throwable) {
+      // Some providers have no thumbnail. The target-sized decoder below is
+      // the bounded fallback; never pass the original URI back to the tile.
+    }
+  }
+
+  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+    try {
+      val bitmap = decodeTargetSized(context, source, edge)
+      return bitmap to ThumbnailSource.BOUNDED_FALLBACK
+    } catch (_: Throwable) {
+      // Deleted/corrupt/inaccessible media becomes a quiet missing tile.
+    }
+  } else {
+    try {
+      @Suppress("DEPRECATION")
+      val bitmap = MediaStore.Images.Thumbnails.getThumbnail(
+        context.contentResolver,
+        id,
+        MediaStore.Images.Thumbnails.MINI_KIND,
+        null,
+      )
+      if (bitmap != null) {
+        return boundUnexpectedProviderBitmap(bitmap, edge) to ThumbnailSource.BOUNDED_FALLBACK
+      }
+    } catch (_: Throwable) {
+      // Old Android has no target-sized decoder. Missing is safer than an
+      // unbounded original decode on a device already known to be memory-tight.
+    }
+  }
+  return null
+}
+
+/** API 28+ decoder whose output is bounded before pixel allocation. */
+private fun decodeTargetSized(context: Context, source: Uri, edge: Int): Bitmap {
+  return ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, source)) {
+      decoder, info, _ ->
+    val sourceWidth = max(1, info.size.width)
+    val sourceHeight = max(1, info.size.height)
+    val scale = minOf(1.0, edge.toDouble() / max(sourceWidth, sourceHeight).toDouble())
+    val width = max(1, (sourceWidth * scale).roundToInt())
+    val height = max(1, (sourceHeight * scale).roundToInt())
+    decoder.setTargetSize(width, height)
+    decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE)
+    decoder.setMemorySizePolicy(ImageDecoder.MEMORY_POLICY_LOW_RAM)
+    decoder.setOnPartialImageListener { false }
+  }
+}
+
+/** Defensive only: loadThumbnail is contracted to honor Size, but OEMs vary. */
+private fun boundUnexpectedProviderBitmap(bitmap: Bitmap, edge: Int): Bitmap {
+  if (bitmap.width <= edge && bitmap.height <= edge) return bitmap
+  val scale = edge.toDouble() / max(bitmap.width, bitmap.height).toDouble()
+  val width = max(1, (bitmap.width * scale).roundToInt())
+  val height = max(1, (bitmap.height * scale).roundToInt())
+  val bounded = Bitmap.createScaledBitmap(bitmap, width, height, true)
+  if (bounded !== bitmap) bitmap.recycle()
+  return bounded
+}
+
+private fun File.isUsableThumbnail(): Boolean = isFile && length() > 0L
+
+private fun writeAtomically(bitmap: Bitmap, destination: File): Boolean {
+  destination.parentFile?.mkdirs()
+  if (destination.exists() && !destination.isUsableThumbnail() && !destination.delete()) {
+    return false
+  }
+  val partial = File(
+    destination.parentFile,
+    "${destination.name}.${Thread.currentThread().id}.part",
+  )
+  return try {
+    val compressed = partial.outputStream().use { output ->
+      bitmap.compress(Bitmap.CompressFormat.JPEG, 85, output)
+    }
+    if (!compressed || partial.length() <= 0L) return false
+    if (partial.renameTo(destination)) return true
+    // Another process/thread may have won the atomic publish race.
+    destination.isUsableThumbnail()
+  } catch (_: Throwable) {
+    false
+  } finally {
+    partial.delete()
+  }
+}

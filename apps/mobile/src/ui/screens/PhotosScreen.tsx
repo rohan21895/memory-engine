@@ -161,7 +161,30 @@ function worthShowing(asset: MediaLibrary.Asset): boolean {
  * leaves the screen, so anything held in the tile's own state is thrown away
  * exactly when the user is most likely to scroll back to it.
  */
-const thumbnailCache = new Map<string, string>();
+const thumbnailCache = new Map<string, string | null>();
+const thumbnailRequests = new Map<string, Promise<string | null>>();
+
+function requestThumbnail(assetId: string, request: number): Promise<string | null> {
+  const key = `${assetId}:${request}`;
+  if (thumbnailCache.has(key)) return Promise.resolve(thumbnailCache.get(key) ?? null);
+  const pending = thumbnailRequests.get(key);
+  if (pending) return pending;
+
+  const requestPromise = thumbnailUri(assetId, request)
+    .then((uri) => {
+      thumbnailCache.set(key, uri);
+      return uri;
+    })
+    .catch(() => {
+      thumbnailCache.set(key, null);
+      return null;
+    })
+    .finally(() => {
+      thumbnailRequests.delete(key);
+    });
+  thumbnailRequests.set(key, requestPromise);
+  return requestPromise;
+}
 
 /**
  * One photo in the grid.
@@ -181,40 +204,33 @@ function PhotoTile({
   onOpen?: (assetId: string) => void;
   size: number;
 }) {
-  const [failed, setFailed] = useState(false);
   // Requested at twice the tile so the grid stays sharp on a 3x screen, and
   // quantised so every tile in a column asks for ONE size -- MediaStore caches
   // per size, and a per-device pixel width would miss that cache every time.
   const request = Math.min(512, Math.max(128, Math.round((size * 2) / 64) * 64));
   const key = `${assetId}:${request}`;
-  const [thumb, setThumb] = useState<string | undefined>(() => thumbnailCache.get(key));
+  const [thumb, setThumb] = useState<string | null | undefined>(() => thumbnailCache.get(key));
   const box = { height: size, width: size };
 
   useEffect(() => {
     if (thumbnailCache.has(key)) {
-      setThumb(thumbnailCache.get(key));
+      setThumb(thumbnailCache.get(key) ?? null);
       return;
     }
     let live = true;
-    // The original is painted while this resolves, so a slow thumbnail can only
-    // ever make the grid faster, never blank.
-    thumbnailUri(assetId, request)
+    // A quiet tile is intentional while native resolution runs. Painting the
+    // original even briefly would let Glide buffer a 25-50 MiB JPEG before the
+    // MediaStore result arrives, defeating the memory fix.
+    setThumb(undefined);
+    requestThumbnail(assetId, request)
       .then((uri) => {
-        if (!uri) return;
-        thumbnailCache.set(key, uri);
         if (live) setThumb(uri);
-      })
-      .catch(() => {
-        // Falling back to the original is the whole point; nothing to report.
       });
     return () => {
       live = false;
     };
   }, [assetId, key, request]);
 
-  if (failed) {
-    return <View accessibilityLabel="Photo unavailable" accessibilityRole="image" style={[styles.tileMissing, box]} />;
-  }
   return (
     <Pressable
       accessibilityHint="Opens this photo full screen"
@@ -222,17 +238,25 @@ function PhotoTile({
       accessibilityRole="imagebutton"
       onPress={onOpen ? () => onOpen(assetId) : undefined}
     >
-      <Image
-        cachePolicy="memory-disk"
-        contentFit="cover"
-        onError={() => setFailed(true)}
-        // Keyed on WHICH uri is showing, not just the asset: without this the
-        // swap from original to thumbnail reuses the decoded original and the
-        // saving never lands.
-        recyclingKey={thumb ?? assetId}
-        source={thumb ?? contentUri(assetId)}
-        style={[styles.tile, box]}
-      />
+      {thumb ? (
+        <Image
+          cachePolicy="memory-disk"
+          contentFit="cover"
+          onError={() => {
+            thumbnailCache.set(key, null);
+            setThumb(null);
+          }}
+          recyclingKey={key}
+          source={thumb}
+          style={[styles.tile, box]}
+        />
+      ) : (
+        <View
+          accessibilityLabel={thumb === null ? "Photo unavailable" : "Loading photo"}
+          accessibilityRole="image"
+          style={[styles.tileMissing, box]}
+        />
+      )}
     </Pressable>
   );
 }
@@ -264,9 +288,9 @@ function PhotoViewer({
   const [index, setIndex] = useState(startIndex);
   const current = assets[index];
   if (!current) return null;
-  const thumb = [...thumbnailCache.entries()].find(([key]) =>
+  const thumb = [...thumbnailCache.entries()].find(([key, uri]) => uri &&
     key.startsWith(`${current.id}:`),
-  )?.[1];
+  )?.[1] ?? undefined;
   return (
     <View style={styles.viewer}>
       <StatusBar hidden />
