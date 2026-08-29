@@ -254,8 +254,17 @@ assert(
   buildAlbumSource.includes("const ANALYZE_CONCURRENCY = 1;") &&
     buildAlbumSource.includes("24 Java-array pipelines to overlap") &&
     buildAlbumSource.includes("source-derived maximum from 24") &&
-    buildAlbumSource.includes("Throughput at concurrency one has not"),
+    buildAlbumSource.includes("The cost is real and unmeasured"),
   "the source-derived ART byte-array fan-out must stay bounded without claiming unmeasured throughput",
+);
+// The allocation must stay RETRACTED. efe401d identified it as expo's
+// `toByteArray()`; that was refuted twice (the 1280 px proxy cannot hold
+// 27.63 MiB, and the call only runs under `base64: true`, whose sites here top
+// out at 1280 px). This pins the retraction rather than the wrong answer,
+// because the failure mode is someone reading a confident comment and stopping.
+assert(
+  buildAlbumSource.includes("Do not treat #41's allocation as identified"),
+  "the OOM allocation must not be described as identified while it is not",
 );
 assert(
   buildAlbumSource.includes("[PhoteoAlbumBuildTiming]") &&
