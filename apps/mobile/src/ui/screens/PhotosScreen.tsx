@@ -44,7 +44,13 @@ import { LocationFilterModal } from "../components/LocationFilterModal";
 import { assetIdsForPlace, countryForState, getStates, stateForCity } from "../components/place-source";
 import { buildPlaceTree, placeParentNames, topPlaces } from "../components/place-tree";
 import { fonts } from "../fonts";
-import { capturedAtFor, rowsFor, samePeopleProjection, type LibraryRow } from "../photo-screen-model";
+import {
+  capturedAtFor,
+  mergeByCapturedAt,
+  rowsFor,
+  samePeopleProjection,
+  type LibraryRow,
+} from "../photo-screen-model";
 import {
   recordThumbnailResolution,
   thumbnailRequestFor,
@@ -547,10 +553,14 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
       cursor.current = page.endCursor;
       hasNextPage.current = page.hasNextPage;
       const worth = page.assets.filter(worthShowing);
-      // Re-sorted within the page by the best timestamp available, newest
-      // first. The fetch order is already close -- that is why it is the fetch
-      // key -- but where `datetaken` DOES survive it is the better answer, and
-      // this puts those photos back where they belong without a second query.
+      // Stamped once per photo, here, because `capturedAtFor` parses the
+      // filename and a sort comparator would run that regex O(n log n) times on
+      // the thread that paints the grid. Sorted newest first afterwards: the
+      // fetch order is only close, and the merge in `loadMore` needs each page
+      // sorted to place photos the filename moved out of their fetch page.
+      for (const asset of worth) {
+        (asset as { capturedAt?: number }).capturedAt = capturedAtFor(asset);
+      }
       worth.sort((a, b) => capturedAtFor(b) - capturedAtFor(a));
       matching.push(...(activeFilter ? worth.filter((asset) => activeFilter.has(asset.id)) : worth));
       if (page.assets.length === 0) break;
@@ -580,7 +590,9 @@ export function PhotosScreen({ onNamePerson, onReviewFaceMerges }: { onNamePerso
     setLoadingMore(true);
     try {
       const next = await fetchBurst();
-      if (next.length > 0) setAssets((current) => current.concat(next));
+      // Merged, not appended: a photo whose filename date disagrees with the
+      // `date_modified` MediaStore paged by can belong far above this page.
+      if (next.length > 0) setAssets((current) => mergeByCapturedAt(current, next));
     } catch {
       setStatus("error");
     } finally {
