@@ -4,13 +4,16 @@ import type { PlannerCandidate, PlannerPolicy } from "./album-planner";
 /**
  * A pose fixture whose cap can actually hold.
  *
- * The production album target is 24 and the fixture has thirteen readable
- * MoveNet clusters, so its readable-pose capacity is 13 * 2 = 26. Unlike the
- * event fixtures' four-word pose vocabulary, this pool does not force the
- * planner to relax `maxPerBodyPose` merely to fill the album.
+ * The production album target is 24. Thirteen raw MoveNet clusters become
+ * fifteen identity-scoped pose buckets: the arms-crossed cluster belongs to
+ * three different people, while the hands-on-hips cluster repeats for Bo.
+ * Their capacity is 15 * 2 = 30, so unlike the event fixtures' four-word pose
+ * vocabulary, this pool does not force the planner to relax `maxPerBodyPose`
+ * merely to fill the album.
  *
- * Two deliberately awkward shapes make the current key observable:
+ * Three deliberately awkward shapes make the current key observable:
  *   - three different people have the same arms-crossed pose;
+ *   - three photos repeat Bo's same hands-on-hips pose;
  *   - three photos of Ava have no readable pose at all.
  * The remaining clusters are two separate takes of one subject in the same
  * posture, as a real portrait session commonly produces.
@@ -22,6 +25,12 @@ export const DIFFERENT_PEOPLE_SAME_POSE_IDS = [
   "pose-arms-crossed-ava",
   "pose-arms-crossed-bo",
   "pose-arms-crossed-cy",
+] as const;
+
+export const SAME_PERSON_SAME_POSE_IDS = [
+  "pose-hands-on-hips-bo-a",
+  "pose-hands-on-hips-bo-b",
+  "pose-hands-on-hips-bo-c",
 ] as const;
 
 export const NO_POSE_SAME_PERSON_IDS = [
@@ -68,9 +77,12 @@ export function poseDedupFixture(): AlbumFixture {
     portrait(DIFFERENT_PEOPLE_SAME_POSE_IDS[0], 0.999, "ava", "movenet:0"),
     portrait(DIFFERENT_PEOPLE_SAME_POSE_IDS[1], 0.998, "bo", "movenet:0"),
     portrait(DIFFERENT_PEOPLE_SAME_POSE_IDS[2], 0.997, "cy", "movenet:0"),
+    portrait(SAME_PERSON_SAME_POSE_IDS[0], 0.996, "bo", "movenet:1"),
+    portrait(SAME_PERSON_SAME_POSE_IDS[1], 0.995, "bo", "movenet:1"),
+    portrait(SAME_PERSON_SAME_POSE_IDS[2], 0.994, "bo", "movenet:1"),
   ];
 
-  for (let index = 1; index < POSTURES.length; index += 1) {
+  for (let index = 2; index < POSTURES.length; index += 1) {
     const posture = POSTURES[index];
     const person = ["ava", "bo", "cy"][index % 3];
     candidates.push(
