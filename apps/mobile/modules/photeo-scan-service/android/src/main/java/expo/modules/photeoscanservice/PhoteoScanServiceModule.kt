@@ -16,6 +16,11 @@ import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
+import java.util.concurrent.Executors
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 
 /**
  * JS control over the scan's foreground service.
@@ -30,11 +35,42 @@ private const val DIAGNOSTIC_LOG = "photeo-diagnostics.log"
 /** One session of timings is a few KB; this is a ceiling, not a target. */
 private const val MAX_DIAGNOSTIC_BYTES = 512L * 1024L
 
+/**
+ * Enough decodes in flight to keep the grid ahead of a fast scroll, few enough
+ * that four full-size bitmaps are the most alive at once. Raising this trades
+ * heap for latency on a device that has already OOMed once.
+ */
+private const val THUMBNAIL_THREADS = 4
+
 class PhoteoScanServiceModule : Module() {
   private val context: Context
     get() = appContext.reactContext ?: throw Exceptions.ReactContextLost()
 
   private var running = false
+
+  /**
+   * Expo runs EVERY AsyncFunction -- in every module in the app -- on one shared
+   * HandlerThread ("expo.modules.AsyncFunctionQueue", see AppContext.kt). That
+   * queue is serial, so the 40-second `clusterFaces` call blocks every thumbnail
+   * behind it and the photo grid simply stops filling in while a recluster runs.
+   * Thumbnails also serialise against each other: measured on the owner's phone,
+   * the average resolution climbed 12ms -> 87ms as requests piled up, which is
+   * queue wait, not decode cost.
+   *
+   * Two private scopes, so neither can starve the other or anything else.
+   */
+  private val thumbnailScope = CoroutineScope(
+    Executors.newFixedThreadPool(THUMBNAIL_THREADS).asCoroutineDispatcher() +
+      SupervisorJob() +
+      CoroutineName("photeo.thumbnails")
+  )
+
+  /** One thread: clustering already fans out across cores inside FaceGraph. */
+  private val clusterScope = CoroutineScope(
+    Executors.newSingleThreadExecutor().asCoroutineDispatcher() +
+      SupervisorJob() +
+      CoroutineName("photeo.cluster")
+  )
 
   override fun definition() = ModuleDefinition {
     Name("PhoteoScanService")
@@ -310,7 +346,7 @@ class PhoteoScanServiceModule : Module() {
       } catch (error: Throwable) {
         null
       }
-    }
+    }.runOnQueue(thumbnailScope)
 
     AsyncFunction("clusterFaces") {
       embeddings: String,
@@ -325,6 +361,6 @@ class PhoteoScanServiceModule : Module() {
       } catch (error: Throwable) {
         null
       }
-    }
+    }.runOnQueue(clusterScope)
   }
 }
