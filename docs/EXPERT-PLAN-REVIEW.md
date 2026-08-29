@@ -199,41 +199,14 @@ highest co-occurring pair                 0.6992
 so we take the plan's recommendation — but note that it cannot help fragmentation,
 because it is not currently letting anything through *or* holding anything back.
 
-The interesting part is what the sweep found on the way. Among co-occurring pairs above
-0.60 linkage — the ones the same-photo cannot-link is actively blocking — there are two
-completely different populations:
+The sweep also found low-rate and high-rate co-occurring pairs, but it did not label
+them. The earlier text promoted that unlabelled shape into a claim about which pairs
+were genuine splits. The current answer audit below shows why that claim must be
+withdrawn: only one answer constrains a co-occurring pair.
 
-```
-  linkage  A (faces)          B (faces)        shared  rate
-  0.6992   person-311  (  1)  person-312  (  1)     1  100.0%
-  0.6796   person-414  (  1)  person-415  (  1)     1  100.0%
-  0.6727   person-232  (  1)  person-233  (  1)     1  100.0%
-  ...
-  0.6369   person-55   (228)  person-714  ( 29)     1    3.4%
-  0.6268   person-14   (258)  person-729  (152)     2    1.3%
-  0.6226   person-126  ( 67)  person-930  ( 32)     1    3.1%
-```
-
-The first group co-occurs in 100% of their appearances: two faces, one photo, nothing
-else. Either two look-alikes or one double-detection, and there is no evidence to tell
-them apart. The cannot-link is doing exactly its job.
-
-The second group is the opposite. `person-14` and `person-729` hold 258 and 152 faces
-and share **2 photos out of 410 appearances** — 1.3%. That is not what two different
-people who know each other look like; our own co-occurrence study put clearly-different
-people at a median of 18.8%. It is what one person looks like when a single photo
-contains a reflection, a framed photo on a wall, or a spurious second detection.
-
-**Three pairs sit at linkage ≥ 0.60 with co-occurrence ≤ 5%, and repairing them merges
-213 faces.** One of those pairs alone is 152. These are almost certainly the tiles the
-owner is complaining about.
-
-We do **not** auto-merge on this. The plan is right that similarity between co-occurring
-people is the failure mode to protect against, and we measured separately that no
-threshold change is safe. But the *rate* is independent evidence the review queue should
-show: "together in only 2 of 410 photos" is the sentence that lets him answer the
-question correctly in one second. #153 already ranks these pairs first; the evidence is
-not yet on the card.
+The rate still belongs on the review card because "together in 2 of 410 photos" is more
+useful context than "2 shared photos." It is a ranking and explanation input only, not
+evidence strong enough to answer the merge question.
 
 ## The finding that reorders everything: nothing is unblocked at the top
 
@@ -252,45 +225,24 @@ split the results by whether the same-photo rule blocks them:
 pair the app could merge on similarity, it already has. Everything left at the top of
 the distribution is held apart by the same-photo cannot-link — not by the threshold.
 
-And the blocked population is cleanly bimodal on co-occurrence rate:
+The earlier version of this section treated a gap in the unlabelled rate distribution as
+if it separated confirmed same-person splits from confirmed different people. Withdraw
+that inference: the answer store behind it held 38 records, but 37 were not usable as
+identity-level labels.
 
-```
-  rate    linkage  A (faces)          B (faces)        shared
-   0.6%   0.5393   person-16   ( 180)  person-187  ( 310)     1
-   0.9%   0.5678   person-24   ( 151)  person-1090 ( 116)     1
-   1.0%   0.5152   person-1    ( 487)  person-20   ( 101)     1
-   1.2%   0.5228   person-23   ( 168)  person-313  ( 373)     2
-   1.3%   0.6268   person-14   ( 258)  person-729  ( 152)     2
-   2.4%   0.5216   person-47   ( 439)  person-388  ( 127)     3
-   3.6%   0.5381   person-2    ( 718)  person-769  (  28)     1
-  ...  gap  ...
-  52.6%   0.5439   person-2    ( 718)  person-158  (  19)    10
-  57.1%   0.5199   person-3    (1159)  person-177  (   7)     4
-```
+Re-measured on 2026-08-29 after face-anchored answers shipped, the store holds **89
+answers** (85 same, 4 different). Of those, 73 resolve against the current identities:
+72 are already satisfied inside one cluster, while only **one answer constrains a current
+co-occurring pair**. That pair is labelled different people at 2.7% co-occurrence. No
+answered pair is in the narrower over-bar population held apart only by co-occurrence.
 
-There is a clean break between 3.6% and 7.7%. Below it: eleven pairs holding **1,065
-faces**, where two large clusters share one, two or three photos out of hundreds. Above
-it: pairs that really are two people who are always photographed together, where the
-cannot-link is doing exactly the right thing.
+One labelled block cannot establish a rate boundary, validate the old bands, or justify
+any clustering decision. Co-occurrence remains an absolute constraint and a review-queue
+ranking input; only the user-confirmed answer authorises a repair.
 
-Two clusters of 180 and 310 faces that share exactly one photo are not two people who
-met once. The likelier explanation is that the one shared photo contains a reflection,
-a framed photo on a wall, or a spurious second detection — **one bad face observation
-holding a 490-face identity apart.**
-
-That reframes the fix. Rather than asking "are these the same person?", we can ask about
-the single shared photo: *is this second face a real person, or an artifact?* One
-question, and a 490-face split resolves. It is a smaller question than a merge
-confirmation, it is one the owner can answer instantly from the crop, and it removes the
-constraint at its source instead of overriding it.
-
-**This is now our highest-value item, ahead of multi-prototype identities.** It is also
-invisible from the summary the expert worked from, which is why the plan does not
-contain it.
-
-*Honest caveat:* a low co-occurrence rate is evidence, not proof. Two people
-photographed together exactly once would look identical in this table. That is precisely
-why the action is a user-answered question and not an auto-merge.
+The user-confirmed review queue remains the accepted repair path. This measurement does
+not establish that low co-occurrence is evidence for either answer; it establishes only
+that the labelled set is still too small to decide.
 
 ## What Codex's audit added
 

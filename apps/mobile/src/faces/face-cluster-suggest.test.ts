@@ -96,12 +96,10 @@ assert(farIndex !== 0, "a distant pair must never outrank a near one");
 // A pair held apart ONLY by co-occurrence is the most important question there
 // is, and must be offered first.
 //
-// This is measured behaviour, not a hypothesis. On the owner's real 17,699-face
-// index, 37 pairs cleared their merge bar and every single one was vetoed by
-// the same-photo rule -- 27 of them by exactly ONE shared photo out of hundreds
-// of faces. The merge pass is not too strict; it is being overruled by a veto a
-// single frame can trigger. Dropping these from the list, which an earlier
-// version of this file did, hid the whole problem.
+// The current labelled set is too small to estimate how often this is a real
+// split: 89 answers constrain only one co-occurring pair, and zero over-bar
+// blocks. What is testable here is structural -- a vetoed, similarity-qualified
+// pair must remain reviewable so the user, rather than the score, decides it.
 {
   // The two groups sit 50 degrees apart, cosine ~0.64. That has to land BETWEEN
   // the merge bar and the 0.72 mirror/panorama exception, which is the only

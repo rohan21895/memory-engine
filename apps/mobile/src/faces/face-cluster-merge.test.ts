@@ -224,9 +224,10 @@ assert(frequentOverlap.length === 2, "lower-similarity co-faces remain a hard ca
  * same four frames, and the old escape merged it automatically. It no longer
  * does, and that is deliberate rather than a regression:
  *
- *  - The same shape describes two people who are ALWAYS photographed together.
- *    On the owner's library those exist and sit at 52-57% co-occurrence, and
- *    merging them fuses, say, a parent with their child, permanently.
+ *  - The same shape describes two people who are always photographed together,
+ *    and merging them can fuse, say, a parent with their child permanently.
+ *    The current answer audit has too few co-occurring labels to estimate a
+ *    rate for that case.
  *  - Similarity cannot separate the two readings. Only the user can.
  *  - In the real pipeline this rarely arises anyway: `dedupeFaceObservations`
  *    deletes repeat detections inside a single photo, on box geometry as well as

@@ -269,10 +269,10 @@ const options = { threshold: 0.5, identityMergeThreshold: 0.6 };
  * than one people in the image, any basic ML model will tell that". The app
  * already knows -- it has placed several distinct people in that frame.
  *
- * Measured on his live index: of the 4,073 pairs held apart by exactly one
- * shared photo, that photo holds 3+ people in 92.2% of cases. Run against his
- * real sixty-question queue, 7 were co-occurrence-blocked, 6 are suppressed
- * here, and the survivor is the doubtful shape -- two people in frame at 0.899.
+ * The current labelled set cannot estimate how often either answer wins. This
+ * rule needs only the structural fact the app already has: a photo containing
+ * three or more distinct clusters is a group, while a two-person frame remains
+ * ambiguous and reviewable.
  */
 {
   const crowd = ["party"];

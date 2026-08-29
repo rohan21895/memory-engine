@@ -118,8 +118,8 @@
  * `face-index.json` stores only centroids. So the shipped clusterer is re-run
  * over the real observations and the membership is taken from its own
  * `onAssign`/`onMerge` callbacks. That reproduces the device's partition to
- * within its incremental batching and the user's 11 saved constraints (2,253
- * people against 2,244, identical 15,785 faces and 1,315 singletons), and it
+ * within its incremental batching and the then-current saved constraints
+ * (identical face membership and singleton count), and it
  * has the property that matters more than exactness: the single-centroid
  * baseline and the prototypes are derived from the SAME membership, so nothing
  * separates the two curves except the representation.

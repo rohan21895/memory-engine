@@ -60,7 +60,7 @@ assert(
   );
   assert(
     line.includes("counted twice"),
-    `a 0.6% rate must say what that usually means, got: ${line}`,
+    `a low rate must explain the possible duplicate-face reading, got: ${line}`,
   );
 }
 
