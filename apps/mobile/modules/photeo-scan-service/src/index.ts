@@ -142,6 +142,13 @@ async function ensureNotificationPermission(): Promise<void> {
   }
 }
 
+/**
+ * Owners currently holding the foreground service. See `stopScanService`: the
+ * service is a singleton and the face scan, the photo index and the album build
+ * can each want it, so it is counted rather than toggled.
+ */
+let serviceHolders = 0;
+
 /** Starts the service. False means the scan must stay in the foreground. */
 export async function startScanService(
   title: string,
@@ -150,7 +157,11 @@ export async function startScanService(
   try {
     await ensureNotificationPermission();
     const native = await nativeModule();
-    return (await native?.start(title, text)) === true;
+    const started = (await native?.start(title, text)) === true;
+    // Counted only on success, so a failed start cannot leave a holder behind
+    // that keeps a later stop from ever reaching the native side.
+    if (started) serviceHolders += 1;
+    return started;
   } catch {
     return false;
   }
@@ -449,6 +460,14 @@ export async function clusterFacesNatively(
 }
 
 export async function stopScanService(): Promise<void> {
+  // One service, several owners: the face scan, the photo index build and now
+  // the album build all keep it alive. Without a count, whichever finished
+  // first would tear the service out from under the others -- and the loser
+  // would not fail loudly, it would quietly stop making progress the moment the
+  // screen went off, which is the exact bug this service exists to prevent.
+  if (serviceHolders > 0) serviceHolders -= 1;
+  if (serviceHolders > 0) return;
+
   // Released first and unconditionally. If the native stop throws, or the
   // native side is absent entirely, an unresolved task would go on holding the
   // timer loop -- and therefore the CPU -- for a scan that has already ended.
@@ -459,4 +478,9 @@ export async function stopScanService(): Promise<void> {
   } catch {
     // Best effort: the service also dies with the process.
   }
+}
+
+/** Owners currently keeping the foreground service alive. */
+export function scanServiceHolderCount(): number {
+  return serviceHolders;
 }

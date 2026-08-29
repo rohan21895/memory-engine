@@ -147,4 +147,32 @@ assert(
   "holdingService must be what excuses the build from waiting -- that is the whole fix",
 );
 
+// The photo index build is a long task too, and the owner asked for "any task
+// which takes time", not just the album. It had the identical plain-pause shape.
+const photoIndex = readFileSync(new URL("../import/photo-index.ts", import.meta.url), "utf8");
+assert(
+  /while \(!control\.cancelled && !control\.foreground && !indexServiceHolding\)/.test(photoIndex),
+  "the photo index build must also run on while backgrounded",
+);
+assert(
+  photoIndex.includes("await stopWatching()"),
+  "...and must await its release, or the notification and wakelock outlive the scan",
+);
+
+// One service, three owners. Counting is what stops the first one to finish
+// from tearing it out from under the others -- a failure that would not throw,
+// it would quietly stop making progress whenever the screen went off.
+const service = readFileSync(
+  new URL("../../modules/photeo-scan-service/src/index.ts", import.meta.url),
+  "utf8",
+);
+assert(
+  /if \(started\) serviceHolders \+= 1;/.test(service),
+  "a holder must be counted only when the service really started",
+);
+assert(
+  /if \(serviceHolders > 0\) serviceHolders -= 1;\s*\n\s*if \(serviceHolders > 0\) return;/.test(service),
+  "stopping must decrement and return early while other owners remain",
+);
+
 console.log("album background self-check passed");

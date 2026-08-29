@@ -692,26 +692,60 @@ function notifyProgress(done: number, total: number): void {
   }
 }
 
+/**
+ * True while the foreground service is holding this build alive.
+ *
+ * The owner asked that "any task which takes time should run in background as
+ * well". Indexing a 12,000-photo library is one of those tasks, and it used to
+ * stop dead the moment the screen went off. The face scan already owned this
+ * machinery; the service is refcounted, so three owners can hold it at once and
+ * only the last release actually stops it.
+ */
+let indexServiceHolding = false;
+
 async function watchAppState(
   control: { cancelled: boolean; foreground: boolean },
-): Promise<() => void> {
+): Promise<() => Promise<void>> {
+  let stopService: (() => Promise<void>) | undefined;
+  try {
+    const service = await import("../../modules/photeo-scan-service/src");
+    indexServiceHolding = await service.startScanService("Photeo", "Finding your photos");
+    stopService = service.stopScanService;
+  } catch {
+    indexServiceHolding = false;
+  }
+
   try {
     const { AppState } = await import("react-native");
     control.foreground = AppState.currentState === "active";
     const subscription = AppState.addEventListener("change", (state) => {
       control.foreground = state === "active";
     });
-    return () => subscription.remove();
+    return async () => {
+      subscription.remove();
+      if (indexServiceHolding) {
+        indexServiceHolding = false;
+        await stopService?.();
+      }
+    };
   } catch {
     control.foreground = true;
-    return () => undefined;
+    return async () => {
+      if (indexServiceHolding) {
+        indexServiceHolding = false;
+        await stopService?.();
+      }
+    };
   }
 }
 
 async function waitForForeground(
   control: { cancelled: boolean; foreground: boolean },
 ): Promise<boolean> {
-  while (!control.cancelled && !control.foreground) {
+  // The service holding is what excuses the wait. Without it this blocks, which
+  // remains right: continuing to decode while Android freezes the process is
+  // worse than stopping.
+  while (!control.cancelled && !control.foreground && !indexServiceHolding) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return !control.cancelled;
@@ -852,7 +886,9 @@ async function runBuild(
   } catch {
     await checkpointIndex(true);
   } finally {
-    stopWatching();
+    // Awaited: this releases the foreground service. Dropping the promise would
+    // leave the notification up and the wakelock held after the scan finished.
+    await stopWatching();
     // Every exit reports final counts: a screen that subscribed mid-scan must
     // never be left showing a scanning state the scan already left behind.
     notifyProgress(Object.keys(index.assets).length, index.total);
