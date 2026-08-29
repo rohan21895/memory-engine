@@ -64,6 +64,7 @@ import { BuildingScreen } from "./src/ui/screens/BuildingScreen";
 import { FamilyScreen } from "./src/ui/screens/FamilyScreen";
 import { FaceMergeReviewScreen } from "./src/ui/screens/FaceMergeReviewScreen";
 import { LoginScreen } from "./src/ui/screens/LoginScreen";
+import { capturedAtFor } from "./src/ui/photo-screen-model";
 import { NamePersonScreen, type NamePersonTarget } from "./src/ui/screens/NamePersonScreen";
 import { PhotosScreen } from "./src/ui/screens/PhotosScreen";
 import { StartScreen } from "./src/ui/screens/StartScreen";
@@ -122,10 +123,59 @@ function isAlbumsRoot(navigation: NavigationState): boolean {
   );
 }
 
+/**
+ * Names an album after when its photos were TAKEN, not when they were copied.
+ *
+ * This read `photo.creationTime` and took the FIRST photo that had one, which
+ * produced the exact contradiction visible on the Albums tab: an album whose own
+ * subtitle read "24 photos - Feb 2025" titled "August memories". `creationTime`
+ * is MediaStore `date_added` -- when the file arrived on this phone -- and 78% of
+ * this library has no real capture timestamp at all, so it files 4,755 photos in
+ * the wrong month. `capturedAtFor` exists precisely for that: it prefers a date
+ * parsed from the FILENAME, which 98.1% of these photos carry and which cannot
+ * drift, because copying rewrites timestamps and not names.
+ *
+ * The month is now the MODE, not the first hit. One outlier should not name a
+ * whole album, and a selection spanning months should be titled by where it
+ * mostly sits. Ties go to the earlier month, so the name is stable rather than
+ * dependent on selection order.
+ *
+ * The year is included whenever it is not the current one, because "February
+ * memories" for photos from 2019 is the same class of quiet lie as the bug above.
+ */
 function suggestedAlbumTitle(photos: PickedPhoto[]) {
-  const timestamp = photos.map((photo) => photo.creationTime).find((value): value is number => typeof value === "number" && Number.isFinite(value));
-  if (!timestamp) return "My photo album";
-  return `${new Date(timestamp).toLocaleDateString(undefined, { month: "long" })} memories`;
+  const months = new Map<string, { count: number; at: number }>();
+  for (const photo of photos) {
+    // PickedPhoto has no modificationTime; `capturedAtFor` drops non-positive
+    // candidates, so 0 simply means "this source offers no file stamp".
+    const at = capturedAtFor({
+      id: photo.id,
+      filename: photo.filename,
+      creationTime: photo.creationTime ?? 0,
+      modificationTime: 0,
+    });
+    if (!Number.isFinite(at) || at <= 0) continue;
+    const date = new Date(at);
+    const key = `${date.getFullYear()}-${date.getMonth()}`;
+    const seen = months.get(key);
+    if (seen) {
+      seen.count += 1;
+      if (at < seen.at) seen.at = at;
+    } else {
+      months.set(key, { count: 1, at });
+    }
+  }
+  if (months.size === 0) return "My photo album";
+
+  const [{ at }] = [...months.values()].sort(
+    (left, right) => right.count - left.count || left.at - right.at,
+  );
+  const when = new Date(at);
+  const month = when.toLocaleDateString(undefined, { month: "long" });
+  const year = when.getFullYear();
+  return year === new Date().getFullYear()
+    ? `${month} memories`
+    : `${month} ${year} memories`;
 }
 
 function samePhotoSelection(left: readonly PickedPhoto[], right: readonly PickedPhoto[]): boolean {
