@@ -16,6 +16,18 @@ export const colors = {
   privacySurface: "#eef2ec",
   quietSurface: "#f1efe9",
   scrim: "rgba(30, 24, 18, 0.42)",
+  /**
+   * A control that is off, on a LIGHT surface.
+   *
+   * Dimming the whole button with `opacity` is what shipped, and it works only
+   * on a dark screen. On the cream background it collapses both the fill and
+   * the label toward the page: white-on-gold at 0.38 measures about 1.2:1, and
+   * "Build my album" was legible only if you already knew what it said. These
+   * two are a flat pair -- #5c574f on #f1efe9 is 5.7:1 -- so an off button
+   * still reads as words, and reads as off because the gold is gone.
+   */
+  disabledSurface: "#f1efe9",
+  disabledText: "#5c574f",
   imageScrim: "rgba(20, 15, 10, 0.34)",
 } as const;
 

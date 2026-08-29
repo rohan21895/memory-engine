@@ -1,10 +1,14 @@
 import { Image } from "expo-image";
-import { ActivityIndicator, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StatusBar, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 
 import { albumSubtitle, type SavedAlbum } from "../../albums/album-store";
 import { PrimaryButton } from "../components/PrimaryButton";
 import { fonts } from "../fonts";
+import { gridItemWidth } from "../grid-width";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
+
+const GRID_COLUMNS = 2;
+const GRID_GAP = 14;
 
 export type SharedAlbumPreview = {
   id: string;
@@ -32,6 +36,15 @@ export function AlbumsScreen({
   onCreate: () => void;
   onOpen: (album: SavedAlbum) => void;
 }) {
+  // Measured, not a percentage. See `gridItemWidth`: "47.8%" twice plus the
+  // 14dp gap came to 316.096dp inside a 316dp row on this phone, so every card
+  // wrapped onto its own line and half the shelf was empty.
+  const { width } = useWindowDimensions();
+  const cardWidth = gridItemWidth(
+    width - layout.screenPadding * 2,
+    GRID_COLUMNS,
+    GRID_GAP,
+  );
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.scroll} contentInsetAdjustmentBehavior="automatic">
@@ -47,7 +60,7 @@ export function AlbumsScreen({
         ) : albums.length > 0 ? (
           <View style={styles.grid}>
             {albums.map((album) => (
-              <Pressable accessibilityHint="Opens this album" accessibilityLabel={`${album.title}. ${albumMeta(album)}`} accessibilityRole="button" key={album.id} onPress={() => onOpen(album)} style={({ pressed }) => [styles.albumCard, pressed ? styles.pressed : null]}>
+              <Pressable accessibilityHint="Opens this album" accessibilityLabel={`${album.title}. ${albumMeta(album)}`} accessibilityRole="button" key={album.id} onPress={() => onOpen(album)} style={({ pressed }) => [styles.albumCard, { width: cardWidth }, pressed ? styles.pressed : null]}>
                 {/* Top-anchored for the same reason as the album hero: a square
                     card cropping a tall portrait from the centre keeps torsos
                     and drops faces. */}
@@ -75,7 +88,7 @@ export function AlbumsScreen({
 }
 
 const styles = StyleSheet.create({
-  albumCard: { paddingBottom: spacing.sm, width: "47.8%" },
+  albumCard: { paddingBottom: spacing.sm },
   albumMeta: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   albumTitle: { color: colors.text, fontFamily: fonts.bold, fontSize: 16, letterSpacing: -0.2, paddingTop: spacing.xs },
   avatar: { alignItems: "center", backgroundColor: "#d9a184", borderRadius: 19, height: 38, justifyContent: "center", width: 38 },
@@ -88,7 +101,7 @@ const styles = StyleSheet.create({
   emptyTitle: { color: colors.text, fontFamily: fonts.extraBold, ...typeScale.subtitle },
   error: { color: colors.error, fontFamily: fonts.medium, textAlign: "center", ...typeScale.small },
   footer: { backgroundColor: "rgba(250,248,245,0.97)", borderTopColor: colors.hairline, borderTopWidth: 1, bottom: 0, left: 0, paddingBottom: spacing.sm, paddingHorizontal: layout.screenPadding, paddingTop: spacing.sm, position: "absolute", right: 0 },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: 14, paddingTop: spacing.md },
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: GRID_GAP, paddingTop: spacing.md },
   header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingBottom: spacing.xs },
   loading: { alignItems: "center", gap: spacing.sm, paddingTop: spacing.xxl },
   loadingText: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },

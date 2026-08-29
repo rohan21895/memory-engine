@@ -107,9 +107,36 @@ assert(
   "every album tile must be tappable",
 );
 assert(
-  detail.includes("<Lightbox") && detail.includes('mode="browse-album"'),
+  detail.includes("<Lightbox") && detail.includes('mode="view"'),
   "...and must open the full-screen viewer, which fits rather than crops",
 );
+// `view`, and specifically NOT `browse-album`, which is a REVIEW-flow mode:
+// there every photo occupies a slot with alternatives behind it. Wiring the
+// saved-album wall to it -- because the name fitted -- inherited the review
+// chrome, so a photo opened simply to look at carried "Why this photo?" and a
+// permanently-disabled "No other shots of this moment" underneath it.
+{
+  const lightbox = readFileSync(
+    new URL("../review/Lightbox.tsx", import.meta.url),
+    "utf8",
+  );
+  assert(
+    lightbox.includes('export type LightboxMode = "view" |'),
+    "the viewer must offer a plain viewing mode",
+  );
+  assert(
+    /\{mode === "view" \? null : <>/.test(lightbox),
+    "...and that mode must drop the review controls rather than disable them",
+  );
+  // VACUITY: the chrome has to still exist for the branch above to be hiding
+  // anything. An assertion that passes because the buttons were deleted
+  // outright would silently break the review flow instead.
+  assert(
+    lightbox.includes("No other shots of this moment") &&
+      lightbox.includes("copy.review.why"),
+    "VACUITY: the review controls must still be there for the other modes",
+  );
+}
 // Full screen is the one place the photo IS the point, so it gets the original
 // rather than the tile's bounded proxy.
 assert(

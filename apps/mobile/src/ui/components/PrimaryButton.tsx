@@ -36,10 +36,10 @@ export function PrimaryButton({
       {busy ? (
         <View style={styles.busyRow}>
       <ActivityIndicator color={colors.onAccent} />
-          <Text style={styles.label}>{label}</Text>
+          <Text style={[styles.label, unavailable ? styles.disabledLabel : null]}>{label}</Text>
         </View>
       ) : (
-        <Text style={styles.label}>{label}</Text>
+        <Text style={[styles.label, unavailable ? styles.disabledLabel : null]}>{label}</Text>
       )}
     </Pressable>
   );
@@ -57,7 +57,10 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   busyRow: { alignItems: "center", flexDirection: "row", gap: spacing.sm },
-  disabled: { opacity: 0.38 },
+  // Not `opacity`: see `colors.disabledSurface`. Dimming a gold button on a
+  // cream page takes the label with it.
+  disabled: { backgroundColor: colors.disabledSurface },
+  disabledLabel: { color: colors.disabledText },
   label: {
     color: colors.onAccent,
     fontFamily: fonts.body,

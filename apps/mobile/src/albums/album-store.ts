@@ -186,15 +186,40 @@ export async function deleteAlbum(id: string): Promise<SavedAlbum[]> {
  * date a screen happens to mean, that is simply wrong information.
  *
  * The photos' own date wins, because that is what the title is named for.
+ *
+ * AND IT SHOWS THE WHOLE SPAN, not just the first month. Showing only the start
+ * put a second contradiction on the shelf, which the device made obvious: an
+ * album called "July memories" sat above "39 photos · Jan 2026". Neither number
+ * is wrong -- `suggestAlbumTitle` names the month that contributed the MOST
+ * photos, this line showed the month the album REACHES BACK to -- but read
+ * together, in the same card, they simply look like a mistake. A range says
+ * both things at once and contradicts neither.
  */
 export function albumSubtitle(album: SavedAlbum): string {
-  const taken = album.dateRange?.start ? new Date(album.dateRange.start) : null;
-  const when = taken && !Number.isNaN(taken.getTime())
-    ? taken
-    : new Date(album.createdAt);
-  const month = Number.isNaN(when.getTime())
-    ? ""
-    : when.toLocaleDateString(undefined, { month: "short", year: "numeric" });
   const count = `${album.photos.length} ${album.photos.length === 1 ? "photo" : "photos"}`;
-  return month ? `${count} · ${month}` : count;
+  const usable = (at: number | undefined): Date | null => {
+    if (typeof at !== "number") return null;
+    const date = new Date(at);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+
+  const start = usable(album.dateRange?.start) ?? usable(album.createdAt);
+  if (!start) return count;
+  const end = usable(album.dateRange?.end);
+
+  const monthYear = (date: Date): string =>
+    date.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  if (!end || end < start) return `${count} · ${monthYear(start)}`;
+
+  const sameMonth =
+    start.getFullYear() === end.getFullYear() &&
+    start.getMonth() === end.getMonth();
+  if (sameMonth) return `${count} · ${monthYear(start)}`;
+
+  // Within one year the year is said once: "Jan – Jul 2026", not
+  // "Jan 2026 – Jul 2026", which is the same fact twice on a narrow card.
+  const span = start.getFullYear() === end.getFullYear()
+    ? `${start.toLocaleDateString(undefined, { month: "short" })} – ${monthYear(end)}`
+    : `${monthYear(start)} – ${monthYear(end)}`;
+  return `${count} · ${span}`;
 }

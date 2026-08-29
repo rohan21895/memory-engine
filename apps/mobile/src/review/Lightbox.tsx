@@ -16,7 +16,17 @@ import { colors, copy, fonts, PrimaryButton, spacing, typeScale } from "../ui";
 
 const SWIPE_DURATION_MS = 170;
 
-export type LightboxMode = "browse-album" | "browse-alternatives";
+/**
+ * `view` is just looking at a photograph. The other two are review-flow modes,
+ * where every photo occupies a SLOT that has alternatives behind it.
+ *
+ * That distinction was missing when the saved-album wall was first wired to
+ * this component: it passed "browse-album", whose name fits, and inherited the
+ * review chrome with it -- "Why this photo?" and a permanently-disabled
+ * "No other shots of this moment" underneath a photo the owner had opened
+ * simply to look at.
+ */
+export type LightboxMode = "view" | "browse-album" | "browse-alternatives";
 
 export type LightboxItem = {
   media_id: string;
@@ -229,6 +239,9 @@ export function Lightbox({
           <Text accessibilityLiveRegion="polite" style={styles.counter}>
             {copy.lightbox.counter(items.length === 0 ? 0 : currentIndex + 1, items.length)}
           </Text>
+          {/* Everything below belongs to the review flow. In `view` the photo
+              is the whole point and the counter is the only chrome earned. */}
+          {mode === "view" ? null : <>
           <Pressable
             accessibilityHint={copy.review.whyHint}
             accessibilityLabel={copy.review.why}
@@ -250,6 +263,7 @@ export function Lightbox({
             }
             onPress={handlePrimary}
           />
+          </>}
         </View>
       </View>
     </Modal>

@@ -33,7 +33,7 @@ export function SecondaryButton({
         disabled ? styles.disabled : null,
       ]}
     >
-      <Text style={[styles.label, quiet ? styles.quietLabel : null]}>{label}</Text>
+      <Text style={[styles.label, quiet ? styles.quietLabel : null, disabled ? styles.disabledLabel : null]}>{label}</Text>
     </Pressable>
   );
 }
@@ -46,7 +46,11 @@ const styles = StyleSheet.create({
     minHeight: layout.minTouchTarget,
     paddingHorizontal: spacing.md,
   },
-  disabled: { opacity: 0.38 },
+  // Same reason as PrimaryButton: on the cream page `opacity` washes the label
+  // out with the fill. Here only the text needs saying, since the surface is
+  // already quiet.
+  disabled: { backgroundColor: colors.disabledSurface },
+  disabledLabel: { color: colors.disabledText, textDecorationLine: "none" },
   label: { color: colors.text, fontFamily: fonts.body, ...typeScale.label },
   outline: { borderColor: colors.hairline, borderWidth: 1 },
   pressed: { opacity: 0.68, transform: [{ scale: 0.985 }] },

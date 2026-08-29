@@ -304,16 +304,24 @@ export function AlbumSetupScreen({
               accessibilityLabel={`Person ${personNumber}, ${person.candidatePhotoCount} selected photos`}
               style={styles.personCard}
             >
-              <PersonFace person={person} />
-              <View style={styles.personChoices}>
+              {/*
+                The three choices get the card's FULL width, on their own row.
+                Beside the avatar they had about 58dp of content each, and
+                "Background" needs 66dp at the smallest size the type scale
+                allows -- so it broke mid-word and the button read
+                "Backg / round / only". Widening the row is the fix; shrinking
+                the words back under the floor is not.
+              */}
+              <View style={styles.personHeader}>
+                <PersonFace person={person} />
                 <Text style={styles.personCount}>
                   #{personNumber} · {person.candidatePhotoCount.toLocaleString()} {person.candidatePhotoCount === 1 ? "photo" : "photos"}
                 </Text>
-                <View accessibilityRole="radiogroup" style={styles.priorityRow}>
-                  <PriorityButton accessibilityLabel={`Main focus for person ${personNumber}`} active={priority === "high"} label="Main focus" onPress={() => setPriority(person.id, "high")} />
-                  <PriorityButton accessibilityLabel={`Include person ${personNumber}`} active={priority === "medium"} label="Include" onPress={() => setPriority(person.id, "medium")} />
-                  <PriorityButton accessibilityLabel={`Background only for person ${personNumber}`} active={priority === "low"} label="Background only" onPress={() => setPriority(person.id, "low")} />
-                </View>
+              </View>
+              <View accessibilityRole="radiogroup" style={styles.priorityRow}>
+                <PriorityButton accessibilityLabel={`Main focus for person ${personNumber}`} active={priority === "high"} label="Main focus" onPress={() => setPriority(person.id, "high")} />
+                <PriorityButton accessibilityLabel={`Include person ${personNumber}`} active={priority === "medium"} label="Include" onPress={() => setPriority(person.id, "medium")} />
+                <PriorityButton accessibilityLabel={`Background only for person ${personNumber}`} active={priority === "low"} label="Background only" onPress={() => setPriority(person.id, "low")} />
               </View>
             </View>
           );
@@ -409,19 +417,17 @@ const styles = StyleSheet.create({
   noPeopleTitle: { color: colors.text, fontFamily: fonts.semibold, ...typeScale.label },
   peopleIntro: { gap: spacing.sm },
   personCard: {
-    alignItems: "center",
     backgroundColor: colors.panel,
     borderColor: colors.hairline,
     borderCurve: "continuous",
     borderRadius: radii.md,
     borderWidth: 1,
-    flexDirection: "row",
     gap: spacing.sm,
     marginBottom: spacing.sm,
     minHeight: 112,
     padding: spacing.sm,
   },
-  personChoices: { flex: 1, gap: spacing.xs },
+  personHeader: { alignItems: "center", flexDirection: "row", gap: spacing.sm },
   personCount: { color: colors.muted, fontFamily: fonts.semibold, fontVariant: ["tabular-nums"], ...typeScale.small },
   photosLabel: { color: colors.muted, fontFamily: fonts.regular, ...typeScale.small },
   priorityButton: {

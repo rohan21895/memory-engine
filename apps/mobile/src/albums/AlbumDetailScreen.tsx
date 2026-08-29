@@ -200,7 +200,7 @@ export function AlbumDetailScreen({
       <Lightbox
         initialIndex={viewerIndex ?? 0}
         items={viewerItems}
-        mode="browse-album"
+        mode="view"
         onClose={() => setViewerIndex(null)}
         visible={viewerIndex !== null}
       />

@@ -8,7 +8,7 @@ import { colors, fonts, layout, radii, spacing, typeScale } from "../ui";
 function PrimaryAction({ disabled, label, onPress }: { disabled?: boolean; label: string; onPress: () => void }) {
   return (
     <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.primary, disabled ? styles.disabled : null, pressed ? styles.pressed : null]}>
-      <Text style={styles.primaryText}>{label}</Text>
+      <Text style={[styles.primaryText, disabled ? styles.disabledText : null]}>{label}</Text>
     </Pressable>
   );
 }
@@ -91,7 +91,8 @@ const styles = StyleSheet.create({
   deleteMark: { alignItems: "center", backgroundColor: "#f7e9e7", borderRadius: 30, height: 60, justifyContent: "center", width: 60 },
   deleteMarkText: { color: colors.error, fontFamily: fonts.extraBold, fontSize: 26 },
   deleteSheet: { backgroundColor: colors.panel, borderTopLeftRadius: 26, borderTopRightRadius: 26, bottom: 0, gap: spacing.md, left: 0, paddingBottom: spacing.xl, paddingHorizontal: layout.screenPadding, paddingTop: spacing.lg, position: "absolute", right: 0 },
-  disabled: { opacity: 0.45 },
+  disabled: { backgroundColor: colors.disabledSurface },
+  disabledText: { color: colors.disabledText },
   eyebrow: { color: colors.muted, fontFamily: fonts.bold, textTransform: "uppercase", ...typeScale.eyebrow },
   field: { backgroundColor: colors.background, borderColor: colors.hairline, borderRadius: 14, borderWidth: 1, color: colors.text, fontFamily: fonts.semibold, fontSize: 16, minHeight: 52, paddingHorizontal: spacing.md },
   grow: { flex: 1 },
