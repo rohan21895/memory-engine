@@ -3,11 +3,16 @@ package expo.modules.photeolitert
 import android.net.Uri
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.Executors
 
 private const val TINY_CLIP_INPUT_BYTES = 1 * 224 * 224 * 3 * Float.SIZE_BYTES
 private const val FACE_INPUT_BYTES = 1 * 112 * 112 * 3 * Float.SIZE_BYTES
@@ -30,6 +35,30 @@ class PhoteoLiteRtModule : Module() {
   private var facePath: String? = null
   private var face: Interpreter? = null
 
+  /**
+   * Inference gets its own thread, because otherwise it takes the app's.
+   *
+   * Expo runs EVERY AsyncFunction from EVERY module on one shared
+   * HandlerThread ("expo.modules.AsyncFunctionQueue", see AppContext.kt). Left
+   * on it, a model invoke blocks every other native call in the app, and is
+   * blocked by them in turn -- which is the same defect already fixed for
+   * thumbnails and clustering in PhoteoScanServiceModule.
+   *
+   * ONE thread rather than a pool, for two reasons. LiteRT already uses several
+   * cores inside a single invoke, so a pool would only oversubscribe them. And
+   * the two interpreters hold ~28 MB of fp32 weights between them on a device
+   * that has already OOMed during album build; serialising invokes means at most
+   * one set of intermediate tensors is ever live.
+   *
+   * The `synchronized` blocks below stay. They guard the interpreter fields
+   * against `OnDestroy`, which does NOT run here.
+   */
+  private val inferenceScope = CoroutineScope(
+    Executors.newSingleThreadExecutor().asCoroutineDispatcher() +
+      SupervisorJob() +
+      CoroutineName("photeo.litert")
+  )
+
   override fun definition() = ModuleDefinition {
     Name("PhoteoLiteRt")
 
@@ -38,7 +67,7 @@ class PhoteoLiteRtModule : Module() {
         tinyClip(modelUri)
         true
       }
-    }
+    }.runOnQueue(inferenceScope)
 
     AsyncFunction("runTinyClip") { modelUri: String, input: ByteArray ->
       require(input.size == TINY_CLIP_INPUT_BYTES) {
@@ -47,7 +76,7 @@ class PhoteoLiteRtModule : Module() {
       synchronized(tinyClipLock) {
         invoke(tinyClip(modelUri), input)
       }
-    }
+    }.runOnQueue(inferenceScope)
 
     AsyncFunction("releaseTinyClip") {
       synchronized(tinyClipLock) {
@@ -55,14 +84,14 @@ class PhoteoLiteRtModule : Module() {
         tinyClip = null
         tinyClipPath = null
       }
-    }
+    }.runOnQueue(inferenceScope)
 
     AsyncFunction("probeFaceIdentity") { modelUri: String ->
       synchronized(faceLock) {
         face(modelUri)
         true
       }
-    }
+    }.runOnQueue(inferenceScope)
 
     AsyncFunction("runFaceIdentity") { modelUri: String, input: ByteArray ->
       require(input.size == FACE_INPUT_BYTES) {
@@ -71,7 +100,7 @@ class PhoteoLiteRtModule : Module() {
       synchronized(faceLock) {
         invoke(face(modelUri), input)
       }
-    }
+    }.runOnQueue(inferenceScope)
 
     AsyncFunction("releaseFaceIdentity") {
       synchronized(faceLock) {
@@ -79,7 +108,7 @@ class PhoteoLiteRtModule : Module() {
         face = null
         facePath = null
       }
-    }
+    }.runOnQueue(inferenceScope)
 
     OnDestroy {
       synchronized(tinyClipLock) {

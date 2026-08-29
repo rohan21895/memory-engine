@@ -18,9 +18,14 @@ import android.util.Log
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -45,6 +50,27 @@ class PhoteoAlbumPdfModule : Module() {
   private val context: Context
     get() = appContext.reactContext ?: throw Exceptions.ReactContextLost()
 
+  /**
+   * Document work gets its own thread, for the same reason inference does.
+   *
+   * Expo runs EVERY AsyncFunction from EVERY module on one shared
+   * HandlerThread ("expo.modules.AsyncFunctionQueue", see AppContext.kt). A
+   * whole-album `generate` left on that queue blocks every other native call in
+   * the app -- and this one is not a short call: it rasterises each page at
+   * 2400x2400 for 300 DPI at the 8x8in trim.
+   *
+   * ONE thread, not a pool. Page rasterisation allocates the largest bitmaps
+   * this app creates, on a device that has already OOMed during album build, so
+   * overlapping two of them is exactly the thing to avoid. It also keeps
+   * `generate` ordered against `renderPage` and `pageCount` without a lock:
+   * viewing a page cannot race the document being rewritten underneath it.
+   */
+  private val documentScope = CoroutineScope(
+    Executors.newSingleThreadExecutor().asCoroutineDispatcher() +
+      SupervisorJob() +
+      CoroutineName("photeo.albumpdf")
+  )
+
   override fun definition() = ModuleDefinition {
     Name("PhoteoAlbumPdf")
 
@@ -64,11 +90,11 @@ class PhoteoAlbumPdfModule : Module() {
         )
         throw error
       }
-    }
+    }.runOnQueue(documentScope)
 
     AsyncFunction("pageCount") { uri: String ->
       openRenderer(uri) { renderer -> renderer.pageCount }
-    }
+    }.runOnQueue(documentScope)
 
     AsyncFunction("renderPage") { uri: String, pageIndex: Int, requestedWidth: Int ->
       val started = System.currentTimeMillis()
@@ -78,7 +104,7 @@ class PhoteoAlbumPdfModule : Module() {
           "elapsedMs=${System.currentTimeMillis() - started}",
       )
       result
-    }
+    }.runOnQueue(documentScope)
   }
 
   private fun generateDocument(albumKey: String, documentJson: String): Map<String, Any> {
