@@ -3,6 +3,7 @@ import { ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 import { PrimaryButton } from "../components/PrimaryButton";
 import { fonts } from "../fonts";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
+import { useFirstLayoutLog } from "../use-first-layout-log";
 
 const steps = [
   "Pick a few photos — or all of them",
@@ -11,8 +12,9 @@ const steps = [
 ];
 
 export function WelcomeScreen({ onContinue }: { onContinue: () => void }) {
+  const logFirstLayout = useFirstLayoutLog("welcome");
   return (
-    <View style={styles.root}>
+    <View onLayout={logFirstLayout} style={styles.root}>
       <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <ScrollView
         contentContainerStyle={styles.scroll}

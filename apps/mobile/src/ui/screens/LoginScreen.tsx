@@ -5,15 +5,17 @@ import { PrimaryButton } from "../components/PrimaryButton";
 import { SecondaryButton } from "../components/SecondaryButton";
 import { fonts } from "../fonts";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
+import { useFirstLayoutLog } from "../use-first-layout-log";
 
 export function LoginScreen({ onContinue }: { onContinue: () => void }) {
   const [mode, setMode] = useState<"Phone" | "Email">("Phone");
   const [value, setValue] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  const logFirstLayout = useFirstLayoutLog("login");
   // TODO(owner): needs backend OTP delivery and verification.
   const sendCode = () => setNotice("Account sign-in needs the sharing service. You can use Photeo without an account today.");
   return (
-    <View style={styles.root}>
+    <View onLayout={logFirstLayout} style={styles.root}>
       <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <ScrollView contentContainerStyle={styles.scroll} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled">
         <View style={styles.mark} />

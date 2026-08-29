@@ -4,6 +4,7 @@ import { PrimaryButton } from "../components/PrimaryButton";
 import { SecondaryButton } from "../components/SecondaryButton";
 import { fonts } from "../fonts";
 import { colors, layout, radii, spacing, typeScale } from "../tokens";
+import { useFirstLayoutLog } from "../use-first-layout-log";
 
 export function StartScreen({
   busy,
@@ -16,8 +17,9 @@ export function StartScreen({
   onAllow: () => void;
   onSkip: () => void;
 }) {
+  const logFirstLayout = useFirstLayoutLog("photo-permission");
   return (
-    <View style={styles.root}>
+    <View onLayout={logFirstLayout} style={styles.root}>
       <StatusBar backgroundColor={colors.background} barStyle="dark-content" />
       <ScrollView
         contentContainerStyle={styles.scroll}

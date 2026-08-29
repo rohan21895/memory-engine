@@ -1,5 +1,7 @@
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { Image } from "expo-image";
+// @ts-expect-error TypeScript bundler resolution normally omits source extensions.
+import { thumbnailUri } from "../../modules/photeo-scan-service/src/index.ts";
 import * as MediaLibrary from "expo-media-library/legacy";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -47,6 +49,11 @@ import {
   requestPhotoAccess,
   type PhotoAccess,
 } from "../ui/photo-access";
+import {
+  recordThumbnailResolution,
+  thumbnailRequestFor,
+  thumbnailUriCache,
+} from "../ui/photo-thumbnail-cache";
 import type { PickedPhoto } from "./picked-photo";
 import {
   assetIdsForCity,
@@ -167,6 +174,40 @@ const PhotoTile = memo(function PhotoTile({
 }: PhotoTileProps) {
   const selected = order !== undefined;
   const handlePress = useCallback(() => onToggle(id), [id, onToggle]);
+  const request = thumbnailRequestFor(size);
+  const [resolved, setResolved] = useState<{
+    assetId: string;
+    request: number;
+    uri: string;
+  } | null>(() => {
+    const uri = thumbnailUriCache.peek(id, request);
+    return uri ? { assetId: id, request, uri } : null;
+  });
+  const thumb = resolved?.assetId === id && resolved.request === request
+    ? resolved.uri
+    : thumbnailUriCache.peek(id, request);
+
+  useEffect(() => {
+    const cached = thumbnailUriCache.get(id, request);
+    if (cached) {
+      setResolved({ assetId: id, request, uri: cached });
+      return;
+    }
+    let live = true;
+    const started = performance.now();
+    thumbnailUri(id, request)
+      .then((uri) => {
+        recordThumbnailResolution(performance.now() - started);
+        if (!uri) return;
+        thumbnailUriCache.set(id, { request, uri });
+        if (live) setResolved({ assetId: id, request, uri });
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [id, request]);
+
   return (
     <Pressable
       accessibilityHint={copy.picker.photoHint}
@@ -179,10 +220,9 @@ const PhotoTile = memo(function PhotoTile({
       <Image
         cachePolicy="memory-disk"
         contentFit="cover"
-        recyclingKey={id}
-        source={contentUri(id)}
+        recyclingKey={thumb ?? id}
+        source={thumb ?? contentUri(id)}
         style={[styles.thumb, dimmed ? styles.thumbDimmed : null]}
-        transition={80}
       />
       {selected ? <View style={styles.selectedBorder} /> : null}
       <View style={[styles.checkBadge, selected ? styles.checkBadgeOn : null]}>
