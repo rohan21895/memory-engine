@@ -1335,27 +1335,21 @@ export type MergeSuggestion = {
    * Photos both clusters appear in.
    *
    * Shown because it is the evidence the user is being asked to overrule, and
-   * its weight varies enormously: ten shared photos means two people who are
-   * usually together, one shared photo out of five hundred faces is more often
-   * a double detection -- a reflection, a poster, a photo of a photo.
+   * its weight varies enormously: one shared photo out of five hundred is not
+   * the same fact as ten shared photos out of twelve. The rate is context for a
+   * human answer, never authority to merge the pair automatically.
    */
   sharedAssets: number;
   /**
    * Photos the smaller cluster appears in at all — the denominator that makes
    * `sharedAssets` mean something.
    *
-   * One shared photo is not one fact, it is a RATE, and the rate is what
-   * separates the two populations. Measured across the owner's library on pairs
-   * the same-photo rule blocks: clusters that really are two people who are
-   * always photographed together sit at 15-57% co-occurrence, while eleven pairs
-   * holding 1,065 faces between them sit at 0.6-3.6% — two clusters of 180 and
-   * 310 faces sharing exactly ONE photo. The gap between 3.6% and 7.7% is empty.
-   *
-   * A pair at the bottom of that range is far more likely to be one person with
-   * a reflection, a framed photo on a wall, or a duplicate detection in a single
-   * frame than two people who met once. The app must not act on that on its own
-   * -- low is evidence, not proof -- but the user can settle it instantly if
-   * shown the number, and cannot if shown only "1 shared photo".
+   * One shared photo is a rate, but the current labelled set cannot say what a
+   * low rate predicts. The 2026-08-29 audit found 89 persisted answers, 73 that
+   * still resolve to identities, and only ONE current co-occurring pair; it was
+   * labelled different people at 2.7%. One block is not a population. Keep the
+   * denominator visible so the user can judge it, without turning it into a
+   * probability claim the labels do not support.
    */
   appearances: number;
   /**
@@ -1372,32 +1366,21 @@ export type MergeSuggestion = {
    * This pair cleared its merge bar on face evidence and is held apart ONLY by
    * having been photographed together.
    *
-   * Measured on the owner's library, every single pair that cleared its bar was
-   * in this state -- 37 of 37 -- and 27 of them were vetoed by exactly ONE
-   * shared photo. So the merge pass is not failing because its bars are too
-   * strict; it is failing because co-occurrence is an absolute veto that a
-   * single frame can trigger. These are the pairs where the app is most likely
-   * to be wrong, so they are asked first.
+   * This is asked first because it identifies exactly what the user can repair:
+   * a similarity-qualified join vetoed by same-photo evidence. The current
+   * answer audit contains zero labelled pairs of this shape, so no accuracy or
+   * prevalence claim rests on that ordering.
    */
   blockedByCoOccurrence: boolean;
 };
 
 /**
- * The measured gap used to put the most repairable review questions first.
- *
- * Measured across the owner's library on the pairs the same-photo rule blocks.
- * Two populations, and the gap between them is empty:
- *
- *   0.6% - 3.6%   eleven pairs holding 1,065 faces. Two clusters of 180 and 310
- *                 faces sharing exactly ONE photo. Far more often one person
- *                 with a reflection, a framed photo on a wall, or a duplicate
- *                 detection in a single frame than two people who met once.
- *   7.7% - 57%    people who really are two people. A parent and child who are
- *                 photographed together constantly sit at 52%.
- *
- * Nothing lands between 3.6% and 7.7%, so these bands read a real separation
- * rather than slicing a continuum at a convenient place. Both are ranking and
- * wording hints only: the app still never answers for the user.
+ * Operational review-queue bucket, not a merge threshold or a measured class
+ * boundary. It keeps low-co-occurrence questions together for deterministic
+ * ranking, but the labelled set is still too small to attach significance: 89
+ * answers currently constrain one co-occurring pair, labelled different people
+ * at 2.7%, and zero over-bar co-occurrence blocks. Changing this constant from
+ * those labels would manufacture a conclusion from one example.
  *
  * Neither band means anything on a denominator of one or two. The screen guards
  * that separately (`MIN_APPEARANCES_FOR_A_CONCLUSION`) — 1 shared photo of 1 is
@@ -1570,13 +1553,10 @@ export function suggestMerges(
       // right, and the app already knows it: it has placed several distinct
       // people in that frame.
       //
-      // Measured on his live index. Of the 4,073 pairs held apart by exactly one
-      // shared photo, that photo holds 3+ people in 92.2% of cases and 6+ in
-      // 65.1%. Run against his real sixty-question queue through this same
-      // function: 7 were co-occurrence-blocked, 6 are suppressed by this rule,
-      // and the ONE that survives is the genuinely doubtful shape — two people
-      // in the frame at similarity 0.899, which is far more likely to be one
-      // head found twice.
+      // The earlier live-index census attached exact rates to this shape, but
+      // its answer store did not supply identity-level labels. The safe fact is
+      // structural: three or more distinct clusters make this a group photo,
+      // while the two-person frame remains the ambiguous shape worth asking.
       //
       // Safe under this codebase's own invariant: withholding a question can
       // only ever leave two records SPLIT, never fused. A split is repairable by
@@ -1616,13 +1596,10 @@ export function suggestMerges(
   // apart only by co-occurrence, so they are the ones where the app is most
   // likely to be wrong and the user's answer is worth most.
   //
-  // Within that group, ask the rare-co-occurrence population first. These pairs
-  // have ALREADY passed the similarity test, and on the measured library the
-  // pairs at <= 5% are the ones with the signature of a real split: one face
-  // found twice in a mirror, framed photo, or single frame. High co-occurrence
-  // pairs are more often two relatives who are genuinely photographed together;
-  // putting a large one first merely earns a quick "not the same" rather than
-  // repairing the library.
+  // Within that group, keep the low-co-occurrence bucket first. This is a review
+  // heuristic only: the current labelled set contains one co-occurring pair,
+  // which is nowhere near enough to estimate which answer either bucket gets.
+  // The queue asks the user; the bucket never authorises a merge.
   //
   // Within each population, the biggest repair comes first. Every question
   // costs the same tap, so the smaller side's size is how much that tap can put
