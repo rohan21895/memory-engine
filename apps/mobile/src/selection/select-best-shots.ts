@@ -160,6 +160,13 @@ export function selectBestShots(
     count: number;
     pinnedMediaIds?: readonly string[];
     excludedMediaIds?: readonly string[];
+    /**
+     * Who the album is for. Absent or empty means the question was never asked,
+     * and the planner behaves exactly as it did before priorities existed --
+     * NOT as though everyone were low priority, which would gate out the whole
+     * library and return an empty album.
+     */
+    personPriority?: Readonly<Record<string, "high" | "medium">>;
   },
 ): AlbumData {
   return selectBestShotsWithObservations(photos, opts).album;
@@ -175,6 +182,13 @@ export function selectBestShotsWithObservations(
     count: number;
     pinnedMediaIds?: readonly string[];
     excludedMediaIds?: readonly string[];
+    /**
+     * Who the album is for. Absent or empty means the question was never asked,
+     * and the planner behaves exactly as it did before priorities existed --
+     * NOT as though everyone were low priority, which would gate out the whole
+     * library and return an empty album.
+     */
+    personPriority?: Readonly<Record<string, "high" | "medium">>;
   },
 ): { album: AlbumData; observations: BestShotSelectionObservations } {
   const candidates = buildCandidates(photos);
@@ -252,6 +266,12 @@ export function selectBestShotsWithObservations(
       policy: {
         pinnedMediaIds: opts.pinnedMediaIds ?? [],
         excludedMediaIds: opts.excludedMediaIds ?? [],
+        // The user's answer to "who is this album for", passed through
+        // UNCHANGED. The planner's gate and caps for it were built and tested
+        // some time ago, but nothing could reach them: this argument did not
+        // exist, so every album was planned as though the question had never
+        // been asked. An empty map still means exactly that, deliberately.
+        personPriority: opts.personPriority ?? {},
         // Preserve the legacy no-analysis import path, which has no measured
         // quality to gate on at all.
         qualityFloor: rankedTakes.some(({ winner }) => winner.analysis)

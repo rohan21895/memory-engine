@@ -244,6 +244,9 @@ export type DeepSignalReport = {
   stillPending: number;
 };
 
+// -expect-error TypeScript bundler resolution normally omits source extensions.
+import type { AlbumBuildPreferences } from "./selection/album-build-preferences.ts";
+
 export type BuildAlbumOptions = {
   signal?: AbortSignal;
   onProgress?: (progress: BuildAlbumProgress) => void;
@@ -251,6 +254,17 @@ export type BuildAlbumOptions = {
   onTiming?: (timing: BuildAlbumTiming) => void;
   /** Overrides `USE_DEEP_SIGNAL_CACHE` for benchmarks and A/B runs. */
   deepSignalCache?: boolean;
+  /**
+   * What the user answered before the build: how many photos, and who the album
+   * is for.
+   *
+   * The single channel between the setup questionnaire and the selector. The
+   * planner's priority gate and caps existed and were tested long before this
+   * field did, and were unreachable the whole time -- there was no argument to
+   * carry an answer from the app, so every album was planned as though the
+   * question had never been asked. Omitting it still means exactly that.
+   */
+  preferences?: AlbumBuildPreferences;
 };
 
 /**
@@ -1349,6 +1363,9 @@ async function buildAlbumImpl(
   const selectionStartedAt = Date.now();
   const selection = selectBestShotsWithObservations(enriched, {
     count: Math.min(count, Math.max(1, enriched.length)),
+    // Who the user said the album is for. Absent means unasked, which the
+    // planner treats as "no preference" rather than "everyone is low priority".
+    personPriority: options.preferences?.personPriority,
   });
   const album: AlbumData = selection.album;
   reportPoseDiversity(enriched, album);
