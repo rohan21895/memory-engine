@@ -89,17 +89,13 @@ const EDGE_FRACTION = 0.01;
 /**
  * Photos analyzed at once.
  *
- * This is a real bound on native work now. It used to be decorative twice over:
- * every photo held up to five INDEPENDENT full-resolution decodes of the
- * original (expo-image-manipulator loads via Glide at SIZE_ORIGINAL and has no
- * subsampling hint, so a 12MP frame is a ~48MB ARGB bitmap - six photos in
- * flight could ask for over a gigabyte against a 192-256MB heap), while the
- * MoveNet and TinyCLIP wrappers serialized their preprocessing on a module-level
- * queue, so the photos that survived that queued up single file anyway. Both are
- * fixed: one bounded proxy per photo feeds every model, and the wrappers now
- * serialize only the inference itself.
+ * Deliberately one. The native proxy removes the route that handed an original
+ * URI to Expo, but the phone is unavailable to measure the next peak or identify
+ * the exact allocator behind #41. At one photo in flight, any next OOM's phase
+ * label belongs to that photo instead of a concurrent bystander. Raising this
+ * is a separate measured decision.
  */
-const ANALYZE_CONCURRENCY = 6;
+const ANALYZE_CONCURRENCY = 1;
 
 /**
  * M2: reuse Tier-B signals across album builds instead of recomputing them.
@@ -1019,16 +1015,13 @@ async function buildAlbumImpl(
         markPhotoDegraded();
       };
     // ONE bounded proxy per photo, on every path — not just the capped one.
-    // expo-image's loadAsync subsamples during decode (Glide submit(w,h)), so
-    // the original is never fully materialized; everything downstream then works
-    // from a file:// JPEG of at most ANALYSIS_PROXY_SIZE. Before this, a normal
-    // sub-500-photo pick — the beta's whole usage — sent the original
-    // content:// URI to five preprocessors that each decoded it at full
-    // resolution, which is the heap ceiling times several.
+    // Pass only the MediaStore id: native loadThumbnail (or ImageDecoder with
+    // its target set before allocation) writes the 1280px file that every model
+    // shares. The original content:// URI must never enter Expo's image stack.
     const proxy = await deepAnalysisTiming.measureAwaited(
       "proxy-create",
       (timing) =>
-        prepareCandidateAnalysisProxy(photo.uri, (error) =>
+        prepareCandidateAnalysisProxy(photo.id, (error) =>
           timing.recordDegraded(error),
         ),
       markPhotoDegraded,

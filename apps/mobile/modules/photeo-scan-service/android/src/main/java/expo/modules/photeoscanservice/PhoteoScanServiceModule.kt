@@ -356,6 +356,27 @@ class PhoteoScanServiceModule : Module() {
       result.uri
     }.runOnQueue(thumbnailScope)
 
+    /**
+     * One bounded, on-disk proxy for every album-analysis consumer.
+     *
+     * This deliberately accepts a MediaStore id, not an original URI. The
+     * loader first asks ContentResolver.loadThumbnail and its fallback gives
+     * ImageDecoder the 1280 px target before pixel allocation. Returning the
+     * actual dimensions keeps face boxes and pose coordinates in proxy space.
+    */
+    AsyncFunction("albumAnalysisProxy") { assetId: String, size: Int ->
+      val started = SystemClock.elapsedRealtimeNanos()
+      val result = resolveMediaStoreAnalysisProxy(context, assetId, size)
+      ThumbnailMetrics.record(result, SystemClock.elapsedRealtimeNanos() - started)
+      val uri = result.uri ?: return@AsyncFunction null
+      if (result.width < 1 || result.height < 1) return@AsyncFunction null
+      mapOf(
+        "uri" to uri,
+        "width" to result.width,
+        "height" to result.height,
+      )
+    }.runOnQueue(thumbnailScope)
+
     Function("clusterFaces") {
       embeddings: String,
       dim: Int,

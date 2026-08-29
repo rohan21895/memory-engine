@@ -221,7 +221,7 @@ assert(
   `every deep-analysis phase must route into the photo counter (wired ${wired} of ${DEEP_ANALYSIS_PHASES.length})`,
 );
 assert(
-  buildAlbumSource.includes("prepareCandidateAnalysisProxy(photo.uri, (error) =>"),
+  buildAlbumSource.includes("prepareCandidateAnalysisProxy(photo.id, (error) =>"),
   "the proxy is the most expensive failure of the six -- it costs every other signal -- so it must report too",
 );
 

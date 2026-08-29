@@ -3,6 +3,7 @@ package expo.modules.photeoscanservice
 import android.content.ContentUris
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
@@ -23,9 +24,16 @@ internal enum class ThumbnailSource {
 internal data class ResolvedThumbnail(
   val uri: String?,
   val source: ThumbnailSource,
+  val width: Int = 0,
+  val height: Int = 0,
   val decodeNanos: Long = 0L,
   val bitmapBytes: Long = 0L,
 )
+
+private const val TILE_MAX_EDGE = 1024
+private const val ANALYSIS_MAX_EDGE = 1280
+private const val TILE_JPEG_QUALITY = 85
+private const val ANALYSIS_JPEG_QUALITY = 94
 
 /** One lock per cache key prevents duplicate bitmaps for the same visible tile. */
 private val thumbnailLocks = ConcurrentHashMap<String, Any>()
@@ -44,21 +52,66 @@ internal fun resolveMediaStoreThumbnail(
   assetId: String,
   requestedEdge: Int,
 ): ResolvedThumbnail {
+  return resolveMediaStoreImage(
+    context = context,
+    assetId = assetId,
+    requestedEdge = requestedEdge,
+    maxEdge = TILE_MAX_EDGE,
+    cacheDirectory = "thumbs",
+    jpegQuality = TILE_JPEG_QUALITY,
+  )
+}
+
+/**
+ * Resolves the shared album-analysis proxy without handing the original URI to
+ * Expo's image stack. Keep this separate from the tile contract: album analysis
+ * requires a 1280 px long edge and quality 94, while tiles stop at 1024/85.
+ */
+internal fun resolveMediaStoreAnalysisProxy(
+  context: Context,
+  assetId: String,
+  requestedEdge: Int,
+): ResolvedThumbnail {
+  return resolveMediaStoreImage(
+    context = context,
+    assetId = assetId,
+    requestedEdge = requestedEdge,
+    maxEdge = ANALYSIS_MAX_EDGE,
+    cacheDirectory = "analysis-proxies",
+    jpegQuality = ANALYSIS_JPEG_QUALITY,
+  )
+}
+
+private fun resolveMediaStoreImage(
+  context: Context,
+  assetId: String,
+  requestedEdge: Int,
+  maxEdge: Int,
+  cacheDirectory: String,
+  jpegQuality: Int,
+): ResolvedThumbnail {
   val id = assetId.toLongOrNull() ?: return ResolvedThumbnail(null, ThumbnailSource.MISSING)
-  val edge = requestedEdge.coerceIn(64, 1024)
-  val cached = File(context.cacheDir, "thumbs/${id}_$edge.jpg")
-  if (cached.isUsableThumbnail()) {
-    return ResolvedThumbnail(Uri.fromFile(cached).toString(), ThumbnailSource.CACHE)
+  val edge = requestedEdge.coerceIn(64, maxEdge)
+  val cached = File(context.cacheDir, "$cacheDirectory/${id}_$edge.jpg")
+  cached.cachedDimensions()?.let { dimensions ->
+    return ResolvedThumbnail(
+      uri = Uri.fromFile(cached).toString(),
+      source = ThumbnailSource.CACHE,
+      width = dimensions.first,
+      height = dimensions.second,
+    )
   }
 
-  val cacheKey = "${id}_$edge"
+  val cacheKey = "$cacheDirectory/${id}_$edge"
   val lock = thumbnailLocks.computeIfAbsent(cacheKey) { Any() }
   try {
     return synchronized(lock) {
-      if (cached.isUsableThumbnail()) {
+      cached.cachedDimensions()?.let { dimensions ->
         return@synchronized ResolvedThumbnail(
-          Uri.fromFile(cached).toString(),
-          ThumbnailSource.CACHE,
+          uri = Uri.fromFile(cached).toString(),
+          source = ThumbnailSource.CACHE,
+          width = dimensions.first,
+          height = dimensions.second,
         )
       }
 
@@ -68,28 +121,30 @@ internal fun resolveMediaStoreThumbnail(
       val decodeNanos = System.nanoTime() - decodeStarted
       if (decoded == null) {
         return@synchronized ResolvedThumbnail(
-          null,
-          ThumbnailSource.MISSING,
-          decodeNanos,
+          uri = null,
+          source = ThumbnailSource.MISSING,
+          decodeNanos = decodeNanos,
         )
       }
 
       val bitmap = decoded.first
       val bitmapBytes = bitmap.allocationByteCount.toLong()
       try {
-        if (!writeAtomically(bitmap, cached)) {
+        if (!writeAtomically(bitmap, cached, jpegQuality)) {
           return@synchronized ResolvedThumbnail(
-            null,
-            ThumbnailSource.MISSING,
-            decodeNanos,
-            bitmapBytes,
+            uri = null,
+            source = ThumbnailSource.MISSING,
+            decodeNanos = decodeNanos,
+            bitmapBytes = bitmapBytes,
           )
         }
         ResolvedThumbnail(
-          Uri.fromFile(cached).toString(),
-          decoded.second,
-          decodeNanos,
-          bitmapBytes,
+          uri = Uri.fromFile(cached).toString(),
+          source = decoded.second,
+          width = bitmap.width,
+          height = bitmap.height,
+          decodeNanos = decodeNanos,
+          bitmapBytes = bitmapBytes,
         )
       } finally {
         bitmap.recycle()
@@ -172,7 +227,20 @@ private fun boundUnexpectedProviderBitmap(bitmap: Bitmap, edge: Int): Bitmap {
 
 private fun File.isUsableThumbnail(): Boolean = isFile && length() > 0L
 
-private fun writeAtomically(bitmap: Bitmap, destination: File): Boolean {
+/** Reads only the cached JPEG header; the original MediaStore item is untouched. */
+private fun File.cachedDimensions(): Pair<Int, Int>? {
+  if (!isUsableThumbnail()) return null
+  val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+  BitmapFactory.decodeFile(absolutePath, options)
+  if (options.outWidth < 1 || options.outHeight < 1) return null
+  return options.outWidth to options.outHeight
+}
+
+private fun writeAtomically(
+  bitmap: Bitmap,
+  destination: File,
+  jpegQuality: Int,
+): Boolean {
   destination.parentFile?.mkdirs()
   if (destination.exists() && !destination.isUsableThumbnail() && !destination.delete()) {
     return false
@@ -183,7 +251,7 @@ private fun writeAtomically(bitmap: Bitmap, destination: File): Boolean {
   )
   return try {
     val compressed = partial.outputStream().use { output ->
-      bitmap.compress(Bitmap.CompressFormat.JPEG, 85, output)
+      bitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, output)
     }
     if (!compressed || partial.length() <= 0L) return false
     if (partial.renameTo(destination)) return true
