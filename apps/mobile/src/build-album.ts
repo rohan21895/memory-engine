@@ -150,6 +150,27 @@ const EDGE_FRACTION = 0.01;
  * are fewer photos reaching TinyCLIP, a second interpreter to break the lock,
  * or a GPU/NNAPI delegate.
  *
+ * THEN THE MODELS WERE UNPINNED FROM ONE THREAD, AND THIS INVERTED. Same phone,
+ * 08-29 18:35, 645 picked / 64 analysed:
+ *
+ *   tinyclip  inference mean  558.9ms  p50  322ms   (was 1042.9 / 1325 at 1 thread)
+ *   movenet   inference mean  388.0ms  p50   41ms   (was  527.3 /   35)
+ *   quality-decode awaited mean 1632.9ms
+ *   concurrent-model-group wall mean 2523.6ms
+ *   deep-analysis 65710ms / 64        total 74885ms / 645, oom:0, 0/64 degraded
+ *
+ * TinyCLIP inference fell 1.87x on the mean and 4.1x on the median. So the
+ * "4t ~= 1t" result quoted above is a MAC result and does not hold on this
+ * device; it should not be cited against threading again.
+ *
+ * And the shape of the build changed with it. TinyCLIP was 75% of the wall; now
+ * the two models together are about 947ms of a 2523.6ms concurrent group, and
+ * the largest single phase is `quality-decode` at 1632.9ms -- JS-side jpeg-js
+ * decode and pixel loops, not model compute. THE BUILD IS NO LONGER
+ * TINYCLIP-BOUND. Anyone optimising from here should re-measure before assuming
+ * it is: a second interpreter or a GPU delegate now attacks a third of the
+ * cost, and the JS decode path is the bigger half.
+ *
  * Do not raise this without re-reading `analysis-degraded` from a real build.
  * `oom:0` is the number that matters; if it stops being zero, this went too far.
  */

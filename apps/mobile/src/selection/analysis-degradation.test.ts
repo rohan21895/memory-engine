@@ -278,6 +278,23 @@ assert(
   buildAlbumSource.includes("oom:0 across 300 photos"),
   "...and must rest the value on the 300-photo evidence, not the 36-photo one",
 );
+// Unpinning the models from one thread cut TinyCLIP inference 1042.9 -> 558.9ms
+// and INVERTED the build's shape: the two models are now ~947ms of a 2523.6ms
+// concurrent group, and the largest phase is JS-side quality-decode at 1632.9ms.
+// The comment has to carry that, because "the build is TinyCLIP-bound" was true,
+// is now false, and is exactly the kind of stale fact that sends the next
+// optimisation at the wrong third of the cost.
+assert(
+  buildAlbumSource.includes("558.9ms") &&
+    buildAlbumSource.includes("NO LONGER\n * TINYCLIP-BOUND"),
+  "the comment must record that the models were unpinned and the bottleneck moved",
+);
+// The Mac's "4t ~= 1t" was the one piece of evidence against threading, and it
+// lost on the device. It must stay marked as Mac-only so it is not re-cited.
+assert(
+  /4t ~= 1t" result quoted above is a MAC result/.test(buildAlbumSource),
+  "the refuted 4t~=1t threading result must stay marked as not holding on device",
+);
 assert(
   /was half wrong and is corrected|1\.46x, not 3x/.test(buildAlbumSource),
   "the superseded 'quality-decode scales' claim must stay visibly corrected",
