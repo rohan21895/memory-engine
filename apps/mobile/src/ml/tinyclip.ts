@@ -1,6 +1,8 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { bundledTfliteSource } from "./bundled-tflite.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
+import { probeNativeTinyClip, releaseNativeTinyClip, runNativeTinyClip } from "../../modules/photeo-litert/src/index.ts";
+// @ts-expect-error Node's TypeScript runner requires the source extension.
 import { benchmarkInference, createModelCache, reportDegraded, type InferenceBenchmark, type ModelCacheLoadStats, type ModelExecutionTimingRecorder } from "./model-cache.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { decodeBase64Image } from "./base64.ts";
@@ -57,6 +59,7 @@ type TensorflowModel = {
   inputs: Array<{ dataType: string; shape: number[] }>;
   outputs: Array<{ dataType: string; shape: number[] }>;
   run(inputs: ArrayBuffer[]): Promise<ArrayBuffer[]>;
+  release?(): Promise<void>;
 };
 
 const modelCache = createModelCache<TensorflowModel>(loadSemanticModel);
@@ -141,16 +144,21 @@ export function semanticModelLoadStats(): ModelCacheLoadStats {
 
 async function loadSemanticModel(): Promise<TensorflowModel | undefined> {
   try {
-    const { loadTensorflowModel } = await import("react-native-fast-tflite");
     const source = await bundledTfliteSource(
       require("../../assets/models/tinyclip-vit-8m16-image-float32.tflite") as number,
     );
-    // The empty delegate list means XNNPACK CPU, and it has to stay empty:
-    // fast-tflite 3.0.1 hardcodes GPU delegate options with no serialization
-    // dir (kernel recompile on every cold start) and max_delegated_partitions=1,
-    // its GPU path has an open batch-mismatch bug on ViT graphs like this one,
-    // and NNAPI is deprecated on Android 15. See ./README.md#delegates.
-    return (await loadTensorflowModel(source, [])) as TensorflowModel;
+    if (!(await probeNativeTinyClip(source.url))) return undefined;
+    return {
+      inputs: [{ dataType: "float32", shape: [1, INPUT_SIZE, INPUT_SIZE, 3] }],
+      outputs: [{ dataType: "float32", shape: [1, EMBEDDING_SIZE] }],
+      async run(inputs) {
+        if (inputs.length !== 1) {
+          throw new Error("TinyCLIP expects exactly one input tensor.");
+        }
+        return [await runNativeTinyClip(source.url, inputs[0])];
+      },
+      release: releaseNativeTinyClip,
+    };
   } catch {
     return undefined;
   }

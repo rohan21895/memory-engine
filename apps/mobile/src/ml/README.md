@@ -2,12 +2,17 @@
 
 The general `getModel()` compatibility boundary retains a deterministic
 JavaScript fallback. Production selection augments it with three guarded,
-lazy, New-Architecture TFLite paths:
+lazy TFLite paths:
 
 - `movenet.ts`: 17-point body pose for coverage diversity;
 - `tinyclip.ts`: semantic image embeddings and offline zero-shot axes;
 - `facenet.ts`: InsightFace buffalo_s `w600k_mbf` 512-d identity embeddings
   for person clustering.
+
+TinyCLIP and MobileFaceNet invoke through the Android-only
+`modules/photeo-litert` Expo module. It accepts and returns raw tensor bytes and
+does not own preprocessing, postprocessing, model selection, or configuration.
+MoveNet remains on `react-native-fast-tflite`.
 
 Every path returns neutral or `undefined` on native, model, image, or tensor
 failure, so `buildAlbum()` always retains deterministic fallback signals.
@@ -18,16 +23,18 @@ like a working one.
 ## Interpreter lifetime
 
 `model-cache.ts` retires each interpreter every `RUNS_PER_MODEL` inferences.
-fast-tflite v3 never returns the interpreter arena between runs
-(mrousavy/react-native-fast-tflite#124), so a long batch climbs from ~200MB to
-~1.2GB of native memory and the app is OOM-killed partway through a large
-library. Retirement happens inside each wrapper's serialized inference queue, so
-no interpreter is ever disposed while a run is in flight.
+The local LiteRT module closes its Java interpreters deterministically through
+the adapter's release hook. fast-tflite v3 never returns its interpreter arena
+between runs (mrousavy/react-native-fast-tflite#124), so a long batch climbs
+from ~200MB to ~1.2GB of native memory and the app is OOM-killed partway through
+a large library. Retirement happens inside each wrapper's serialized inference
+queue, so no interpreter is ever disposed while a run is in flight.
 
 ## Delegates
 
-Every `loadTensorflowModel(...)` call passes an empty delegate list. Do not add
-GPU delegates:
+MoveNet's `loadTensorflowModel(...)` call passes an empty delegate list. The
+local LiteRT module pins one CPU thread to preserve the previous execution
+shape. Do not add GPU delegates:
 
 - fast-tflite 3.0.1 hardcodes the GPU delegate options with no serialization
   directory, so kernels are recompiled on every cold start - fatal for batch work;
