@@ -65,6 +65,28 @@ function equal(actual: unknown, expected: unknown, message: string): void {
 }
 
 {
+  // The dedicated LiteRT adapter has a real release hook (unlike Nitro's empty
+  // inherited dispose). Retirement must await it before the next model loads.
+  let loads = 0;
+  let releases = 0;
+  const cache = createModelCache(
+    async () => ({
+      id: ++loads,
+      async release() {
+        releases += 1;
+      },
+    }),
+    2,
+  );
+  await cache.acquire();
+  await cache.acquire();
+  await cache.acquire();
+  equal(releases, 1, "scheduled retirement closes the native LiteRT interpreter");
+  await cache.retire();
+  equal(releases, 2, "explicit retirement closes the current LiteRT interpreter");
+}
+
+{
   // Retiring an idle cache must be a no-op, not a spurious load: this runs at
   // the end of every scan, including scans that embedded nothing.
   let loads = 0;

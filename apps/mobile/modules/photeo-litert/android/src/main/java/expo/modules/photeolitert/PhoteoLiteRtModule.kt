@@ -49,6 +49,14 @@ class PhoteoLiteRtModule : Module() {
       }
     }
 
+    AsyncFunction("releaseTinyClip") {
+      synchronized(tinyClipLock) {
+        tinyClip?.close()
+        tinyClip = null
+        tinyClipPath = null
+      }
+    }
+
     AsyncFunction("probeFaceIdentity") { modelUri: String ->
       synchronized(faceLock) {
         face(modelUri)
@@ -62,6 +70,14 @@ class PhoteoLiteRtModule : Module() {
       }
       synchronized(faceLock) {
         invoke(face(modelUri), input)
+      }
+    }
+
+    AsyncFunction("releaseFaceIdentity") {
+      synchronized(faceLock) {
+        face?.close()
+        face = null
+        facePath = null
       }
     }
 

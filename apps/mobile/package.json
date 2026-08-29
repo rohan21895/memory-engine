@@ -43,6 +43,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "gates:cx25": "node src/eval-gates/run-cx25-gates.ts",
+    "test:litert": "node modules/photeo-litert/src/index.test.mjs",
     "test:cx25": "node src/eval-gates/cx25-gates.test.ts"
   },
   "private": true

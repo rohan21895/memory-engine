@@ -248,8 +248,10 @@ export function createModelCache<T>(
 /**
  * Drops the reference to a retired model.
  *
- * There is NO deterministic release available, and it is worth being exact
- * about why, because the obvious call looks like one and is not.
+ * The local PhoteoLiteRt adapters expose an explicit `release()` that closes
+ * their Java Interpreter. Use it when present. There is NO deterministic
+ * release available for react-native-fast-tflite, and it is worth being exact
+ * about why, because its obvious call looks like one and is not.
  *
  * `dispose()` IS callable on any nitro HybridObject — the base class registers
  * it on the prototype (nitro-modules 0.37 `HybridObject.cpp`:64). But the base
@@ -267,7 +269,15 @@ export function createModelCache<T>(
  */
 async function releaseModel(pending: Promise<unknown>): Promise<void> {
   try {
-    await pending;
+    const model = await pending;
+    if (
+      typeof model === "object" &&
+      model !== null &&
+      "release" in model &&
+      typeof model.release === "function"
+    ) {
+      await model.release();
+    }
   } catch {
     // A model that failed to load holds nothing to release.
   }

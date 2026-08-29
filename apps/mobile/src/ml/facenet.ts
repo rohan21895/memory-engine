@@ -1,6 +1,8 @@
 import type { SharedRef } from "expo-modules-core/types";
 import { decode as decodeJpeg } from "jpeg-js";
 
+// @ts-expect-error Node's TypeScript runner requires the source extension.
+import { probeNativeFaceIdentity, releaseNativeFaceIdentity, runNativeFaceIdentity } from "../../modules/photeo-litert/src/index.ts";
 import type { FaceBox } from "../faces/face-detector";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { traceScanStage } from "../faces/face-detector.ts";
@@ -49,6 +51,7 @@ type TensorflowModel = {
   inputs: Array<{ dataType: string; shape: number[] }>;
   outputs: Array<{ dataType: string; shape: number[] }>;
   run(inputs: ArrayBuffer[]): Promise<ArrayBuffer[]>;
+  release?(): Promise<void>;
 };
 
 const modelCache = createModelCache<TensorflowModel>(loadFaceIdentityModel);
@@ -135,16 +138,21 @@ export async function embedFaceIdentity(
 
 async function loadFaceIdentityModel(): Promise<TensorflowModel | undefined> {
   try {
-    const { loadTensorflowModel } = await import("react-native-fast-tflite");
-    // Static require is required so Metro packages the graph in the APK.
     const source = await bundledTfliteSource(
       require("../../assets/models/w600k-mbf-512-float32.tflite") as number,
     );
-    // The empty delegate list means XNNPACK CPU, and it has to stay empty:
-    // fast-tflite 3.0.1 hardcodes GPU delegate options with no serialization
-    // dir (kernel recompile on every cold start) and max_delegated_partitions=1,
-    // and NNAPI is deprecated on Android 15. See ./README.md#delegates.
-    const model = (await loadTensorflowModel(source, [])) as TensorflowModel;
+    if (!(await probeNativeFaceIdentity(source.url))) return undefined;
+    const model: TensorflowModel = {
+      inputs: [{ dataType: "float32", shape: [1, INPUT_SIZE, INPUT_SIZE, 3] }],
+      outputs: [{ dataType: "float32", shape: [1, EMBEDDING_SIZE] }],
+      async run(inputs) {
+        if (inputs.length !== 1) {
+          throw new Error("MobileFaceNet expects exactly one input tensor.");
+        }
+        return [await runNativeFaceIdentity(source.url, inputs[0])];
+      },
+      release: releaseNativeFaceIdentity,
+    };
     if (!loadDiagnosticWritten) {
       loadDiagnosticWritten = true;
       console.warn(`[PhoteoFaceNet] loaded ${tensorSummary(model)} expected=${isExpectedModel(model)}`);
