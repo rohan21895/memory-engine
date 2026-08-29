@@ -276,7 +276,7 @@ let mirrored = false;
 export function mirrorConsoleToLogcat(): void {
   if (mirrored) return;
   mirrored = true;
-  for (const level of ["log", "warn", "error"] as const) {
+  for (const level of ["log", "info", "warn", "error"] as const) {
     const original = console[level].bind(console);
     console[level] = (...args: unknown[]) => {
       original(...args);
