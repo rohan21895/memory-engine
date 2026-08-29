@@ -138,6 +138,18 @@ const EDGE_FRACTION = 0.01;
  * instead of originals -- should remove the pressure that causes #41, and is a
  * better lead than anything further down the saveAsync path.
  *
+ * ACTED ON, and this is the current state: the proxy no longer takes an
+ * original URI at all. `prepareCandidateAnalysisProxy` now takes a MediaStore
+ * id and goes through the native `albumAnalysisProxy`, which asks
+ * ContentResolver.loadThumbnail first and, failing that, hands ImageDecoder the
+ * 1280 px target BEFORE pixel allocation. The route that could buffer a 27.63
+ * MiB original is gone, and with it the `compress: 0.94` full-quality re-encode
+ * that sat on the end of it.
+ *
+ * That is a removed ROUTE, not a confirmed diagnosis. Nobody has yet watched a
+ * build with the new path and seen the peak drop, because the phone was locked.
+ * Until someone does, #41 stays open and the sentence above stands.
+ *
  * Confirming the exact frame needs the phone, which was locked. Read the phase
  * label from a concurrency-one run (see below) before believing any successor.
  *
@@ -1099,7 +1111,7 @@ async function buildAlbumImpl(
     const proxy = await deepAnalysisTiming.measureAwaited(
       "proxy-create",
       (timing) =>
-        prepareCandidateAnalysisProxy(photo.uri, (error) =>
+        prepareCandidateAnalysisProxy(photo.id, (error) =>
           timing.recordDegraded(error),
         ),
       markPhotoDegraded,

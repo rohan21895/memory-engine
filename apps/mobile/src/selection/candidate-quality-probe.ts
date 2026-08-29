@@ -1,5 +1,7 @@
 // @ts-expect-error Node's native TypeScript runner requires the extension.
 import { exposureFromPixels, sharpnessFromPixels, type MeasuredImageQuality } from "./image-quality.ts";
+// @ts-expect-error Metro resolves the local Expo module without the source extension.
+import { albumAnalysisProxy } from "../../modules/photeo-scan-service/src/index.ts";
 
 const PROBE_SIZE = 32;
 /**
@@ -72,45 +74,13 @@ export type CandidateAnalysisProxy = {
  * into the Android Java heap.
  */
 export async function prepareCandidateAnalysisProxy(
-  uri: string,
+  assetId: string,
   onDegraded?: (error: unknown) => void,
 ): Promise<CandidateAnalysisProxy | undefined> {
   try {
-    const [{ Image }, { ImageManipulator, SaveFormat }] = await Promise.all([
-      import("expo-image"),
-      import("expo-image-manipulator"),
-    ]);
-    const source = await Image.loadAsync(uri, {
-      maxHeight: ANALYSIS_PROXY_SIZE,
-      maxWidth: ANALYSIS_PROXY_SIZE,
-    });
-    try {
-      const context = ImageManipulator.manipulate(source);
-      try {
-        const rendered = await context.renderAsync();
-        try {
-          const saved = await rendered.saveAsync({
-            // High quality on purpose: every downstream quality measurement now
-            // reads this proxy instead of the original, and sharpness is the
-            // heaviest term in the score. The file is deleted as soon as the
-            // photo is analyzed, so the extra bytes never accumulate.
-            compress: 0.94,
-            format: SaveFormat.JPEG,
-          });
-          return {
-            uri: saved.uri,
-            width: saved.width,
-            height: saved.height,
-          };
-        } finally {
-          rendered.release();
-        }
-      } finally {
-        context.release();
-      }
-    } finally {
-      source.release();
-    }
+    const proxy = await albumAnalysisProxy(assetId, ANALYSIS_PROXY_SIZE);
+    if (!proxy) throw new Error("Bounded album analysis proxy unavailable.");
+    return proxy;
   } catch (error) {
     // The most expensive silence in the pipeline: without a proxy the photo
     // reaches the planner scored on metadata alone -- no sharpness, no faces,

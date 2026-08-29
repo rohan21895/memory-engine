@@ -24,6 +24,10 @@ type ScanServiceNative = {
   openAppSettings?(): Promise<boolean>;
   log?(message: string): boolean;
   thumbnailUri?(assetId: string, size: number): Promise<string | null>;
+  albumAnalysisProxy?(
+    assetId: string,
+    size: number,
+  ): Promise<NativeAlbumAnalysisProxy | null>;
   clusterFaces?(
     embeddings: string,
     dim: number,
@@ -32,6 +36,18 @@ type ScanServiceNative = {
     seed: number,
     rounds: number,
   ): Promise<number[] | null>;
+};
+
+type NativeAlbumAnalysisProxy = {
+  uri?: unknown;
+  width?: unknown;
+  height?: unknown;
+};
+
+export type AlbumAnalysisProxy = {
+  uri: string;
+  width: number;
+  height: number;
 };
 
 /** `undefined` means "not looked up yet"; `null` means "looked up, absent". */
@@ -225,6 +241,35 @@ export async function thumbnailUri(
   try {
     const native = await nativeModule();
     return (await native?.thumbnailUri?.(assetId, size)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns a 1280px-capable MediaStore proxy whose pixels were bounded before
+ * allocation. There is intentionally no original-URI fallback: a missing
+ * native module degrades one photo's signals instead of reopening the OOM path.
+ */
+export async function albumAnalysisProxy(
+  assetId: string,
+  size: number,
+): Promise<AlbumAnalysisProxy | null> {
+  try {
+    const native = await nativeModule();
+    const proxy = await native?.albumAnalysisProxy?.(assetId, size);
+    if (
+      typeof proxy?.uri !== "string" ||
+      typeof proxy.width !== "number" ||
+      !Number.isFinite(proxy.width) ||
+      proxy.width < 1 ||
+      typeof proxy.height !== "number" ||
+      !Number.isFinite(proxy.height) ||
+      proxy.height < 1
+    ) {
+      return null;
+    }
+    return { uri: proxy.uri, width: proxy.width, height: proxy.height };
   } catch {
     return null;
   }
