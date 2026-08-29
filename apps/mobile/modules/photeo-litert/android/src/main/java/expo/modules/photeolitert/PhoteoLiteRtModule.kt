@@ -131,7 +131,7 @@ class PhoteoLiteRtModule : Module() {
     tinyClip = null
     tinyClipPath = null
 
-    val loaded = Interpreter(File(path), Interpreter.Options().setNumThreads(1))
+    val loaded = Interpreter(File(path), interpreterOptions())
     try {
       require(loaded.inputTensorCount == 1 && loaded.outputTensorCount == 1) {
         "TinyCLIP must have exactly one input and one output"
@@ -161,7 +161,7 @@ class PhoteoLiteRtModule : Module() {
     face = null
     facePath = null
 
-    val loaded = Interpreter(File(path), Interpreter.Options().setNumThreads(1))
+    val loaded = Interpreter(File(path), interpreterOptions())
     try {
       require(loaded.inputTensorCount == 1 && loaded.outputTensorCount == 1) {
         "MobileFaceNet must have exactly one input and one output"
@@ -183,6 +183,34 @@ class PhoteoLiteRtModule : Module() {
     face = loaded
     return loaded
   }
+
+  /**
+   * Interpreter threads.
+   *
+   * This was `setNumThreads(1)`, with no comment and no measurement behind it,
+   * on a phone with EIGHT cores clocked to 3.5-4.3 GHz. TinyCLIP is 75% of an
+   * album build -- 312856ms of a 415114ms wall on the measured 300-photo run --
+   * and every millisecond of it was spent on one core.
+   *
+   * Four, not eight. The models are not the only thing running: MoveNet has its
+   * own runtime on the fast-tflite path, ML Kit detects faces, and the JS thread
+   * still has to decode and normalise. Taking every core would move the queue
+   * rather than shorten it.
+   *
+   * CAVEAT, recorded because it is the one piece of contrary evidence:
+   * `docs/DEEP-ANALYSIS-TIMING.md` measured "4t ~= 1t" for these models -- on a
+   * Mac, where TinyCLIP runs in 6.03 ms and fixed overhead dominates any
+   * parallel gain. At 1042.9 ms on the device there is real work to divide.
+   * That is a reason to CHECK the device number, not a reason to stay at one:
+   * compare `tinyclip.model-inference` against its 1042.9 ms baseline.
+   */
+  private fun interpreterThreads(): Int {
+    val cores = Runtime.getRuntime().availableProcessors()
+    return cores.minus(2).coerceIn(1, 4)
+  }
+
+  private fun interpreterOptions(): Interpreter.Options =
+    Interpreter.Options().setNumThreads(interpreterThreads())
 
   private fun invoke(interpreter: Interpreter, input: ByteArray): ByteArray {
     val inputBuffer = ByteBuffer

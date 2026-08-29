@@ -6,8 +6,36 @@ import type { PickedPhoto } from "../import/picked-photo";
 import { decodeBlurhashGrayscale } from "./candidate-quality-probe.ts";
 import type { MeasuredImageQuality } from "./image-quality";
 
-/** Normal-sized picks keep the existing all-photo analysis path unchanged. */
+/**
+ * Superseded by `shouldCapCandidates`, kept because the probe cache and several
+ * gates still describe their behaviour in terms of it.
+ *
+ * It used to be the whole rule: cap only above 500 picked photos. That produced
+ * an absurdity on the owner's device. A 300-photo pick fell under the threshold,
+ * so all 300 went through the deep stage and the build took 417 s -- against
+ * this file's own stated budget of 148.8 s. A 600-photo pick would have been
+ * capped to 64 and finished in about a quarter of the time. Picking MORE photos
+ * made the album faster.
+ */
 export const CANDIDATE_PREPASS_THRESHOLD = 500;
+
+/**
+ * Cap whenever the pick costs more than the deep stage can afford.
+ *
+ * This is what `candidateBudget` always meant -- its own comment calls the
+ * budget "a PRICE, not a constant" -- and a fixed 500-photo gate quietly
+ * contradicted it. Paying the price is now the rule rather than the exception,
+ * so the deep stage's cost stops depending on which side of an arbitrary line
+ * the pick happened to land.
+ */
+export function shouldCapCandidates(
+  photoCount: number,
+  albumSize: number,
+  msPerCandidate = DEEP_ANALYSIS_MS_PER_CANDIDATE,
+): boolean {
+  if (!Number.isFinite(photoCount)) return false;
+  return photoCount > candidateBudget(albumSize, msPerCandidate);
+}
 /**
  * Measured on the beta Android device: the two TFLite runtimes serialize their
  * queues, so 64 is the largest safe deep-analysis pool inside the time budget.

@@ -18,9 +18,9 @@ import type {
   ReviewSelected,
 } from "./review/mock-data";
 import {
-  CANDIDATE_PREPASS_THRESHOLD,
   candidateBudget,
   chooseHeavyAnalysisCandidates,
+  shouldCapCandidates,
   type ProbedCandidate,
 } from "./selection/candidate-prepass";
 import {
@@ -174,13 +174,25 @@ const ANALYZE_CONCURRENCY = 3;
  *    none of the pinned albums, and it uses the rejected int8 encoding — which
  *    DOES move one — as its sabotage.
  *
- * What is still unmeasured, and what should decide the flip: the hit rate on a
- * real library. A repeat of the same filter hits everything; a different filter
- * re-ranks the cheap probes and can pick a largely different 64.
- * `deep-signal-store.benchmark.ts` reports that overlap for nested and
- * disjoint filters, but only against synthetic corpora.
+ * NOW ON. What decided it: the risk of flipping it is a MISS, not a wrong
+ * album. `deep-signal-parity.test.ts` runs 6 plans over 6,048 pairs and reports
+ * cosine drift of 1.98e-8, with the nearest pair sitting 2.48e-4 from the 0.92
+ * bar -- a 12,562x margin -- and no plan moving. It is not a vacuous gate
+ * either: the rejected int8 encoding, used as its sabotage, crosses that bar
+ * twice. So a hit returns the same album the slow path would have, and a miss
+ * costs one 3.9 KB encode on top of work that was happening anyway.
+ *
+ * Against that, the measured win is 156 s to 7.3 s on a repeat build, and the
+ * candidate cap now engages far more often, so the 64 photos a build analyses
+ * are exactly the ones most likely to be asked for again.
+ *
+ * Still unmeasured, and worth watching rather than blocking on: the hit rate on
+ * a real library. A repeat of the same filter hits everything; a different
+ * filter re-ranks the cheap probes and can pick a largely different 64.
+ * `deep-signal-store.benchmark.ts` reports that overlap for nested and disjoint
+ * filters, but only against synthetic corpora.
  */
-const USE_DEEP_SIGNAL_CACHE = false;
+const USE_DEEP_SIGNAL_CACHE = true;
 
 /**
  * Who recurs across the whole library, for the candidate cap to protect.
@@ -803,7 +815,7 @@ export async function buildAlbum(
   // begins, so the confirm button can never look frozen.
   await yieldToEventLoop();
   throwIfCancelled(options.signal);
-  const capEngaged = photos.length > CANDIDATE_PREPASS_THRESHOLD;
+  const capEngaged = shouldCapCandidates(photos.length, count);
   const cacheStartedAt = Date.now();
   const probeCache = capEngaged ? await loadCandidateProbeCache() : undefined;
   if (probeCache) {
@@ -881,7 +893,12 @@ async function buildAlbumImpl(
   // that actually loaded, and each wrapper knows up front whether its graph is
   // usable instead of preprocessing every photo for an answer it cannot give.
   const modelHealth = checkModelHealth();
-  const capEngaged = photos.length > CANDIDATE_PREPASS_THRESHOLD;
+  // The cap now engages whenever the pick costs more than the deep stage can
+  // afford, rather than above a fixed 500 photos. Under the old rule his
+  // 300-photo pick ran uncapped at 417s while a 600-photo pick would have been
+  // capped to 64 and finished far sooner -- picking more photos made the album
+  // faster. See `shouldCapCandidates`.
+  const capEngaged = shouldCapCandidates(photos.length, count);
   // The budget the album asks for, clamped by what the deep stage can afford at
   // its measured per-photo price. 64 today; it rises on its own when M2/M3 make
   // a candidate cheaper. See `candidateBudget`.
