@@ -1,5 +1,5 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { sameConsolidationBars, scanEndNeedsRecluster } from "./face-index.ts";
+import { planConsolidationSweep, sameConsolidationBars, scanEndNeedsRecluster } from "./face-index.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { clusterFaces, extendFaceClusters } from "./face-cluster.ts";
 // A type-only import is erased before the extension can matter, so unlike the
@@ -109,8 +109,8 @@ assert(
   "a bar that genuinely moved must still get the full rebuild",
 );
 
-// Every consolidation bar is compared exactly. A tolerance here would reset
-// its own baseline on every scan and could postpone an untouched merge forever.
+// The diagnostic comparison remains exact, so the log proves whether a bar
+// moved even when the sweep planner safely holds a stricter persisted value.
 const mergeBars = {
   identity: 0.55,
   perceptual: 0.72,
@@ -131,9 +131,40 @@ for (const field of ["identity", "perceptual", "evidenced", "temporal"] as const
       ...mergeBars,
       [field]: mergeBars[field] + Number.EPSILON,
     }),
-    `VACUITY: moving ${field} by one representable step must disable restriction`,
+    `VACUITY: moving ${field} by one representable step must be observable`,
   );
 }
+
+const legacyPlan = planConsolidationSweep(undefined, mergeBars);
+assert(
+  !legacyPlan.restricted &&
+    JSON.stringify(legacyPlan.bars) === JSON.stringify(mergeBars),
+  "legacy state must run the full sweep at one measured bar snapshot",
+);
+const relaxedMeasurement = {
+  identity: 0.54,
+  perceptual: 0.71,
+  evidenced: 0.42,
+  temporal: 0.40,
+};
+const heldPlan = planConsolidationSweep(mergeBars, relaxedMeasurement);
+assert(
+  heldPlan.restricted &&
+    JSON.stringify(heldPlan.bars) === JSON.stringify(mergeBars),
+  "a relaxed measurement must hold the persisted bars for the touched-only sweep",
+);
+const tightenedMeasurement = {
+  identity: 0.56,
+  perceptual: 0.73,
+  evidenced: 0.44,
+  temporal: 0.42,
+};
+const tightenedPlan = planConsolidationSweep(mergeBars, tightenedMeasurement);
+assert(
+  tightenedPlan.restricted &&
+    JSON.stringify(tightenedPlan.bars) === JSON.stringify(tightenedMeasurement),
+  "a stricter measurement keeps every old rejection valid and may use the fast sweep",
+);
 
 // --- 3. Equivalence: the cheap path may split, it may never fuse. ------------
 

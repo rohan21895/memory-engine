@@ -624,6 +624,8 @@ type ClusterOptions = {
   evidencedMergeThreshold?: number;
   onAssign?: (observation: FaceObservation, personId: string) => void;
   onMerge?: (absorbedPersonId: string, survivingPersonId: string) => void;
+  /** Fires only when consolidation actually starts, after `skipMerge`. */
+  onMergeSweep?: (path: "full" | "restricted") => void;
   threshold?: number;
   perceptualThreshold?: number;
   /**
@@ -851,6 +853,9 @@ export function extendFaceClusters(
   }
 
   if (!opts.skipMerge) {
+    opts.onMergeSweep?.(
+      opts.mergeSeedPersonIds === undefined ? "full" : "restricted",
+    );
     mergeSimilarPeople(
       people,
       identityMergeThreshold,

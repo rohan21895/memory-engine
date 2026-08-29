@@ -331,6 +331,22 @@ export type ConsolidationBars = {
   temporal: number;
 };
 
+export type ConsolidationBarComparison = {
+  /** True only when every persisted and compare-time bar is exactly equal. */
+  equal: boolean;
+  /** Signed movement from the persisted/read bar to the compare-time bar. */
+  delta?: ConsolidationBars;
+};
+
+export type ConsolidationSweepPlan = {
+  /** True when unchanged/stricter effective bars make touched rows sufficient. */
+  restricted: boolean;
+  /** Signed movement from the persisted/read bar to the compare-time bar. */
+  delta?: ConsolidationBars;
+  /** Immutable effective bars to pass to every comparison in this sweep. */
+  bars: ConsolidationBars;
+};
+
 export type FaceScanAsset = {
   id: string;
   width: number;
@@ -2258,7 +2274,7 @@ export function faceClusterOptions(
   };
 }
 
-function consolidationBarsFrom(
+export function consolidationBarsFrom(
   options: ReturnType<typeof faceClusterOptions>,
 ): ConsolidationBars {
   return {
@@ -2394,18 +2410,79 @@ export function storedFaceMergeSuggestions(
   };
 }
 
-/** Exact by design: any bar movement requires the historical full sweep. */
+/** Exact diagnostic equality; sweep safety is decided by `planConsolidationSweep`. */
 export function sameConsolidationBars(
   previous: ConsolidationBars | undefined,
   current: ConsolidationBars,
 ): boolean {
-  return (
-    previous !== undefined &&
-    previous.identity === current.identity &&
-    previous.perceptual === current.perceptual &&
-    previous.evidenced === current.evidenced &&
-    previous.temporal === current.temporal
-  );
+  return compareConsolidationBars(previous, current).equal;
+}
+
+/**
+ * The fast sweep's complete arithmetic, exported for the deterministic probe.
+ *
+ * A boolean alone can prove neither why the path was skipped nor whether the
+ * bar moved in the expected direction. Keep the signed per-bar deltas beside
+ * the exact decision so an on-device log and the checkout-only measurement are
+ * reading the same comparison the sweep actually makes.
+ */
+export function compareConsolidationBars(
+  read: ConsolidationBars | undefined,
+  compareTime: ConsolidationBars,
+): ConsolidationBarComparison {
+  if (!read) return { equal: false };
+  const delta = {
+    identity: compareTime.identity - read.identity,
+    perceptual: compareTime.perceptual - read.perceptual,
+    evidenced: compareTime.evidenced - read.evidenced,
+    temporal: compareTime.temporal - read.temporal,
+  };
+  return {
+    equal:
+      delta.identity === 0 &&
+      delta.perceptual === 0 &&
+      delta.evidenced === 0 &&
+      delta.temporal === 0,
+    delta,
+  };
+}
+
+/**
+ * Selects one stable bar snapshot for a touched-row consolidation.
+ *
+ * A newly looser measured bar cannot be applied to touched rows alone: an
+ * untouched pair rejected at the old bar may clear the new one. Holding the
+ * persisted, stricter bar is safe and fails toward a temporary split. A newly
+ * stricter bar is also safe: every untouched rejection remains a rejection.
+ * Consequently the element-wise maximum is a complete proof that untouched
+ * rows need no visit, while the next full rebuild remains free to adopt a
+ * measured relaxation over the whole library.
+ *
+ * Missing legacy state still takes the historical full sweep. `bars` is then
+ * measured exactly once before that sweep and held for every pair it judges.
+ */
+export function planConsolidationSweep(
+  read: ConsolidationBars | undefined,
+  compareTime: ConsolidationBars,
+): ConsolidationSweepPlan {
+  const comparison = compareConsolidationBars(read, compareTime);
+  if (!read) {
+    return {
+      restricted: false,
+      delta: comparison.delta,
+      bars: { ...compareTime },
+    };
+  }
+  return {
+    restricted: true,
+    delta: comparison.delta,
+    bars: {
+      identity: Math.max(read.identity, compareTime.identity),
+      perceptual: Math.max(read.perceptual, compareTime.perceptual),
+      evidenced: Math.max(read.evidenced, compareTime.evidenced),
+      temporal: Math.max(read.temporal, compareTime.temporal),
+    },
+  };
 }
 
 /**
@@ -3887,6 +3964,51 @@ function consolidatingClusterOptions(): ReturnType<typeof faceClusterOptions> {
   });
 }
 
+function clusterOptionsAtConsolidationBars(
+  bars: ConsolidationBars,
+): ReturnType<typeof faceClusterOptions> {
+  return {
+    constraints: index.constraints ?? [],
+    evidencedMergeThreshold: bars.evidenced,
+    identityMergeThreshold: bars.identity,
+    perceptualThreshold: bars.perceptual,
+    temporalMergeThreshold: bars.temporal,
+    threshold: index.threshold,
+  };
+}
+
+let mergeSweepPathCounts = { taken: 0, skipped: 0 };
+
+function formatConsolidationBars(bars: ConsolidationBars | undefined): string {
+  if (!bars) return "legacy";
+  return [bars.identity, bars.perceptual, bars.evidenced, bars.temporal]
+    .map((bar) => bar.toFixed(6))
+    .join("/");
+}
+
+/** Logs the exact decision at the only two sites that can start a sweep. */
+function traceMergeSweepPath(
+  source: "cadence" | "scan-end",
+  read: ConsolidationBars | undefined,
+  compareTime: ConsolidationBars,
+  plan: ConsolidationSweepPlan,
+  executedPath: "full" | "restricted",
+): void {
+  const fastTaken = executedPath === "restricted";
+  if (fastTaken) mergeSweepPathCounts.taken += 1;
+  else mergeSweepPathCounts.skipped += 1;
+  console.log(
+    `[PhoteoFaceIndex] merge-sweep ${source} ` +
+      `fast=${fastTaken ? "taken" : "skipped"} ` +
+      `planned=${plan.restricted ? "restricted" : "full"} ` +
+      `taken=${mergeSweepPathCounts.taken} skipped=${mergeSweepPathCounts.skipped} ` +
+      `read=${formatConsolidationBars(read)} ` +
+      `compare=${formatConsolidationBars(compareTime)} ` +
+      `delta=${formatConsolidationBars(plan.delta)} ` +
+      `applied=${formatConsolidationBars(plan.bars)}`,
+  );
+}
+
 function pendingConsolidationPeople(): Set<string> {
   return new Set(index.pendingConsolidationPersonIds ?? []);
 }
@@ -3952,15 +4074,22 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
   // Both bars walk every observation on record and both feed merging alone, so
   // on a batch that will not merge they are pure cost -- ~800ms per batch,
   // measured, and rising with the library.
-  const clusterOptions = consolidate
+  const measuredOptions = consolidate
     ? consolidatingClusterOptions()
     : faceClusterOptions(index.threshold, {
         constraints: index.constraints ?? [],
       });
-  const bars = consolidationBarsFrom(clusterOptions);
+  const measuredBars = consolidationBarsFrom(measuredOptions);
   const pending = pendingConsolidationPeople();
-  const restrictSweep =
-    consolidate && sameConsolidationBars(index.consolidationBars, bars);
+  const readBars = index.consolidationBars;
+  const sweepPlan = consolidate
+    ? planConsolidationSweep(readBars, measuredBars)
+    : undefined;
+  const restrictSweep = sweepPlan?.restricted ?? false;
+  const bars = sweepPlan?.bars ?? measuredBars;
+  const clusterOptions = sweepPlan
+    ? clusterOptionsAtConsolidationBars(sweepPlan.bars)
+    : measuredOptions;
   traceScanStage("calibrate", calibrateStartedAt);
   const clusterStartedAt = Date.now();
   // A throw from a consolidating call must fail toward another full sweep, not
@@ -3972,6 +4101,17 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
     // from, and would otherwise fall back to the strict constant and merge
     // differently than a full rebuild over the same library.
     ...clusterOptions,
+    onMergeSweep: (executedPath) => {
+      if (sweepPlan) {
+        traceMergeSweepPath(
+          "cadence",
+          readBars,
+          measuredBars,
+          sweepPlan,
+          executedPath,
+        );
+      }
+    },
     onAssign: (observation, personId) => {
       assignments.set(observation, personId);
       // Seeds the restricted sweep below. Load-bearing ORDER: `mergeSeedPersonIds`
@@ -4036,12 +4176,14 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
  *    pair left un-merged, which the next full rebuild repairs.
  *
  * A stored snapshot of the last completed consolidation's exact merge bars is
- * what makes the common case sub-quadratic. If any bar moved, the whole sweep
- * runs exactly as before. If none moved, two untouched endpoints are bit-for-
- * bit the same pair already rejected at those bars, so only touched rows seed
- * the queue. An absorb makes its survivor touched indirectly and the clusterer
- * refreshes that whole row, preserving every merge chain and the same fixed
- * point. Missing legacy state also fails toward the historical full sweep.
+ * what makes the common case sub-quadratic. The touched sweep holds each bar at
+ * that snapshot or tightens it to the current measurement; it never relaxes a
+ * bar. Therefore an untouched endpoint pair rejected before is still rejected,
+ * while touched rows see the stricter current evidence immediately. An absorb
+ * makes its survivor touched indirectly and the clusterer refreshes that whole
+ * row, preserving every merge chain. A future full rebuild may safely adopt a
+ * relaxed measurement because it visits the whole library. Missing legacy
+ * state still fails toward the historical full sweep.
  */
 function consolidatePeople(): void {
   // Nothing was deferred, so the sweep has nothing to find that the last one
@@ -4051,29 +4193,15 @@ function consolidatePeople(): void {
   if (!index.consolidationPending) return;
   const startedAt = Date.now();
   const before = index.people.length;
-  const options = consolidatingClusterOptions();
-  const bars = consolidationBarsFrom(options);
+  const measuredOptions = consolidatingClusterOptions();
+  const measuredBars = consolidationBarsFrom(measuredOptions);
   const pending = pendingConsolidationPeople();
-  const restrictSweep = sameConsolidationBars(index.consolidationBars, bars);
-  // Measured on device: the recluster decision reported `restricted
-  // drift=0.00000` and this consolidation then ran a FULL sweep costing 21.6
-  // SECONDS for one new photo. Those two cannot both be right, so the disagreement
-  // is the bug and not the reporting. The suspicion is that the recluster
-  // decision allows 0.01 of hysteresis while `sameConsolidationBars` compares
-  // with ===, so a drift far too small to print forces the expensive path. Print
-  // the bars to full precision rather than argue about it.
-  if (!restrictSweep) {
-    const previous = index.consolidationBars;
-    console.warn(
-      `[PhoteoFaceIndex] full sweep because ` +
-        (previous === undefined
-          ? "no previous bars were stored (first run, or an interrupted consolidation)"
-          : `bars differ: identity ${previous.identity}->${bars.identity} ` +
-            `perceptual ${previous.perceptual}->${bars.perceptual} ` +
-            `evidenced ${previous.evidenced}->${bars.evidenced} ` +
-            `temporal ${previous.temporal}->${bars.temporal}`),
-    );
-  }
+  const readBars = index.consolidationBars;
+  const sweepPlan = planConsolidationSweep(
+    readBars,
+    measuredBars,
+  );
+  const options = clusterOptionsAtConsolidationBars(sweepPlan.bars);
   // Marked before the call for the same reason `appendPeople` does: a throw
   // partway through still leaves a partially merged `index.people` behind.
   markIndexDirty();
@@ -4083,7 +4211,16 @@ function consolidatePeople(): void {
     [],
     {
       ...options,
-      mergeSeedPersonIds: restrictSweep ? pending : undefined,
+      mergeSeedPersonIds: sweepPlan.restricted ? pending : undefined,
+      onMergeSweep: (executedPath) => {
+        traceMergeSweepPath(
+          "scan-end",
+          readBars,
+          measuredBars,
+          sweepPlan,
+          executedPath,
+        );
+      },
       onMerge: (absorbedPersonId, survivingPersonId) => {
         transferPendingConsolidationPerson(
           pending,
@@ -4094,7 +4231,7 @@ function consolidatePeople(): void {
     },
   );
   batchesSinceConsolidation = 0;
-  index.consolidationBars = bars;
+  index.consolidationBars = sweepPlan.bars;
   index.pendingConsolidationPersonIds = [];
   index.consolidationPending = false;
   markIndexDirty();
@@ -4109,7 +4246,7 @@ function consolidatePeople(): void {
     `[PhoteoFaceIndex] consolidated ${Date.now() - startedAt}ms ` +
       `${before}->${index.people.length} people over ` +
       `${index.observations.length} faces (no recluster, ` +
-      `${restrictSweep ? `${pending.size} touched` : "full sweep"})`,
+      `${sweepPlan.restricted ? `${pending.size} touched` : "full sweep"})`,
   );
 }
 
@@ -4307,6 +4444,7 @@ async function runBuild(
   opts: BuildFaceIndexOptions,
   control: { cancelled: boolean; foreground: boolean },
 ): Promise<void> {
+  mergeSweepPathCounts = { taken: 0, skipped: 0 };
   const stopWatching = await watchAppState(control);
   try {
     await loadFaceIndex();
@@ -4384,12 +4522,6 @@ async function runBuild(
     let newlyProcessed = 0;
     let targetReached = false;
     let assetsSinceCheckpoint = 0;
-  /**
-   * The last progress number actually shown, so a batch that moves it nowhere
-   * costs nothing. -1 rather than 0 so the very first batch always reports,
-   * including on a library where the scan is already complete.
-   */
-  let lastShownProgress = -1;
     let lastCheckpointAt = Date.now();
     notifyFaceProgress(seenCount(), index.total);
 
@@ -4519,33 +4651,16 @@ async function runBuild(
           assetsSinceCheckpoint = 0;
           lastCheckpointAt = Date.now();
         }
-        // Everything below is per-BATCH, and a batch of photos this scan has
-        // already seen moves none of these numbers. Measured on the owner's
-        // device catching up over an already-scanned library: sixteen batches a
-        // second, each one broadcasting progress, crossing the native bridge to
-        // rewrite a notification with identical text, and appending a
-        // `photos=0 faces=0` line to the diagnostics file. All of it for work
-        // that changed nothing a person could see.
-        const shown = Math.min(seenCount(), index.total);
-        if (shown !== lastShownProgress) {
-          lastShownProgress = shown;
-          notifyFaceProgress(shown, index.total);
-          // A service notification that sat unchanged for the half hour this
-          // takes would read as hung, and "stuck" is the one impression that
-          // gets an app force-stopped. It only has to change when the NUMBER
-          // does -- rewriting it with the same text is a bridge call for nothing.
-          void updateScanService(
-            "Organising your photos",
-            `${shown.toLocaleString()} of ${index.total.toLocaleString()} photos`,
-          );
-        }
+        notifyFaceProgress(Math.min(seenCount(), index.total), index.total);
+        // Same numbers the in-app progress line shows. A service notification
+        // that sat unchanged for the half hour this takes would read as hung,
+        // and "stuck" is the one impression that gets an app force-stopped.
+        void updateScanService(
+          "Organising your photos",
+          `${Math.min(seenCount(), index.total).toLocaleString()} of ${index.total.toLocaleString()} photos`,
+        );
         const trace = takeScanTrace();
-        // A trace that reports no photos and no faces is the scan saying it did
-        // nothing. Writing that down once per batch buried the lines that
-        // matter and cost a file append each time.
-        if (trace && !/\bphotos=0 faces=0\b/.test(trace)) {
-          console.warn(`[PhoteoFaceScan] ${trace}`);
-        }
+        if (trace) console.warn(`[PhoteoFaceScan] ${trace}`);
         await yieldToEventLoop();
         if (
           incrementalTarget !== null &&
