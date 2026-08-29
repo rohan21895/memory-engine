@@ -4365,6 +4365,12 @@ async function runBuild(
     let newlyProcessed = 0;
     let targetReached = false;
     let assetsSinceCheckpoint = 0;
+  /**
+   * The last progress number actually shown, so a batch that moves it nowhere
+   * costs nothing. -1 rather than 0 so the very first batch always reports,
+   * including on a library where the scan is already complete.
+   */
+  let lastShownProgress = -1;
     let lastCheckpointAt = Date.now();
     notifyFaceProgress(seenCount(), index.total);
 
@@ -4494,16 +4500,33 @@ async function runBuild(
           assetsSinceCheckpoint = 0;
           lastCheckpointAt = Date.now();
         }
-        notifyFaceProgress(Math.min(seenCount(), index.total), index.total);
-        // Same numbers the in-app progress line shows. A service notification
-        // that sat unchanged for the half hour this takes would read as hung,
-        // and "stuck" is the one impression that gets an app force-stopped.
-        void updateScanService(
-          "Organising your photos",
-          `${Math.min(seenCount(), index.total).toLocaleString()} of ${index.total.toLocaleString()} photos`,
-        );
+        // Everything below is per-BATCH, and a batch of photos this scan has
+        // already seen moves none of these numbers. Measured on the owner's
+        // device catching up over an already-scanned library: sixteen batches a
+        // second, each one broadcasting progress, crossing the native bridge to
+        // rewrite a notification with identical text, and appending a
+        // `photos=0 faces=0` line to the diagnostics file. All of it for work
+        // that changed nothing a person could see.
+        const shown = Math.min(seenCount(), index.total);
+        if (shown !== lastShownProgress) {
+          lastShownProgress = shown;
+          notifyFaceProgress(shown, index.total);
+          // A service notification that sat unchanged for the half hour this
+          // takes would read as hung, and "stuck" is the one impression that
+          // gets an app force-stopped. It only has to change when the NUMBER
+          // does -- rewriting it with the same text is a bridge call for nothing.
+          void updateScanService(
+            "Organising your photos",
+            `${shown.toLocaleString()} of ${index.total.toLocaleString()} photos`,
+          );
+        }
         const trace = takeScanTrace();
-        if (trace) console.warn(`[PhoteoFaceScan] ${trace}`);
+        // A trace that reports no photos and no faces is the scan saying it did
+        // nothing. Writing that down once per batch buried the lines that
+        // matter and cost a file append each time.
+        if (trace && !/\bphotos=0 faces=0\b/.test(trace)) {
+          console.warn(`[PhoteoFaceScan] ${trace}`);
+        }
         await yieldToEventLoop();
         if (
           incrementalTarget !== null &&
