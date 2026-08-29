@@ -220,6 +220,10 @@ function ModeSwitch({
           accessibilityLabel={`${option === "classic" ? "Classic" : "Cinema"} mode`}
           accessibilityRole="radio"
           accessibilityState={{ checked: mode === option }}
+          // Vertical only. The two options sit shoulder to shoulder inside the
+          // switch, so horizontal slop would overlap and the later-rendered one
+          // would silently win every tap in the seam.
+          hitSlop={{ bottom: 8, top: 8 }}
           key={option}
           onPress={() => onChange(option)}
           style={styles.modeOption}

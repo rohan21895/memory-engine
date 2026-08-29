@@ -1,7 +1,8 @@
 // @ts-expect-error The Expo app deliberately does not ship Node declarations.
-import { readdirSync, readFileSync } from "node:fs";
-// @ts-expect-error The Expo app deliberately does not ship Node declarations.
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+
+// @ts-expect-error Node requires the extension; Metro resolves this path too.
+import { openingTags, sourceFiles } from "./jsx-scan.ts";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(`pressable accessibility self-check failed: ${message}`);
@@ -29,64 +30,15 @@ function assert(value: unknown, message: string): asserts value {
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
-/** Every .tsx under src, tests excluded -- a test file is not a screen. */
-function screenFiles(directory: string): string[] {
-  const found: string[] = [];
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) found.push(...screenFiles(path));
-    else if (entry.name.endsWith(".tsx") && !entry.name.includes(".test.")) {
-      found.push(path);
-    }
-  }
-  return found;
-}
-
-/**
- * The opening tag of each `<Pressable`, as written.
- *
- * Walks to the `>` that closes the tag rather than the first one in the file,
- * because these tags carry arrow functions (`style={({ pressed }) => ...}`) and
- * a naive `indexOf(">")` stops inside one. Braces, quotes and template literals
- * are tracked so the scan cannot be fooled by a `>` inside any of them --
- * without that this test reports whatever it happens to have truncated, which
- * is the failure mode where a green run means nothing.
- */
-function openingTags(source: string): string[] {
-  const tags: string[] = [];
-  for (let at = source.indexOf("<Pressable"); at !== -1; at = source.indexOf("<Pressable", at + 1)) {
-    let depth = 0;
-    let quote: string | null = null;
-    for (let index = at; index < source.length; index += 1) {
-      const character = source[index];
-      if (quote) {
-        if (character === "\\") index += 1;
-        else if (character === quote) quote = null;
-        continue;
-      }
-      if (character === '"' || character === "'" || character === "`") {
-        quote = character;
-      } else if (character === "{") depth += 1;
-      else if (character === "}") depth -= 1;
-      else if (character === ">" && depth === 0) {
-        tags.push(source.slice(at, index + 1));
-        break;
-      }
-    }
-  }
-  return tags;
-}
-
 const unnamed: string[] = [];
 let total = 0;
-for (const file of screenFiles(ROOT)) {
+for (const file of sourceFiles(ROOT)) {
   const source = readFileSync(file, "utf8");
-  for (const tag of openingTags(source)) {
+  for (const { line, tag } of openingTags(source)) {
     total += 1;
     if (tag.includes("accessibilityLabel") || tag.includes("accessibilityRole")) {
       continue;
     }
-    const line = source.slice(0, source.indexOf(tag)).split("\n").length;
     unnamed.push(`${file.slice(ROOT.length)}:${line}`);
   }
 }
@@ -100,8 +52,8 @@ assert(total > 40, `the scan must actually find the app's buttons (found ${total
     '<Pressable accessibilityRole="button" onPress={() => go(a > b)} style={s}><Text>x</Text></Pressable>',
   );
   assert(
-    sample?.endsWith("style={s}>") === true,
-    `tag extraction must stop at the tag's own close, not at a > inside a prop (got ${sample})`,
+    sample?.tag.endsWith("style={s}>") === true,
+    `tag extraction must stop at the tag's own close, not at a > inside a prop (got ${sample?.tag})`,
   );
 }
 

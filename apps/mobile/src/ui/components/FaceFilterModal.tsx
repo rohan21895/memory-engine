@@ -36,7 +36,9 @@ export function FaceFilterModal({
             <Text accessibilityRole="header" style={styles.title}>Choose a person</Text>
             <Text style={styles.helper}>Choose anyone, or pick several people.</Text>
           </View>
-          <Pressable accessibilityLabel="Close person filter" accessibilityRole="button" onPress={onClose} style={styles.close}>
+          {/* 34pt circle, 8pt of slop: a 50pt touch area for a small glyph. Its
+              neighbours in this row are text, so the slop cannot steal a tap. */}
+          <Pressable accessibilityLabel="Close person filter" accessibilityRole="button" hitSlop={8} onPress={onClose} style={styles.close}>
             <Text style={styles.closeText}>✕</Text>
           </Pressable>
         </View>

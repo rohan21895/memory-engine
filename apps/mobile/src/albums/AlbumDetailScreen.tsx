@@ -133,8 +133,11 @@ export function AlbumDetailScreen({
             style={StyleSheet.absoluteFill}
           />
           <View style={styles.scrim} />
-          <Pressable accessibilityLabel="Back to albums" accessibilityRole="button" onPress={onBack} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>
-          <Pressable accessibilityRole="button" onPress={onManage} style={styles.edit}><Text style={styles.editText}>Edit</Text></Pressable>
+          {/* 40pt circles, because the design wants them small over the photo,
+              with 8pt of slop each so the touch area reaches the 48 the tokens
+              ask for. Both float alone in the hero, so nothing overlaps. */}
+          <Pressable accessibilityLabel="Back to albums" accessibilityRole="button" hitSlop={8} onPress={onBack} style={styles.back}><Text style={styles.backText}>‹</Text></Pressable>
+          <Pressable accessibilityLabel="Edit album" accessibilityRole="button" hitSlop={8} onPress={onManage} style={styles.edit}><Text style={styles.editText}>Edit</Text></Pressable>
           <View style={styles.heroCopy}>
             <Text style={styles.title}>{album.title}</Text>
             <Text style={styles.meta}>{subtitle}</Text>
