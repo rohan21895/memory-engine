@@ -1,7 +1,14 @@
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { planAlbum } from "./album-planner.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
-import { DIFFERENT_PEOPLE_SAME_POSE_IDS, NO_POSE_SAME_PERSON_IDS, POSE_DEDUP_CAP, POSE_DEDUP_ISOLATION_POLICY, poseDedupFixture } from "./pose-dedup-fixture.ts";
+import {
+  DIFFERENT_PEOPLE_SAME_POSE_IDS,
+  NO_POSE_SAME_PERSON_IDS,
+  POSE_DEDUP_CAP,
+  POSE_DEDUP_ISOLATION_POLICY,
+  SAME_PERSON_SAME_POSE_IDS,
+  poseDedupFixture,
+} from "./pose-dedup-fixture.ts";
 import type { PlannerCandidate } from "./album-planner";
 
 function assert(value: unknown, message: string): asserts value {
@@ -13,14 +20,22 @@ function selectedCount(ids: readonly string[], wanted: readonly string[]) {
   return wanted.filter((mediaId) => selected.has(mediaId)).length;
 }
 
+function identityPoseKey(candidate: PlannerCandidate): string | undefined {
+  if (!candidate.poseCluster || !candidate.personIds?.length) return undefined;
+  return `${JSON.stringify([...new Set(candidate.personIds)].sort())}|${candidate.poseCluster}`;
+}
+
 function poseAudit(ids: readonly string[], candidates: readonly PlannerCandidate[]) {
   const byId = new Map(candidates.map((candidate) => [candidate.mediaId, candidate]));
   const poseCounts = new Map<string, number>();
   const readable = ids
     .map((mediaId) => byId.get(mediaId))
-    .filter((candidate): candidate is PlannerCandidate => candidate?.poseCluster !== undefined);
+    .filter(
+      (candidate): candidate is PlannerCandidate =>
+        candidate !== undefined && identityPoseKey(candidate) !== undefined,
+    );
   for (const candidate of readable) {
-    const pose = candidate.poseCluster!;
+    const pose = identityPoseKey(candidate)!;
     poseCounts.set(pose, (poseCounts.get(pose) ?? 0) + 1);
   }
   return {
@@ -32,12 +47,18 @@ function poseAudit(ids: readonly string[], candidates: readonly PlannerCandidate
 
 const fixture = poseDedupFixture();
 const poolPoses = new Set(
-  fixture.candidates.flatMap((candidate) => candidate.poseCluster ? [candidate.poseCluster] : []),
+  fixture.candidates.flatMap((candidate) => {
+    const key = identityPoseKey(candidate);
+    return key ? [key] : [];
+  }),
 );
 const poolCapacity = poolPoses.size * POSE_DEDUP_CAP;
 
-assert(fixture.candidates.length === 30, "the fixture must contain all thirty intended candidates");
-assert(poolPoses.size === 13, "the fixture must carry thirteen distinct readable postures");
+assert(
+  fixture.candidates.length === 31,
+  "the fixture must contain all thirty-one intended candidates",
+);
+assert(poolPoses.size === 15, "the fixture must carry fifteen identity-scoped postures");
 assert(
   poolCapacity > fixture.target,
   `fixture capacity ${poolCapacity} must exceed its ${fixture.target}-photo album target`,
@@ -47,6 +68,18 @@ assert(
     fixture.candidates.some((candidate) => candidate.mediaId === mediaId),
   ),
   "all three different-person pose collisions must exist",
+);
+assert(
+  SAME_PERSON_SAME_POSE_IDS.every((mediaId) =>
+    fixture.candidates.some(
+      (candidate) =>
+        candidate.mediaId === mediaId &&
+        candidate.personIds?.length === 1 &&
+        candidate.personIds[0] === "bo" &&
+        candidate.poseCluster === "movenet:1",
+    ),
+  ),
+  "all three same-person pose repeats must exist",
 );
 assert(
   NO_POSE_SAME_PERSON_IDS.every((mediaId) =>
@@ -73,8 +106,13 @@ assert(
 );
 assert(audit.worstBucket === POSE_DEDUP_CAP, "the body-pose cap must bind without relaxing");
 assert(
-  selectedCount(plan.selectedIds, DIFFERENT_PEOPLE_SAME_POSE_IDS) === POSE_DEDUP_CAP,
-  "the pose-only key must make three different people in one posture compete for two slots",
+  selectedCount(plan.selectedIds, DIFFERENT_PEOPLE_SAME_POSE_IDS) ===
+    DIFFERENT_PEOPLE_SAME_POSE_IDS.length,
+  "three different people in one posture must not compete for the same slots",
+);
+assert(
+  selectedCount(plan.selectedIds, SAME_PERSON_SAME_POSE_IDS) === POSE_DEDUP_CAP,
+  "three repetitions of one person's posture must still compete for two slots",
 );
 assert(
   selectedCount(plan.selectedIds, NO_POSE_SAME_PERSON_IDS) === NO_POSE_SAME_PERSON_IDS.length,
@@ -82,24 +120,24 @@ assert(
 );
 
 const byId = new Map(fixture.candidates.map((candidate) => [candidate.mediaId, candidate]));
-const omittedCollision = DIFFERENT_PEOPLE_SAME_POSE_IDS.find(
+const omittedCollision = SAME_PERSON_SAME_POSE_IDS.find(
   (mediaId) => !plan.selectedIds.includes(mediaId),
 );
-assert(omittedCollision !== undefined, "one high-quality different-person collision must be omitted");
+assert(omittedCollision !== undefined, "one high-quality same-person repeat must be omitted");
 assert(
   plan.selectedIds.some((mediaId) => byId.get(mediaId)!.quality < byId.get(omittedCollision)!.quality),
-  "the collision must lose to a lower-quality photo because the pose-only cap bound",
+  "the repeat must lose to a lower-quality photo because the identity-pose cap bound",
 );
 
-// SABOTAGE 1: widen only the cap. The same assertion above must now fail, and
-// selecting the third collision proves the sabotage reached the planner.
+// SABOTAGE 1: widen only the cap. The same-person assertion above must now
+// fail, and selecting the third repeat proves the sabotage reached the planner.
 const widened = planAlbum(fixture.candidates, fixture.target, {
   policy: { ...POSE_DEDUP_ISOLATION_POLICY, maxPerBodyPose: POSE_DEDUP_CAP + 1 },
 });
 const widenedAudit = poseAudit(widened.selectedIds, fixture.candidates);
 assert(
-  selectedCount(widened.selectedIds, DIFFERENT_PEOPLE_SAME_POSE_IDS) === POSE_DEDUP_CAP + 1,
-  "SABOTAGE must actually admit the third different-person pose collision",
+  selectedCount(widened.selectedIds, SAME_PERSON_SAME_POSE_IDS) === POSE_DEDUP_CAP + 1,
+  "SABOTAGE must actually admit the third same-person pose repeat",
 );
 assert(
   widenedAudit.worstBucket > POSE_DEDUP_CAP,

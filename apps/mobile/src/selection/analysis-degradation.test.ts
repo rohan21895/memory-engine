@@ -24,11 +24,11 @@ function assert(value: unknown, message: string): asserts value {
  *
  * The app caught it and carried on, which is correct. What was NOT correct is
  * that the catch was the end of the story: the same build emitted a full
- * `[album-build-timing]` line with per-phase means and p95s, and not one field
+ * `[PhoteoAlbumBuildTiming]` line with per-phase means and p95s, and not one field
  * in it said a photo had lost a signal. `measureAwaited` records its duration
  * in a `finally`, so a phase that rejected produced a sample indistinguishable
  * from a healthy one. Nobody could say which photo degraded, on which phase, or
- * even how many — which is also why the 29MB allocation still has no site.
+ * even how many.
  *
  * The three halves below, and the third is the one that keeps the first honest:
  * a counter is exactly the kind of code that passes its own test while never
@@ -39,6 +39,32 @@ const OOM_MESSAGE =
   "java.lang.OutOfMemoryError: Failed to allocate a 28975795 byte allocation " +
   "with 25165824 free bytes and 24MB until OOM, target footprint 268435456, " +
   "growth limit 268435456";
+
+// ART reports the whole byte-array object: 12-byte header plus payload. The
+// payload's remainder distinguishes the exact-copy step from Android Base64's
+// padded output, whose byte length is always divisible by four.
+const FAILED_ART_OBJECT_BYTES = 28_975_795;
+const BYTE_ARRAY_HEADER_BYTES = 12;
+const failedPayloadBytes = FAILED_ART_OBJECT_BYTES - BYTE_ARRAY_HEADER_BYTES;
+assert(
+  failedPayloadBytes === 28_975_783 && failedPayloadBytes % 4 === 3,
+  "the measured allocation must be an arbitrary-length payload, not the Base64 output array",
+);
+
+const imageManipulatorAndroidSource = readFileSync(
+  new URL(
+    "../../../../node_modules/expo-image-manipulator/android/src/main/java/expo/modules/imagemanipulator/ImageManipulatorModule.kt",
+    import.meta.url,
+  ),
+  "utf8",
+);
+assert(
+  imageManipulatorAndroidSource.includes("ByteArrayOutputStream().use") &&
+    imageManipulatorAndroidSource.includes("byteOut.toByteArray()") &&
+    imageManipulatorAndroidSource.includes("Base64.encodeToString") &&
+    imageManipulatorAndroidSource.includes("Base64.NO_WRAP"),
+  "Expo's measured native phase must still make the exact second JPEG copy before Base64",
+);
 
 // --- 1. The collector counts, classifies and scrubs. -------------------------
 
@@ -223,6 +249,27 @@ assert(
 assert(
   buildAlbumSource.includes("prepareCandidateAnalysisProxy(photo.uri, (error) =>"),
   "the proxy is the most expensive failure of the six -- it costs every other signal -- so it must report too",
+);
+assert(
+  buildAlbumSource.includes("const ANALYZE_CONCURRENCY = 1;") &&
+    buildAlbumSource.includes("24 Java-array pipelines to overlap") &&
+    buildAlbumSource.includes("source-derived maximum from 24") &&
+    buildAlbumSource.includes("The cost is real and unmeasured"),
+  "the source-derived ART byte-array fan-out must stay bounded without claiming unmeasured throughput",
+);
+// The allocation must stay RETRACTED. efe401d identified it as expo's
+// `toByteArray()`; that was refuted twice (the 1280 px proxy cannot hold
+// 27.63 MiB, and the call only runs under `base64: true`, whose sites here top
+// out at 1280 px). This pins the retraction rather than the wrong answer,
+// because the failure mode is someone reading a confident comment and stopping.
+assert(
+  buildAlbumSource.includes("Do not treat #41's allocation as identified"),
+  "the OOM allocation must not be described as identified while it is not",
+);
+assert(
+  buildAlbumSource.includes("[PhoteoAlbumBuildTiming]") &&
+    buildAlbumSource.includes("[PhoteoAlbumBuildDegraded]"),
+  "album OOM evidence must use the prefix persisted past ColorOS logcat drops",
 );
 
 console.log("analysis-degradation self-check passed");

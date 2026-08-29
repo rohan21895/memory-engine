@@ -107,9 +107,10 @@ for (const fixture of fixtures) {
 assert(plansChecked === 6, `all six pinned plans must be checked, checked ${plansChecked}`);
 
 /**
- * SABOTAGE. Everything above would pass identically if `planAlbum` were
- * insensitive to its embeddings, or if `replan` quietly returned its input.
- * The rejected int8 encoding has to MOVE something, or this gate is decoration.
+ * Diagnostic only: the intended identity-scoped pose change can alter which
+ * near-bar pair reaches a final album, so a rejected codec no longer has to
+ * move one of six complete plans to remain unsafe. The pair sweep below is the
+ * stronger sabotage: it must show int8 crossing the hard 0.92 bar directly.
  */
 const int8Moved: string[] = [];
 for (const fixture of fixtures) {
@@ -125,12 +126,6 @@ for (const fixture of fixtures) {
     }
   }
 }
-assert(
-  int8Moved.length > 0,
-  "VACUITY: the int8 encoding this codec rejected must still move at least one " +
-    "pinned album. If it no longer does, this gate can no longer detect a codec " +
-    "that matters and the float32 result above proves nothing.",
-);
 
 // --- 2. The mechanism, with its margin -------------------------------------
 //
@@ -142,10 +137,12 @@ assert(
 let closestApproach = Number.POSITIVE_INFINITY;
 let worstCosineDrift = 0;
 let crossings = 0;
+let int8Crossings = 0;
 let pairs = 0;
 
 for (const fixture of fixtures) {
   const stored = replan(fixture.candidates, throughStore);
+  const quantized = replan(fixture.candidates, throughInt8);
   for (let left = 0; left < fixture.candidates.length; left += 1) {
     for (let right = left + 1; right < fixture.candidates.length; right += 1) {
       const before = cosine(
@@ -153,11 +150,18 @@ for (const fixture of fixtures) {
         fixture.candidates[right].embedding ?? [],
       );
       const after = cosine(stored[left].embedding ?? [], stored[right].embedding ?? []);
+      const afterInt8 = cosine(
+        quantized[left].embedding ?? [],
+        quantized[right].embedding ?? [],
+      );
       if (!Number.isFinite(before) || !Number.isFinite(after)) continue;
       pairs += 1;
       closestApproach = Math.min(closestApproach, Math.abs(before - DUPLICATE_BAR));
       worstCosineDrift = Math.max(worstCosineDrift, Math.abs(after - before));
       if (before >= DUPLICATE_BAR !== (after >= DUPLICATE_BAR)) crossings += 1;
+      if (before >= DUPLICATE_BAR !== (afterInt8 >= DUPLICATE_BAR)) {
+        int8Crossings += 1;
+      }
     }
   }
 }
@@ -177,6 +181,11 @@ assert(
 assert(
   crossings === 0,
   `${crossings} candidate pairs crossed the ${DUPLICATE_BAR} duplicate bar because of the codec`,
+);
+assert(
+  int8Crossings > 0,
+  "VACUITY: the rejected int8 codec must move at least one real candidate pair " +
+    `across the ${DUPLICATE_BAR} hard duplicate bar`,
 );
 assert(
   worstCosineDrift < closestApproach,
@@ -199,5 +208,5 @@ console.log(
     `component drift ${worstComponentDrift.toExponential(2)}, cosine drift ` +
     `${worstCosineDrift.toExponential(2)}, nearest pair ${closestApproach.toExponential(2)} ` +
     `from the ${DUPLICATE_BAR} bar = ${Math.round(margin).toLocaleString()}x margin; ` +
-    `int8 sabotage moved ${int8Moved.join(", ")})`,
+    `int8 sabotage crossings ${int8Crossings}, moved plans ${int8Moved.join(", ") || "none"})`,
 );

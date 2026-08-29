@@ -1,7 +1,12 @@
 // Pure module self-checks; Node 22's native TypeScript test runner executes
 // this file and treats any failed assertion as a failed test.
 // @ts-expect-error Node requires the extension while Metro resolves it too.
-import { planAlbum, type PlannerCandidate } from "./album-planner.ts";
+import {
+  blendedSimilarity,
+  DEFAULT_ALBUM_OBJECTIVE,
+  planAlbum,
+  type PlannerCandidate,
+} from "./album-planner.ts";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(`Album planner self-check failed: ${message}`);
@@ -112,11 +117,12 @@ const poses = planAlbum(
     ...Array.from({ length: 5 }, (_, index) =>
       candidate(`pose-a-${index}`, 0.95 - index * 0.01, {
         poseCluster: "A",
+        personIds: ["ava"],
         embedding: axis(index),
       }),
     ),
-    candidate("pose-b-0", 0.65, { poseCluster: "B", embedding: axis(6) }),
-    candidate("pose-b-1", 0.64, { poseCluster: "B", embedding: axis(7) }),
+    candidate("pose-b-0", 0.65, { poseCluster: "B", personIds: ["ava"], embedding: axis(6) }),
+    candidate("pose-b-1", 0.64, { poseCluster: "B", personIds: ["ava"], embedding: axis(7) }),
   ],
   4,
 );
@@ -130,12 +136,46 @@ const onePose = planAlbum(
   Array.from({ length: 4 }, (_, index) =>
     candidate(`only-pose-${index}`, 0.9 - index * 0.01, {
       poseCluster: "A",
+      personIds: ["ava"],
       embedding: axis(index),
     }),
   ),
   4,
 );
 assert(onePose.selectedIds.length === 4, "pose cap must relax rather than shorten the album");
+
+const poseOnlySimilarity = {
+  ...DEFAULT_ALBUM_OBJECTIVE,
+  simSemantic: 0,
+  simPeople: 0,
+  simPose: 1,
+  simPlace: 0,
+  simTime: 0,
+};
+assert(
+  blendedSimilarity(
+    { mediaId: "ava-pose", quality: 1, personIds: ["ava"], poseCluster: "A" },
+    { mediaId: "bo-pose", quality: 1, personIds: ["bo"], poseCluster: "A" },
+    poseOnlySimilarity,
+  ) === 0,
+  "the same pose must not make two different people similar",
+);
+assert(
+  blendedSimilarity(
+    { mediaId: "ava-pose-a", quality: 1, personIds: ["ava"], poseCluster: "A" },
+    { mediaId: "ava-pose-b", quality: 1, personIds: ["ava"], poseCluster: "A" },
+    poseOnlySimilarity,
+  ) === 1,
+  "the same person's repeated pose must remain fully similar",
+);
+assert(
+  blendedSimilarity(
+    { mediaId: "unknown-pose-a", quality: 1, personIds: [], poseCluster: "A" },
+    { mediaId: "unknown-pose-b", quality: 1, personIds: [], poseCluster: "A" },
+    poseOnlySimilarity,
+  ) === 0,
+  "an unowned single-person pose must not fuse two unknown people",
+);
 
 // Rare moments and scarce people waive soft floors, never absolute screenshot gates.
 const rare = planAlbum(
@@ -354,6 +394,7 @@ assert(
     Array.from({ length: 4 }, (_, index) =>
       candidate(`only-pose-${index}`, 0.9 - index * 0.01, {
         poseCluster: "A",
+        personIds: ["ava"],
         embedding: axis(index),
       }),
     ),
@@ -376,4 +417,3 @@ assert(
   allIdentical.selectedIds.length === 5,
   `the duplicate ceiling must relax rather than shorten the album (got ${allIdentical.selectedIds.length})`,
 );
-

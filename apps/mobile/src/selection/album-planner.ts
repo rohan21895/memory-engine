@@ -467,10 +467,7 @@ function buildSelectionContext(
       ]),
     ),
     poseKey: new Map(
-      survivors.map((candidate) => [
-        candidate.mediaId,
-        candidate.poseCluster ? `pose:${candidate.poseCluster}` : `nopose:${candidate.mediaId}`,
-      ]),
+      survivors.map((candidate) => [candidate.mediaId, bodyPoseKey(candidate)]),
     ),
     shotKey: new Map(
       survivors.map((candidate) => [candidate.mediaId, candidate.shotGroup || candidate.mediaId]),
@@ -498,6 +495,23 @@ function buildSelectionContext(
       ]),
     ),
   };
+}
+
+/**
+ * The body-pose cap prevents one person recurring in one posture. A MoveNet
+ * cluster by itself describes only joint geometry; using it as a global key
+ * makes unrelated people compete merely because both crossed their arms.
+ *
+ * No known person means no safe owner for the single-person MoveNet result, so
+ * the photo gets a unique key. Multi-person sets are kept exact and sorted by
+ * normalization: MoveNet does not say which detected identity it followed,
+ * and guessing would turn a conservative split into an irreversible fusion.
+ */
+function bodyPoseKey(candidate: NormalizedCandidate): string {
+  if (!candidate.poseCluster || candidate.personIds.length === 0) {
+    return `nopose:${candidate.mediaId}`;
+  }
+  return `pose:${JSON.stringify(candidate.personIds)}|${candidate.poseCluster}`;
 }
 
 type SelectionContext = ReturnType<typeof buildSelectionContext>;
@@ -1289,7 +1303,13 @@ export function blendedSimilarity(
   }
 
   if (left.poseCluster && right.poseCluster) {
-    add(tuning.simPose, left.poseCluster === right.poseCluster ? 1 : 0);
+    // MoveNet describes a person's posture, not a globally scarce posture.
+    // Requiring the same high-confidence person set prevents two different
+    // people with the same stance from becoming similar merely because their
+    // elbow angles match. Multi-person sets must match exactly: MoveNet fits
+    // only one body and guessing which face owns it would violate the
+    // split-first identity rule.
+    add(tuning.simPose, bodyPoseKey(left) === bodyPoseKey(right) ? 1 : 0);
   }
 
   const leftPlace = left.placeKey || UNKNOWN;

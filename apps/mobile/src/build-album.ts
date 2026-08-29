@@ -89,17 +89,88 @@ const EDGE_FRACTION = 0.01;
 /**
  * Photos analyzed at once.
  *
- * This is a real bound on native work now. It used to be decorative twice over:
- * every photo held up to five INDEPENDENT full-resolution decodes of the
- * original (expo-image-manipulator loads via Glide at SIZE_ORIGINAL and has no
- * subsampling hint, so a 12MP frame is a ~48MB ARGB bitmap - six photos in
- * flight could ask for over a gigabyte against a 192-256MB heap), while the
- * MoveNet and TinyCLIP wrappers serialized their preprocessing on a module-level
- * queue, so the photos that survived that queued up single file anyway. Both are
- * fixed: one bounded proxy per photo feeds every model, and the wrappers now
- * serialize only the inference itself.
+ * One, because the measured OOM is Java byte-array pressure AFTER the bounded
+ * proxy was added, not the old full-resolution bitmap hypothesis:
+ *
+ * - the device attributed the OOM to `quality-decode` and ART reported a
+ *   28,975,795-byte object allocation;
+ * - ART's byte-array object size is its 12-byte header plus payload, leaving an
+ *   exact 28,975,783-byte JPEG payload. That is not a bitmap, and it cannot be
+ *   Android Base64's output either: NO_WRAP output has a multiple-of-four byte
+ *   length, while this payload is 3 mod 4;
+ * - source tracing (not a heap measurement) shows that each photo starts four
+ *   Base64 preprocessing paths under one Promise.all: perceptual, quality,
+ *   MoveNet, and TinyCLIP. The previous outer limit of six therefore allowed up
+ *   to 24 Java-array pipelines to overlap.
+ *
+ * WHAT PRODUCES THE 27.63 MiB PAYLOAD IS STILL UNKNOWN. An earlier revision of
+ * this comment named expo-image-manipulator's `byteOut.toByteArray()` in
+ * `saveAsync` as the allocation. That call is real (ImageManipulatorModule.kt
+ * line 127) and it is the right SHAPE of allocation, but it cannot be this
+ * one, and the arithmetic that rules it out is the same arithmetic that found
+ * it: the quality proxy is capped at ANALYSIS_PROXY_SIZE = 1280 px, so at most
+ * 1.6 MP. No JPEG encoder emits 27.63 MiB from 1.6 MP at any quality -- that
+ * is 9-18x more bytes than the bound permits, and a 27.63 MiB JPEG implies
+ * roughly 15-29 MP. So the failed allocation comes from something that still
+ * sees a full-size image, not from the proxy that was added to prevent exactly
+ * that. Do not treat #41's allocation as identified.
+ *
+ * A second, independent argument kills the same hypothesis. The `toByteArray()`
+ * at ImageManipulatorModule.kt:127 sits inside the `if (base64)` branch, so it
+ * runs ONLY for `saveAsync({base64: true})`. Every such call site in this app is
+ * bounded well below the size needed: image-quality resamples to
+ * QUALITY_SAMPLE_WIDTH = 512, face-index saves a FACE_THUMBNAIL_SIZE crop, and
+ * the tinyclip / movenet / facenet wrappers encode at their model input size.
+ * The largest is 1280 px. None can hold 27.63 MiB of compressed JPEG. Two
+ * separate arguments, one from the proxy bound and one from the base64 gate,
+ * both exclude that call.
+ *
+ * WHAT THE NUMBER DOES MATCH is an ORIGINAL. His library contains DSLR JPEGs of
+ * 25-27 MiB (largest found on the archived copy: 27,863,843 bytes), against a
+ * failed allocation of 28,975,783. Same class of file, same order of magnitude.
+ * The most probable allocation is therefore the original's own bytes being
+ * buffered while it is opened -- inside Glide/expo-image or the ContentResolver,
+ * not in this repo's Kotlin, which contains no full-file read. The bound is
+ * applied AFTER the file is opened, so a 1280 px cap never prevents it.
+ *
+ * That makes #41 and #59 the same root cause: this app still hands full-size
+ * originals to the image pipeline. Fixing #59 -- decode MediaStore thumbnails
+ * instead of originals -- should remove the pressure that causes #41, and is a
+ * better lead than anything further down the saveAsync path.
+ *
+ * Confirming the exact frame needs the phone, which was locked. Read the phase
+ * label from a concurrency-one run (see below) before believing any successor.
+ *
+ * The `quality-decode` label is not evidence of the culprit either, and this is
+ * why the whole attribution came apart. `measureImageQuality` is only ever
+ * called on `analysisUri` -- the proxy -- and it resamples to
+ * QUALITY_SAMPLE_WIDTH = 512, so the path that phase names is the most tightly
+ * bounded one in the build. What the label actually records is which timing
+ * bucket was OPEN on one photo's timeline, and at concurrency six, with four
+ * coroutine-dispatched paths per photo, up to 24 allocations from other photos
+ * were in flight against the same heap. The bucket names the bystander, not the
+ * allocator.
+ *
+ * Serializing at the photo boundary reduces the source-derived maximum from 24
+ * pipelines to four. Keep it at one until the payload above is explained: if a
+ * single photo really can allocate 27.63 MiB plus its ~38.6 MiB Base64 copy,
+ * that is ~66 MiB transient against a 192-256 MB heap, and two photos would
+ * likely be fatal. This is a stopgap that bounds the blast radius, NOT a fix --
+ * the fix is to stop producing a 27.63 MiB payload at all.
+ *
+ * It also buys the diagnosis. One photo at a time means one photo's allocations
+ * in flight, so the NEXT OOM's phase label finally names the path that
+ * allocated instead of whichever bucket happened to be open. Read the label
+ * from a concurrency-one run before believing any successor to this comment.
+ *
+ * The cost is real and unmeasured. `saveAsync` is declared
+ * `AsyncFunction(...) Coroutine`, so it runs on a coroutine dispatcher rather
+ * than the single expo AsyncFunctionQueue -- these calls genuinely did run in
+ * parallel, and going 6 -> 1 genuinely serializes them. Measure album build on
+ * the phone before assuming this is cheap; do not infer it from the old
+ * six-photo trace.
  */
-const ANALYZE_CONCURRENCY = 6;
+const ANALYZE_CONCURRENCY = 1;
 
 /**
  * M2: reuse Tier-B signals across album builds instead of recomputing them.
@@ -358,10 +429,10 @@ function formatDegradation(timing: BuildAlbumTiming): string {
  * `worstBucket` says nothing about the planner and the line marks itself
  * unmeasurable rather than inviting the wrong conclusion.
  *
- * `noPose` is the other half, and it is the one this library is likely to fail
- * on. A photo whose pose MoveNet could not read is keyed `nopose:<mediaId>`,
- * unique to itself, so it is never capped at all -- and MoveNet fits ONE person,
- * while most photos here hold several.
+ * `noPoseOrIdentity` is the other half, and it is the one this library is
+ * likely to fail on. A photo whose pose MoveNet could not read, or whose fitted
+ * body cannot be assigned to a known identity, is keyed
+ * `nopose:<mediaId>`, unique to itself and never capped.
  *
  * Reporting only: it observes a finished decision and changes nothing.
  */
@@ -374,23 +445,23 @@ function reportPoseDiversity(
     const chosen = album.selected
       .map((selected) => byId.get(selected.media_id))
       .filter((photo): photo is (typeof enriched)[number] => photo !== undefined);
-    const readable = chosen.filter((photo) => photo.poseCluster);
+    // A single-person pose has no safe owner without a known identity. For a
+    // group, retain the exact sorted identity set: MoveNet fits only one body,
+    // and guessing which face it followed would make this diagnostic claim a
+    // deduplication the planner deliberately refuses to make.
+    const readable = chosen.filter(
+      (photo) => photo.poseCluster && (photo.personIds?.length ?? 0) > 0,
+    );
     const buckets = new Map<string, number>();
     for (const photo of readable) {
-      const key = photo.poseCluster!;
+      const people = [...new Set(photo.personIds ?? [])].sort();
+      const key = `${JSON.stringify(people)}|${photo.poseCluster}`;
       buckets.set(key, (buckets.get(key) ?? 0) + 1);
     }
-    const personPose = new Map<string, number>();
-    for (const photo of readable) {
-      for (const person of photo.personIds ?? []) {
-        const key = `${person}|${photo.poseCluster}`;
-        personPose.set(key, (personPose.get(key) ?? 0) + 1);
-      }
-    }
-    const repeats = [...personPose.values()].filter((count) => count > 1).length;
+    const repeats = [...buckets.values()].filter((count) => count > 1).length;
     const capacity = buckets.size * POSE_DIVERSITY_CAP;
     console.info(
-      `[album-pose-diversity] chosen=${chosen.length} noPose=${chosen.length - readable.length} ` +
+      `[PhoteoAlbumPoseDiversity] chosen=${chosen.length} noPoseOrIdentity=${chosen.length - readable.length} ` +
         `distinctPoses=${buckets.size} capacity=${capacity} ` +
         `worstBucket=${buckets.size > 0 ? Math.max(...buckets.values()) : 0} ` +
         `samePersonSamePose=${repeats}` +
@@ -407,7 +478,7 @@ function reportPoseDiversity(
 const POSE_DIVERSITY_CAP = 2;
 
 /**
- * `[album-runtime]` — the line that decides whether M3 is a runtime problem.
+ * `[PhoteoAlbumRuntime]` — the line that decides whether M3 is a runtime problem.
  *
  * Three numbers, and the argument only works with all three:
  *
@@ -418,7 +489,7 @@ const POSE_DIVERSITY_CAP = 2;
  * - `cpu:<x>ms/<wall>ms` is JS-thread CPU inside measured synchronous blocks
  *   against the stage's own wall clock. These DO sum — the thread is single and
  *   the blocks cannot yield — so a share near 100% means the pass is JS-bound
- *   and `ANALYZE_CONCURRENCY = 6` is buying nothing but peak memory.
+ *   and outer photo concurrency is buying nothing but peak memory.
  * - `blocked` is how much of the stage a trivial timer could not run, i.e. how
  *   long a resolution arriving from the Nitro thread pool waits to be seen.
  *
@@ -450,7 +521,7 @@ function reportRuntimeProfile(
           `(${measured.runs}x,${formatMilliseconds(measured.minMs)}..${formatMilliseconds(measured.maxMs)})`
         : `${name}:unavailable`;
     console.info(
-      `[album-runtime] photos=${photoCount} ` +
+      `[PhoteoAlbumRuntime] photos=${photoCount} ` +
         `idle-bench={${describe("tinyclip", bench.tinyclip)},${describe("movenet", bench.movenet)}} ` +
         formatJsThreadProfile(stageWallMs, lag),
     );
@@ -795,7 +866,7 @@ export async function buildAlbum(
       (timing) => timing.stage === "deep-analysis-phase",
     );
     console.info(
-      `[album-build-timing] ${timings
+      `[PhoteoAlbumBuildTiming] ${timings
         .map(formatTiming)
         .join(" ")}` +
         (hasDeepAnalysisBreakdown
@@ -904,7 +975,7 @@ async function buildAlbumImpl(
       itemCount: probed.length,
     });
     console.info(
-      `[album-build] Candidate cap engaged: analyzing the best ${analysisInputs.length} of ${photos.length} photos.`,
+      `[PhoteoAlbumBuild] Candidate cap engaged: analyzing the best ${analysisInputs.length} of ${photos.length} photos.`,
     );
     emitProgress(options.onProgress, {
       done: completedWork,
@@ -1283,7 +1354,7 @@ async function buildAlbumImpl(
   for (const degradation of degradations) {
     if (degradation.count === 0) continue;
     console.warn(
-      `[album-build-degraded] ${degradation.phase} count=${degradation.count} ` +
+      `[PhoteoAlbumBuildDegraded] ${degradation.phase} count=${degradation.count} ` +
         `oom=${degradation.outOfMemory} first="${degradation.firstMessage}"`,
     );
   }

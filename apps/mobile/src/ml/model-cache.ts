@@ -37,7 +37,7 @@ export type ModelExecutionTimingRecorder = {
    * `undefined`/`{}`/`[]` so one bad photo cannot fail an album. That is the
    * right behaviour and it stays — but until this existed, the swallow was also
    * the END of the story: a 29MB `OutOfMemoryError` thrown inside a native
-   * decode was caught, the album quietly got worse, and the only trace left was
+   * image-manipulator copy was caught, the album quietly got worse, and the only trace left was
    * a timing sample indistinguishable from a healthy one. `measureAwaited`
    * records in a `finally`, so a rejected phase still produced a duration.
    *
