@@ -4055,6 +4055,25 @@ function consolidatePeople(): void {
   const bars = consolidationBarsFrom(options);
   const pending = pendingConsolidationPeople();
   const restrictSweep = sameConsolidationBars(index.consolidationBars, bars);
+  // Measured on device: the recluster decision reported `restricted
+  // drift=0.00000` and this consolidation then ran a FULL sweep costing 21.6
+  // SECONDS for one new photo. Those two cannot both be right, so the disagreement
+  // is the bug and not the reporting. The suspicion is that the recluster
+  // decision allows 0.01 of hysteresis while `sameConsolidationBars` compares
+  // with ===, so a drift far too small to print forces the expensive path. Print
+  // the bars to full precision rather than argue about it.
+  if (!restrictSweep) {
+    const previous = index.consolidationBars;
+    console.warn(
+      `[PhoteoFaceIndex] full sweep because ` +
+        (previous === undefined
+          ? "no previous bars were stored (first run, or an interrupted consolidation)"
+          : `bars differ: identity ${previous.identity}->${bars.identity} ` +
+            `perceptual ${previous.perceptual}->${bars.perceptual} ` +
+            `evidenced ${previous.evidenced}->${bars.evidenced} ` +
+            `temporal ${previous.temporal}->${bars.temporal}`),
+    );
+  }
   // Marked before the call for the same reason `appendPeople` does: a throw
   // partway through still leaves a partially merged `index.people` behind.
   markIndexDirty();
