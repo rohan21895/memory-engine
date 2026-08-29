@@ -25,7 +25,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isFinalPhoto(value: unknown): value is FinalPhoto {
-  return isRecord(value) && typeof value.media_id === "string" && typeof value.uri === "string" && typeof value.page === "number";
+  return (
+    isRecord(value) &&
+    typeof value.media_id === "string" &&
+    typeof value.uri === "string" &&
+    typeof value.page === "number" &&
+    (value.width === undefined || (typeof value.width === "number" && Number.isFinite(value.width) && value.width > 0)) &&
+    (value.height === undefined || (typeof value.height === "number" && Number.isFinite(value.height) && value.height > 0))
+  );
 }
 
 function isReviewData(value: unknown): value is ReviewData {

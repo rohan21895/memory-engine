@@ -13,6 +13,7 @@ import { BackHandler, StyleSheet, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AlbumDetailScreen } from "./src/albums/AlbumDetailScreen";
+import { AlbumPdfViewer } from "./src/albums/AlbumPdfViewer";
 import {
   DeleteAlbumScreen,
   ManageAlbumSheet,
@@ -78,7 +79,7 @@ const ACCESS_REPAIR_KEY = "photeo-media-access-repair-v1";
 
 type Gate = "checking" | "welcome" | "login" | "permission" | "ready";
 type CreateStep = "pick" | "setup" | "building" | "review" | "ready" | "error" | null;
-type LibraryRoute = { albumId: string; screen: "detail" | "slideshow" } | null;
+type LibraryRoute = { albumId: string; screen: "detail" | "document" | "slideshow" } | null;
 type ActionOrigin = "detail" | "ready";
 type AlbumActionRoute =
   | { albumId: string; origin: ActionOrigin; screen: "manage" | "delete" | "share" | "print" }
@@ -503,19 +504,28 @@ function whenIdle(timeout: number): Promise<void> {
     const previous = existingId
       ? savedAlbumsRef.current.find((candidate) => candidate.id === existingId)
       : undefined;
+    const sourceById = new Map(pickedPhotos.map((photo) => [photo.id, photo]));
+    const documentPhotos = photos.map((photo) => {
+      const source = sourceById.get(photo.media_id);
+      return {
+        ...photo,
+        height: source?.height,
+        width: source?.width,
+      };
+    });
     const saved: SavedAlbum = {
       id,
       // Keep any title the user typed on Album Ready before stepping back.
       title: previous?.title ?? suggestedAlbumTitle(pickedPhotos),
-      coverUri: photos[0]?.uri ?? "",
-      photoIds: photos.map((photo) => photo.media_id),
-      photos,
+      coverUri: documentPhotos[0]?.uri ?? "",
+      photoIds: documentPhotos.map((photo) => photo.media_id),
+      photos: documentPhotos,
       reviewData: album,
       dateRange: timestamps.length > 0 ? { start: Math.min(...timestamps), end: Math.max(...timestamps) } : {},
       createdAt: previous?.createdAt ?? now,
       updatedAt: now,
     };
-    setFinalPhotos(photos);
+    setFinalPhotos(documentPhotos);
     setCurrentAlbumId(id);
     setSavedAlbums(await saveAlbum(saved));
     void clearAlbumSetupDraft().catch(() => undefined);
@@ -659,6 +669,10 @@ function whenIdle(timeout: number): Promise<void> {
     return <Slideshow album={routedAlbum} onBack={popNavigation} />;
   }
 
+  if (libraryRoute?.screen === "document" && routedAlbum) {
+    return <AlbumPdfViewer album={routedAlbum} onBack={popNavigation} />;
+  }
+
   if (libraryRoute?.screen === "detail" && routedAlbum) {
     return (
       <AlbumDetailScreen
@@ -666,6 +680,7 @@ function whenIdle(timeout: number): Promise<void> {
         onBack={popNavigation}
         onManage={() => pushNavigation({ actionRoute: { albumId: routedAlbum.id, origin: "detail", screen: "manage" } })}
         onPlay={() => pushNavigation({ libraryRoute: { albumId: routedAlbum.id, screen: "slideshow" } })}
+        onRead={() => pushNavigation({ libraryRoute: { albumId: routedAlbum.id, screen: "document" } })}
         onPrint={() => pushNavigation({ actionRoute: { albumId: routedAlbum.id, origin: "detail", screen: "print" } })}
         onShare={() => pushNavigation({ actionRoute: { albumId: routedAlbum.id, origin: "detail", screen: "share" } })}
       />
@@ -730,7 +745,7 @@ function whenIdle(timeout: number): Promise<void> {
         onBack={popNavigation}
         onDone={resetCreateFlow}
         onOpen={() => {
-          pushNavigation({ createStep: null, libraryRoute: { albumId: currentAlbum.id, screen: "detail" } });
+          pushNavigation({ createStep: null, libraryRoute: { albumId: currentAlbum.id, screen: "document" } });
         }}
         onPlay={() => {
           pushNavigation({ createStep: null, libraryRoute: { albumId: currentAlbum.id, screen: "slideshow" } });

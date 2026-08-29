@@ -17,11 +17,13 @@ export function AlbumDetailScreen({
   onBack,
   onManage,
   onPlay,
+  onRead,
 }: {
   album: SavedAlbum;
   onBack: () => void;
   onManage: () => void;
   onPlay: () => void;
+  onRead: () => void;
   onPrint: () => void;
   onShare: () => void;
 }) {
@@ -41,6 +43,7 @@ export function AlbumDetailScreen({
           </View>
         </View>
         <View style={styles.actions}>
+          <PillButton label="Read album" onPress={onRead} />
           <PillButton label="▶  Play slideshow" onPress={onPlay} />
         </View>
         <View style={styles.gridHeading}><Text style={styles.gridTitle}>All {album.photos.length} photos</Text></View>
