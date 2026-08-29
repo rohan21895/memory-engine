@@ -438,7 +438,7 @@ const styles = StyleSheet.create({
   },
   priorityButtonActive: { backgroundColor: colors.gold, borderColor: colors.gold },
   priorityButtonPressed: { opacity: 0.72 },
-  priorityLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: 11, lineHeight: 14, textAlign: "center" },
+  priorityLabel: { color: colors.text, fontFamily: fonts.semibold, fontSize: 12, lineHeight: 16, textAlign: "center" },
   priorityLabelActive: { color: colors.onAccent },
   priorityRow: { flexDirection: "row", gap: spacing.xxs },
   root: { backgroundColor: colors.background, flex: 1 },

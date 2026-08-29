@@ -192,7 +192,7 @@ const styles = StyleSheet.create({
   swatchActive: { borderColor: colors.gold, borderWidth: 3 },
   swatchCard: { alignItems: "center", gap: 5, width: 72 },
   swatchEmpty: { opacity: 0.5 },
-  swatchLabel: { color: colors.muted, fontFamily: fonts.regular, fontSize: 11.5 },
+  swatchLabel: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12 },
   swatchLabelActive: { color: colors.text, fontFamily: fonts.bold },
   title: { color: colors.text, fontFamily: fonts.extraBold, ...typeScale.subtitle },
   use: { alignItems: "center", backgroundColor: colors.gold, borderRadius: 27, height: 54, justifyContent: "center" },

@@ -818,7 +818,7 @@ const styles = StyleSheet.create({
   iconButtonText: { color: "#fff", fontFamily: fonts.regular, fontSize: 29, lineHeight: 30, marginTop: -2 },
   meta: { color: "rgba(255,255,255,.72)", fontFamily: fonts.regular, fontVariant: ["tabular-nums"], ...typeScale.small },
   modeCluster: { alignItems: "center", gap: 5 },
-  modeHint: { color: "rgba(255,255,255,.68)", fontFamily: fonts.medium, fontSize: 10.5, letterSpacing: 0.2 },
+  modeHint: { color: "rgba(255,255,255,.68)", fontFamily: fonts.medium, fontSize: 12, letterSpacing: 0.2 },
   modeIndicator: {
     backgroundColor: "rgba(255,255,255,.94)",
     borderCurve: "continuous",
