@@ -93,7 +93,7 @@ const build = readFileSync(new URL("../build-album.ts", import.meta.url), "utf8"
 const capLines = build.match(/const capEngaged = .*/g) ?? [];
 assert(capLines.length === 2, `expected both capEngaged sites (found ${capLines.length})`);
 assert(
-  capLines.every((line) => line.includes("shouldCapCandidates(photos.length, count)")),
+  capLines.every((line: string) => line.includes("shouldCapCandidates(photos.length, count)")),
   `every capEngaged site must use the budget rule (got ${capLines.join(" | ")})`,
 );
 assert(

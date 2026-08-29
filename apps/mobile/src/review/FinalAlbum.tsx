@@ -67,7 +67,16 @@ export default function FinalAlbum({
         <Text style={styles.backText}>‹</Text>
       </Pressable>
       {photos[0] ? (
-        <Image cachePolicy="memory-disk" contentFit="cover" source={photos[0].uri} style={styles.cover} transition={160} />
+        // A big photograph that does nothing when tapped reads as broken. Opening
+        // the album is the thing he already wants from here, so the cover does it.
+        <Pressable
+          accessibilityHint="Opens the album"
+          accessibilityLabel="Album cover"
+          accessibilityRole="button"
+          onPress={leaveVia(onOpen)}
+        >
+          <Image cachePolicy="memory-disk" contentFit="cover" source={photos[0].uri} style={styles.cover} transition={160} />
+        </Pressable>
       ) : <View style={styles.cover} />}
       <Text style={styles.eyebrow}>Album ready</Text>
       <View style={styles.titleRow}>

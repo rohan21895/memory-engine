@@ -86,10 +86,35 @@ assert(
   detail.includes("aspectRatio: aspectRatioOf(photo)"),
   "each tile must take its own photo's aspect ratio",
 );
-const tileImage = detail.match(/<Image[^>]*style=\{\[styles\.tile[^>]*>/s)?.[0] ?? "";
+// The tile used to letterbox, because a photo with no stored dimensions read as
+// square and `cover` would have cropped it. That premise is gone: dimensions are
+// now MEASURED from the native proxy, so the box and the photo agree and `cover`
+// cuts nothing -- while avoiding the grey seam a rounding error gives `contain`.
+// What must hold is the measurement, not the fit mode.
 assert(
-  tileImage.includes('contentFit="contain"'),
-  "album tiles must letterbox, never centre-crop -- dimensions are not guaranteed",
+  detail.includes("albumAnalysisProxy(photo.media_id, TILE_EDGE)"),
+  "the wall must measure real dimensions, not trust the optional stored ones",
+);
+assert(
+  /frame \? \{ \.\.\.photo, width: frame\.width, height: frame\.height \} : photo/.test(detail),
+  "...and the measured dimensions must reach the layout, or measuring them is pointless",
+);
+// Tapping a photo must open it full screen. This never existed: album photos
+// were bare <Image> elements in every album surface, which is what "mini images
+// when clicked should always show me full screen images" was reporting.
+assert(
+  /onPress=\{\(\) => setViewerIndex\(indexOf\(photo\.media_id\)\)\}/.test(detail),
+  "every album tile must be tappable",
+);
+assert(
+  detail.includes("<Lightbox") && detail.includes('mode="browse-album"'),
+  "...and must open the full-screen viewer, which fits rather than crops",
+);
+// Full screen is the one place the photo IS the point, so it gets the original
+// rather than the tile's bounded proxy.
+assert(
+  /uri: photo\.uri,/.test(detail.slice(detail.indexOf("viewerItems"))),
+  "the full-screen viewer must show the original, not the tile proxy",
 );
 
 const pdf = readFileSync(
