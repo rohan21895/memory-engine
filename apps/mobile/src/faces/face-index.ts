@@ -303,6 +303,24 @@ export type FaceIndexStatus = {
 
 export type BuildFaceIndexOptions = {
   onProgress?: (done: number, total: number) => void;
+  /**
+   * Fires when the visible People projection may have changed.
+   *
+   * Exists so a screen can stop REBUILDING that projection on a timer. The
+   * People rail polled once a second during a scan, which measured 964.7ms per
+   * rebuild over an 11,800-photo library -- a second of work, once a second,
+   * for an answer that is usually identical to the last one.
+   *
+   * "May have changed" is deliberate and is the honest contract. This fires
+   * when people are re-clustered, consolidated, or have their avatars filled
+   * in; it does NOT promise the projection actually differs. A false wake costs
+   * one rebuild, where a missed one leaves the user looking at a stale rail,
+   * and only one of those is a bug.
+   *
+   * Progress is NOT the same signal and must not be used as a substitute: faces
+   * are processed in batches that frequently change nothing a person can see.
+   */
+  onPeopleChanged?: () => void;
   threshold?: number;
 };
 
@@ -519,6 +537,15 @@ let hydration: Promise<void> | null = null;
 let duplicateDetectionsDropped = 0;
 let personIdsByAsset = new Map<string, string[]>();
 let progressSubscribers = new Set<(done: number, total: number) => void>();
+/**
+ * Screens waiting to hear that the People projection may have moved.
+ *
+ * Separate from `progressSubscribers` on purpose. Progress ticks per batch and
+ * most batches change nothing visible, so a screen driven by it rebuilds
+ * constantly for no reason -- which is exactly the 964.7ms-per-second the
+ * People rail was paying.
+ */
+let peopleSubscribers = new Set<() => void>();
 let activeScanControl: { cancelled: boolean; foreground: boolean } | null = null;
 
 function observationCounts(): Pick<
@@ -3734,6 +3761,8 @@ function rebuildPeople(requested?: number): void {
   // rather than assumed: "feels slow" reports on this app have pointed at the
   // wrong thing before.
   const elapsed = Date.now() - startedAt;
+  // Every caller of this function has just replaced the people array.
+  notifyPeopleChanged();
   if (elapsed > 250) {
     console.warn(
       `[PhoteoFaceIndex] rebuildPeople ${elapsed}ms over ` +
@@ -4051,6 +4080,12 @@ function consolidatePeople(): void {
   index.consolidationPending = false;
   markIndexDirty();
   rebuildPersonIdsByAsset();
+  // Consolidation MERGES people, so the rail can be shorter than a moment ago
+  // even though no face was added. Fired unconditionally rather than on
+  // `before !== after`: consolidation also moves faces and avatars between
+  // surviving people, which changes what the user sees without changing the
+  // count.
+  notifyPeopleChanged();
   console.warn(
     `[PhoteoFaceIndex] consolidated ${Date.now() - startedAt}ms ` +
       `${before}->${index.people.length} people over ` +
@@ -4126,6 +4161,22 @@ export function scanEndNeedsRecluster(scan: {
       `newPhotos=${scan.newlyProcessed}`,
   );
   return reason !== null;
+}
+
+/**
+ * Tells every listening screen the People projection may have moved.
+ *
+ * Never throws: a screen callback cannot be allowed to interrupt a scan that
+ * the rest of the library depends on.
+ */
+function notifyPeopleChanged(): void {
+  for (const subscriber of peopleSubscribers) {
+    try {
+      subscriber();
+    } catch {
+      // A screen callback cannot interrupt the shared scan.
+    }
+  }
 }
 
 function notifyFaceProgress(done: number, total: number): void {
@@ -4299,6 +4350,7 @@ async function runBuild(
           // makes the recovered avatars appear without a restart.
           notifyFaceProgress(index.total, index.total);
           console.log(`[faces] recovered ${recovered} avatars`);
+          if (recovered > 0) notifyPeopleChanged();
         }
         return;
       }
@@ -4558,6 +4610,7 @@ async function runBuild(
       if (recovered > 0) {
         notifyFaceProgress(index.total, index.total);
         console.log(`[faces] recovered ${recovered} avatars`);
+        if (recovered > 0) notifyPeopleChanged();
       }
     }
   } catch {
@@ -4580,6 +4633,11 @@ export function buildFaceIndex(
   opts: BuildFaceIndexOptions = {},
 ): Promise<void> {
   if (opts.onProgress) progressSubscribers.add(opts.onProgress);
+  // Subscribed BEFORE the attach check, so a screen that arrives while a scan
+  // is already running still hears about people. Registering only on the path
+  // that starts a build would leave every later subscriber silent for the whole
+  // scan -- the case that matters most, since a scan is when people change.
+  if (opts.onPeopleChanged) peopleSubscribers.add(opts.onPeopleChanged);
   if (activeBuild) {
     if (opts.onProgress) {
       opts.onProgress(Math.min(seenCount(), index.total), index.total);
@@ -4592,6 +4650,7 @@ export function buildFaceIndex(
     activeBuild = null;
     activeScanControl = null;
     progressSubscribers.clear();
+    peopleSubscribers.clear();
   });
   return activeBuild;
 }
