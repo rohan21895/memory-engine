@@ -23,8 +23,11 @@ export function LoginScreen({ onContinue }: { onContinue: () => void }) {
           <Text accessibilityRole="header" style={styles.title}>Sign in to Photeo</Text>
           <Text style={styles.helper}>Only so family can share albums with you. Your photos still stay on this phone.</Text>
         </View>
-        <View style={styles.segmented}>
-          {(["Phone", "Email"] as const).map((option) => <Pressable key={option} onPress={() => { setMode(option); setValue(""); }} style={[styles.segment, mode === option ? styles.segmentActive : null]}><Text style={[styles.segmentText, mode === option ? styles.segmentTextActive : null]}>{option}</Text></Pressable>)}
+        {/* The only thing marking the active half is a background tint, so
+            without `selected` a screen reader reads "Phone. Email." and gives
+            no way to tell which one the field below is expecting. */}
+        <View accessibilityRole="tablist" style={styles.segmented}>
+          {(["Phone", "Email"] as const).map((option) => <Pressable accessibilityHint={`Sign in with your ${option.toLowerCase()}`} accessibilityRole="tab" accessibilityState={{ selected: mode === option }} key={option} onPress={() => { setMode(option); setValue(""); }} style={[styles.segment, mode === option ? styles.segmentActive : null]}><Text style={[styles.segmentText, mode === option ? styles.segmentTextActive : null]}>{option}</Text></Pressable>)}
         </View>
         <TextInput
           autoCapitalize="none"

@@ -306,7 +306,16 @@ function PhotoViewer({
         }}
         pagingEnabled
         renderItem={({ item }) => (
-          <Pressable onPress={onClose} style={{ height, width }}>
+          // Tapping the photo closes it. Announced, because otherwise the whole
+          // screen is one unnamed tappable region and the only way out that a
+          // screen reader can find is the small × in the corner.
+          <Pressable
+            accessibilityHint="Closes this photo"
+            accessibilityLabel="Photo"
+            accessibilityRole="button"
+            onPress={onClose}
+            style={{ height, width }}
+          >
             <Image
               cachePolicy="memory-disk"
               contentFit="contain"
