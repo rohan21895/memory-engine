@@ -332,10 +332,19 @@ export type ConsolidationBars = {
 };
 
 export type ConsolidationBarComparison = {
-  /** True when the touched-row sweep is safe at the bar being compared. */
+  /** True only when every persisted and compare-time bar is exactly equal. */
+  equal: boolean;
+  /** Signed movement from the persisted/read bar to the compare-time bar. */
+  delta?: ConsolidationBars;
+};
+
+export type ConsolidationSweepPlan = {
+  /** True when unchanged/stricter effective bars make touched rows sufficient. */
   restricted: boolean;
   /** Signed movement from the persisted/read bar to the compare-time bar. */
   delta?: ConsolidationBars;
+  /** Immutable effective bars to pass to every comparison in this sweep. */
+  bars: ConsolidationBars;
 };
 
 export type FaceScanAsset = {
@@ -2401,12 +2410,12 @@ export function storedFaceMergeSuggestions(
   };
 }
 
-/** Exact by design: any bar movement requires the historical full sweep. */
+/** Exact diagnostic equality; sweep safety is decided by `planConsolidationSweep`. */
 export function sameConsolidationBars(
   previous: ConsolidationBars | undefined,
   current: ConsolidationBars,
 ): boolean {
-  return compareConsolidationBars(previous, current).restricted;
+  return compareConsolidationBars(previous, current).equal;
 }
 
 /**
@@ -2421,7 +2430,7 @@ export function compareConsolidationBars(
   read: ConsolidationBars | undefined,
   compareTime: ConsolidationBars,
 ): ConsolidationBarComparison {
-  if (!read) return { restricted: false };
+  if (!read) return { equal: false };
   const delta = {
     identity: compareTime.identity - read.identity,
     perceptual: compareTime.perceptual - read.perceptual,
@@ -2429,12 +2438,50 @@ export function compareConsolidationBars(
     temporal: compareTime.temporal - read.temporal,
   };
   return {
-    restricted:
+    equal:
       delta.identity === 0 &&
       delta.perceptual === 0 &&
       delta.evidenced === 0 &&
       delta.temporal === 0,
     delta,
+  };
+}
+
+/**
+ * Selects one stable bar snapshot for a touched-row consolidation.
+ *
+ * A newly looser measured bar cannot be applied to touched rows alone: an
+ * untouched pair rejected at the old bar may clear the new one. Holding the
+ * persisted, stricter bar is safe and fails toward a temporary split. A newly
+ * stricter bar is also safe: every untouched rejection remains a rejection.
+ * Consequently the element-wise maximum is a complete proof that untouched
+ * rows need no visit, while the next full rebuild remains free to adopt a
+ * measured relaxation over the whole library.
+ *
+ * Missing legacy state still takes the historical full sweep. `bars` is then
+ * measured exactly once before that sweep and held for every pair it judges.
+ */
+export function planConsolidationSweep(
+  read: ConsolidationBars | undefined,
+  compareTime: ConsolidationBars,
+): ConsolidationSweepPlan {
+  const comparison = compareConsolidationBars(read, compareTime);
+  if (!read) {
+    return {
+      restricted: false,
+      delta: comparison.delta,
+      bars: { ...compareTime },
+    };
+  }
+  return {
+    restricted: true,
+    delta: comparison.delta,
+    bars: {
+      identity: Math.max(read.identity, compareTime.identity),
+      perceptual: Math.max(read.perceptual, compareTime.perceptual),
+      evidenced: Math.max(read.evidenced, compareTime.evidenced),
+      temporal: Math.max(read.temporal, compareTime.temporal),
+    },
   };
 }
 
@@ -3917,6 +3964,19 @@ function consolidatingClusterOptions(): ReturnType<typeof faceClusterOptions> {
   });
 }
 
+function clusterOptionsAtConsolidationBars(
+  bars: ConsolidationBars,
+): ReturnType<typeof faceClusterOptions> {
+  return {
+    constraints: index.constraints ?? [],
+    evidencedMergeThreshold: bars.evidenced,
+    identityMergeThreshold: bars.identity,
+    perceptualThreshold: bars.perceptual,
+    temporalMergeThreshold: bars.temporal,
+    threshold: index.threshold,
+  };
+}
+
 let mergeSweepPathCounts = { taken: 0, skipped: 0 };
 
 function formatConsolidationBars(bars: ConsolidationBars | undefined): string {
@@ -3931,19 +3991,19 @@ function traceMergeSweepPath(
   source: "cadence" | "scan-end",
   read: ConsolidationBars | undefined,
   compareTime: ConsolidationBars,
-): boolean {
-  const comparison = compareConsolidationBars(read, compareTime);
-  if (comparison.restricted) mergeSweepPathCounts.taken += 1;
+  plan: ConsolidationSweepPlan,
+): void {
+  if (plan.restricted) mergeSweepPathCounts.taken += 1;
   else mergeSweepPathCounts.skipped += 1;
   console.log(
     `[PhoteoFaceIndex] merge-sweep ${source} ` +
-      `fast=${comparison.restricted ? "taken" : "skipped"} ` +
+      `fast=${plan.restricted ? "taken" : "skipped"} ` +
       `taken=${mergeSweepPathCounts.taken} skipped=${mergeSweepPathCounts.skipped} ` +
       `read=${formatConsolidationBars(read)} ` +
       `compare=${formatConsolidationBars(compareTime)} ` +
-      `delta=${formatConsolidationBars(comparison.delta)}`,
+      `delta=${formatConsolidationBars(plan.delta)} ` +
+      `applied=${formatConsolidationBars(plan.bars)}`,
   );
-  return comparison.restricted;
 }
 
 function pendingConsolidationPeople(): Set<string> {
@@ -4011,16 +4071,29 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
   // Both bars walk every observation on record and both feed merging alone, so
   // on a batch that will not merge they are pure cost -- ~800ms per batch,
   // measured, and rising with the library.
-  const clusterOptions = consolidate
+  const measuredOptions = consolidate
     ? consolidatingClusterOptions()
     : faceClusterOptions(index.threshold, {
         constraints: index.constraints ?? [],
       });
-  const bars = consolidationBarsFrom(clusterOptions);
+  const measuredBars = consolidationBarsFrom(measuredOptions);
   const pending = pendingConsolidationPeople();
-  const restrictSweep =
-    consolidate &&
-    traceMergeSweepPath("cadence", index.consolidationBars, bars);
+  const sweepPlan = consolidate
+    ? planConsolidationSweep(index.consolidationBars, measuredBars)
+    : undefined;
+  if (sweepPlan) {
+    traceMergeSweepPath(
+      "cadence",
+      index.consolidationBars,
+      measuredBars,
+      sweepPlan,
+    );
+  }
+  const restrictSweep = sweepPlan?.restricted ?? false;
+  const bars = sweepPlan?.bars ?? measuredBars;
+  const clusterOptions = sweepPlan
+    ? clusterOptionsAtConsolidationBars(sweepPlan.bars)
+    : measuredOptions;
   traceScanStage("calibrate", calibrateStartedAt);
   const clusterStartedAt = Date.now();
   // A throw from a consolidating call must fail toward another full sweep, not
@@ -4096,12 +4169,14 @@ function appendPeople(observations: FaceObservation[]): Map<FaceObservation, str
  *    pair left un-merged, which the next full rebuild repairs.
  *
  * A stored snapshot of the last completed consolidation's exact merge bars is
- * what makes the common case sub-quadratic. If any bar moved, the whole sweep
- * runs exactly as before. If none moved, two untouched endpoints are bit-for-
- * bit the same pair already rejected at those bars, so only touched rows seed
- * the queue. An absorb makes its survivor touched indirectly and the clusterer
- * refreshes that whole row, preserving every merge chain and the same fixed
- * point. Missing legacy state also fails toward the historical full sweep.
+ * what makes the common case sub-quadratic. The touched sweep holds each bar at
+ * that snapshot or tightens it to the current measurement; it never relaxes a
+ * bar. Therefore an untouched endpoint pair rejected before is still rejected,
+ * while touched rows see the stricter current evidence immediately. An absorb
+ * makes its survivor touched indirectly and the clusterer refreshes that whole
+ * row, preserving every merge chain. A future full rebuild may safely adopt a
+ * relaxed measurement because it visits the whole library. Missing legacy
+ * state still fails toward the historical full sweep.
  */
 function consolidatePeople(): void {
   // Nothing was deferred, so the sweep has nothing to find that the last one
@@ -4111,14 +4186,20 @@ function consolidatePeople(): void {
   if (!index.consolidationPending) return;
   const startedAt = Date.now();
   const before = index.people.length;
-  const options = consolidatingClusterOptions();
-  const bars = consolidationBarsFrom(options);
+  const measuredOptions = consolidatingClusterOptions();
+  const measuredBars = consolidationBarsFrom(measuredOptions);
   const pending = pendingConsolidationPeople();
-  const restrictSweep = traceMergeSweepPath(
+  const sweepPlan = planConsolidationSweep(
+    index.consolidationBars,
+    measuredBars,
+  );
+  traceMergeSweepPath(
     "scan-end",
     index.consolidationBars,
-    bars,
+    measuredBars,
+    sweepPlan,
   );
+  const options = clusterOptionsAtConsolidationBars(sweepPlan.bars);
   // Marked before the call for the same reason `appendPeople` does: a throw
   // partway through still leaves a partially merged `index.people` behind.
   markIndexDirty();
@@ -4128,7 +4209,7 @@ function consolidatePeople(): void {
     [],
     {
       ...options,
-      mergeSeedPersonIds: restrictSweep ? pending : undefined,
+      mergeSeedPersonIds: sweepPlan.restricted ? pending : undefined,
       onMerge: (absorbedPersonId, survivingPersonId) => {
         transferPendingConsolidationPerson(
           pending,
@@ -4139,7 +4220,7 @@ function consolidatePeople(): void {
     },
   );
   batchesSinceConsolidation = 0;
-  index.consolidationBars = bars;
+  index.consolidationBars = sweepPlan.bars;
   index.pendingConsolidationPersonIds = [];
   index.consolidationPending = false;
   markIndexDirty();
@@ -4154,7 +4235,7 @@ function consolidatePeople(): void {
     `[PhoteoFaceIndex] consolidated ${Date.now() - startedAt}ms ` +
       `${before}->${index.people.length} people over ` +
       `${index.observations.length} faces (no recluster, ` +
-      `${restrictSweep ? `${pending.size} touched` : "full sweep"})`,
+      `${sweepPlan.restricted ? `${pending.size} touched` : "full sweep"})`,
   );
 }
 

@@ -5,6 +5,9 @@
 // speedup is not distorted by the much longer synthetic-library setup or load
 // changes between two executions.
 //
+// Fast-path regression check only:
+//   node --experimental-strip-types scratch/merge-sweep-bench/bench.ts --engagement-only
+//
 // Deterministic: a seeded LCG, so both checkouts see the same library.
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import { clusterFaces, extendFaceClusters } from "../../apps/mobile/src/faces/face-cluster.ts";
@@ -16,6 +19,7 @@ import {
   compareConsolidationBars,
   consolidationBarsFrom,
   faceClusterOptions,
+  planConsolidationSweep,
 } from "../../apps/mobile/src/faces/face-index.ts";
 // @ts-expect-error Node's TypeScript runner requires the source extension.
 import type { FaceObservation } from "../../apps/mobile/src/faces/types.ts";
@@ -119,24 +123,29 @@ const settledFaceCount = FACES - FACES_PER_SMALL_SCAN * ENGAGEMENT_RUNS;
 let readBars = barsFor(calibrationObservations.slice(0, settledFaceCount));
 let fastTaken = 0;
 let fastSkipped = 0;
+let exactComparisonSkipped = 0;
 for (let run = 1; run <= ENGAGEMENT_RUNS; run += 1) {
   const compareAt = settledFaceCount + run * FACES_PER_SMALL_SCAN;
   const compareBars = barsFor(calibrationObservations.slice(0, compareAt));
-  const comparison = compareConsolidationBars(readBars, compareBars);
-  if (comparison.restricted) fastTaken += 1;
+  const exactComparison = compareConsolidationBars(readBars, compareBars);
+  if (!exactComparison.equal) exactComparisonSkipped += 1;
+  const plan = planConsolidationSweep(readBars, compareBars);
+  if (plan.restricted) fastTaken += 1;
   else fastSkipped += 1;
   console.log(
     JSON.stringify({
       run,
       facesAtRead: compareAt - FACES_PER_SMALL_SCAN,
       facesAtCompare: compareAt,
-      fast: comparison.restricted ? "taken" : "skipped",
+      fast: plan.restricted ? "taken" : "skipped",
       read: readBars,
       compare: compareBars,
-      delta: comparison.delta,
+      delta: plan.delta,
+      applied: plan.bars,
+      exactComparison: exactComparison.equal ? "equal" : "moved",
     }),
   );
-  readBars = compareBars;
+  readBars = plan.bars;
 }
 const calibrationScores = calibrationObservations.filter(
   (_face, position) => position % 2 === 1,
@@ -144,7 +153,7 @@ const calibrationScores = calibrationObservations.filter(
 const abovePointTwo = calibrationScores.filter((score) => score > 0.2).length;
 console.log(
   JSON.stringify({
-    engagement: { fastTaken, fastSkipped },
+    engagement: { fastTaken, fastSkipped, exactComparisonSkipped },
     calibration: {
       pairs: calibrationScores.length,
       abovePointTwo,
@@ -152,6 +161,18 @@ console.log(
     },
   }),
 );
+
+if (Math.abs(abovePointTwo / calibrationScores.length - 0.041) > 0.005) {
+  throw new Error("merge engagement check invalid: family impostor tail drifted");
+}
+if (exactComparisonSkipped === 0) {
+  throw new Error("merge engagement check invalid: moving-bar bug was not exercised");
+}
+if (fastTaken === 0 || fastSkipped !== 0) {
+  throw new Error(
+    `merge engagement regression: fast path taken=${fastTaken} skipped=${fastSkipped}`,
+  );
+}
 
 if (process.argv.includes("--engagement-only")) process.exit(0);
 
