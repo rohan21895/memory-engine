@@ -1736,7 +1736,7 @@ export function clusterFacesByGraph(
   // minutes of phone CPU. Everything below is the identical TypeScript, kept
   // working and kept correct, for every build that has no native side.
   const graphAt = Date.now();
-  const nativeLabels = graphLabelsNatively(usable, bars, opts.seed ?? 1);
+  const nativeLabels = takeStashedLabels(usable, opts.seed ?? 1);
   const graphMs = Date.now() - graphAt;
   if (nativeLabels) {
     const peopleAt = Date.now();
@@ -1995,15 +1995,92 @@ function packEmbeddings(
  * arithmetic and has no judgement in it, so there is no second copy of any
  * threshold or any rule to drift out of step.
  */
+/**
+ * Labels computed off the JS thread, waiting for the clusterer to collect them.
+ *
+ * `rebuildPeople` has six callers and is synchronous; making the whole chain
+ * async to move ONE call off-thread would be a large change to code that has no
+ * other reason to move. So the expensive part is computed ahead of time by
+ * `precomputeGraphLabels`, which IS async, and left here for the synchronous
+ * clusterer to pick up.
+ *
+ * Keyed, not just stored. A stash that silently belonged to a different set of
+ * faces would relabel the library against a roster it never saw, which is worse
+ * than being slow.
+ */
+let stashedLabels: { key: string; labels: number[] } | null = null;
+
+/**
+ * Identifies the exact face set a stash was computed for.
+ *
+ * Folds every face id rather than trusting the count: a scan that adds one face
+ * and drops another leaves the count identical while changing who is in the
+ * graph, and that is precisely the case where reusing labels would be wrong.
+ */
+function graphStashKey(usable: FaceObservation[], seed: number): string {
+  let hash = 0;
+  for (let i = 0; i < usable.length; i += 1) {
+    // assetId plus POSITION: several faces share one photograph, so the id
+    // alone cannot distinguish them, and the graph depends on their order.
+    const id = usable[i].assetId;
+    hash = (hash * 31 + i) | 0;
+    for (let c = 0; c < id.length; c += 1) {
+      hash = (hash * 31 + id.charCodeAt(c)) | 0;
+    }
+  }
+  return `${usable.length}:${seed}:${hash}`;
+}
+
+/**
+ * Runs the native graph pass OFF the JS thread and stashes the result.
+ *
+ * This is the whole reason the native call is an `AsyncFunction`. Declared as a
+ * synchronous one it executed on the JS thread, so a whole-library regroup --
+ * around six minutes on the owner's library -- froze the app for its entire
+ * duration. Faster than the seventeen minutes it replaced, and still a freeze,
+ * which is the thing he actually reports.
+ *
+ * Returns whether a stash is now waiting. False means the sync path will do
+ * whatever it would have done anyway, so nothing here can break clustering --
+ * only speed it up.
+ */
+export async function precomputeGraphLabels(
+  observations: FaceObservation[],
+  opts: ClusterOptions & { seed?: number } = {},
+): Promise<boolean> {
+  const usable = observations.filter((o) => o.embeddingKind === "identity");
+  if (usable.length === 0) return false;
+  const seed = opts.seed ?? 1;
+  const { bars } = prepareGraph(usable, opts);
+  const labels = await graphLabelsNatively(usable, bars, seed);
+  if (!labels || labels.length !== usable.length) return false;
+  stashedLabels = { key: graphStashKey(usable, seed), labels };
+  return true;
+}
+
+/** The stash, if it was computed for exactly these faces. Consumed once. */
+function takeStashedLabels(
+  usable: FaceObservation[],
+  seed: number,
+): number[] | null {
+  const stash = stashedLabels;
+  if (!stash) return null;
+  // Cleared whether or not it matched: a stash that did not match is stale by
+  // definition, and holding it would let a later rebuild collect labels older
+  // than the one that just rejected them.
+  stashedLabels = null;
+  return stash.key === graphStashKey(usable, seed) ? stash.labels : null;
+}
+
 function graphLabelsNatively(
   usable: FaceObservation[],
   bars: Float64Array,
   seed: number,
-): number[] | null {
+): Promise<number[] | null> {
   const dim = usable[0].embedding.length;
-  if (dim <= 0) return null;
+  if (dim <= 0) return Promise.resolve(null);
   const packed = packEmbeddings(usable, dim);
-  if (!packed) return null;
+  if (!packed) return Promise.resolve(null);
 
   // Photograph identity travels as an int: the native side only ever asks
   // "same photo?", and comparing ints beats shipping and hashing strings.

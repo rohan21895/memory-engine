@@ -6,7 +6,7 @@ import { faceEmbeddingPathCounts } from "../ml/facenet.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
 import { captureAlignedSamples, faceAlignmentShapeCounts, takeAlignedSamples } from "../ml/face-align.ts";
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, clusterFaces, clusterFacesByGraph, cosine, dequantized, extendFaceClusters, mergeExistingPeople, suggestMerges, type MergeSuggestion } from "./face-cluster.ts";
+import { DEFAULT_MERGE_THRESHOLD, DEFAULT_PERCEPTUAL_THRESHOLD, SAME_PHOTO_DUPLICATE_SIMILARITY, clusterFaces, clusterFacesByGraph, cosine, dequantized, extendFaceClusters, mergeExistingPeople, precomputeGraphLabels, suggestMerges, type MergeSuggestion } from "./face-cluster.ts";
 
 /**
  * Build people by graph propagation instead of greedy assignment.
@@ -3791,6 +3791,21 @@ async function reclusterIfCalibrationChanged(
   if (sameBar && sameRule) return false;
 
   const previousPeople = index.people.length;
+  // The O(n^2) graph pass runs HERE, off the JS thread, and leaves its labels
+  // for the synchronous rebuild below to collect. Doing it inside `rebuildPeople`
+  // is what froze the app for the whole six minutes: Expo runs a synchronous
+  // native function on the JS thread, so "native and fast" was still "native and
+  // blocking". Failure is not an error -- the rebuild then does exactly what it
+  // would have done anyway.
+  const precomputeStartedAt = Date.now();
+  const precomputed = await precomputeGraphLabels(
+    centeredForClustering(index.observations),
+    { threshold: wanted },
+  );
+  console.log(
+    `[PhoteoFaceIndex] graph precompute ${precomputed ? "ready" : "unavailable"} ` +
+      `in ${Date.now() - precomputeStartedAt}ms over ${index.observations.length} faces`,
+  );
   rebuildPeople(wanted);
   console.warn(
     `[PhoteoFaceIndex] recalibrated bar ${previousThreshold.toFixed(3)}->` +

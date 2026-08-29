@@ -31,7 +31,7 @@ type ScanServiceNative = {
     bars: number[],
     seed: number,
     rounds: number,
-  ): number[] | null;
+  ): Promise<number[] | null>;
 };
 
 /** `undefined` means "not looked up yet"; `null` means "looked up, absent". */
@@ -308,19 +308,22 @@ export function hasNativeClustering(): boolean {
  * algorithm and gives the same answer; it is just far too slow to be the only
  * path, which is the entire reason this exists.
  */
-export function clusterFacesNatively(
+export async function clusterFacesNatively(
   embeddings: string,
   dim: number,
   assetGroup: number[],
   bars: number[],
   seed: number,
   rounds: number,
-): number[] | null {
+): Promise<number[] | null> {
   try {
-    // Deliberately the cached value rather than a lookup: this is the
-    // synchronous path, and an unprimed module means "fall back", not "wait".
-    const native = cached;
-    const labels = native?.clusterFaces?.(
+    // ASYNC on purpose. Expo runs a synchronous `Function` on the JS thread, so
+    // declared that way this froze the app for the entire six minutes of a
+    // whole-library regroup -- faster than the seventeen minutes it replaced,
+    // and still a freeze, which is the part the user actually experiences.
+    // `AsyncFunction` hands it to a background dispatcher instead.
+    const native = await nativeModule();
+    const labels = await native?.clusterFaces?.(
       embeddings,
       dim,
       assetGroup,

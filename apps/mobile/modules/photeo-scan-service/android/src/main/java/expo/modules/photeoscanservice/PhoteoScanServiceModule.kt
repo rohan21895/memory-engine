@@ -288,7 +288,7 @@ class PhoteoScanServiceModule : Module() {
       }
     }
 
-    Function("clusterFaces") {
+    AsyncFunction("clusterFaces") {
       embeddings: String,
       dim: Int,
       assetGroup: IntArray,
