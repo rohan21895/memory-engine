@@ -41,7 +41,7 @@ export function AlbumDetailScreen({
           </View>
         </View>
         <View style={styles.actions}>
-          <PillButton label="▸  Play" onPress={onPlay} />
+          <PillButton label="▶  Play slideshow" onPress={onPlay} />
         </View>
         <View style={styles.gridHeading}><Text style={styles.gridTitle}>All {album.photos.length} photos</Text></View>
         <View style={styles.grid}>
