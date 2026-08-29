@@ -30,8 +30,17 @@ import {
   saveAlbum,
   type SavedAlbum,
 } from "./src/albums/album-store";
+import {
+  clearAlbumSetupDraft,
+  createAlbumSetupRoster,
+  hydrateAlbumSetupRoster,
+  initialAlbumBuildPreferences,
+  loadAlbumSetupDraft,
+  saveAlbumSetupDraft,
+  type AlbumSetupPerson,
+} from "./src/albums/album-setup-draft";
 import { buildAlbum, type BuildAlbumProgress } from "./src/build-album";
-import { buildFaceIndex, loadFaceIndex, stopFaceIndexBuild } from "./src/faces/face-index";
+import { buildFaceIndex, getPeople, loadFaceIndex, stopFaceIndexBuild } from "./src/faces/face-index";
 import GalleryGrid from "./src/import/GalleryGrid";
 import { buildIndex, loadIndex, stopIndexBuild } from "./src/import/photo-index";
 import type { PickedPhoto } from "./src/import/picked-photo";
@@ -39,11 +48,16 @@ import FinalAlbum, { type FinalPhoto } from "./src/review/FinalAlbum";
 import type { ReviewData } from "./src/review/mock-data";
 import ReviewScreen from "./src/review/ReviewScreen";
 import { Slideshow } from "./src/review/Slideshow";
+import {
+  stalePriorityPeople,
+  type AlbumBuildPreferences,
+} from "./src/selection/album-build-preferences";
 import { TabBar, type AppTab } from "./src/ui/components/TabBar";
 import { colors, copy, LoadingState } from "./src/ui";
 import { getPhotoAccess, requestPhotoAccess } from "./src/ui/photo-access";
 import { AccountScreen } from "./src/ui/screens/AccountScreen";
 import { AlbumsScreen, type SharedAlbumPreview } from "./src/ui/screens/AlbumsScreen";
+import { AlbumSetupScreen } from "./src/ui/screens/AlbumSetupScreen";
 import { BuildErrorScreen } from "./src/ui/screens/BuildErrorScreen";
 import { BuildingScreen } from "./src/ui/screens/BuildingScreen";
 import { FamilyScreen } from "./src/ui/screens/FamilyScreen";
@@ -63,7 +77,7 @@ const WELCOME_SEEN_KEY = "photeo-welcome-seen-v1";
 const ACCESS_REPAIR_KEY = "photeo-media-access-repair-v1";
 
 type Gate = "checking" | "welcome" | "login" | "permission" | "ready";
-type CreateStep = "pick" | "building" | "review" | "ready" | "error" | null;
+type CreateStep = "pick" | "setup" | "building" | "review" | "ready" | "error" | null;
 type LibraryRoute = { albumId: string; screen: "detail" | "slideshow" } | null;
 type ActionOrigin = "detail" | "ready";
 type AlbumActionRoute =
@@ -113,6 +127,10 @@ function suggestedAlbumTitle(photos: PickedPhoto[]) {
   return `${new Date(timestamp).toLocaleDateString(undefined, { month: "long" })} memories`;
 }
 
+function samePhotoSelection(left: readonly PickedPhoto[], right: readonly PickedPhoto[]): boolean {
+  return left.length === right.length && left.every((photo, index) => photo.id === right[index]?.id);
+}
+
 function PhoteoApp() {
   const [fontsLoaded, fontError] = useFonts({
     Figtree_400Regular,
@@ -138,6 +156,12 @@ function PhoteoApp() {
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionMessage, setPermissionMessage] = useState<string | null>(null);
   const [pickedPhotos, setPickedPhotos] = useState<PickedPhoto[]>([]);
+  const [albumSetupPeople, setAlbumSetupPeople] = useState<AlbumSetupPerson[]>([]);
+  const [albumBuildPreferences, setAlbumBuildPreferences] = useState<AlbumBuildPreferences | null>(null);
+  const [albumSetupMessage, setAlbumSetupMessage] = useState<string | null>(null);
+  const [albumSetupBusy, setAlbumSetupBusy] = useState(false);
+  const albumSetupSubmitting = useRef(false);
+  const createSessionTouched = useRef(false);
   // null until the shelf has been read off disk once. AlbumsScreen needs that
   // distinction: an empty array is "you have no albums", null is "still loading".
   const [savedAlbums, setSavedAlbums] = useState<SavedAlbum[] | null>(null);
@@ -173,9 +197,9 @@ function PhoteoApp() {
     setNavigation((current) => {
       while (navigationHistory.current.length > 0) {
         const candidate = navigationHistory.current.pop()!;
-        if (candidate.createStep === "pick") return candidate;
+        if (candidate.createStep === "setup") return candidate;
       }
-      return { ...current, createStep: "pick" };
+      return { ...current, createStep: "setup" };
     });
   }, [invalidateBuild]);
 
@@ -193,6 +217,7 @@ function PhoteoApp() {
 
   const popNavigation = useCallback(() => {
     const current = navigationRef.current;
+    if (current.createStep === "setup" && albumSetupSubmitting.current) return;
     if (current.createStep === "building") {
       cancelBuild();
       return;
@@ -222,6 +247,26 @@ function PhoteoApp() {
     // A transient read failure must not blank the shelf; album-store already
     // falls back to its cache, so an empty list here means genuinely empty.
     void loadAlbums().then(setSavedAlbums).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    void Promise.all([
+      loadAlbumSetupDraft(),
+      loadFaceIndex().catch(() => undefined),
+    ])
+      .then(([draft]) => {
+        if (!live || !draft || createSessionTouched.current) return;
+        setPickedPhotos(draft.pickedPhotos);
+        setAlbumSetupPeople(hydrateAlbumSetupRoster(draft.people, getPeople()));
+        setAlbumBuildPreferences(draft.preferences);
+        navigationHistory.current = [ALBUMS_ROOT, { ...ALBUMS_ROOT, createStep: "pick" }];
+        setNavigation({ ...ALBUMS_ROOT, createStep: "setup" });
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
   }, []);
 
   // Both library scans are singletons with subscriber fan-out, so calling this
@@ -299,7 +344,10 @@ function whenIdle(timeout: number): Promise<void> {
     }
   }, [finishGate]);
 
-  const processPhotos = useCallback(async (next: PickedPhoto[]) => {
+  const processPhotos = useCallback(async (
+    next: PickedPhoto[],
+    preferences: AlbumBuildPreferences,
+  ) => {
     if (next.length === 0) {
       replaceNavigation({ createStep: "pick" });
       return;
@@ -328,8 +376,9 @@ function whenIdle(timeout: number): Promise<void> {
     });
     pushNavigation({ createStep: "building" });
     try {
-      const built = await buildAlbum(next, 24, {
+      const built = await buildAlbum(next, preferences.maxPhotos, {
         signal: controller.signal,
+        preferences,
         onProgress: (progress) => {
           if (request === buildRequest.current && !controller.signal.aborted) {
             setBuildProgress(progress);
@@ -353,6 +402,91 @@ function whenIdle(timeout: number): Promise<void> {
       if (buildAbort.current === null) void startLibraryScan();
     }
   }, [pushNavigation, replaceNavigation, startLibraryScan]);
+
+  const openAlbumSetup = useCallback((next: PickedPhoto[]) => {
+    if (next.length === 0) {
+      replaceNavigation({ createStep: "pick" });
+      return;
+    }
+    createSessionTouched.current = true;
+    const canResumeAnswer =
+      albumBuildPreferences !== null && samePhotoSelection(next, pickedPhotos);
+    const people = canResumeAnswer
+      ? albumSetupPeople
+      : createAlbumSetupRoster(next, getPeople());
+    const preferences = canResumeAnswer
+      ? albumBuildPreferences
+      : initialAlbumBuildPreferences(people);
+    setPickedPhotos(next);
+    setAlbumSetupPeople(people);
+    setAlbumBuildPreferences(preferences);
+    setAlbumSetupMessage(null);
+    void saveAlbumSetupDraft({
+      pickedPhotos: next,
+      people,
+      preferences,
+      updatedAt: Date.now(),
+    }).catch(() => undefined);
+    pushNavigation({ createStep: "setup" });
+  }, [albumBuildPreferences, albumSetupPeople, pickedPhotos, pushNavigation, replaceNavigation]);
+
+  const changeAlbumSetup = useCallback((preferences: AlbumBuildPreferences) => {
+    setAlbumBuildPreferences(preferences);
+    setAlbumSetupMessage(null);
+    if (pickedPhotos.length === 0) return;
+    void saveAlbumSetupDraft({
+      pickedPhotos,
+      people: albumSetupPeople,
+      preferences,
+      updatedAt: Date.now(),
+    }).catch(() => undefined);
+  }, [albumSetupPeople, pickedPhotos]);
+
+  const continueAlbumSetup = useCallback(async () => {
+    if (
+      albumSetupSubmitting.current ||
+      !albumBuildPreferences ||
+      pickedPhotos.length === 0
+    ) {
+      return;
+    }
+    albumSetupSubmitting.current = true;
+    setAlbumSetupBusy(true);
+    try {
+      await loadFaceIndex().catch(() => undefined);
+      const livePeople = getPeople();
+      const stale = stalePriorityPeople(
+        albumBuildPreferences,
+        livePeople.map((person) => person.id),
+      );
+      if (stale.length > 0) {
+        const people = createAlbumSetupRoster(pickedPhotos, livePeople);
+        const preferences = initialAlbumBuildPreferences(
+          people,
+          albumBuildPreferences.maxPhotos,
+        );
+        setAlbumSetupPeople(people);
+        setAlbumBuildPreferences(preferences);
+        setAlbumSetupMessage(
+          people.length > 0
+            ? "People changed while you were choosing, so please pick the Main focus again."
+            : "People changed while you were choosing, and no person is available now; we’ll choose by quality and variety only.",
+        );
+        await saveAlbumSetupDraft({
+          pickedPhotos,
+          people,
+          preferences,
+          updatedAt: Date.now(),
+        }).catch(() => undefined);
+        return;
+      }
+      setAlbumSetupMessage(null);
+      await processPhotos(pickedPhotos, albumBuildPreferences);
+    } finally {
+      albumSetupSubmitting.current = false;
+      setAlbumSetupBusy(false);
+    }
+  }, [albumBuildPreferences, pickedPhotos, processPhotos]);
 
   const finalizeAlbum = useCallback(async (photos: FinalPhoto[]) => {
     if (!album || photos.length === 0) return;
@@ -384,6 +518,7 @@ function whenIdle(timeout: number): Promise<void> {
     setFinalPhotos(photos);
     setCurrentAlbumId(id);
     setSavedAlbums(await saveAlbum(saved));
+    void clearAlbumSetupDraft().catch(() => undefined);
     pushNavigation({ createStep: "ready" });
   }, [album, pickedPhotos, pushNavigation]);
 
@@ -395,10 +530,17 @@ function whenIdle(timeout: number): Promise<void> {
     setAlbum(null);
     setFinalPhotos(null);
     setPickedPhotos([]);
+    setAlbumSetupPeople([]);
+    setAlbumBuildPreferences(null);
+    setAlbumSetupMessage(null);
+    setAlbumSetupBusy(false);
+    albumSetupSubmitting.current = false;
     setCurrentAlbumId(null);
+    void clearAlbumSetupDraft().catch(() => undefined);
   }, [invalidateBuild]);
 
   const startCreateFlow = useCallback(() => {
+    createSessionTouched.current = true;
     clearCreateSession();
     pushNavigation({ createStep: "pick" });
   }, [clearCreateSession, pushNavigation]);
@@ -530,28 +672,46 @@ function whenIdle(timeout: number): Promise<void> {
     );
   }
 
-  if (createStep === "pick" || createStep === "building") {
+  if (createStep === "setup" && albumBuildPreferences) {
+    return (
+      <AlbumSetupScreen
+        busy={albumSetupBusy}
+        message={albumSetupMessage}
+        onBack={popNavigation}
+        onChange={changeAlbumSetup}
+        onContinue={() => void continueAlbumSetup()}
+        people={albumSetupPeople}
+        photoCount={pickedPhotos.length}
+        preferences={albumBuildPreferences}
+      />
+    );
+  }
+  if (createStep === "building") {
+    return <BuildingScreen onCancel={cancelBuild} progress={buildProgress} />;
+  }
+  if (createStep === "pick") {
     return (
       <View style={styles.root}>
         <GalleryGrid
           initialSelection={pickedPhotos}
-          onBack={popNavigation}
-          onConfirm={(picked) => void processPhotos(picked)}
+          onBack={resetCreateFlow}
+          onConfirm={openAlbumSetup}
         />
-        {createStep === "building" ? (
-          <View style={styles.buildOverlay}>
-            <BuildingScreen
-              onCancel={cancelBuild}
-              progress={buildProgress}
-            />
-          </View>
-        ) : null}
       </View>
     );
   }
 
   if (createStep === "error") {
-    return <BuildErrorScreen onBack={resetCreateFlow} onRetry={() => void processPhotos(pickedPhotos)} />;
+    return (
+      <BuildErrorScreen
+        onBack={resetCreateFlow}
+        onRetry={() => {
+          if (albumBuildPreferences) {
+            void processPhotos(pickedPhotos, albumBuildPreferences);
+          }
+        }}
+      />
+    );
   }
 
   if (createStep === "review" && album) {
@@ -618,7 +778,6 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  buildOverlay: { bottom: 0, left: 0, position: "absolute", right: 0, top: 0 },
   root: { backgroundColor: colors.background, flex: 1 },
   tabContent: { flex: 1 },
 });
