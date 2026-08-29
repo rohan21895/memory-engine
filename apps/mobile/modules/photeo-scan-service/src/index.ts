@@ -28,6 +28,12 @@ type ScanServiceNative = {
     assetId: string,
     size: number,
   ): Promise<NativeAlbumAnalysisProxy | null>;
+  photoFilters?(): string[];
+  filteredPhoto?(
+    assetId: string,
+    filter: string,
+    size: number,
+  ): Promise<NativeAlbumAnalysisProxy | null>;
   clusterFaces?(
     embeddings: string,
     dim: number,
@@ -273,6 +279,62 @@ export async function albumAnalysisProxy(
   } catch {
     return null;
   }
+}
+
+/**
+ * The filter ids the native side offers, in display order.
+ *
+ * Asking the module rather than hard-coding a list here keeps one source of
+ * truth: a look added to `PhotoFilter` appears in the picker without a matching
+ * edit on this side, and one removed cannot leave a swatch that resolves to
+ * nothing. The fallback is the identity look, never an empty strip.
+ */
+export async function photoFilters(): Promise<string[]> {
+  try {
+    const native = await nativeModule();
+    const filters = native?.photoFilters?.();
+    if (!Array.isArray(filters) || filters.length === 0) return ["original"];
+    return filters.filter((value): value is string => typeof value === "string");
+  } catch {
+    return ["original"];
+  }
+}
+
+/**
+ * One filtered copy of a photo, bounded exactly like the analysis proxy.
+ *
+ * `size` is the only difference between a picker swatch and the photo that
+ * lands in the album -- both go through here, so what he taps is what he keeps.
+ * Null means the look could not be produced and the caller should show the
+ * unfiltered photo; it must never fall back to the original URI at full size.
+ */
+export async function filteredPhoto(
+  assetId: string,
+  filter: string,
+  size: number,
+): Promise<AlbumAnalysisProxy | null> {
+  try {
+    const native = await nativeModule();
+    return validProxy(await native?.filteredPhoto?.(assetId, filter, size));
+  } catch {
+    return null;
+  }
+}
+
+/** Native returns `null` for missing media, and bad dimensions break layout. */
+function validProxy(proxy: NativeAlbumAnalysisProxy | null | undefined): AlbumAnalysisProxy | null {
+  if (
+    typeof proxy?.uri !== "string" ||
+    typeof proxy.width !== "number" ||
+    !Number.isFinite(proxy.width) ||
+    proxy.width < 1 ||
+    typeof proxy.height !== "number" ||
+    !Number.isFinite(proxy.height) ||
+    proxy.height < 1
+  ) {
+    return null;
+  }
+  return { uri: proxy.uri, width: proxy.width, height: proxy.height };
 }
 
 /**

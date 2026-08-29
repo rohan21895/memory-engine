@@ -34,6 +34,21 @@ export type PlannerCandidate = {
   personIds?: readonly string[];
   embedding?: readonly number[];
   embeddingSpace?: string;
+  /**
+   * TinyCLIP's image embedding, kept SEPARATE from `embedding`.
+   *
+   * `embedding` is the phone's 76-dim perceptual fingerprint -- an 8x8 luma grid
+   * and a coarse colour histogram. That is a near-duplicate detector: it answers
+   * "is this the same frame twice", and it is what the calibrated 0.93 shot
+   * threshold is calibrated against. It cannot answer "same person, same outfit,
+   * same room, ten minutes apart", because at 8x8 those two photos are simply
+   * two different arrangements of light.
+   *
+   * TinyCLIP can, which is why the owner asked for "background detection,
+   * clothes detection" by name. It rides alongside rather than replacing, so the
+   * duplicate constraint keeps the signal it was measured on.
+   */
+  semanticEmbedding?: readonly number[];
   comparisonClass?: string;
   shotGroup?: string;
   poseFamily?: string;
@@ -554,10 +569,20 @@ function greedySelect(
   const shotCounts: MutableCounts = {};
   const familyCounts: MutableCounts = {};
   const closest: MutableCounts = {};
+  const closestSemantic: MutableCounts = {};
   let personCap = perPersonCap(survivors, target, policy);
   const [redundancyFree, redundancyDenominator] = calibratedRedundancy(
     survivors,
     policy,
+  );
+  // Ceiling 1 rather than `shotSimilarity`: that constant is calibrated against
+  // the perceptual fingerprint's scale and means nothing in TinyCLIP's space.
+  const [semanticFree, semanticDenominator] = calibratedRedundancy(
+    survivors,
+    policy,
+    semanticSimilarity,
+    (candidate) => Boolean(candidate.semanticEmbedding),
+    1,
   );
   const {
     smilePercentile,
@@ -596,6 +621,15 @@ function greedySelect(
         }
       }
     }
+    if (candidate.semanticEmbedding) {
+      for (const otherId of remaining) {
+        const other = byId.get(otherId)!;
+        const similarity = semanticSimilarity(candidate, other);
+        if (similarity !== undefined && similarity > (closestSemantic[otherId] ?? 0)) {
+          closestSemantic[otherId] = similarity;
+        }
+      }
+    }
   };
 
   const gain = (mediaId: string) => {
@@ -618,6 +652,21 @@ function greedySelect(
           1,
           Math.max(0, (closest[mediaId] ?? 0) - redundancyFree) /
             redundancyDenominator,
+        );
+    }
+    // The same penalty, charged on scene rather than on frame. This is what
+    // separates "another photo of the same afternoon in the same clothes in the
+    // same room" from "a different moment" -- a distinction the 8x8 perceptual
+    // grid above is structurally incapable of drawing. It is deliberately a
+    // soft cost and never a hard exclusion: TinyCLIP is good enough to rank
+    // with and not good enough to throw a photograph away on.
+    if (candidate.semanticEmbedding) {
+      value -=
+        weights.weightRedundancy *
+        Math.min(
+          1,
+          Math.max(0, (closestSemantic[mediaId] ?? 0) - semanticFree) /
+            semanticDenominator,
         );
     }
     value += weights.weightSmile * (smilePercentile.get(mediaId) ?? 0.5);
@@ -1603,8 +1652,30 @@ function groupMoments(candidates: NormalizedCandidate[], policy: PlannerPolicy) 
   );
 }
 
-function calibratedRedundancy(candidates: NormalizedCandidate[], policy: PlannerPolicy): [number, number] {
-  const embedded = candidates.filter((candidate) => candidate.embedding).sort(byMediaId);
+/**
+ * Derives the "this much similarity is normal here" band from the set itself.
+ *
+ * Photos of one afternoon are all alike; a year of photos is not. A fixed
+ * threshold would either punish every photo in a single-event album or excuse
+ * every photo in a year's worth, so the median pairwise similarity of the
+ * actual candidates becomes the free band and only what exceeds it is charged.
+ *
+ * This matters twice as much for `semanticSimilarity`, whose raw cosines sit
+ * high between any two photographs of people -- an absolute number picked by
+ * hand would have been wrong on the first library that disagreed with it.
+ */
+function calibratedRedundancy(
+  candidates: NormalizedCandidate[],
+  policy: PlannerPolicy,
+  similarityOf: (
+    left: NormalizedCandidate,
+    right: NormalizedCandidate,
+  ) => number | undefined = candidateSimilarity,
+  hasSignal: (candidate: NormalizedCandidate) => boolean = (candidate) =>
+    Boolean(candidate.embedding),
+  ceiling: number = policy.shotSimilarity,
+): [number, number] {
+  const embedded = candidates.filter(hasSignal).sort(byMediaId);
   let free = policy.redundancyFreeSimilarity;
   if (embedded.length >= 8) {
     const stride = Math.max(1, Math.floor(embedded.length / 48));
@@ -1612,15 +1683,15 @@ function calibratedRedundancy(candidates: NormalizedCandidate[], policy: Planner
     const similarities: number[] = [];
     for (let left = 0; left < sample.length; left += 1) {
       for (let right = left + 1; right < sample.length; right += 1) {
-        const similarity = candidateSimilarity(sample[left], sample[right]);
+        const similarity = similarityOf(sample[left], sample[right]);
         if (similarity !== undefined) similarities.push(similarity);
       }
     }
     similarities.sort((a, b) => a - b);
     const median = similarities[Math.floor(similarities.length / 2)];
-    if (Number.isFinite(median)) free = Math.max(free, Math.min(median, policy.shotSimilarity));
+    if (Number.isFinite(median)) free = Math.max(free, Math.min(median, ceiling));
   }
-  return [free, Math.max(policy.shotSimilarity - free, 0.02)];
+  return [free, Math.max(ceiling - free, 0.02)];
 }
 
 function axisPercentiles(
@@ -1669,6 +1740,19 @@ function candidateSimilarity(left: NormalizedCandidate, right: NormalizedCandida
   if (!left.embedding || !right.embedding) return undefined;
   if ((left.embeddingSpace || "default") !== (right.embeddingSpace || "default")) return undefined;
   return cosine(left.embedding, right.embedding);
+}
+
+/**
+ * Scene/background/clothing similarity, from TinyCLIP.
+ *
+ * No embedding-space check: unlike `embedding`, this field only ever holds one
+ * model's output, so there is no second space to confuse it with. That was not
+ * true of `embedding`, where the space tag is what stops a 76-dim perceptual
+ * vector being compared against a 512-dim semantic one.
+ */
+function semanticSimilarity(left: NormalizedCandidate, right: NormalizedCandidate) {
+  if (!left.semanticEmbedding || !right.semanticEmbedding) return undefined;
+  return cosine(left.semanticEmbedding, right.semanticEmbedding);
 }
 
 export function cosine(left: readonly number[], right: readonly number[]) {

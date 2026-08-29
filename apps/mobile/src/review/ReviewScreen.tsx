@@ -13,6 +13,7 @@ import {
   spacing,
   typeScale,
 } from "../ui";
+import { FilterSheet, type AppliedFilter } from "./FilterSheet";
 import Lightbox, { type LightboxItem, type LightboxMode } from "./Lightbox";
 import { SwapSheet } from "./SwapSheet";
 import {
@@ -29,11 +30,16 @@ type ViewerState = { mode: LightboxMode; initialIndex: number; slotMediaId?: str
 type DisplayItem = {
   alternativeCount: number;
   caption: string;
+  /** The look applied to this slot, or "original" when it is untouched. */
+  filterId: string;
   media_id: string;
   page: number;
   rawReasons: string[];
   slot_media_id: string;
+  /** The photo as it will appear in the album -- filtered when a look is set. */
   uri: string;
+  /** Always the untouched photo, so the sheet can offer "keep original". */
+  originalUri: string;
 };
 
 function alternativeCaption(alternative: ReviewAlternative) {
@@ -75,6 +81,11 @@ export default function ReviewScreen({
   const [added, setAdded] = useState<Set<string>>(new Set());
   const [viewer, setViewer] = useState<ViewerState | null>(null);
   const [swapSlot, setSwapSlot] = useState<string | null>(null);
+  // Keyed by slot but stamped with the photo it was chosen for. Swapping a slot
+  // to a different shot must not inherit the previous photo's look, and a stamp
+  // makes that self-correcting rather than something every edit path must undo.
+  const [filtered, setFiltered] = useState<Record<string, AppliedFilter & { mediaId: string }>>({});
+  const [filterSlot, setFilterSlot] = useState<string | null>(null);
 
   const mediaById = useMemo(() => {
     const entries: ReviewMedia[] = [
@@ -94,31 +105,49 @@ export default function ReviewScreen({
           ? selected.alternatives.find((item) => item.media_id === replacementId)
           : undefined;
         const shown = (replacementId ? mediaById.get(replacementId) : undefined) ?? selected;
+        // The stamp is what makes a stale look impossible: if this slot now
+        // shows a different photo, the stored look simply does not apply.
+        const look = filtered[selected.media_id];
+        const applies = look?.mediaId === shown.media_id ? look : undefined;
         return {
           alternativeCount: selected.alternatives.length,
           caption: replacementId ? copy.review.changedReason : plainChosenReason(selected.chosen_because),
+          filterId: applies?.filter ?? "original",
           media_id: shown.media_id,
+          originalUri: shown.uri,
           page: selected.page,
           rawReasons: replacement?.not_chosen_because ?? selected.chosen_because,
           slot_media_id: selected.media_id,
-          uri: shown.uri,
+          uri: applies?.uri ?? shown.uri,
         };
       });
     const maxPage = chosen.reduce((max, item) => Math.max(max, item.page), 0);
     const addedItems = data.pool
       .filter((item) => added.has(item.media_id))
-      .map((item, index) => ({
-        // A photo added back from the pool owns no slot, so it has no alternates.
-        alternativeCount: 0,
-        caption: copy.review.changedReason,
-        media_id: item.media_id,
-        page: maxPage + index + 1,
-        rawReasons: item.reasons,
-        slot_media_id: `pool:${item.media_id}`,
-        uri: item.uri,
-      }));
+      .map((item, index) => {
+        const look = filtered[`pool:${item.media_id}`];
+        const applies = look?.mediaId === item.media_id ? look : undefined;
+        return {
+          // A photo added back from the pool owns no slot, so it has no alternates.
+          alternativeCount: 0,
+          caption: copy.review.changedReason,
+          filterId: applies?.filter ?? "original",
+          media_id: item.media_id,
+          originalUri: item.uri,
+          page: maxPage + index + 1,
+          rawReasons: item.reasons,
+          slot_media_id: `pool:${item.media_id}`,
+          uri: applies?.uri ?? item.uri,
+        };
+      });
     return [...chosen, ...addedItems];
-  }, [added, data.pool, data.selected, mediaById, removed, swaps]);
+  }, [added, data.pool, data.selected, filtered, mediaById, removed, swaps]);
+
+  // Resolved from the live grid rather than captured when the sheet opened, so
+  // a slot that changes underneath the sheet cannot leave it editing a ghost.
+  const filterTarget = filterSlot
+    ? gridItems.find((item) => item.slot_media_id === filterSlot)
+    : undefined;
 
   const albumItems = useMemo<LightboxItem[]>(
     () => gridItems.map((item) => ({
@@ -219,6 +248,17 @@ export default function ReviewScreen({
                     </Text>
                   </Pressable>
                   <Pressable
+                    accessibilityHint="Choose a look for this photo"
+                    accessibilityLabel={item.filterId === "original" ? "Add a look" : `Look: ${item.filterId}`}
+                    accessibilityRole="button"
+                    onPress={() => setFilterSlot(item.slot_media_id)}
+                    style={({ pressed }) => [styles.look, pressed ? styles.pressed : null, item.filterId !== "original" ? styles.lookActive : null]}
+                  >
+                    <Text numberOfLines={1} style={[styles.lookText, item.filterId !== "original" ? styles.lookTextActive : null]}>
+                      {item.filterId === "original" ? "Look" : item.filterId}
+                    </Text>
+                  </Pressable>
+                  <Pressable
                     accessibilityLabel="Remove from album"
                     accessibilityRole="button"
                     onPress={() => {
@@ -281,6 +321,24 @@ export default function ReviewScreen({
         </View>
       ) : null}
 
+      <FilterSheet
+        assetId={filterTarget?.media_id ?? null}
+        current={filterTarget?.filterId ?? "original"}
+        onClose={() => setFilterSlot(null)}
+        onPick={(applied) => {
+          const target = filterTarget;
+          if (!target) return;
+          setFiltered((current) => {
+            const next = { ...current };
+            if (!applied) delete next[target.slot_media_id];
+            else next[target.slot_media_id] = { ...applied, mediaId: target.media_id };
+            return next;
+          });
+        }}
+        originalUri={filterTarget?.originalUri ?? ""}
+        visible={filterSlot !== null && filterTarget !== undefined}
+      />
+
       <SwapSheet
         currentMediaId={swapSlot ? swaps[swapSlot] ?? swapSlot : ""}
         onClose={() => setSwapSlot(null)}
@@ -338,6 +396,10 @@ const styles = StyleSheet.create({
   missedReason: { color: colors.muted, fontFamily: fonts.regular, fontSize: 12.5, lineHeight: 17, minHeight: 34 },
   missedSection: { gap: spacing.xs, paddingTop: spacing.lg },
   missedTitle: { color: colors.text, fontFamily: fonts.extraBold, fontSize: 18, letterSpacing: -0.3 },
+  look: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderRadius: 22, borderWidth: 1, justifyContent: "center", minHeight: 44, paddingHorizontal: 10 },
+  lookActive: { backgroundColor: colors.gold, borderColor: colors.gold },
+  lookText: { color: colors.text, fontFamily: fonts.bold, fontSize: 12, textTransform: "capitalize" },
+  lookTextActive: { color: colors.onAccent },
   pressed: { opacity: 0.65 },
   reason: { color: colors.muted, fontFamily: fonts.regular, fontSize: 13, lineHeight: 18, minHeight: 52 },
   remove: { alignItems: "center", backgroundColor: colors.panel, borderColor: colors.hairline, borderRadius: 22, borderWidth: 1, justifyContent: "center", minHeight: 44, width: 44 },

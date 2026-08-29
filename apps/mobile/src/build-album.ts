@@ -833,12 +833,16 @@ export async function buildAlbum(
       timings,
       probeCache,
       deepStore,
-      lifecycle.waitUntilForeground,
+      lifecycle.waitUntilRunnable,
+      lifecycle.report,
     );
   } finally {
     await probeCache?.persist();
     await deepStore?.persist();
-    lifecycle.dispose();
+    // Awaited: this stops the foreground service and clears its notification.
+    // Leaving it running would leave "Building your album" on his phone after
+    // the album is already on screen.
+    await lifecycle.dispose();
     const total: BuildAlbumTiming = {
       stage: "total",
       elapsedMs: Date.now() - totalStartedAt,
@@ -866,7 +870,8 @@ async function buildAlbumImpl(
   timings: BuildAlbumTiming[],
   probeCache: CandidateProbeCache | undefined,
   deepStore: DeepSignalStore | undefined,
-  waitUntilForeground: () => Promise<void>,
+  waitUntilRunnable: () => Promise<void>,
+  reportProgress: (text: string) => void = () => undefined,
 ): Promise<ReviewData> {
   throwIfCancelled(options.signal);
   const model = getModel();
@@ -918,7 +923,7 @@ async function buildAlbumImpl(
       },
       {
         signal: options.signal,
-        waitUntilRunnable: waitUntilForeground,
+        waitUntilRunnable,
         yieldEvery: PREPASS_YIELD_ITEMS,
         checkpointEvery: PREPASS_CHECKPOINT_ITEMS,
         onCheckpoint: async () => probeCache?.persist(),
@@ -1257,17 +1262,22 @@ async function buildAlbumImpl(
     }
   }, {
     signal: options.signal,
-    waitUntilRunnable: waitUntilForeground,
+    waitUntilRunnable,
     yieldEvery: ANALYSIS_YIELD_ITEMS,
     onComplete: (done) => {
       completedWork = prepassWork + done * ANALYSIS_WORK_UNITS;
+      const phase = capEngaged
+        ? cappedAnalysisPhase(done, analysisInputs.length, photos.length)
+        : lookingAtPhase(done, analysisInputs.length);
       emitProgress(options.onProgress, {
         done: completedWork,
         total: totalWork,
-        phase: capEngaged
-          ? cappedAnalysisPhase(done, analysisInputs.length, photos.length)
-          : lookingAtPhase(done, analysisInputs.length),
+        phase,
       });
+      // This is the stage that takes the minutes -- 415s of a 417s build on the
+      // 300-photo run. It is also the only thing he can see while the app is in
+      // his pocket, so the notification must carry it rather than sit unchanged.
+      reportProgress(phase);
     },
   }).catch((error: unknown) => {
     // A cancelled build unwinds past the report below, and the lag sampler is a

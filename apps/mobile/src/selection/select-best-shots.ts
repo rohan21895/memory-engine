@@ -225,9 +225,20 @@ export function selectBestShotsWithObservations(
       placeKey: rankedTake.winner.photo.placeKey,
       personIds: rankedTake.winner.photo.personIds,
       embedding: rankedTake.winner.embedding,
-      embeddingSpace: rankedTake.winner.photo.semantic
-        ? "tinyclip-vit-8m16-yfcc15m-v1"
-        : "phone-perceptual-v1",
+      // The tag must name the vector actually in `embedding`, which is the
+      // perceptual fingerprint whenever one exists and TinyCLIP only as a
+      // fallback. Tagging it from `photo.semantic` instead described a photo
+      // that HAS a semantic signal, not one that is USING it -- so a photo with
+      // both and a photo with only TinyCLIP both claimed the same space while
+      // carrying 76-dim and 512-dim vectors. The length guard in `cosine` caught
+      // it, by silently returning 0: the redundancy penalty between those two
+      // photos quietly became "completely different" and never fired.
+      embeddingSpace: rankedTake.winner.perceptualEmbedding?.length
+        ? "phone-perceptual-v1"
+        : "tinyclip-vit-8m16-yfcc15m-v1",
+      // Scene, background and clothing -- the axis the perceptual grid cannot
+      // see, and the one behind "images chosen are not different".
+      semanticEmbedding: rankedTake.winner.photo.semantic?.embedding,
       comparisonClass: rankedTake.winner.analysis?.category,
       category: rankedTake.winner.analysis?.category,
       shotGroup: `take:${rankedTake.winner.photo.id}`,

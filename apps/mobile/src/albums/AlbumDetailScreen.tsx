@@ -1,8 +1,13 @@
 import { Image } from "expo-image";
+import { useMemo } from "react";
 import { Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
 
+import { aspectRatioOf, balanceIntoColumns } from "./album-wall";
 import type { SavedAlbum } from "./album-store";
 import { colors, fonts, spacing, typeScale } from "../ui";
+
+/** Two, not three: a wall of whole photos wants size more than it wants density. */
+const WALL_COLUMNS = 2;
 
 function PillButton({ label, onPress }: { label: string; onPress: () => void }) {
   return (
@@ -28,6 +33,7 @@ export function AlbumDetailScreen({
   onShare: () => void;
 }) {
   const created = new Date(album.createdAt).toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  const columns = useMemo(() => balanceIntoColumns(album.photos, WALL_COLUMNS), [album.photos]);
   return (
     <View style={styles.root}>
       <StatusBar backgroundColor="transparent" barStyle="light-content" translucent />
@@ -47,9 +53,26 @@ export function AlbumDetailScreen({
           <PillButton label="▶  Play slideshow" onPress={onPlay} />
         </View>
         <View style={styles.gridHeading}><Text style={styles.gridTitle}>All {album.photos.length} photos</Text></View>
-        <View style={styles.grid}>
-          {album.photos.map((photo, index) => (
-            <Image cachePolicy="memory-disk" contentFit="cover" key={`${photo.media_id}-${index}`} source={photo.uri} style={styles.tile} />
+        {/*
+          A wall, not a grid. Every tile carries its photo's own aspect ratio, so
+          nothing is cropped to fit a square -- which is what "images are cut to
+          fit in required size" was describing. `contain` rather than `cover` is
+          the safety net for photos whose source never reported dimensions: they
+          fall back to square and must letterbox instead of losing their edges.
+        */}
+        <View style={styles.wall}>
+          {columns.map((column, columnIndex) => (
+            <View key={columnIndex} style={styles.wallColumn}>
+              {column.items.map((photo, index) => (
+                <Image
+                  cachePolicy="memory-disk"
+                  contentFit="contain"
+                  key={`${photo.media_id}-${index}`}
+                  source={photo.uri}
+                  style={[styles.tile, { aspectRatio: aspectRatioOf(photo) }]}
+                />
+              ))}
+            </View>
           ))}
         </View>
       </ScrollView>
@@ -63,7 +86,8 @@ const styles = StyleSheet.create({
   backText: { color: colors.text, fontFamily: fonts.regular, fontSize: 28 },
   edit: { alignItems: "center", backgroundColor: "rgba(255,255,255,.9)", borderRadius: 20, height: 40, justifyContent: "center", paddingHorizontal: spacing.md, position: "absolute", right: spacing.md, top: (StatusBar.currentHeight ?? 24) + spacing.xs },
   editText: { color: colors.text, fontFamily: fonts.bold, ...typeScale.small },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: 3 },
+  wall: { flexDirection: "row", gap: 4, paddingHorizontal: 4 },
+  wallColumn: { flex: 1, gap: 4 },
   gridHeading: { alignItems: "baseline", flexDirection: "row", justifyContent: "space-between", paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   gridTitle: { color: colors.text, fontFamily: fonts.bold, ...typeScale.label },
   hero: { height: 330, position: "relative" },
@@ -75,6 +99,6 @@ const styles = StyleSheet.create({
   root: { backgroundColor: colors.background, flex: 1 },
   scrim: { backgroundColor: "rgba(25,17,12,.38)", bottom: 0, height: 150, left: 0, position: "absolute", right: 0 },
   scroll: { paddingBottom: spacing.xl },
-  tile: { aspectRatio: 1, backgroundColor: colors.hairline, width: "32.8%" },
+  tile: { backgroundColor: colors.hairline, borderCurve: "continuous", borderRadius: 4, width: "100%" },
   title: { color: colors.onAccent, fontFamily: fonts.extraBold, fontSize: 29, letterSpacing: -0.8 },
 });

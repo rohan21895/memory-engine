@@ -217,26 +217,34 @@ class PhoteoAlbumPdfModule : Module() {
         ?: throw IllegalStateException("One album photo could not be read")
       try {
         placement.put("effectiveDpi", effectiveDpi(bitmap, target))
-        drawCover(canvas, bitmap, target, imagePaint)
+        drawWhole(canvas, bitmap, target, imagePaint)
       } finally {
         bitmap.recycle()
       }
     }
   }
 
-  private fun drawCover(canvas: Canvas, bitmap: Bitmap, target: RectF, paint: Paint) {
-    val sourceRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
-    val targetRatio = target.width() / target.height()
-    val source = if (sourceRatio > targetRatio) {
-      val width = (bitmap.height * targetRatio).roundToInt().coerceAtMost(bitmap.width)
-      val left = (bitmap.width - width) / 2
-      Rect(left, 0, left + width, bitmap.height)
-    } else {
-      val height = (bitmap.width / targetRatio).roundToInt().coerceAtMost(bitmap.height)
-      val top = (bitmap.height - height) / 2
-      Rect(0, top, bitmap.width, top + height)
-    }
-    canvas.drawBitmap(bitmap, source, target, paint)
+  /**
+   * Draws the WHOLE photo inside its frame, centred, never cropped.
+   *
+   * This used to be a centre-crop to fill: it took the sub-rectangle of the
+   * source matching the frame's ratio and threw the rest away. The owner's
+   * report was "In albums images are cut to fit in required size, that is
+   * really bad" -- a portrait photo in a landscape frame lost its top and
+   * bottom, which in family photos is heads and feet.
+   *
+   * Fitting instead of filling means the frame is rarely filled edge to edge,
+   * and the remainder shows the mat that is already painted across the whole
+   * frame. That is not a gap; it is what a mounted print looks like.
+   */
+  private fun drawWhole(canvas: Canvas, bitmap: Bitmap, target: RectF, paint: Paint) {
+    val scale = minOf(target.width() / bitmap.width, target.height() / bitmap.height)
+    val width = bitmap.width * scale
+    val height = bitmap.height * scale
+    val left = target.left + (target.width() - width) / 2f
+    val top = target.top + (target.height() - height) / 2f
+    val placed = RectF(left, top, left + width, top + height)
+    canvas.drawBitmap(bitmap, null, placed, paint)
   }
 
   private fun decodeBitmap(uriString: String, targetWidth: Int, targetHeight: Int): Bitmap? {
@@ -347,16 +355,23 @@ class PhoteoAlbumPdfModule : Module() {
   private fun rasterPixelsForPoints(points: Double): Int =
     ceil(points * RASTER_PIXELS_PER_POINT).toInt().coerceAtLeast(1)
 
+  /**
+   * Print resolution of the photo as placed.
+   *
+   * This used to simulate the centre-crop and report the DPI of the surviving
+   * region. Nothing is discarded now: the photo is scaled uniformly to fit, so
+   * every pixel lands on the page and the DPI is simply that one scale factor
+   * expressed per inch. Fitting also means a slightly SMALLER placed size than
+   * filling did, so this number is honestly a little lower -- reporting the old
+   * one would overstate the print quality of a page that changed underneath it.
+   */
   private fun effectiveDpi(bitmap: Bitmap, target: RectF): Double {
-    val sourceRatio = bitmap.width.toDouble() / bitmap.height.toDouble()
-    val targetRatio = target.width().toDouble() / target.height().toDouble()
-    val croppedWidth = if (sourceRatio > targetRatio) bitmap.height * targetRatio else bitmap.width.toDouble()
-    val croppedHeight = if (sourceRatio > targetRatio) bitmap.height.toDouble() else bitmap.width / targetRatio
-    val dpi = minOf(
-      croppedWidth / (target.width() / 72.0),
-      croppedHeight / (target.height() / 72.0),
+    val scale = minOf(
+      target.width().toDouble() / bitmap.width,
+      target.height().toDouble() / bitmap.height,
     )
-    return (dpi * 10.0).roundToInt() / 10.0
+    if (scale <= 0.0) return 0.0
+    return (72.0 / scale * 10.0).roundToInt() / 10.0
   }
 
   private fun minimumEffectiveDpi(pages: org.json.JSONArray): Double? {

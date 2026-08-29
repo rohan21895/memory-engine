@@ -117,14 +117,13 @@ function effectiveDpi(photo: FinalPhoto, frame: AlbumDocumentRect, mat: number):
   const placedHeight = frame.height - mat * 2;
   if (sourceWidth <= 0 || sourceHeight <= 0 || placedWidth <= 0 || placedHeight <= 0) return null;
 
-  const sourceRatio = sourceWidth / sourceHeight;
-  const placedRatio = placedWidth / placedHeight;
-  const croppedWidth = sourceRatio > placedRatio ? sourceHeight * placedRatio : sourceWidth;
-  const croppedHeight = sourceRatio > placedRatio ? sourceHeight : sourceWidth / placedRatio;
-  const sourceDpi = Math.min(
-    croppedWidth / (placedWidth / 72),
-    croppedHeight / (placedHeight / 72),
-  );
+  // The renderer fits the whole photo inside the frame rather than cropping it
+  // to fill, so one uniform scale governs both axes and nothing is discarded.
+  // Fitting places the photo slightly smaller than filling did, which makes
+  // this number a little lower than it used to be -- and honest, which the
+  // crop-simulating version stopped being the moment the renderer changed.
+  const scale = Math.min(placedWidth / sourceWidth, placedHeight / sourceHeight);
+  const sourceDpi = scale > 0 ? 72 / scale : 0;
   // The native writer may decode above the target before embedding, but the
   // plan never promises more resolution than this 300-DPI document requests.
   return Math.round(Math.min(ALBUM_TARGET_DPI, sourceDpi) * 10) / 10;

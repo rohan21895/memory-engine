@@ -27,7 +27,10 @@ const PINNED = [
   {
     module: "photeo-scan-service",
     file: "modules/photeo-scan-service/android/src/main/java/expo/modules/photeoscanservice/PhoteoScanServiceModule.kt",
-    functions: ["thumbnailUri", "clusterFaces"],
+    // Every one of these decodes or filters a bitmap, and `filteredPhoto` runs
+    // once per swatch in the picker -- exactly the burst that made the shared
+    // queue visible as UI freeze the first time.
+    functions: ["thumbnailUri", "clusterFaces", "albumAnalysisProxy", "filteredPhoto"],
   },
   {
     module: "photeo-litert",

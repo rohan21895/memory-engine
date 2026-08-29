@@ -82,6 +82,31 @@ internal fun resolveMediaStoreAnalysisProxy(
   )
 }
 
+/**
+ * Resolves a filtered copy for the album review strip and the finished album.
+ *
+ * Filtered results are cached under their own key, so the picker can re-show a
+ * look instantly and the unfiltered proxy above keeps the exact cache path it
+ * had before filters existed. Quality matches the analysis proxy because a
+ * filtered photo is what actually lands in the album.
+ */
+internal fun resolveFilteredPhoto(
+  context: Context,
+  assetId: String,
+  filter: PhotoFilter,
+  requestedEdge: Int,
+): ResolvedThumbnail {
+  return resolveMediaStoreImage(
+    context = context,
+    assetId = assetId,
+    requestedEdge = requestedEdge,
+    maxEdge = ANALYSIS_MAX_EDGE,
+    cacheDirectory = "filtered",
+    jpegQuality = ANALYSIS_JPEG_QUALITY,
+    filter = filter,
+  )
+}
+
 private fun resolveMediaStoreImage(
   context: Context,
   assetId: String,
@@ -89,10 +114,13 @@ private fun resolveMediaStoreImage(
   maxEdge: Int,
   cacheDirectory: String,
   jpegQuality: Int,
+  filter: PhotoFilter = PhotoFilter.ORIGINAL,
 ): ResolvedThumbnail {
   val id = assetId.toLongOrNull() ?: return ResolvedThumbnail(null, ThumbnailSource.MISSING)
   val edge = requestedEdge.coerceIn(64, maxEdge)
-  val cached = File(context.cacheDir, "$cacheDirectory/${id}_$edge.jpg")
+  // ORIGINAL keeps the pre-filter filename so already-cached tiles still hit.
+  val suffix = if (filter == PhotoFilter.ORIGINAL) "" else "_${filter.id}"
+  val cached = File(context.cacheDir, "$cacheDirectory/${id}_$edge$suffix.jpg")
   cached.cachedDimensions()?.let { dimensions ->
     return ResolvedThumbnail(
       uri = Uri.fromFile(cached).toString(),
@@ -102,7 +130,7 @@ private fun resolveMediaStoreImage(
     )
   }
 
-  val cacheKey = "$cacheDirectory/${id}_$edge"
+  val cacheKey = "$cacheDirectory/${id}_$edge$suffix"
   val lock = thumbnailLocks.computeIfAbsent(cacheKey) { Any() }
   try {
     return synchronized(lock) {
@@ -127,7 +155,9 @@ private fun resolveMediaStoreImage(
         )
       }
 
-      val bitmap = decoded.first
+      // Filtering here rather than at draw time means the album, the PDF and
+      // the share sheet all get the same pixels, and the look survives export.
+      val bitmap = applyFilterInPlace(decoded.first, filter)
       val bitmapBytes = bitmap.allocationByteCount.toLong()
       try {
         if (!writeAtomically(bitmap, cached, jpegQuality)) {

@@ -25,7 +25,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { scheduleOnRN } from "react-native-worklets";
 
 // @ts-expect-error TypeScript bundler resolution normally omits source extensions.
-import { thumbnailUri } from "../../modules/photeo-scan-service/src/index.ts";
+import { albumAnalysisProxy, thumbnailUri } from "../../modules/photeo-scan-service/src/index.ts";
 import type { SavedAlbum } from "../albums/album-store";
 import { fonts, spacing, typeScale } from "../ui";
 import {
@@ -42,30 +42,56 @@ const MODE_GESTURE_DISTANCE = 156;
 const PAGE_SPRING = { dampingRatio: 0.86, duration: 420 } as const;
 const EASE_OUT = Easing.bezier(0.23, 1, 0.32, 1);
 
+/**
+ * The long edge the slideshow actually displays.
+ *
+ * Deliberately equal to ANALYSIS_PROXY_SIZE, so every photo in a built album is
+ * already on disk as a proxy and the slideshow decodes nothing new. It is also
+ * the reason the full-resolution original never reaches this screen: his library
+ * holds 25-27 MiB DSLR JPEGs, and three of those mounted at once is the album
+ * OOM in a different costume.
+ */
+const DISPLAY_EDGE = 1280;
+
 const thumbnailCache = new Map<string, string | null>();
 const thumbnailRequests = new Map<string, Promise<string | null>>();
+const displayCache = new Map<string, string | null>();
+const displayRequests = new Map<string, Promise<string | null>>();
+
+/** Shared single-flight + memo, so three mounted pages cause one native call. */
+function cachedUri(
+  cache: Map<string, string | null>,
+  requests: Map<string, Promise<string | null>>,
+  key: string,
+  load: () => Promise<string | null>,
+): Promise<string | null> {
+  if (cache.has(key)) return Promise.resolve(cache.get(key) ?? null);
+  const pending = requests.get(key);
+  if (pending) return pending;
+
+  const request = load()
+    .then((uri) => uri)
+    .catch(() => null)
+    .then((uri) => {
+      cache.set(key, uri);
+      requests.delete(key);
+      return uri;
+    });
+  requests.set(key, request);
+  return request;
+}
 
 function requestThumbnail(assetId: string, displaySize: number): Promise<string | null> {
   const size = quantizedThumbnailSize(displaySize);
   const key = `${assetId}:${size}`;
-  if (thumbnailCache.has(key)) return Promise.resolve(thumbnailCache.get(key) ?? null);
+  return cachedUri(thumbnailCache, thumbnailRequests, key, () => thumbnailUri(assetId, size));
+}
 
-  const pending = thumbnailRequests.get(key);
-  if (pending) return pending;
-
-  const request = thumbnailUri(assetId, size)
-    .then((uri) => {
-      thumbnailCache.set(key, uri);
-      thumbnailRequests.delete(key);
-      return uri;
-    })
-    .catch(() => {
-      thumbnailCache.set(key, null);
-      thumbnailRequests.delete(key);
-      return null;
-    });
-  thumbnailRequests.set(key, request);
-  return request;
+function requestDisplayPhoto(assetId: string): Promise<string | null> {
+  return cachedUri(displayCache, displayRequests, assetId, async () => {
+    const proxy = await albumAnalysisProxy(assetId, DISPLAY_EDGE);
+    return proxy?.uri ?? null;
+  });
 }
 
 function useThumbnail(assetId: string | undefined, displaySize: number): string | undefined {
@@ -94,6 +120,41 @@ function useThumbnail(assetId: string | undefined, displaySize: number): string 
       live = false;
     };
   }, [assetId, displaySize, key]);
+
+  return uri;
+}
+
+/**
+ * The display-sized photo for a slide.
+ *
+ * Every mounted page asks for this, not just the current one, so the next and
+ * previous slides are already decoded before he swipes. That prefetch is half
+ * the fix for "refreshes a lot"; the other half is that the page below now
+ * keeps ONE image view for its whole life instead of swapping sources.
+ */
+function useDisplayPhoto(assetId: string | undefined): string | undefined {
+  const [uri, setUri] = useState<string | undefined>(() =>
+    assetId ? displayCache.get(assetId) ?? undefined : undefined,
+  );
+
+  useEffect(() => {
+    if (!assetId) {
+      setUri(undefined);
+      return;
+    }
+
+    const cached = displayCache.get(assetId);
+    setUri(cached ?? undefined);
+    if (cached !== undefined) return;
+
+    let live = true;
+    void requestDisplayPhoto(assetId).then((next) => {
+      if (live) setUri(next ?? undefined);
+    });
+    return () => {
+      live = false;
+    };
+  }, [assetId]);
 
   return uri;
 }
@@ -199,6 +260,9 @@ function PhotoPage({
   const photo = album.photos[photoIndex];
   const isCurrent = logicalPage === page;
   const thumbnail = useThumbnail(photo?.media_id, width);
+  // Requested by every mounted page, not just the current one: that is the
+  // prefetch, and it is why arriving at a slide no longer starts a decode.
+  const display = useDisplayPhoto(photo?.media_id);
 
   const pageStyle = useAnimatedStyle(() => {
     const progress = transitionProgress.get();
@@ -230,28 +294,33 @@ function PhotoPage({
       style={[styles.photoPage, { height, left: logicalPage * width, width }, pageStyle]}
     >
       <View style={styles.photoSurface}>
-        {isCurrent ? (
-          <Image
-            accessibilityLabel={`Photo ${photoIndex + 1} of ${album.photos.length}`}
-            accessibilityRole="image"
-            cachePolicy="memory-disk"
-            contentFit="contain"
-            placeholder={thumbnail}
-            recyclingKey={`slideshow-original:${photo.media_id}`}
-            source={photo.uri}
-            style={StyleSheet.absoluteFill}
-            transition={reducedMotion ? 0 : 160}
-          />
-        ) : thumbnail ? (
-          <Image
-            cachePolicy="memory-disk"
-            contentFit="contain"
-            recyclingKey={`slideshow-adjacent:${photo.media_id}`}
-            source={thumbnail}
-            style={StyleSheet.absoluteFill}
-            transition={0}
-          />
-        ) : null}
+        {/*
+          ONE image view, one recycling key, for the whole life of this page.
+          It previously rendered two different image elements -- a full-res one
+          while current, a thumbnail one otherwise -- with DIFFERENT recyclingKeys.
+          expo-image tears down and rebuilds the native view whenever that key
+          changes, so every advance destroyed and rebuilt two views, and the slide
+          being left behind was actively downgraded from a decoded photo back to a
+          blurry thumbnail. That is the "refreshes a lot, sometimes refreshes and
+          thumbnail is visible" he reported; it was structural, not slow I/O.
+
+          The source is now the same display proxy whether or not the page is
+          current, so becoming current changes nothing about what is loaded.
+          `photo.uri` remains only as a last resort for a device with no native
+          module -- never as the routine path, which is what the OOM taught.
+        */}
+        <Image
+          accessibilityLabel={`Photo ${photoIndex + 1} of ${album.photos.length}`}
+          accessibilityRole="image"
+          cachePolicy="memory-disk"
+          contentFit="contain"
+          placeholder={thumbnail}
+          placeholderContentFit="contain"
+          recyclingKey={`slideshow:${photo.media_id}`}
+          source={display ?? thumbnail ?? photo.uri}
+          style={StyleSheet.absoluteFill}
+          transition={reducedMotion ? 0 : 160}
+        />
         <Animated.View pointerEvents="none" style={styles.classicFrame} />
       </View>
     </Animated.View>

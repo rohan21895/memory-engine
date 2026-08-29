@@ -384,6 +384,28 @@ class PhoteoScanServiceModule : Module() {
       )
     }.runOnQueue(thumbnailScope)
 
+    /** The looks the review strip offers, in the order it should show them. */
+    Function("photoFilters") { PhotoFilter.entries.map { it.id } }
+
+    /**
+     * One filtered JPEG for a MediaStore id.
+     *
+     * Small `size` values are the picker's live preview and large ones are what
+     * goes into the album, and both come from here so a look can never differ
+     * between the swatch he tapped and the photo he keeps. Results are cached
+     * per (id, edge, filter), so re-tapping a filter is a file read.
+     */
+    AsyncFunction("filteredPhoto") { assetId: String, filter: String, size: Int ->
+      val result = resolveFilteredPhoto(context, assetId, PhotoFilter.fromId(filter), size)
+      val uri = result.uri ?: return@AsyncFunction null
+      if (result.width < 1 || result.height < 1) return@AsyncFunction null
+      mapOf(
+        "uri" to uri,
+        "width" to result.width,
+        "height" to result.height,
+      )
+    }.runOnQueue(thumbnailScope)
+
     AsyncFunction("clusterFaces") {
       embeddings: String,
       dim: Int,
