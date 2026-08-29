@@ -1,8 +1,16 @@
 import type { FinalPhoto } from "../review/FinalAlbum";
 
-export const ALBUM_DOCUMENT_FORMAT = "photeo-phone-v1" as const;
-export const ALBUM_DOCUMENT_WIDTH = 1800;
-export const ALBUM_DOCUMENT_HEIGHT = 2400;
+export const ALBUM_DOCUMENT_FORMAT = "photeo-album-8x8-v2" as const;
+export const ALBUM_TRIM_SIZE_POINTS = 576;
+export const ALBUM_BLEED_POINTS = 8.5;
+export const ALBUM_SAFE_MARGIN_POINTS = 36;
+export const ALBUM_DOCUMENT_WIDTH = 593;
+export const ALBUM_DOCUMENT_HEIGHT = 593;
+export const ALBUM_TARGET_DPI = 300;
+export const ALBUM_TRIM_RASTER_SIZE = 2_400;
+export const ALBUM_DOCUMENT_RASTER_SIZE = Math.ceil(
+  ALBUM_DOCUMENT_WIDTH * ALBUM_TRIM_RASTER_SIZE / ALBUM_TRIM_SIZE_POINTS,
+);
 
 export type AlbumDocumentRect = {
   x: number;
@@ -12,6 +20,7 @@ export type AlbumDocumentRect = {
 };
 
 export type AlbumDocumentPlacement = {
+  effectiveDpi: number | null;
   mediaId: string;
   uri: string;
   frame: AlbumDocumentRect;
@@ -30,16 +39,27 @@ export type AlbumDocumentPage = {
  * the Android writer remains a mechanical executor in either case.
  */
 export type AlbumDocumentSpec = {
+  bleed: number;
   format: typeof ALBUM_DOCUMENT_FORMAT;
   pageWidth: number;
   pageHeight: number;
+  rasterHeight: number;
+  rasterWidth: number;
+  safeMargin: number;
+  trimBox: AlbumDocumentRect;
   pages: AlbumDocumentPage[];
 };
 
 type FrameTemplate = AlbumDocumentRect[];
 
 const PAPER = "#e9e3da";
-const MAT = 34;
+const MAT = 9;
+const TRIM_BOX: AlbumDocumentRect = {
+  x: ALBUM_BLEED_POINTS,
+  y: ALBUM_BLEED_POINTS,
+  width: ALBUM_TRIM_SIZE_POINTS,
+  height: ALBUM_TRIM_SIZE_POINTS,
+};
 const FULL_PAGE: AlbumDocumentRect = {
   x: 0,
   y: 0,
@@ -48,34 +68,34 @@ const FULL_PAGE: AlbumDocumentRect = {
 };
 
 const TWO: FrameTemplate = [
-  { x: 120, y: 170, width: 1_020, height: 1_180 },
-  { x: 720, y: 1_440, width: 960, height: 780 },
+  { x: 45, y: 54, width: 312, height: 270 },
+  { x: 242, y: 335, width: 306, height: 205 },
 ];
 
 const THREE_A: FrameTemplate = [
-  { x: 120, y: 150, width: 900, height: 1_320 },
-  { x: 1_092, y: 260, width: 588, height: 720 },
-  { x: 480, y: 1_570, width: 1_200, height: 670 },
+  { x: 45, y: 45, width: 290, height: 304 },
+  { x: 352, y: 60, width: 196, height: 177 },
+  { x: 201, y: 366, width: 347, height: 182 },
 ];
 
 const THREE_B: FrameTemplate = [
-  { x: 120, y: 160, width: 1_180, height: 710 },
-  { x: 1_050, y: 970, width: 630, height: 1_270 },
-  { x: 120, y: 1_030, width: 850, height: 970 },
+  { x: 45, y: 45, width: 350, height: 190 },
+  { x: 410, y: 205, width: 138, height: 343 },
+  { x: 45, y: 255, width: 340, height: 293 },
 ];
 
 const FOUR_A: FrameTemplate = [
-  { x: 120, y: 150, width: 960, height: 1_240 },
-  { x: 1_152, y: 250, width: 528, height: 630 },
-  { x: 1_152, y: 960, width: 528, height: 790 },
-  { x: 300, y: 1_830, width: 1_380, height: 410 },
+  { x: 45, y: 45, width: 286, height: 286 },
+  { x: 347, y: 55, width: 201, height: 145 },
+  { x: 347, y: 216, width: 201, height: 180 },
+  { x: 99, y: 412, width: 449, height: 136 },
 ];
 
 const FOUR_B: FrameTemplate = [
-  { x: 120, y: 160, width: 1_100, height: 700 },
-  { x: 1_292, y: 160, width: 388, height: 900 },
-  { x: 120, y: 940, width: 600, height: 1_300 },
-  { x: 792, y: 1_160, width: 888, height: 740 },
+  { x: 45, y: 45, width: 330, height: 174 },
+  { x: 391, y: 45, width: 157, height: 234 },
+  { x: 45, y: 235, width: 190, height: 313 },
+  { x: 251, y: 296, width: 297, height: 252 },
 ];
 
 function photoRatio(photo: FinalPhoto): number {
@@ -88,6 +108,26 @@ function frameRatio(frame: AlbumDocumentRect): number {
   const innerWidth = Math.max(1, frame.width - MAT * 2);
   const innerHeight = Math.max(1, frame.height - MAT * 2);
   return innerWidth / innerHeight;
+}
+
+function effectiveDpi(photo: FinalPhoto, frame: AlbumDocumentRect, mat: number): number | null {
+  const sourceWidth = photo.width ?? 0;
+  const sourceHeight = photo.height ?? 0;
+  const placedWidth = frame.width - mat * 2;
+  const placedHeight = frame.height - mat * 2;
+  if (sourceWidth <= 0 || sourceHeight <= 0 || placedWidth <= 0 || placedHeight <= 0) return null;
+
+  const sourceRatio = sourceWidth / sourceHeight;
+  const placedRatio = placedWidth / placedHeight;
+  const croppedWidth = sourceRatio > placedRatio ? sourceHeight * placedRatio : sourceWidth;
+  const croppedHeight = sourceRatio > placedRatio ? sourceHeight : sourceWidth / placedRatio;
+  const sourceDpi = Math.min(
+    croppedWidth / (placedWidth / 72),
+    croppedHeight / (placedHeight / 72),
+  );
+  // The native writer may decode above the target before embedding, but the
+  // plan never promises more resolution than this 300-DPI document requests.
+  return Math.round(Math.min(ALBUM_TARGET_DPI, sourceDpi) * 10) / 10;
 }
 
 function permutations<T>(items: readonly T[]): T[][] {
@@ -126,6 +166,7 @@ function galleryPage(
     background: PAPER,
     kind: "gallery",
     placements: frames.map((frame, index) => ({
+      effectiveDpi: effectiveDpi(assigned[index]!, frame, MAT),
       frame,
       mat: MAT,
       mediaId: assigned[index]!.media_id,
@@ -139,6 +180,7 @@ function breatherPage(photo: FinalPhoto): AlbumDocumentPage {
     background: "#ffffff",
     kind: "breather",
     placements: [{
+      effectiveDpi: effectiveDpi(photo, FULL_PAGE, 0),
       frame: FULL_PAGE,
       mat: 0,
       mediaId: photo.media_id,
@@ -159,7 +201,9 @@ function templateFor(count: number, galleryIndex: number): FrameTemplate {
 }
 
 /**
- * Plans a portrait document for reading on a phone. The first page and then an
+ * Plans a square document for both the in-app reader and 8x8-inch output. The
+ * trim is inset by the bleed on every side; gallery frames remain inside the
+ * 0.5-inch safe margin. The first page and then an
  * occasional page between gallery-wall runs are edge-to-edge breathers; the
  * remaining pages use asymmetric, orientation-aware matted placements.
  */
@@ -194,9 +238,14 @@ export function buildAlbumDocument(photos: readonly FinalPhoto[]): AlbumDocument
   }
 
   return {
+    bleed: ALBUM_BLEED_POINTS,
     format: ALBUM_DOCUMENT_FORMAT,
     pageHeight: ALBUM_DOCUMENT_HEIGHT,
     pageWidth: ALBUM_DOCUMENT_WIDTH,
+    rasterHeight: ALBUM_TRIM_RASTER_SIZE,
+    rasterWidth: ALBUM_TRIM_RASTER_SIZE,
+    safeMargin: ALBUM_SAFE_MARGIN_POINTS,
+    trimBox: TRIM_BOX,
     pages,
   };
 }

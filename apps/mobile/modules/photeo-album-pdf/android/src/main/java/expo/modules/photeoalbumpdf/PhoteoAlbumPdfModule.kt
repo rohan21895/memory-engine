@@ -21,11 +21,19 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-private const val DOCUMENT_FORMAT = "photeo-phone-v1"
+private const val DOCUMENT_FORMAT = "photeo-album-8x8-v2"
+private const val PAGE_POINTS = 593
+private const val TRIM_POINTS = 576.0
+private const val BLEED_POINTS = 8.5
+private const val SAFE_MARGIN_POINTS = 36.0
+private const val TRIM_RASTER_SIZE = 2_400
+private const val RASTER_PIXELS_PER_POINT = TRIM_RASTER_SIZE / TRIM_POINTS
 private const val DIAGNOSTIC_LOG = "photeo-diagnostics.log"
 private const val MAX_DIAGNOSTIC_BYTES = 512L * 1024L
 private const val MAX_PAGES = 200
@@ -78,7 +86,20 @@ class PhoteoAlbumPdfModule : Module() {
     require(spec.getString("format") == DOCUMENT_FORMAT) { "Unsupported album document format" }
     val pageWidth = spec.getInt("pageWidth")
     val pageHeight = spec.getInt("pageHeight")
-    require(pageWidth in 720..3_600 && pageHeight in 960..4_800) { "Invalid page dimensions" }
+    require(pageWidth == PAGE_POINTS && pageHeight == PAGE_POINTS) { "Invalid page dimensions" }
+    require(closeTo(spec.getDouble("bleed"), BLEED_POINTS)) { "Invalid page bleed" }
+    require(closeTo(spec.getDouble("safeMargin"), SAFE_MARGIN_POINTS)) { "Invalid safe margin" }
+    require(
+      spec.getInt("rasterWidth") == TRIM_RASTER_SIZE &&
+        spec.getInt("rasterHeight") == TRIM_RASTER_SIZE,
+    ) { "Invalid trim raster dimensions" }
+    val trimBox = spec.getJSONObject("trimBox")
+    require(
+      closeTo(trimBox.getDouble("x"), BLEED_POINTS) &&
+        closeTo(trimBox.getDouble("y"), BLEED_POINTS) &&
+        closeTo(trimBox.getDouble("width"), TRIM_POINTS) &&
+        closeTo(trimBox.getDouble("height"), TRIM_POINTS),
+    ) { "Invalid trim geometry" }
 
     val pages = spec.getJSONArray("pages")
     require(pages.length() in 1..MAX_PAGES) { "Album must contain 1 to $MAX_PAGES pages" }
@@ -87,6 +108,7 @@ class PhoteoAlbumPdfModule : Module() {
     val digest = sha256(documentJson).take(16)
     val prefix = "photeo-album-${safeKey(albumKey)}-"
     val destination = File(directory, "$prefix$digest.pdf")
+    val specification = File(directory, "$prefix$digest.json")
     if (!destination.isFile || destination.length() == 0L) {
       val partial = File(directory, "${destination.name}.part")
       partial.delete()
@@ -113,10 +135,22 @@ class PhoteoAlbumPdfModule : Module() {
         partial.delete()
         "Could not save album document"
       }
-      directory.listFiles()
-        ?.filter { it != destination && it.name.startsWith(prefix) && it.extension == "pdf" }
-        ?.forEach(File::delete)
     }
+    // drawPage replaces any metadata estimate with the effective DPI of the
+    // bitmap actually embedded. Persist the executed plan, not the input JSON.
+    writeSpec(specification, spec.toString())
+    directory.listFiles()
+      ?.filter {
+        it != destination && it != specification && it.name.startsWith(prefix) &&
+          (it.extension == "pdf" || it.extension == "json")
+      }
+      ?.forEach(File::delete)
+
+    val effectiveDpi = minimumEffectiveDpi(pages)
+    diagnostic(
+      "[PhoteoAlbumPdf] geometry media=${pageWidth}pt trim=${TRIM_POINTS.toInt()}pt " +
+        "bleed=${BLEED_POINTS}pt minEffectiveDpi=${effectiveDpi?.let { "%.1f".format(it) } ?: "unknown"}",
+    )
 
     return mapOf(
       "pageCount" to pages.length(),
@@ -137,12 +171,12 @@ class PhoteoAlbumPdfModule : Module() {
       val placement = placements.getJSONObject(index)
       val frameJson = placement.getJSONObject("frame")
       val frame = RectF(
-        frameJson.getInt("x").toFloat(),
-        frameJson.getInt("y").toFloat(),
-        (frameJson.getInt("x") + frameJson.getInt("width")).toFloat(),
-        (frameJson.getInt("y") + frameJson.getInt("height")).toFloat(),
+        frameJson.getDouble("x").toFloat(),
+        frameJson.getDouble("y").toFloat(),
+        (frameJson.getDouble("x") + frameJson.getDouble("width")).toFloat(),
+        (frameJson.getDouble("y") + frameJson.getDouble("height")).toFloat(),
       )
-      val mat = placement.getInt("mat").toFloat()
+      val mat = placement.getDouble("mat").toFloat()
       require(
         frame.left >= 0 && frame.top >= 0 && frame.right <= pageWidth && frame.bottom <= pageHeight &&
           frame.width() > mat * 2 && frame.height() > mat * 2,
@@ -150,10 +184,13 @@ class PhoteoAlbumPdfModule : Module() {
 
       if (mat > 0) canvas.drawRect(frame, matPaint)
       val target = RectF(frame.left + mat, frame.top + mat, frame.right - mat, frame.bottom - mat)
+      val targetWidth = rasterPixelsForPoints(target.width().toDouble())
+      val targetHeight = rasterPixelsForPoints(target.height().toDouble())
       val uri = placement.getString("uri")
-      val bitmap = decodeBitmap(uri, target.width().roundToInt(), target.height().roundToInt())
+      val bitmap = decodeBitmap(uri, targetWidth, targetHeight)
         ?: throw IllegalStateException("One album photo could not be read")
       try {
+        placement.put("effectiveDpi", effectiveDpi(bitmap, target))
         drawCover(canvas, bitmap, target, imagePaint)
       } finally {
         bitmap.recycle()
@@ -278,6 +315,49 @@ class PhoteoAlbumPdfModule : Module() {
     MessageDigest.getInstance("SHA-256")
       .digest(value.toByteArray(Charsets.UTF_8))
       .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+  private fun closeTo(value: Double, expected: Double): Boolean = abs(value - expected) < 0.001
+
+  private fun rasterPixelsForPoints(points: Double): Int =
+    ceil(points * RASTER_PIXELS_PER_POINT).toInt().coerceAtLeast(1)
+
+  private fun effectiveDpi(bitmap: Bitmap, target: RectF): Double {
+    val sourceRatio = bitmap.width.toDouble() / bitmap.height.toDouble()
+    val targetRatio = target.width().toDouble() / target.height().toDouble()
+    val croppedWidth = if (sourceRatio > targetRatio) bitmap.height * targetRatio else bitmap.width.toDouble()
+    val croppedHeight = if (sourceRatio > targetRatio) bitmap.height.toDouble() else bitmap.width / targetRatio
+    val dpi = minOf(
+      croppedWidth / (target.width() / 72.0),
+      croppedHeight / (target.height() / 72.0),
+    )
+    return (dpi * 10.0).roundToInt() / 10.0
+  }
+
+  private fun minimumEffectiveDpi(pages: org.json.JSONArray): Double? {
+    var minimum: Double? = null
+    for (pageIndex in 0 until pages.length()) {
+      val placements = pages.getJSONObject(pageIndex).getJSONArray("placements")
+      for (placementIndex in 0 until placements.length()) {
+        val placement = placements.getJSONObject(placementIndex)
+        if (placement.isNull("effectiveDpi")) continue
+        val dpi = placement.getDouble("effectiveDpi")
+        require(dpi.isFinite() && dpi > 0) { "Invalid effective DPI" }
+        minimum = minimum?.let { minOf(it, dpi) } ?: dpi
+      }
+    }
+    return minimum
+  }
+
+  private fun writeSpec(destination: File, documentJson: String) {
+    if (destination.isFile && destination.length() > 0L) return
+    val partial = File(destination.parentFile, "${destination.name}.part")
+    partial.delete()
+    partial.writeText(documentJson)
+    require(partial.length() > 0L && partial.renameTo(destination)) {
+      partial.delete()
+      "Could not save album document metadata"
+    }
+  }
 
   /** ColorOS drops logcat after 300 process lines, so measurements also go to the shared file. */
   private fun diagnostic(message: String) {

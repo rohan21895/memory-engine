@@ -30,10 +30,10 @@ import {
   type RenderedAlbumPage,
 } from "../../modules/photeo-album-pdf/src";
 import { colors, fonts, spacing, typeScale } from "../ui";
-import { buildAlbumDocument } from "./album-document";
+import { ALBUM_DOCUMENT_RASTER_SIZE, buildAlbumDocument } from "./album-document";
 import type { SavedAlbum } from "./album-store";
 
-const MAIN_PAGE_WIDTH = 1_800;
+const MAIN_PAGE_WIDTH = ALBUM_DOCUMENT_RASTER_SIZE;
 const THUMBNAIL_WIDTH = 144;
 const MAX_ZOOM = 4;
 const SETTLE_SPRING = { dampingRatio: 0.8, duration: 400 } as const;
@@ -332,7 +332,7 @@ export function AlbumPdfViewer({ album, onBack }: { album: SavedAlbum; onBack: (
           ) : (
             <>
               <ActivityIndicator color={colors.gold} size="large" />
-              <Text accessibilityRole="header" style={styles.loadingTitle}>Preparing high-resolution PDF</Text>
+              <Text accessibilityRole="header" style={styles.loadingTitle}>Preparing high-resolution, 8x8 inch PDF</Text>
               <Text style={styles.loadingHelper}>Building your gallery-wall pages on this phone.</Text>
             </>
           )}
@@ -348,7 +348,7 @@ export function AlbumPdfViewer({ album, onBack }: { album: SavedAlbum; onBack: (
         <ViewerButton accessibilityLabel="Back to album" label="‹" onPress={onBack} />
         <View style={styles.headerCopy}>
           <Text numberOfLines={1} style={styles.title}>{album.title}</Text>
-          <Text style={styles.subtitle}>High-resolution PDF · stays inside Photeo</Text>
+          <Text style={styles.subtitle}>High-resolution, 8x8 inch · stays inside Photeo</Text>
         </View>
         <Text style={styles.counter}>{pageIndex + 1} / {document.pageCount}</Text>
       </View>
